@@ -13,7 +13,7 @@ use crate::transport::{HttpResponseData, HttpTransport};
 
 const DEFAULT_ZNCA_BASE_URL: &str = "https://nxapi-znca-api.fancy.org.uk/api/znca";
 const DEFAULT_OAUTH_URL: &str = "https://nxapi-auth.fancy.org.uk/api/oauth/token";
-const DEFAULT_CLIENT_ID: &str = "K25kIeO_LRjaijJlPNs8og";
+const DEFAULT_CLIENT_ID: &str = "OhFZ3YmNeYnls5Fo-z3BkA";
 // This is a compatibility identifier, not the Coral app version. It must be
 // updated deliberately when nxapi changes its Coral request implementation.
 const ZNCA_CLIENT_VERSION: &str = "d8fAZDPzwimzQ7c6";
@@ -420,7 +420,7 @@ mod tests {
     fn uses_current_nxapi_client_identifiers() {
         let config = NxapiConfig::default();
 
-        assert_eq!(config.client_id, "K25kIeO_LRjaijJlPNs8og");
+        assert_eq!(config.client_id, "OhFZ3YmNeYnls5Fo-z3BkA");
         assert_eq!(
             config.user_agent,
             format!("Cypas/NSOAlbum/{}", env!("CARGO_PKG_VERSION"))
