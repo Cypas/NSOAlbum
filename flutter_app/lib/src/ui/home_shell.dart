@@ -677,8 +677,7 @@ class _PageFrame extends StatelessWidget {
     required this.child,
     this.leading,
     this.action,
-    this.pinnedAction,
-    this.hideTitle = false,
+    this.fixedHeader = false,
   });
 
   final String title;
@@ -686,105 +685,108 @@ class _PageFrame extends StatelessWidget {
   final Widget child;
   final Widget? leading;
   final Widget? action;
-  final Widget? pinnedAction;
-  final bool hideTitle;
+  final bool fixedHeader;
 
-  @override
-  Widget build(BuildContext context) => SafeArea(
-    child: Column(
+  Widget _header(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(24, 6, 24, 4),
+    child: Row(
+      key: const Key('page-header'),
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        if (pinnedAction != null) _PinnedPageActionBar(child: pinnedAction!),
+        if (leading != null) ...[
+          Padding(padding: const EdgeInsets.only(right: 10), child: leading),
+        ],
         Expanded(
-          child: CustomScrollView(
-            slivers: [
-              if (!hideTitle)
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
-                  sliver: SliverToBoxAdapter(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (leading != null) ...[
-                          Padding(
-                            padding: const EdgeInsets.only(right: 10),
-                            child: leading,
-                          ),
-                        ],
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Visibility(
-                                visible: !hideTitle,
-                                maintainState: true,
-                                maintainAnimation: true,
-                                maintainSize: true,
-                                child: Text(
-                                  title,
-                                  key: const Key('page-title'),
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .headlineMedium
-                                      ?.copyWith(fontWeight: FontWeight.w700),
-                                ),
-                              ),
-                              if (subtitle != null && subtitle!.isNotEmpty) ...[
-                                const SizedBox(height: 4),
-                                Text(
-                                  subtitle!,
-                                  style: TextStyle(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
-                        ),
-                        ?action,
-                      ],
-                    ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                title,
+                key: const Key('page-title'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.headlineMedium
+                    ?.copyWith(fontWeight: FontWeight.w700),
+              ),
+              if (subtitle != null && subtitle!.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  subtitle!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
                 ),
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
-                sliver: SliverToBoxAdapter(child: child),
-              ),
+              ],
             ],
           ),
         ),
+        if (action != null)
+          ConstrainedBox(
+            constraints: const BoxConstraints(
+              minWidth: 120,
+              maxWidth: 620,
+              minHeight: 40,
+              maxHeight: 40,
+            ),
+            child: ClipRect(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                reverse: true,
+                child: Align(alignment: Alignment.centerRight, child: action),
+              ),
+            ),
+          ),
       ],
     ),
   );
-}
-
-class _PinnedPageActionBar extends StatelessWidget {
-  const _PinnedPageActionBar({required this.child});
-
-  final Widget child;
 
   @override
-  Widget build(BuildContext context) => Material(
-    key: const Key('batch-selection-sticky'),
-    color: Theme.of(context).colorScheme.surface,
-    elevation: 2,
-    shadowColor: Theme.of(context).colorScheme.shadow.withValues(alpha: .2),
-    child: SizedBox(
-      height: 64,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
-        child: Align(
-          alignment: Alignment.centerRight,
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            reverse: true,
-            child: child,
-          ),
+  Widget build(BuildContext context) {
+    final content = CustomScrollView(
+      slivers: [
+        SliverPersistentHeader(
+          pinned: fixedHeader,
+          delegate: _PageHeaderDelegate(child: _header(context), extent: 72),
         ),
-      ),
-    ),
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
+          sliver: SliverToBoxAdapter(child: child),
+        ),
+      ],
+    );
+    return SafeArea(child: content);
+  }
+}
+
+class _PageHeaderDelegate extends SliverPersistentHeaderDelegate {
+  const _PageHeaderDelegate({required this.child, required this.extent});
+
+  final Widget child;
+  final double extent;
+
+  @override
+  double get minExtent => extent;
+
+  @override
+  double get maxExtent => extent;
+
+  @override
+  Widget build(
+    BuildContext context,
+    double shrinkOffset,
+    bool overlapsContent,
+  ) => Material(
+    color: Theme.of(context).colorScheme.surface,
+    elevation: overlapsContent ? 2 : 0,
+    child: SizedBox(height: extent, child: child),
   );
+
+  @override
+  bool shouldRebuild(covariant _PageHeaderDelegate oldDelegate) =>
+      oldDelegate.extent != extent || oldDelegate.child != child;
 }
 
 enum _BatchMediaAction {
@@ -2234,12 +2236,6 @@ class _LibraryPageState extends State<LibraryPage> {
     crossAxisAlignment: WrapCrossAlignment.center,
     children: [
       if (selecting) ...[
-        Text(
-          context.l10n.select(
-            zh: '已选择 ${selectedMediaIds.length} 项',
-            en: '${selectedMediaIds.length} selected',
-          ),
-        ),
         IconButton.filledTonal(
           key: const Key('batch-select-all'),
           tooltip: context.l10n.select(
@@ -2370,7 +2366,12 @@ class _LibraryPageState extends State<LibraryPage> {
 
   @override
   Widget build(BuildContext context) => _PageFrame(
-    title: widget.albumName ?? context.l10n.select(zh: '图库', en: 'Library'),
+    title: selecting
+        ? context.l10n.select(
+            zh: '已选择 ${selectedMediaIds.length} 项',
+            en: '${selectedMediaIds.length} selected',
+          )
+        : widget.albumName ?? context.l10n.select(zh: '图库', en: 'Library'),
     subtitle: widget.albumId == null
         ? null
         : widget.albumDescription?.trim().isNotEmpty == true
@@ -2395,9 +2396,8 @@ class _LibraryPageState extends State<LibraryPage> {
             onPressed: widget.onBack,
             icon: const Icon(Icons.arrow_back_rounded),
           ),
-    action: selecting ? null : _buildHeaderActions(context),
-    pinnedAction: selecting ? _buildHeaderActions(context) : null,
-    hideTitle: selecting,
+    action: _buildHeaderActions(context),
+    fixedHeader: true,
     child: Column(
       children: [
         Wrap(

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:media_kit/media_kit.dart';
@@ -12,6 +13,17 @@ class VideoRuntime {
   static Player? _prewarmedPlayer;
   static Future<void>? _prewarmFuture;
   static final Map<String, _PreparedVideo> _prepared = {};
+
+  static Future<void> openAndPlayWhenReady({
+    required Future<void> Function() waitForVideoOutput,
+    required Future<void> Function() open,
+    required Future<void> Function() play,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    await waitForVideoOutput().timeout(timeout);
+    await open().timeout(timeout);
+    await play().timeout(timeout);
+  }
 
   static Future<void> prepare(String path) {
     if (path.isEmpty) return Future<void>.value();

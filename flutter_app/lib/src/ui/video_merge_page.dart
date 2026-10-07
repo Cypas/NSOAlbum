@@ -62,14 +62,10 @@ class _VideoMergePageState extends State<VideoMergePage> {
   @override
   void initState() {
     super.initState();
-    for (final video in videos.take(3)) {
-      unawaited(VideoRuntime.prepare(video.storagePath));
-    }
   }
 
   @override
   void dispose() {
-    unawaited(VideoRuntime.clearPrepared());
     final player = previewPlayer;
     final path = previewPath;
     if (player != null) unawaited(player.dispose());
@@ -515,23 +511,34 @@ class _SourceVideoPreview extends StatefulWidget {
 }
 
 class _SourceVideoPreviewState extends State<_SourceVideoPreview> {
-  late final VideoPlayerHandle _playerHandle = VideoRuntime.acquirePlayer(
-    widget.video.storagePath,
-  );
-  late final Player player = _playerHandle.player;
+  late final Player player = Player();
   late final VideoController controller = VideoController(player);
 
   Object? error;
+  bool _firstFrameRendered = false;
 
   @override
   void initState() {
     super.initState();
-    (_playerHandle.ready ??
-            player.open(Media(widget.video.storagePath), play: true))
-        .then((_) => player.play())
-        .catchError((Object value) {
-          if (mounted) setState(() => error = value);
-        });
+    unawaited(_startPreview());
+  }
+
+  Future<void> _startPreview() async {
+    try {
+      await VideoRuntime.openAndPlayWhenReady(
+        waitForVideoOutput: () async {
+          await controller.platform.future;
+        },
+        open: () => player.open(Media(widget.video.storagePath), play: false),
+        play: player.play,
+      );
+      await controller.waitUntilFirstFrameRendered.timeout(
+        const Duration(seconds: 15),
+      );
+      if (mounted) setState(() => _firstFrameRendered = true);
+    } catch (value) {
+      if (mounted) setState(() => error = value);
+    }
   }
 
   @override
@@ -582,12 +589,21 @@ class _SourceVideoPreviewState extends State<_SourceVideoPreview> {
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
             child: error == null
                 ? Center(
-                    child: AspectRatio(
-                      aspectRatio: 16 / 9,
-                      child: Video(
-                        controller: controller,
-                        controls: AdaptiveVideoControls,
-                      ),
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        AspectRatio(
+                          aspectRatio: 16 / 9,
+                          child: Video(
+                            controller: controller,
+                            controls: AdaptiveVideoControls,
+                          ),
+                        ),
+                        if (!_firstFrameRendered)
+                          const IgnorePointer(
+                            child: CircularProgressIndicator(),
+                          ),
+                      ],
                     ),
                   )
                 : Center(

@@ -18,6 +18,7 @@ import 'package:squid_album/src/state/settings_controller.dart';
 import 'package:squid_album/src/state/sync_controller.dart';
 import 'package:squid_album/src/ui/home_shell.dart';
 import 'package:squid_album/src/ui/media_viewer.dart';
+import 'package:squid_album/src/ui/video_runtime.dart';
 
 void main() {
   test('video viewer preloads only the current and adjacent indexes', () {
@@ -560,16 +561,22 @@ void main() {
     final mediaBeforeSelecting = tester
         .getTopLeft(find.byKey(const ValueKey('media-card-1')))
         .dy;
+    final headerHeight = tester
+        .getSize(find.byKey(const Key('page-header')))
+        .height;
     await tester.tap(find.byKey(const Key('start-media-selection')));
     await tester.pumpAndSettle();
-    final sticky = find.byKey(const Key('batch-selection-sticky'));
-    expect(sticky, findsOneWidget);
-    expect(find.byKey(const Key('page-title')), findsNothing);
+    expect(find.byKey(const Key('batch-selection-sticky')), findsNothing);
+    expect(find.byKey(const Key('page-title')), findsOneWidget);
+    expect(find.text('已选择 0 项'), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const Key('page-header'))).height,
+      closeTo(headerHeight, 0.001),
+    );
     final mediaAfterSelecting = tester
         .getTopLeft(find.byKey(const ValueKey('media-card-1')))
         .dy;
-    expect(mediaAfterSelecting, lessThan(mediaBeforeSelecting));
-    final initialTop = tester.getTopLeft(sticky).dy;
+    expect(mediaAfterSelecting, closeTo(mediaBeforeSelecting, 0.001));
 
     await tester.tap(find.byKey(const ValueKey('media-selected-1')));
     await tester.pump();
@@ -582,9 +589,99 @@ void main() {
 
     await tester.drag(find.byType(CustomScrollView), const Offset(0, -500));
     await tester.pumpAndSettle();
-    expect(tester.getTopLeft(sticky).dy, initialTop);
+    expect(
+      tester.getSize(find.byKey(const Key('page-header'))).height,
+      closeTo(headerHeight, 0.001),
+    );
     expect(find.byKey(const Key('batch-media-actions')), findsOneWidget);
   });
+
+  testWidgets('normal gallery header scrolls with the media content', (
+    tester,
+  ) async {
+    final backend = FakeBackend(
+      mediaItems: List.generate(
+        20,
+        (index) => _media(id: index + 1, name: 'media-${index + 1}.jpg'),
+      ),
+    );
+    await tester.pumpWidget(SquidAlbumApp(backend: backend));
+    await tester.pumpAndSettle();
+
+    final header = find.byKey(const Key('page-header'));
+    expect(header, findsOneWidget);
+    final initialTop = tester.getTopLeft(header).dy;
+    final mediaBefore = tester
+        .getTopLeft(find.byKey(const ValueKey('media-card-1')))
+        .dy;
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -500));
+    await tester.pumpAndSettle();
+    final mediaAfter = tester
+        .getTopLeft(find.byKey(const ValueKey('media-card-1')))
+        .dy;
+    expect(mediaAfter, lessThan(mediaBefore));
+    expect(tester.getTopLeft(header).dy, lessThanOrEqualTo(initialTop));
+  });
+
+  test('source preview starts only after the video output is ready', () async {
+    final calls = <String>[];
+    await VideoRuntime.openAndPlayWhenReady(
+      waitForVideoOutput: () async => calls.add('output'),
+      open: () async => calls.add('open'),
+      play: () async => calls.add('play'),
+    );
+    expect(calls, ['output', 'open', 'play']);
+  });
+
+  testWidgets(
+    'entering and leaving batch selection preserves the gallery subtree',
+    (tester) async {
+      final backend = FakeBackend(
+        mediaItems: [
+          _media(id: 1, name: 'one.jpg'),
+          _media(id: 2, name: 'two.jpg'),
+        ],
+      );
+      await tester.pumpWidget(SquidAlbumApp(backend: backend));
+      await tester.pumpAndSettle();
+
+      final cardElement = tester.element(
+        find.byKey(const ValueKey('media-card-1')),
+      );
+      await tester.tap(find.byKey(const Key('start-media-selection')));
+      await tester.pumpAndSettle();
+      expect(
+        tester.element(find.byKey(const ValueKey('media-card-1'))),
+        same(cardElement),
+      );
+
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.element(find.byKey(const ValueKey('media-card-1'))),
+        same(cardElement),
+      );
+    },
+  );
+
+  test(
+    'source preview does not open or play if video output is unavailable',
+    () async {
+      final calls = <String>[];
+      await expectLater(
+        VideoRuntime.openAndPlayWhenReady(
+          waitForVideoOutput: () async {
+            calls.add('output');
+            throw TimeoutException('video output did not initialize');
+          },
+          open: () async => calls.add('open'),
+          play: () async => calls.add('play'),
+        ),
+        throwsA(isA<TimeoutException>()),
+      );
+      expect(calls, ['output']);
+    },
+  );
 
   testWidgets(
     'batch drag selects cards and selected cards have a strong outline',
