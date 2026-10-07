@@ -7,6 +7,8 @@
 
 正式运行时代码位于 `flutter_app/` 与 `rust_core/`。内部设计文档、原型和本地变更记录不随公开快照提交。
 
+当前 Windows 开发环境已启用 Developer Mode，Flutter 插件可以直接创建符号链接；其他开发机若未启用，可使用 Windows 打包脚本的 CMake/目录联接回退流程。
+
 ## Windows 打包
 
 在 `flutter_app` 目录先生成目录版和 ZIP：
