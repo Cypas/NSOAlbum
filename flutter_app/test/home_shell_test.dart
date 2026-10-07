@@ -1520,10 +1520,10 @@ void main() {
     final path = defaultLibraryPathForPlatform(
       supportDirectory: r'C:\AppData\SquidAlbum',
       isWindows: true,
-      picturesDirectory: r'C:\Users\player\Pictures',
+      picturesDirectory: r'C:\Pictures',
     );
 
-    expect(path, r'C:\Users\player\Pictures\FreshAlbum');
+    expect(path, r'C:\Pictures\FreshAlbum');
   });
 
   testWidgets('storage location change action stays enabled', (tester) async {
