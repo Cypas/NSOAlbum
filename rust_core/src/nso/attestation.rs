@@ -33,6 +33,24 @@ fn is_incompatible_client(response: &HttpResponseData) -> bool {
             == Some("incompatible_client")
 }
 
+fn oauth_client_authentication_error(response: &HttpResponseData) -> Option<String> {
+    if response.status != 401 {
+        return None;
+    }
+    let value = response.json::<Value>().ok()?;
+    if value.get("error").and_then(Value::as_str) != Some("invalid_client") {
+        return None;
+    }
+    let description = value
+        .get("error_description")
+        .and_then(Value::as_str)
+        .unwrap_or("client authentication was rejected");
+    Some(format!(
+        "NXAPI OAuth client authentication is required for client id {}: {description}. Configure the matching nxapi-auth client secret/client assertion; it must not be bundled in the app.",
+        DEFAULT_CLIENT_ID
+    ))
+}
+
 fn build_f_request_body(
     url: &str,
     access_token: &str,
@@ -161,6 +179,9 @@ impl NxapiAttestationClient {
         };
         if response.status >= 400 && refresh_token.is_some() {
             response = self.request_oauth_token("client_credentials", None).await?;
+        }
+        if let Some(message) = oauth_client_authentication_error(&response) {
+            return Err(CoreError::Authentication(message));
         }
         response.ensure_success("NXAPI OAuth token request")?;
         let value: Value = response.json()?;
@@ -417,6 +438,21 @@ mod tests {
         };
 
         assert!(is_incompatible_client(&response));
+    }
+
+    #[test]
+    fn explains_missing_oauth_client_authentication() {
+        let response = HttpResponseData {
+            status: 401,
+            headers: HashMap::new(),
+            body:
+                br#"{"error":"invalid_client","error_description":"Missing client authentication"}"#
+                    .to_vec(),
+        };
+
+        let message = oauth_client_authentication_error(&response).unwrap();
+        assert!(message.contains("client secret/client assertion"));
+        assert!(message.contains("must not be bundled"));
     }
 
     #[test]

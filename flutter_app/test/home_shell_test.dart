@@ -6,12 +6,17 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:squid_album/main.dart';
 import 'package:squid_album/src/backend/app_backend.dart';
+import 'package:squid_album/src/l10n/app_localizations.dart';
 import 'package:squid_album/src/backend/rust_backend.dart';
 import 'package:squid_album/src/rust/models.dart';
 import 'package:squid_album/src/rust/settings.dart';
+import 'package:squid_album/src/state/settings_controller.dart';
+import 'package:squid_album/src/state/sync_controller.dart';
+import 'package:squid_album/src/ui/home_shell.dart';
 
 void main() {
   test('selects the initial interface language from the system locale', () {
@@ -1685,6 +1690,49 @@ void main() {
       expect(backend.syncCalls, 1);
     },
   );
+
+  testWidgets('shows an automatic sync failure in a global snackbar', (
+    tester,
+  ) async {
+    final syncFailure = Completer<SyncSummary>();
+    final backend = FakeBackend(syncFuture: syncFailure.future);
+    final settings = SettingsController(backend);
+    final sync = SyncController(backend);
+    addTearDown(() {
+      settings.dispose();
+      sync.dispose();
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: const [
+          AppLocalizations.delegate,
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: HomeShell(
+          backend: backend,
+          settings: settings,
+          syncController: sync,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    unawaited(sync.run());
+    await tester.pump();
+    syncFailure.completeError(
+      StateError(
+        'provider failed: NXAPI OAuth token request failed with HTTP 401: Missing client authentication',
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pumpAndSettle();
+    expect(sync.state, SyncState.failed);
+    expect(sync.error, isNotNull);
+
+    expect(find.byType(MaterialBanner), findsOneWidget);
+  });
 
   testWidgets('persists the desktop window close behavior', (tester) async {
     final backend = FakeBackend();

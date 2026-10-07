@@ -266,6 +266,7 @@ class _HomeShellState extends State<HomeShell> {
   late final SyncController sync;
   late final bool ownsSyncController;
   SyncState? _lastSyncState;
+  String? _syncFailureMessage;
 
   @override
   void initState() {
@@ -278,9 +279,23 @@ class _HomeShellState extends State<HomeShell> {
 
   void _handleSyncStateChanged() {
     final next = sync.state;
+    if (next == SyncState.running && mounted) {
+      setState(() => _syncFailureMessage = null);
+    }
     if (next == SyncState.completed && _lastSyncState != SyncState.completed) {
       unawaited(libraryKey.currentState?._reloadAndPreload());
       if (mounted) setState(() => albumPageRevision += 1);
+    }
+    if (next == SyncState.failed && _lastSyncState != SyncState.failed) {
+      final failure = sync.error;
+      if (failure != null && mounted) {
+        setState(
+          () => _syncFailureMessage = context.l10n.select(
+            zh: 'Nintendo 同步失败：$failure',
+            en: 'Nintendo synchronization failed: $failure',
+          ),
+        );
+      }
     }
     _lastSyncState = next;
   }
@@ -396,33 +411,53 @@ class _HomeShellState extends State<HomeShell> {
       ),
     ];
     final content = ActivePageHost(index: index, children: pages);
-
-    return Scaffold(
-      body: wide
-          ? Row(
-              children: [
-                TweenAnimationBuilder<double>(
-                  key: const Key('desktop-sidebar'),
-                  tween: Tween(end: railExtended ? 1 : 0),
-                  duration: const Duration(milliseconds: 320),
-                  curve: Curves.easeInOutCubicEmphasized,
-                  builder: (context, expansion, _) => SizedBox(
-                    width: 72 + 148 * expansion,
-                    child: _DesktopSidebar(
-                      destinations: destinations,
-                      selectedIndex: index,
-                      expansion: expansion,
-                      expanded: railExtended,
-                      onDestinationSelected: _selectDestination,
-                      onToggle: () =>
-                          setState(() => railExtended = !railExtended),
-                    ),
+    final contentBody = wide
+        ? Row(
+            children: [
+              TweenAnimationBuilder<double>(
+                key: const Key('desktop-sidebar'),
+                tween: Tween(end: railExtended ? 1 : 0),
+                duration: const Duration(milliseconds: 320),
+                curve: Curves.easeInOutCubicEmphasized,
+                builder: (context, expansion, _) => SizedBox(
+                  width: 72 + 148 * expansion,
+                  child: _DesktopSidebar(
+                    destinations: destinations,
+                    selectedIndex: index,
+                    expansion: expansion,
+                    expanded: railExtended,
+                    onDestinationSelected: _selectDestination,
+                    onToggle: () =>
+                        setState(() => railExtended = !railExtended),
                   ),
                 ),
-                Expanded(child: content),
+              ),
+              Expanded(child: content),
+            ],
+          )
+        : content;
+
+    return Scaffold(
+      body: Column(
+        children: [
+          if (_syncFailureMessage != null)
+            MaterialBanner(
+              content: Text(_syncFailureMessage!),
+              leading: const Icon(Icons.error_outline_rounded),
+              backgroundColor: Theme.of(context).colorScheme.errorContainer,
+              contentTextStyle: TextStyle(
+                color: Theme.of(context).colorScheme.onErrorContainer,
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => setState(() => _syncFailureMessage = null),
+                  child: Text(context.l10n.select(zh: '关闭', en: 'Dismiss')),
+                ),
               ],
-            )
-          : content,
+            ),
+          Expanded(child: contentBody),
+        ],
+      ),
       bottomNavigationBar: wide
           ? null
           : NavigationBar(
