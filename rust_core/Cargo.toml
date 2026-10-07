@@ -1,0 +1,31 @@
+[package]
+name = "squid_album_core"
+version = "0.1.29"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+filetime = "0.2"
+flutter_rust_bridge = { version = "=2.13.0", features = ["chrono"] }
+hex = "0.4"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "brotli", "stream"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt", "sync", "time"] }
+unicode-normalization = "0.1"
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"

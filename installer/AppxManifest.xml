@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+  <Identity
+    Name="__IDENTITY_NAME__"
+    Publisher="__PUBLISHER__"
+    Version="__VERSION__" />
+  <Properties>
+    <DisplayName>鱿型相册</DisplayName>
+    <PublisherDisplayName>Cypas</PublisherDisplayName>
+    <Description>Nintendo Switch and Switch 2 album manager</Description>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily
+      Name="Windows.Desktop"
+      MinVersion="10.0.17763.0"
+      MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Resources>
+    <Resource Language="zh-CN" />
+    <Resource Language="en-US" />
+  </Resources>
+  <Applications>
+    <Application
+      Id="SquidAlbum"
+      Executable="squid_album.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        AppListEntry="none"
+        DisplayName="鱿型相册"
+        Description="Nintendo Switch album manager"
+        Square44x44Logo="Assets\Square44x44Logo.png"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        BackgroundColor="#20242B" />
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

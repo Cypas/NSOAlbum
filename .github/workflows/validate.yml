@@ -1,0 +1,61 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Check formatting
+        working-directory: rust_core
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        working-directory: rust_core
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Run unit tests
+        working-directory: rust_core
+        run: cargo test --lib
+
+  flutter:
+    name: Flutter checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.6
+          channel: stable
+          cache: true
+      - name: Resolve dependencies
+        working-directory: flutter_app
+        run: flutter pub get
+      - name: Analyze Dart
+        working-directory: flutter_app
+        run: dart analyze
+      - name: Run Flutter tests
+        working-directory: flutter_app
+        run: flutter test --no-pub
+
+  secrets:
+    name: Scan repository history for secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,64 @@
+# Rust
+rust_core/target/
+**/target/
+
+# Flutter / Dart
+flutter_app/.dart_tool/
+flutter_app/build/
+flutter_app/**/ephemeral/
+flutter_app/.flutter-plugins-dependencies
+dist/
+coverage/
+
+# IDE and local files
+.idea/
+.vscode/
+*.iml
+*.log
+*.swp
+.DS_Store
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+**/local.properties
+**/key.properties
+*.p12
+*.pfx
+*.keystore
+*.jks
+*.pem
+*.key
+*.mobileprovision
+*.provisionprofile
+secrets/
+credentials/
+
+# User state and private data
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+*.log.*
+*.dump
+*.backup
+*.bak
+
+# Build and release scratch
+.superpowers/
+.worktrees/
+worktrees/
+AGENTS.md
+docs/design/
+docs/prototypes/
+docs/CHANGELOG.md
+docs/protocol/
+flutter_app/macos/Flutter/ephemeral/
+flutter_app/ios/Flutter/ephemeral/
+
+# Common temporary artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
