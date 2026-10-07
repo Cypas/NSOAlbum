@@ -697,55 +697,56 @@ class _PageFrame extends StatelessWidget {
         Expanded(
           child: CustomScrollView(
             slivers: [
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
-                sliver: SliverToBoxAdapter(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (leading != null) ...[
-                        Padding(
-                          padding: const EdgeInsets.only(right: 10),
-                          child: leading,
-                        ),
-                      ],
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Visibility(
-                              visible: !hideTitle,
-                              maintainState: true,
-                              maintainAnimation: true,
-                              maintainSize: true,
-                              child: Text(
-                                title,
-                                key: const Key('page-title'),
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .headlineMedium
-                                    ?.copyWith(fontWeight: FontWeight.w700),
-                              ),
-                            ),
-                            if (subtitle != null && subtitle!.isNotEmpty) ...[
-                              const SizedBox(height: 4),
-                              Text(
-                                subtitle!,
-                                style: TextStyle(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSurfaceVariant,
+              if (!hideTitle)
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+                  sliver: SliverToBoxAdapter(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (leading != null) ...[
+                          Padding(
+                            padding: const EdgeInsets.only(right: 10),
+                            child: leading,
+                          ),
+                        ],
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Visibility(
+                                visible: !hideTitle,
+                                maintainState: true,
+                                maintainAnimation: true,
+                                maintainSize: true,
+                                child: Text(
+                                  title,
+                                  key: const Key('page-title'),
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .headlineMedium
+                                      ?.copyWith(fontWeight: FontWeight.w700),
                                 ),
                               ),
+                              if (subtitle != null && subtitle!.isNotEmpty) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  subtitle!,
+                                  style: TextStyle(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
                             ],
-                          ],
+                          ),
                         ),
-                      ),
-                      ?action,
-                    ],
+                        ?action,
+                      ],
+                    ),
                   ),
                 ),
-              ),
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
                 sliver: SliverToBoxAdapter(child: child),
@@ -1351,6 +1352,7 @@ class _LibraryPageState extends State<LibraryPage> {
   final Set<int> selectedMediaIds = {};
   final Set<int> favoriteBusy = {};
   final Map<int, bool> favoriteOverrides = {};
+  final Set<String> _preloadedImagePaths = {};
   final TextEditingController searchController = TextEditingController();
   Timer? searchDebounce;
   String search = '';
@@ -2211,6 +2213,21 @@ class _LibraryPageState extends State<LibraryPage> {
     );
   }
 
+  void _preloadGalleryImages(List<MediaAsset> items, int columns) {
+    final limit = (columns * 3).clamp(6, 24);
+    for (final asset
+        in items.where((item) => item.kind == MediaKind.image).take(limit)) {
+      if (!_preloadedImagePaths.add(asset.storagePath)) continue;
+      unawaited(
+        precacheImage(
+          FileImage(File(asset.storagePath)),
+          context,
+          size: const Size(900, 600),
+        ).catchError((_) {}),
+      );
+    }
+  }
+
   Widget _buildHeaderActions(BuildContext context) => Wrap(
     spacing: 8,
     runSpacing: 8,
@@ -2660,6 +2677,8 @@ class _LibraryPageState extends State<LibraryPage> {
               ].join(' ');
               return normalizedTextContains(text, search);
             }).toList();
+            final columns = widget.settings.value.galleryColumns.clamp(2, 7);
+            _preloadGalleryImages(rows, columns);
             visibleMediaIds = rows
                 .map((item) => item.id)
                 .toList(growable: false);
@@ -2675,10 +2694,6 @@ class _LibraryPageState extends State<LibraryPage> {
             } else {
               mediaContent = LayoutBuilder(
                 builder: (context, constraints) {
-                  final columns = widget.settings.value.galleryColumns.clamp(
-                    2,
-                    7,
-                  );
                   final previewRows = _isDesktop
                       ? 3
                       : widget.settings.value.galleryRows.clamp(2, 8);
@@ -3161,6 +3176,7 @@ class _MediaPreview extends StatelessWidget {
         File(asset.storagePath),
         fit: BoxFit.cover,
         cacheWidth: 900,
+        gaplessPlayback: true,
         errorBuilder: (_, _, _) => _placeholder(context),
       );
     }

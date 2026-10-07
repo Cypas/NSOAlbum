@@ -1,6 +1,6 @@
 [package]
 name = "squid_album_core"
-version = "0.1.29"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 

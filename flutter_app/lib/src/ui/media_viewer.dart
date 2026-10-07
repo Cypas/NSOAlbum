@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -12,6 +13,11 @@ import 'desktop_window_drag_area.dart';
 import 'media_metadata_editor.dart';
 import 'video_editor.dart';
 import 'video_runtime.dart';
+
+Set<int> adjacentVideoIndices(int index, int length) => {
+  for (final candidate in [index - 1, index, index + 1])
+    if (candidate >= 0 && candidate < length) candidate,
+};
 
 class MediaViewer extends StatefulWidget {
   const MediaViewer({
@@ -90,7 +96,23 @@ class _MediaViewerState extends State<MediaViewer> {
   bool immersive = false;
 
   @override
+  void initState() {
+    super.initState();
+    _preloadAround(currentIndex);
+  }
+
+  void _preloadAround(int index) {
+    for (final candidate in adjacentVideoIndices(index, items.length)) {
+      final item = items[candidate];
+      if (item.kind == MediaKind.video) {
+        unawaited(VideoRuntime.prepare(item.storagePath));
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    unawaited(VideoRuntime.clearPrepared());
     pageController.dispose();
     keyboardFocus.dispose();
     super.dispose();
@@ -226,7 +248,10 @@ class _MediaViewerState extends State<MediaViewer> {
                 controller: pageController,
                 itemCount: items.length,
                 allowImplicitScrolling: true,
-                onPageChanged: (index) => setState(() => currentIndex = index),
+                onPageChanged: (index) {
+                  setState(() => currentIndex = index);
+                  _preloadAround(index);
+                },
                 itemBuilder: (context, index) {
                   final media = items[index];
                   return Padding(
@@ -535,7 +560,10 @@ class _VideoViewer extends StatefulWidget {
 
 class _VideoViewerState extends State<_VideoViewer>
     with AutomaticKeepAliveClientMixin {
-  late final Player player = VideoRuntime.acquirePlayer();
+  late final VideoPlayerHandle _playerHandle = VideoRuntime.acquirePlayer(
+    widget.path,
+  );
+  late final Player player = _playerHandle.player;
   late final VideoController controller = VideoController(player);
 
   Object? openError;
@@ -550,8 +578,14 @@ class _VideoViewerState extends State<_VideoViewer>
   @override
   void initState() {
     super.initState();
-    player
-        .open(Media(widget.path), play: widget.autoPlay && widget.active)
+    (_playerHandle.ready ??
+            player.open(
+              Media(widget.path),
+              play: widget.autoPlay && widget.active,
+            ))
+        .then((_) {
+          if (widget.autoPlay && widget.active) unawaited(player.play());
+        })
         .catchError((Object error) {
           if (mounted) setState(() => openError = error);
         });

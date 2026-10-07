@@ -60,7 +60,16 @@ class _VideoMergePageState extends State<VideoMergePage> {
   Object? previewError;
 
   @override
+  void initState() {
+    super.initState();
+    for (final video in videos.take(3)) {
+      unawaited(VideoRuntime.prepare(video.storagePath));
+    }
+  }
+
+  @override
   void dispose() {
+    unawaited(VideoRuntime.clearPrepared());
     final player = previewPlayer;
     final path = previewPath;
     if (player != null) unawaited(player.dispose());
@@ -491,6 +500,7 @@ class _SourceVideoPreview extends StatefulWidget {
   static Future<void> open(BuildContext context, {required MediaAsset video}) =>
       showDialog<void>(
         context: context,
+        barrierDismissible: true,
         barrierColor: Colors.black87,
         builder: (_) => Dialog(
           key: const Key('video-merge-source-preview'),
@@ -505,7 +515,10 @@ class _SourceVideoPreview extends StatefulWidget {
 }
 
 class _SourceVideoPreviewState extends State<_SourceVideoPreview> {
-  late final Player player = VideoRuntime.acquirePlayer();
+  late final VideoPlayerHandle _playerHandle = VideoRuntime.acquirePlayer(
+    widget.video.storagePath,
+  );
+  late final Player player = _playerHandle.player;
   late final VideoController controller = VideoController(player);
 
   Object? error;
@@ -513,11 +526,12 @@ class _SourceVideoPreviewState extends State<_SourceVideoPreview> {
   @override
   void initState() {
     super.initState();
-    player.open(Media(widget.video.storagePath), play: true).catchError((
-      Object value,
-    ) {
-      if (mounted) setState(() => error = value);
-    });
+    (_playerHandle.ready ??
+            player.open(Media(widget.video.storagePath), play: true))
+        .then((_) => player.play())
+        .catchError((Object value) {
+          if (mounted) setState(() => error = value);
+        });
   }
 
   @override
@@ -552,7 +566,7 @@ class _SourceVideoPreviewState extends State<_SourceVideoPreview> {
               ),
               Positioned(
                 top: 8,
-                right: 8,
+                left: 8,
                 child: IconButton.filledTonal(
                   key: const Key('video-merge-source-preview-close'),
                   tooltip: context.l10n.select(zh: '关闭预览', en: 'Close preview'),

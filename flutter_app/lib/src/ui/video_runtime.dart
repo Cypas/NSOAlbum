@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:media_kit/media_kit.dart';
 
 /// Lazily initializes media_kit only when a video surface or decoder is
@@ -9,6 +11,30 @@ class VideoRuntime {
   static bool _initialized = false;
   static Player? _prewarmedPlayer;
   static Future<void>? _prewarmFuture;
+  static final Map<String, _PreparedVideo> _prepared = {};
+
+  static Future<void> prepare(String path) {
+    if (path.isEmpty) return Future<void>.value();
+    if (Platform.environment.containsKey('FLUTTER_TEST')) {
+      return Future<void>.value();
+    }
+    final existing = _prepared[path];
+    if (existing != null) return existing.ready;
+    ensureInitialized();
+    final player = Player();
+    final future = () async {
+      try {
+        await player.open(Media(path), play: false);
+      } catch (_) {
+        _prepared.remove(path);
+        await player.dispose();
+        rethrow;
+      }
+    }();
+    final entry = _PreparedVideo(player, future);
+    _prepared[path] = entry;
+    return future;
+  }
 
   static void ensureInitialized() {
     if (_initialized) return;
@@ -29,10 +55,36 @@ class VideoRuntime {
     return future;
   }
 
-  static Player acquirePlayer() {
+  static VideoPlayerHandle acquirePlayer(String path) {
     ensureInitialized();
+    final prepared = _prepared.remove(path);
+    if (prepared != null) {
+      return VideoPlayerHandle(prepared.player, prepared.ready);
+    }
     final player = _prewarmedPlayer;
     _prewarmedPlayer = null;
-    return player ?? Player();
+    return VideoPlayerHandle(player ?? Player(), null);
   }
+
+  static Future<void> clearPrepared() async {
+    final entries = _prepared.values.toList(growable: false);
+    _prepared.clear();
+    for (final entry in entries) {
+      await entry.player.dispose();
+    }
+  }
+}
+
+class _PreparedVideo {
+  const _PreparedVideo(this.player, this.ready);
+
+  final Player player;
+  final Future<void> ready;
+}
+
+class VideoPlayerHandle {
+  const VideoPlayerHandle(this.player, this.ready);
+
+  final Player player;
+  final Future<void>? ready;
 }

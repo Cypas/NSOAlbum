@@ -17,8 +17,15 @@ import 'package:squid_album/src/rust/settings.dart';
 import 'package:squid_album/src/state/settings_controller.dart';
 import 'package:squid_album/src/state/sync_controller.dart';
 import 'package:squid_album/src/ui/home_shell.dart';
+import 'package:squid_album/src/ui/media_viewer.dart';
 
 void main() {
+  test('video viewer preloads only the current and adjacent indexes', () {
+    expect(adjacentVideoIndices(0, 4), {0, 1});
+    expect(adjacentVideoIndices(2, 4), {1, 2, 3});
+    expect(adjacentVideoIndices(3, 4), {2, 3});
+  });
+
   test('selects the initial interface language from the system locale', () {
     expect(interfaceLanguageForLocale(const Locale('zh', 'TW')), 'zh');
     expect(interfaceLanguageForLocale(const Locale('en', 'US')), 'en');
@@ -550,10 +557,18 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
     await tester.pumpAndSettle();
 
+    final mediaBeforeSelecting = tester
+        .getTopLeft(find.byKey(const ValueKey('media-card-1')))
+        .dy;
     await tester.tap(find.byKey(const Key('start-media-selection')));
     await tester.pumpAndSettle();
     final sticky = find.byKey(const Key('batch-selection-sticky'));
     expect(sticky, findsOneWidget);
+    expect(find.byKey(const Key('page-title')), findsNothing);
+    final mediaAfterSelecting = tester
+        .getTopLeft(find.byKey(const ValueKey('media-card-1')))
+        .dy;
+    expect(mediaAfterSelecting, lessThan(mediaBeforeSelecting));
     final initialTop = tester.getTopLeft(sticky).dy;
 
     await tester.tap(find.byKey(const ValueKey('media-selected-1')));
