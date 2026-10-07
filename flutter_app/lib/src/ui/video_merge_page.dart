@@ -243,7 +243,7 @@ class _VideoMergePageState extends State<VideoMergePage> {
               ),
               Expanded(child: _buildPreview(context)),
               Container(
-                height: 250,
+                height: 278,
                 color: Theme.of(context).colorScheme.surfaceContainerLow,
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
                 child: ReorderableListView.builder(
@@ -266,7 +266,7 @@ class _VideoMergePageState extends State<VideoMergePage> {
                     final video = videos[index];
                     return SizedBox(
                       key: ValueKey(video.id),
-                      width: 284,
+                      width: 248,
                       child: Card(
                         margin: const EdgeInsets.only(right: 12),
                         child: Padding(
@@ -297,7 +297,8 @@ class _VideoMergePageState extends State<VideoMergePage> {
                                 ],
                               ),
                               const SizedBox(height: 6),
-                              Expanded(
+                              SizedBox(
+                                width: double.infinity,
                                 child: _MergeVideoThumbnail(
                                   video: video,
                                   backend: widget.backend,

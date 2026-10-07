@@ -957,6 +957,11 @@ void main() {
       ),
       findsOneWidget,
     );
+    final mergeThumbnail = find.byKey(
+      const ValueKey('video-merge-thumbnail-2'),
+    );
+    expect(tester.getSize(mergeThumbnail).width, greaterThan(190));
+    expect(tester.getSize(mergeThumbnail).width, lessThan(240));
     expect(
       find.byKey(const Key('video-merge-window-drag-area')),
       findsOneWidget,
