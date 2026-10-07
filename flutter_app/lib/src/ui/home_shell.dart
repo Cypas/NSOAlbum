@@ -678,6 +678,7 @@ class _PageFrame extends StatelessWidget {
     this.leading,
     this.action,
     this.pinnedAction,
+    this.hideTitle = false,
   });
 
   final String title;
@@ -686,6 +687,7 @@ class _PageFrame extends StatelessWidget {
   final Widget? leading;
   final Widget? action;
   final Widget? pinnedAction;
+  final bool hideTitle;
 
   @override
   Widget build(BuildContext context) => SafeArea(
@@ -711,10 +713,19 @@ class _PageFrame extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              title,
-                              style: Theme.of(context).textTheme.headlineMedium
-                                  ?.copyWith(fontWeight: FontWeight.w700),
+                            Visibility(
+                              visible: !hideTitle,
+                              maintainState: true,
+                              maintainAnimation: true,
+                              maintainSize: true,
+                              child: Text(
+                                title,
+                                key: const Key('page-title'),
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .headlineMedium
+                                    ?.copyWith(fontWeight: FontWeight.w700),
+                              ),
                             ),
                             if (subtitle != null && subtitle!.isNotEmpty) ...[
                               const SizedBox(height: 4),
@@ -2369,6 +2380,7 @@ class _LibraryPageState extends State<LibraryPage> {
           ),
     action: selecting ? null : _buildHeaderActions(context),
     pinnedAction: selecting ? _buildHeaderActions(context) : null,
+    hideTitle: selecting,
     child: Column(
       children: [
         Wrap(
@@ -8132,7 +8144,7 @@ SnackBar _messageSnackBar(
   bool error = false,
   SnackBarAction? action,
 }) => SnackBar(
-  content: Text(message),
+  content: SelectableText(message, key: const Key('snackbar-message')),
   duration: Duration(seconds: error ? 12 : 8),
   showCloseIcon: true,
   action: action,

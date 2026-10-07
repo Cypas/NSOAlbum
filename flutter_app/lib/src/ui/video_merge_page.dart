@@ -536,11 +536,11 @@ class _SourceVideoPreviewState extends State<_SourceVideoPreview> {
     constraints: const BoxConstraints(maxWidth: 1100, maxHeight: 760),
     child: Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 10, 10),
-          child: Row(
+        SizedBox(
+          height: 52,
+          child: Stack(
             children: [
-              Expanded(
+              Positioned.fill(
                 child: DesktopWindowDragArea(
                   key: const Key('video-merge-source-window-drag-area'),
                   child: Text(
@@ -555,11 +555,15 @@ class _SourceVideoPreviewState extends State<_SourceVideoPreview> {
                   ),
                 ),
               ),
-              IconButton.filledTonal(
-                key: const Key('video-merge-source-preview-close'),
-                tooltip: context.l10n.select(zh: '关闭预览', en: 'Close preview'),
-                onPressed: () => Navigator.of(context).pop(),
-                icon: const Icon(Icons.close_rounded),
+              Positioned(
+                top: 8,
+                right: 8,
+                child: IconButton.filledTonal(
+                  key: const Key('video-merge-source-preview-close'),
+                  tooltip: context.l10n.select(zh: '关闭预览', en: 'Close preview'),
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: const Icon(Icons.close_rounded),
+                ),
               ),
             ],
           ),

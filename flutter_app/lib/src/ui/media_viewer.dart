@@ -225,6 +225,7 @@ class _MediaViewerState extends State<MediaViewer> {
               PageView.builder(
                 controller: pageController,
                 itemCount: items.length,
+                allowImplicitScrolling: true,
                 onPageChanged: (index) => setState(() => currentIndex = index),
                 itemBuilder: (context, index) {
                   final media = items[index];
@@ -532,7 +533,8 @@ class _VideoViewer extends StatefulWidget {
   State<_VideoViewer> createState() => _VideoViewerState();
 }
 
-class _VideoViewerState extends State<_VideoViewer> {
+class _VideoViewerState extends State<_VideoViewer>
+    with AutomaticKeepAliveClientMixin {
   late final Player player = _createPlayer();
   late final VideoController controller = VideoController(player);
 
@@ -542,6 +544,9 @@ class _VideoViewerState extends State<_VideoViewer> {
   }
 
   Object? openError;
+
+  @override
+  bool get wantKeepAlive => true;
 
   Future<void> togglePlayback() => player.playOrPause();
 
@@ -572,6 +577,7 @@ class _VideoViewerState extends State<_VideoViewer> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     if (openError != null) {
       return _ViewerError(
         icon: Icons.videocam_off_outlined,
