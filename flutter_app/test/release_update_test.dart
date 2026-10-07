@@ -94,6 +94,12 @@ void main() {
     expect(candidates.last.host, 'github.com');
   });
 
+  test('release API candidates try the proxy before GitHub', () {
+    final candidates = releaseApiCandidates();
+    expect(candidates.first.host, 'gh-proxy.org');
+    expect(candidates.last.host, 'api.github.com');
+  });
+
   test('automatic checks are limited to once in a 24 hour window', () {
     final now = DateTime.utc(2026, 10, 7, 12);
 

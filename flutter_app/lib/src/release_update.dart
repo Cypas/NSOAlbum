@@ -9,6 +9,7 @@ const githubLatestReleaseApi =
 const _maxInstallerBytes = 512 * 1024 * 1024;
 
 typedef ReleaseAssetCandidateBuilder = List<Uri> Function(Uri officialUrl);
+typedef ReleaseApiCandidateBuilder = List<Uri> Function();
 
 class StableRelease {
   const StableRelease({
@@ -106,6 +107,11 @@ List<Uri> releaseAssetDownloadCandidates(Uri officialUrl) => [
   officialUrl,
 ];
 
+List<Uri> releaseApiCandidates() => [
+  Uri.parse('https://gh-proxy.org/$githubLatestReleaseApi'),
+  Uri.parse(githubLatestReleaseApi),
+];
+
 bool automaticUpdateCheckDue(DateTime? lastCheck, DateTime now) =>
     lastCheck == null || now.difference(lastCheck) >= const Duration(days: 1);
 
@@ -130,12 +136,15 @@ class ReleaseUpdateService {
   ReleaseUpdateService({
     HttpClient? client,
     ReleaseAssetCandidateBuilder? candidateBuilder,
+    ReleaseApiCandidateBuilder? apiCandidateBuilder,
     this._downloadDirectory,
   }) : _client = client ?? HttpClient(),
-       _candidateBuilder = candidateBuilder ?? releaseAssetDownloadCandidates;
+       _candidateBuilder = candidateBuilder ?? releaseAssetDownloadCandidates,
+       _apiCandidateBuilder = apiCandidateBuilder ?? releaseApiCandidates;
 
   final HttpClient _client;
   final ReleaseAssetCandidateBuilder _candidateBuilder;
+  final ReleaseApiCandidateBuilder _apiCandidateBuilder;
   final Directory? _downloadDirectory;
 
   Future<bool> isAutomaticCheckDue() async {
@@ -167,31 +176,50 @@ class ReleaseUpdateService {
   }
 
   Future<StableRelease?> checkForUpdate(String currentVersion) async {
-    final uri = Uri.parse(githubLatestReleaseApi);
-    final request = await _client.getUrl(uri);
-    request.headers.set(
-      HttpHeaders.acceptHeader,
-      'application/vnd.github+json',
-    );
-    request.headers.set(HttpHeaders.userAgentHeader, 'FreshAlbum');
-    request.headers.set('X-GitHub-Api-Version', '2022-11-28');
-    final response = await request.close().timeout(const Duration(seconds: 15));
-    if (response.statusCode != HttpStatus.ok) {
-      await response.drain<void>();
-      throw HttpException(
-        'GitHub latest-release lookup failed (HTTP ${response.statusCode})',
-        uri: uri,
-      );
+    Object? lastError;
+    for (final uri in _apiCandidateBuilder()) {
+      try {
+        final request = await _client.getUrl(uri);
+        request.headers.set(
+          HttpHeaders.acceptHeader,
+          'application/vnd.github+json',
+        );
+        request.headers.set(HttpHeaders.userAgentHeader, 'FreshAlbum');
+        request.headers.set('X-GitHub-Api-Version', '2022-11-28');
+        final response = await request.close().timeout(
+          const Duration(seconds: 15),
+        );
+        if (response.statusCode == HttpStatus.notFound) {
+          await response.drain<void>();
+          lastError = const FormatException(
+            'No public stable release is available for Fresh Album',
+          );
+          continue;
+        }
+        if (response.statusCode != HttpStatus.ok) {
+          await response.drain<void>();
+          throw HttpException(
+            'Release lookup failed (HTTP ${response.statusCode})',
+            uri: uri,
+          );
+        }
+        final body = await response
+            .transform(utf8.decoder)
+            .join()
+            .timeout(const Duration(seconds: 15));
+        final decoded = jsonDecode(body);
+        if (decoded is! Map<String, dynamic>) {
+          throw const FormatException(
+            'Release service returned invalid metadata',
+          );
+        }
+        return latestStableUpdateFromGithubJson(decoded, currentVersion);
+      } catch (error) {
+        lastError = error;
+      }
     }
-    final body = await response
-        .transform(utf8.decoder)
-        .join()
-        .timeout(const Duration(seconds: 15));
-    final decoded = jsonDecode(body);
-    if (decoded is! Map<String, dynamic>) {
-      throw const FormatException('GitHub returned invalid release metadata');
-    }
-    return latestStableUpdateFromGithubJson(decoded, currentVersion);
+    throw lastError ??
+        const FormatException('No release service could be reached');
   }
 
   Future<File> downloadInstaller(

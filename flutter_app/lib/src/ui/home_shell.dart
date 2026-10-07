@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -8170,7 +8171,26 @@ class _ErrorPanel extends StatelessWidget {
       padding: const EdgeInsets.all(24),
       child: Row(
         children: [
-          Expanded(child: Text(message)),
+          Expanded(
+            child: SelectableText(
+              message,
+              key: const Key('error-panel-message'),
+            ),
+          ),
+          IconButton(
+            key: const Key('error-panel-copy'),
+            tooltip: context.l10n.select(zh: '复制错误', en: 'Copy error'),
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: message));
+              if (!context.mounted) return;
+              ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                _messageSnackBar(
+                  context.l10n.select(zh: '错误信息已复制', en: 'Error copied'),
+                ),
+              );
+            },
+            icon: const Icon(Icons.copy_rounded),
+          ),
           TextButton(
             onPressed: onRetry,
             child: Text(context.l10n.select(zh: '重试', en: 'Retry')),
