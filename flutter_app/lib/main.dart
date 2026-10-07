@@ -19,6 +19,7 @@ import 'src/state/sync_controller.dart';
 import 'src/startup/startup_diagnostics.dart';
 import 'src/startup/startup_options.dart';
 import 'src/ui/home_shell.dart';
+import 'src/ui/video_runtime.dart';
 
 Future<void> main(List<String> arguments) async {
   final startupOptions = StartupOptions.parse(arguments);
@@ -314,6 +315,22 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
             !kDebugMode &&
             !widget.startupOptions.safeMode) {
           unawaited(_checkForUpdates(automatic: true));
+        }
+        if (!Platform.environment.containsKey('FLUTTER_TEST') &&
+            !widget.startupOptions.disableVideoThumbnails &&
+            !widget.startupOptions.safeMode) {
+          unawaited(
+            widget.diagnostics?.runGuarded(
+                  'media-player-prewarm',
+                  VideoRuntime.prewarm,
+                ) ??
+                VideoRuntime.prewarm(),
+          );
+        } else {
+          unawaited(
+            widget.diagnostics?.phase('media-player-prewarm-disabled') ??
+                Future<void>.value(),
+          );
         }
         if (!widget.startupOptions.disableAutomaticSync) {
           unawaited(

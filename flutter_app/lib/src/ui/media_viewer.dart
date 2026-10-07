@@ -535,13 +535,8 @@ class _VideoViewer extends StatefulWidget {
 
 class _VideoViewerState extends State<_VideoViewer>
     with AutomaticKeepAliveClientMixin {
-  late final Player player = _createPlayer();
+  late final Player player = VideoRuntime.acquirePlayer();
   late final VideoController controller = VideoController(player);
-
-  Player _createPlayer() {
-    VideoRuntime.ensureInitialized();
-    return Player();
-  }
 
   Object? openError;
 
