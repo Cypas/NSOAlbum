@@ -196,7 +196,24 @@ $versionValidator = Join-Path $PSScriptRoot 'validate_release_version.ps1'
 
 $cargo = Resolve-Executable -Name 'cargo.exe' -Fallback (Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe')
 $flutter = Resolve-Executable -Name 'flutter.bat' -Fallback (Join-Path $env:USERPROFILE 'development\flutter\bin\flutter.bat')
-$dart = Resolve-Executable -Name 'dart.exe' -Fallback (Join-Path $env:USERPROFILE 'development\flutter\bin\cache\dart-sdk\bin\dart.exe')
+$dartCandidates = @(
+    (Join-Path $env:USERPROFILE 'development\flutter\bin\cache\dart-sdk\bin\dart.exe'),
+    (Join-Path $env:USERPROFILE 'development\flutter\bin\cache\dart-sdk\bin\dart.bat')
+)
+$dart = $null
+foreach ($candidate in $dartCandidates) {
+    if (Test-Path -LiteralPath $candidate) {
+        $dart = $candidate
+        break
+    }
+}
+if ($null -eq $dart) {
+    $dartCommand = Get-Command 'dart' -ErrorAction SilentlyContinue
+    if ($null -eq $dartCommand) {
+        throw 'Cannot find Dart. Expected dart on PATH or inside the Flutter SDK cache.'
+    }
+    $dart = $dartCommand.Source
+}
 
 Write-Host 'Generating Flutter/Rust bridge code...'
 & $bridgeScript
