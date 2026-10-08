@@ -17,6 +17,7 @@ import '../rust/nso/provider.dart';
 import '../rust/settings.dart';
 import 'app_backend.dart';
 import 'app_logger.dart';
+import '../fonts/custom_font_store.dart';
 
 const _windowsPicturesKnownFolderId = '{33E28130-4E1E-4676-835A-98395C3BC3BB}';
 
@@ -143,6 +144,7 @@ class RustBackend
       autoPlayVideo: false,
       autoSyncOnLaunch: false,
       closeBehavior: 'ask',
+      customFontPaths: const [],
       syncPolicy: const SyncPolicy(
         enabled: false,
         activeIntervalMinutes: 10,
@@ -158,6 +160,13 @@ class RustBackend
   Future<void> saveSettings(AppSettings value) async {
     await rust_api.saveSettings(settings: value);
     _settings = value;
+  }
+
+  @override
+  Future<List<String>> importCustomFonts(List<String> sourcePaths) async {
+    final supportDirectory = await getApplicationSupportDirectory();
+    return CustomFontStore(supportDirectory: supportDirectory.path)
+        .importFiles(sourcePaths);
   }
 
   @override
@@ -894,7 +903,7 @@ String defaultLibraryPathForPlatform({
   String? picturesDirectory,
 }) {
   if (isWindows && picturesDirectory?.trim().isNotEmpty == true) {
-    return '${picturesDirectory!.trim()}${Platform.pathSeparator}FreshAlbum';
+    return '${picturesDirectory!.trim()}${Platform.pathSeparator}NSOAlbum';
   }
   return '$supportDirectory${Platform.pathSeparator}squid_album_library';
 }

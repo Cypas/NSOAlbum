@@ -1854,8 +1854,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   AppSettings dco_decode_app_settings(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 13)
-      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
     return AppSettings(
       proxyUrl: dco_decode_opt_String(arr[0]),
       libraryPath: dco_decode_String(arr[1]),
@@ -1869,7 +1869,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       autoPlayVideo: dco_decode_bool(arr[9]),
       autoSyncOnLaunch: dco_decode_bool(arr[10]),
       closeBehavior: dco_decode_String(arr[11]),
-      syncPolicy: dco_decode_sync_policy(arr[12]),
+      customFontPaths: dco_decode_list_String(arr[12]),
+      syncPolicy: dco_decode_sync_policy(arr[13]),
     );
   }
 
@@ -2484,6 +2485,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_autoPlayVideo = sse_decode_bool(deserializer);
     var var_autoSyncOnLaunch = sse_decode_bool(deserializer);
     var var_closeBehavior = sse_decode_String(deserializer);
+    var var_customFontPaths = sse_decode_list_String(deserializer);
     var var_syncPolicy = sse_decode_sync_policy(deserializer);
     return AppSettings(
       proxyUrl: var_proxyUrl,
@@ -2498,6 +2500,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       autoPlayVideo: var_autoPlayVideo,
       autoSyncOnLaunch: var_autoSyncOnLaunch,
       closeBehavior: var_closeBehavior,
+      customFontPaths: var_customFontPaths,
       syncPolicy: var_syncPolicy,
     );
   }
@@ -3277,6 +3280,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.autoPlayVideo, serializer);
     sse_encode_bool(self.autoSyncOnLaunch, serializer);
     sse_encode_String(self.closeBehavior, serializer);
+    sse_encode_list_String(self.customFontPaths, serializer);
     sse_encode_sync_policy(self.syncPolicy, serializer);
   }
 

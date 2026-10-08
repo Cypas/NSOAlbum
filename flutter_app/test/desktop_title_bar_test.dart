@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/main.dart';
+import 'package:squid_album/src/ui/font_families.dart';
 
 void main() {
   testWidgets('custom title bar renders app branding and window controls', (
@@ -8,9 +9,12 @@ void main() {
   ) async {
     await tester.pumpWidget(
       MaterialApp(
-        theme: ThemeData(fontFamily: 'SmileySans'),
+        theme: ThemeData(
+          fontFamily: appFontFamily,
+          fontFamilyFallback: appFontFallback,
+        ),
         home: const DesktopTitleBar(
-          title: 'Fresh Album',
+          title: 'NSOAlbum',
           iconAsset: 'assets/tray/app_icon.png',
         ),
       ),
@@ -23,8 +27,11 @@ void main() {
     expect(find.byKey(const Key('desktop-titlebar-maximize')), findsOneWidget);
     expect(find.byKey(const Key('desktop-titlebar-close')), findsOneWidget);
     expect(
-      tester.widget<Text>(find.byKey(const Key('desktop-titlebar-title'))).style?.fontFamily,
-      'SmileySans',
+      tester
+          .widget<Text>(find.byKey(const Key('desktop-titlebar-title')))
+          .style
+          ?.fontFamily,
+      'Splatoon2',
     );
   });
 }

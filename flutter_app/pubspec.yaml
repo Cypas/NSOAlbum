@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 0.2.0+31
+version: 0.2.0+32
 
 environment:
   sdk: ^3.13.5
@@ -85,9 +85,36 @@ flutter:
     - assets/tray/app_icon.png
 
   fonts:
-    - family: SmileySans
+    - family: Splatoon2
       fonts:
-        - asset: assets/fonts/SmileySans-Oblique.ttf
+        - asset: assets/fonts/splatoon_web/Splatoon2-common-2LVXcHij.ttf
+    - family: Splatoon2Symbol
+      fonts:
+        - asset: assets/fonts/splatoon_web/Splatoon2-symbol-common-aF2KKpUQ.ttf
+    - family: Splatoon2Cjk
+      fonts:
+        - asset: assets/fonts/splatoon_web/Splatoon2-cjk-common-BEzXpdSx.ttf
+    - family: Splatoon2JpKana
+      fonts:
+        - asset: assets/fonts/splatoon_web/Splatoon2JP-hiragana-katakana-D98dgzMx.ttf
+    - family: Splatoon2JpLevel1
+      fonts:
+        - asset: assets/fonts/splatoon_web/Splatoon2JP-level1-rL37kLr1.ttf
+    - family: Splatoon2JpLevel2
+      fonts:
+        - asset: assets/fonts/splatoon_web/Splatoon2JP-level2-DR2Y1cVj.ttf
+    - family: Splatoon2ChzhLevel1
+      fonts:
+        - asset: assets/fonts/splatoon_web/Splatoon2CHzh-level1-CUZXdiKS.ttf
+    - family: Splatoon2ChzhLevel2
+      fonts:
+        - asset: assets/fonts/splatoon_web/Splatoon2CHzh-level2-DDnDbTcP.ttf
+    - family: Splatoon2TwzhLevel1
+      fonts:
+        - asset: assets/fonts/splatoon_web/Splatoon2TWzh-level1-DzeF0cQ3.ttf
+    - family: Splatoon2TwzhLevel2
+      fonts:
+        - asset: assets/fonts/splatoon_web/Splatoon2TWzh-level2-BpPG6hHS.ttf
 
   # To add assets to your application, add an assets section, like this:
   # assets:

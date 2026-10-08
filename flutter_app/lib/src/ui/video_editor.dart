@@ -12,6 +12,7 @@ import '../l10n/app_localizations.dart';
 import '../rust/models.dart';
 import 'desktop_window_drag_area.dart';
 import 'video_runtime.dart';
+import 'font_families.dart';
 
 class VideoEditorResult {
   const VideoEditorResult({required this.asset, required this.overwrite});
@@ -481,7 +482,8 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
                 key: const Key('video-editor-auto-play-selection'),
                 labelStyle: TextStyle(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  fontFamily: 'SmileySans',
+                  fontFamily: appFontFamily,
+                  fontFamilyFallback: appFontFallback,
                 ),
                 selected: autoPlayAfterSelectionChange,
                 onSelected: (value) =>

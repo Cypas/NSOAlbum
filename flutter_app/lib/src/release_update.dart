@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'app_branding.dart';
+
 const githubLatestReleaseApi =
     'https://api.github.com/repos/Cypas/NSOAlbum/releases/latest';
 const _maxInstallerBytes = 512 * 1024 * 1024;
@@ -29,7 +31,7 @@ class StableRelease {
       return null;
     }
     final version = tag.substring(1);
-    final expectedAsset = 'FreshAlbum-$version-Setup.exe';
+    final expectedAsset = windowsInstallerName(version);
     final assets = json['assets'];
     if (assets is! List) return null;
     for (final entry in assets) {
@@ -184,7 +186,7 @@ class ReleaseUpdateService {
           HttpHeaders.acceptHeader,
           'application/vnd.github+json',
         );
-        request.headers.set(HttpHeaders.userAgentHeader, 'FreshAlbum');
+        request.headers.set(HttpHeaders.userAgentHeader, appEnglishName);
         request.headers.set('X-GitHub-Api-Version', '2022-11-28');
         final response = await request.close().timeout(
           const Duration(seconds: 15),
@@ -192,7 +194,7 @@ class ReleaseUpdateService {
         if (response.statusCode == HttpStatus.notFound) {
           await response.drain<void>();
           lastError = const FormatException(
-            'No public stable release is available for Fresh Album',
+            'No public stable release is available for $appEnglishName',
           );
           continue;
         }
@@ -229,11 +231,11 @@ class ReleaseUpdateService {
   }) async {
     final updateDirectory = Directory(
       _downloadDirectory?.path ??
-          '${(await getTemporaryDirectory()).path}${Platform.pathSeparator}FreshAlbumUpdates',
+          '${(await getTemporaryDirectory()).path}${Platform.pathSeparator}NSOAlbumUpdates',
     );
     await updateDirectory.create(recursive: true);
     final destination = File(
-      '${updateDirectory.path}${Platform.pathSeparator}FreshAlbum-${release.version}-Setup.exe',
+      '${updateDirectory.path}${Platform.pathSeparator}${windowsInstallerName(release.version)}',
     );
     Object? lastError;
     for (final uri in _candidateBuilder(release.installerUrl)) {
@@ -242,7 +244,7 @@ class ReleaseUpdateService {
       try {
         if (await partial.exists()) await partial.delete();
         final request = await _client.getUrl(uri);
-        request.headers.set(HttpHeaders.userAgentHeader, 'FreshAlbum');
+        request.headers.set(HttpHeaders.userAgentHeader, appEnglishName);
         final response = await request.close().timeout(
           const Duration(seconds: 30),
         );

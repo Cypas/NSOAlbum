@@ -7,7 +7,7 @@ void main() {
       const SquidAlbumApp(startupError: 'native library unavailable'),
     );
 
-    expect(find.text('Failed to initialize Fresh Album core'), findsOneWidget);
+    expect(find.text('Failed to initialize NSOAlbum core'), findsOneWidget);
     expect(find.text('native library unavailable'), findsOneWidget);
   });
 }

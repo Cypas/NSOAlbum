@@ -27,7 +27,7 @@
   <Applications>
     <Application
       Id="SquidAlbum"
-      Executable="squid_album.exe"
+      Executable="NSOAlbum.exe"
       EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         AppListEntry="none"

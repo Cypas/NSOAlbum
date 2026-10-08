@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "io.squidalbum" "\0"
-            VALUE "FileDescription", "Fresh Album" "\0"
+            VALUE "FileDescription", "NSOAlbum" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "FreshAlbum" "\0"
+            VALUE "InternalName", "NSOAlbum" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 io.squidalbum. All rights reserved." "\0"
-            VALUE "OriginalFilename", "FreshAlbum.exe" "\0"
-            VALUE "ProductName", "Fresh Album" "\0"
+            VALUE "OriginalFilename", "NSOAlbum.exe" "\0"
+            VALUE "ProductName", "NSOAlbum" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

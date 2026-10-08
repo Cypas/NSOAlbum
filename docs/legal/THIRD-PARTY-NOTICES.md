@@ -19,9 +19,9 @@ The repository's MIT `LICENSE` covers original source code only. Artwork, person
 
 ## WeAchieve Nintendo Switch Online (Coral) integration write-up
 
-- Local reference: `../protocol/nintendo-implementacao-para-comunidade.md`
+- Reference: public WeAchieve Nintendo Switch Online (Coral) integration write-up; internal research notes are not included in the public repository.
 - Referenced concepts: exact per-endpoint headers, encrypted Coral request/response flow, NXAPI `Client-Id` placement, Base64URL response handling and runtime NSO version discovery.
-- The document is retained as protocol documentation only; its example account credentials and tokens are placeholders, and no external runtime dependency is introduced.
+- This reference is used only to document protocol behavior; no external runtime dependency, account credentials, or tokens are distributed.
 
 ## flutter_rust_bridge and Cargokit
 
@@ -53,4 +53,4 @@ The repository's MIT `LICENSE` covers original source code only. Artwork, person
 - Project: `atelier-anchor/smiley-sans`
 - Version: 2.0.1
 - License: SIL Open Font License 1.1
-- Used as the primary application typeface. The bundled license text is stored at `flutter_app/assets/fonts/SmileySans-OFL.txt` and must remain in source and release distributions.
+- Legacy source asset only; it is no longer registered or bundled by the application. Its license text remains at `flutter_app/assets/fonts/SmileySans-OFL.txt`.

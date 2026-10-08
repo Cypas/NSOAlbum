@@ -17,15 +17,135 @@ import 'package:squid_album/src/rust/settings.dart';
 import 'package:squid_album/src/state/settings_controller.dart';
 import 'package:squid_album/src/state/sync_controller.dart';
 import 'package:squid_album/src/ui/home_shell.dart';
+import 'package:squid_album/src/ui/font_families.dart';
 import 'package:squid_album/src/ui/media_viewer.dart';
 import 'package:squid_album/src/ui/video_runtime.dart';
 
 void main() {
+  setUp(() async {
+    await loadCustomFontFamilies(const []);
+  });
+
   test('video viewer preloads only the current and adjacent indexes', () {
     expect(adjacentVideoIndices(0, 4), {0, 1});
     expect(adjacentVideoIndices(2, 4), {1, 2, 3});
     expect(adjacentVideoIndices(3, 4), {2, 3});
   });
+
+  test('application typography uses the built-in web font shard chain', () {
+    expect(appFontFamily, 'Splatoon2');
+    expect(appFontFallback, contains('Splatoon2Symbol'));
+  });
+
+  testWidgets('gallery search uses the application Splatoon 2 font chain', (
+    tester,
+  ) async {
+    await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
+    await tester.pumpAndSettle();
+
+    final search = tester.widget<TextField>(
+      find.byKey(const Key('library-search')),
+    );
+    expect(search.style?.fontFamily, appFontFamily);
+    expect(search.style?.fontFamilyFallback, appFontFallback);
+  });
+
+  testWidgets(
+    'font management persists reorder and applies without restarting',
+    (tester) async {
+      if (!Platform.isWindows) return;
+      final backend = _FontSettingsBackend()..mediaItems = [];
+      final firstFont = File(
+        'assets/fonts/splatoon_web/Splatoon2-common-2LVXcHij.ttf',
+      ).absolute.path;
+      final secondFont = File(
+        'assets/fonts/splatoon_web/Splatoon2CHzh-level1-CUZXdiKS.ttf',
+      ).absolute.path;
+      backend.settings = AppSettings(
+        proxyUrl: backend.settings.proxyUrl,
+        libraryPath: backend.settings.libraryPath,
+        theme: backend.settings.theme,
+        language: backend.settings.language,
+        galleryColumns: backend.settings.galleryColumns,
+        galleryRows: backend.settings.galleryRows,
+        showNotePreview: backend.settings.showNotePreview,
+        showGameTag: backend.settings.showGameTag,
+        compactTagDisplay: backend.settings.compactTagDisplay,
+        autoPlayVideo: backend.settings.autoPlayVideo,
+        autoSyncOnLaunch: backend.settings.autoSyncOnLaunch,
+        closeBehavior: backend.settings.closeBehavior,
+        customFontPaths: [firstFont, secondFont],
+        syncPolicy: backend.settings.syncPolicy,
+      );
+      var restartCount = 0;
+      await tester.pumpWidget(
+        SquidAlbumApp(
+          backend: backend,
+          onRestartApplication: () async => restartCount++,
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('设置').last);
+      await tester.pumpAndSettle();
+
+      final fontCard = find.byKey(const Key('font-management-card'));
+      await tester.ensureVisible(fontCard);
+      await tester.pumpAndSettle();
+      final ordering = tester.widget<ReorderableListView>(
+        find.byKey(const Key('custom-font-order')),
+      );
+      ordering.onReorderItem!(0, 1);
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('apply-custom-fonts')));
+      await tester.runAsync(() async {
+        backend.fontSettingsSaved = Completer<void>();
+        await tester.tap(find.byKey(const Key('apply-custom-fonts')));
+        await backend.fontSettingsSaved!.future.timeout(
+          const Duration(seconds: 10),
+        );
+      });
+      await tester.pumpAndSettle();
+
+      expect(backend.settings.customFontPaths, [secondFont, firstFont]);
+      expect(find.textContaining('字体已应用'), findsOneWidget);
+      expect(restartCount, 0);
+      expect(appFontFamily, startsWith('NSOAlbumCustomFont_'));
+      final appliedFamily = appFontFamily;
+      expect(
+        Theme.of(tester.element(fontCard)).textTheme.bodyMedium?.fontFamily,
+        appliedFamily,
+      );
+      expect(
+        Theme.of(tester.element(fontCard))
+            .textTheme
+            .bodyMedium
+            ?.fontFamilyFallback,
+        hasLength(1),
+      );
+
+      await tester.ensureVisible(find.byKey(const Key('clear-custom-fonts')));
+      await tester.tap(find.byKey(const Key('clear-custom-fonts')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('apply-custom-fonts')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('apply-custom-fonts')));
+      await tester.pumpAndSettle();
+      expect(backend.settings.customFontPaths, isEmpty);
+      expect(restartCount, 0);
+      expect(appFontFamily, 'Splatoon2');
+      expect(
+        Theme.of(tester.element(fontCard)).textTheme.bodyMedium?.fontFamily,
+        'Splatoon2',
+      );
+      expect(
+        Theme.of(tester.element(fontCard))
+            .textTheme
+            .bodyMedium
+            ?.fontFamilyFallback,
+        contains('Splatoon2ChzhLevel1'),
+      );
+    },
+  );
 
   test('selects the initial interface language from the system locale', () {
     expect(interfaceLanguageForLocale(const Locale('zh', 'TW')), 'zh');
@@ -754,6 +874,7 @@ void main() {
       autoPlayVideo: false,
       autoSyncOnLaunch: false,
       closeBehavior: 'ask',
+      customFontPaths: [],
       syncPolicy: SyncPolicy(
         enabled: false,
         activeIntervalMinutes: 10,
@@ -1286,7 +1407,7 @@ void main() {
       of: find.byKey(const ValueKey('sidebar-label-图库')),
       matching: find.byType(Text),
     );
-    expect(tester.widget<Text>(libraryLabel).style?.fontFamily, 'SmileySans');
+    expect(tester.widget<Text>(libraryLabel).style?.fontFamily, appFontFamily);
   });
 
   testWidgets('desktop sidebar does not duplicate the native window brand', (
@@ -1418,6 +1539,17 @@ void main() {
 
     expect(find.text('Settings'), findsWidgets);
     expect(backend.settings.language, 'en');
+    final settingsTheme = Theme.of(
+      tester.element(find.byKey(const Key('font-management-card'))),
+    );
+    expect(
+      settingsTheme.textTheme.bodyMedium?.fontFamilyFallback,
+      contains('Splatoon2JpLevel1'),
+    );
+    expect(
+      settingsTheme.textTheme.bodyMedium?.fontFamilyFallback,
+      isNot(contains('Splatoon2ChzhLevel1')),
+    );
 
     final proxyField = find.byType(TextField).last;
     await tester.ensureVisible(proxyField);
@@ -1448,7 +1580,7 @@ void main() {
     tester,
   ) async {
     PackageInfo.setMockInitialValues(
-      appName: 'Fresh Album',
+      appName: 'NSOAlbum',
       packageName: 'io.squidalbum',
       version: '4.5.6',
       buildNumber: '78',
@@ -1645,7 +1777,7 @@ void main() {
       picturesDirectory: r'C:\Pictures',
     );
 
-    expect(path, r'C:\Pictures\FreshAlbum');
+    expect(path, r'C:\Pictures\NSOAlbum');
   });
 
   testWidgets('storage location change action stays enabled', (tester) async {
@@ -1797,6 +1929,7 @@ void main() {
         autoPlayVideo: backend.settings.autoPlayVideo,
         autoSyncOnLaunch: true,
         closeBehavior: backend.settings.closeBehavior,
+        customFontPaths: backend.settings.customFontPaths,
         syncPolicy: backend.settings.syncPolicy,
       );
 
@@ -1964,6 +2097,7 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
     autoPlayVideo: false,
     autoSyncOnLaunch: false,
     closeBehavior: 'ask',
+    customFontPaths: [],
     syncPolicy: SyncPolicy(
       enabled: false,
       activeIntervalMinutes: 10,
@@ -2423,6 +2557,10 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
   Future<void> saveSettings(AppSettings value) async => settings = value;
 
   @override
+  Future<List<String>> importCustomFonts(List<String> sourcePaths) async =>
+      List.of(sourcePaths);
+
+  @override
   Future<void> setFavorite(int mediaId, bool favorite) async {
     favoriteUpdates[mediaId] = favorite;
   }
@@ -2446,6 +2584,17 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
   Future<SyncSummary> syncNintendoAlbum() {
     syncCalls += 1;
     return syncFuture ?? Future.error(StateError('not signed in'));
+  }
+}
+
+class _FontSettingsBackend extends FakeBackend {
+  Completer<void>? fontSettingsSaved;
+
+  @override
+  Future<void> saveSettings(AppSettings value) async {
+    await super.saveSettings(value);
+    final completion = fontSettingsSaved;
+    if (completion != null && !completion.isCompleted) completion.complete();
   }
 }
 

@@ -1482,6 +1482,7 @@ mod tests {
             auto_play_video: false,
             auto_sync_on_launch: false,
             close_behavior: "ask".into(),
+            custom_font_paths: Vec::new(),
             sync_policy: SyncPolicy::default(),
         })
         .unwrap();
@@ -1717,6 +1718,7 @@ mod tests {
             auto_play_video: false,
             auto_sync_on_launch: false,
             close_behavior: "ask".into(),
+            custom_font_paths: Vec::new(),
             sync_policy: SyncPolicy::default(),
         };
 

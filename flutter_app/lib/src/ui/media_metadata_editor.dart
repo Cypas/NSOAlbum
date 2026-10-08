@@ -4,6 +4,7 @@ import '../backend/app_backend.dart';
 import '../l10n/app_localizations.dart';
 import '../rust/models.dart';
 import '../search/search_normalizer.dart';
+import 'font_families.dart';
 
 class MediaMetadataUpdate {
   const MediaMetadataUpdate({required this.note, required this.tags});
@@ -212,7 +213,8 @@ class _MediaMetadataEditorState extends State<MediaMetadataEditor> {
       label: Text(tag),
       labelStyle: TextStyle(
         color: Theme.of(context).colorScheme.onSurfaceVariant,
-        fontFamily: 'SmileySans',
+        fontFamily: appFontFamily,
+        fontFamilyFallback: appFontFallback,
       ),
       selected: selectedTags.contains(tag),
       onSelected: (selected) => setState(() {

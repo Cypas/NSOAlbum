@@ -1778,6 +1778,7 @@ impl SseDecode for crate::settings::AppSettings {
         let mut var_autoPlayVideo = <bool>::sse_decode(deserializer);
         let mut var_autoSyncOnLaunch = <bool>::sse_decode(deserializer);
         let mut var_closeBehavior = <String>::sse_decode(deserializer);
+        let mut var_customFontPaths = <Vec<String>>::sse_decode(deserializer);
         let mut var_syncPolicy = <crate::settings::SyncPolicy>::sse_decode(deserializer);
         return crate::settings::AppSettings {
             proxy_url: var_proxyUrl,
@@ -1792,6 +1793,7 @@ impl SseDecode for crate::settings::AppSettings {
             auto_play_video: var_autoPlayVideo,
             auto_sync_on_launch: var_autoSyncOnLaunch,
             close_behavior: var_closeBehavior,
+            custom_font_paths: var_customFontPaths,
             sync_policy: var_syncPolicy,
         };
     }
@@ -2609,6 +2611,7 @@ impl flutter_rust_bridge::IntoDart for crate::settings::AppSettings {
             self.auto_play_video.into_into_dart().into_dart(),
             self.auto_sync_on_launch.into_into_dart().into_dart(),
             self.close_behavior.into_into_dart().into_dart(),
+            self.custom_font_paths.into_into_dart().into_dart(),
             self.sync_policy.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -3156,6 +3159,7 @@ impl SseEncode for crate::settings::AppSettings {
         <bool>::sse_encode(self.auto_play_video, serializer);
         <bool>::sse_encode(self.auto_sync_on_launch, serializer);
         <String>::sse_encode(self.close_behavior, serializer);
+        <Vec<String>>::sse_encode(self.custom_font_paths, serializer);
         <crate::settings::SyncPolicy>::sse_encode(self.sync_policy, serializer);
     }
 }

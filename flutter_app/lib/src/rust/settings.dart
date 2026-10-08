@@ -20,6 +20,7 @@ class AppSettings {
   final bool autoPlayVideo;
   final bool autoSyncOnLaunch;
   final String closeBehavior;
+  final List<String> customFontPaths;
   final SyncPolicy syncPolicy;
 
   const AppSettings({
@@ -35,6 +36,7 @@ class AppSettings {
     required this.autoPlayVideo,
     required this.autoSyncOnLaunch,
     required this.closeBehavior,
+    required this.customFontPaths,
     required this.syncPolicy,
   });
 
@@ -52,6 +54,7 @@ class AppSettings {
       autoPlayVideo.hashCode ^
       autoSyncOnLaunch.hashCode ^
       closeBehavior.hashCode ^
+      customFontPaths.hashCode ^
       syncPolicy.hashCode;
 
   @override
@@ -71,6 +74,7 @@ class AppSettings {
           autoPlayVideo == other.autoPlayVideo &&
           autoSyncOnLaunch == other.autoSyncOnLaunch &&
           closeBehavior == other.closeBehavior &&
+          customFontPaths == other.customFontPaths &&
           syncPolicy == other.syncPolicy;
 }
 

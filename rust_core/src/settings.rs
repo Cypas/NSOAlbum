@@ -145,6 +145,8 @@ pub struct AppSettings {
     pub auto_sync_on_launch: bool,
     #[serde(default = "default_close_behavior")]
     pub close_behavior: String,
+    #[serde(default)]
+    pub custom_font_paths: Vec<String>,
     pub sync_policy: SyncPolicy,
 }
 
@@ -217,5 +219,42 @@ mod tests {
         assert!(settings.compact_tag_display);
         assert!(!settings.auto_sync_on_launch);
         assert_eq!(settings.close_behavior, "ask");
+        assert!(settings.custom_font_paths.is_empty());
+    }
+
+    #[test]
+    fn preserves_ordered_custom_font_paths() {
+        let settings: AppSettings = serde_json::from_value(serde_json::json!({
+            "proxy_url": null,
+            "library_path": "C:/library",
+            "theme": "ocean",
+            "language": "zh",
+            "gallery_columns": 4,
+            "gallery_rows": 3,
+            "show_note_preview": true,
+            "show_game_tag": true,
+            "compact_tag_display": true,
+            "auto_play_video": false,
+            "auto_sync_on_launch": false,
+            "close_behavior": "ask",
+            "custom_font_paths": [
+                "C:/support/custom_fonts/entry-1/first.ttf",
+                "C:/support/custom_fonts/entry-2/second.otf"
+            ],
+            "sync_policy": {
+                "enabled": false,
+                "active_interval_minutes": 10,
+                "sleep_after_hours": 24
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            settings.custom_font_paths,
+            [
+                "C:/support/custom_fonts/entry-1/first.ttf",
+                "C:/support/custom_fonts/entry-2/second.otf"
+            ]
+        );
     }
 }

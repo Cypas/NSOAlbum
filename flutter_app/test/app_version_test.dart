@@ -11,7 +11,7 @@ void main() {
 
   test('loads the version and build number from platform metadata', () async {
     PackageInfo.setMockInitialValues(
-      appName: 'Fresh Album',
+      appName: 'NSOAlbum',
       packageName: 'io.squidalbum',
       version: '2.4.6',
       buildNumber: '135',

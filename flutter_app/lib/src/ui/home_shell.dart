@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../app_branding.dart';
 import '../app_version.dart';
 import '../backend/app_backend.dart';
 import '../l10n/app_localizations.dart';
@@ -23,6 +24,7 @@ import 'app_image_viewer.dart';
 import 'video_merge_page.dart';
 import 'video_thumbnail.dart';
 import 'active_page_host.dart';
+import 'font_families.dart';
 
 Future<void> showLatestReleaseUpdate(
   BuildContext context, {
@@ -57,8 +59,8 @@ Future<void> showLatestReleaseUpdate(
         title: Text(context.l10n.select(zh: '发现新版本', en: 'Update available')),
         content: Text(
           context.l10n.select(
-            zh: '发现 Fresh Album ${release.version}。需要下载经过 SHA-256 校验的安装包吗？安装前还会再次确认。',
-            en: 'Fresh Album ${release.version} is available. Download the installer and verify its SHA-256? You will confirm again before installation.',
+            zh: '发现 $appEnglishName ${release.version}。需要下载经过 SHA-256 校验的安装包吗？安装前还会再次确认。',
+            en: '$appEnglishName ${release.version} is available. Download the installer and verify its SHA-256? You will confirm again before installation.',
           ),
         ),
         actions: [
@@ -90,7 +92,7 @@ Future<void> showLatestReleaseUpdate(
         content: Text(
           context.l10n.select(
             zh: '安装包已通过 SHA-256 校验。现在退出鱿型相册并启动安装程序吗？',
-            en: 'The installer passed SHA-256 verification. Exit Fresh Album and launch the installer now?',
+            en: 'The installer passed SHA-256 verification. Exit $appEnglishName and launch the installer now?',
           ),
         ),
         actions: [
@@ -242,6 +244,7 @@ class HomeShell extends StatefulWidget {
     this.startupDiagnostics,
     this.onCheckForUpdates,
     this.onInstallUpdate,
+    this.onRestartApplication,
   });
 
   final AppBackend backend;
@@ -253,6 +256,7 @@ class HomeShell extends StatefulWidget {
   final StartupDiagnostics? startupDiagnostics;
   final Future<void> Function()? onCheckForUpdates;
   final Future<void> Function(File installer)? onInstallUpdate;
+  final Future<void> Function()? onRestartApplication;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -409,6 +413,7 @@ class _HomeShellState extends State<HomeShell> {
         backend: widget.backend,
         onTagsChanged: _handleTagsChanged,
         onCheckForUpdates: widget.onCheckForUpdates,
+        onRestartApplication: widget.onRestartApplication,
       ),
     ];
     final content = ActivePageHost(index: index, children: pages);
@@ -657,7 +662,8 @@ class _SidebarAnimatedText extends StatelessWidget {
               overflow: TextOverflow.clip,
               softWrap: false,
               style: TextStyle(
-                fontFamily: 'SmileySans',
+                fontFamily: appFontFamily,
+                fontFamilyFallback: appFontFallback,
                 color: color,
                 fontSize: 15,
                 fontWeight: FontWeight.w600,
@@ -1063,7 +1069,8 @@ class _GameTagFiltersState extends State<_GameTagFilters> {
                     labelStyle: TextStyle(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                       fontWeight: FontWeight.w600,
-                      fontFamily: 'SmileySans',
+                      fontFamily: appFontFamily,
+                      fontFamilyFallback: appFontFallback,
                     ),
                     label: Row(
                       mainAxisSize: MainAxisSize.min,
@@ -2054,7 +2061,8 @@ class _LibraryPageState extends State<LibraryPage> {
                               color: Theme.of(context)
                                   .colorScheme
                                   .onSurfaceVariant,
-                              fontFamily: 'SmileySans',
+                              fontFamily: appFontFamily,
+                              fontFamilyFallback: appFontFallback,
                             ),
                             selected: selected.contains(tag),
                             onSelected: (enabled) => setDialogState(() {
@@ -2410,13 +2418,9 @@ class _LibraryPageState extends State<LibraryPage> {
               child: TextField(
                 key: const Key('library-search'),
                 controller: searchController,
-                style: const TextStyle(
-                  fontFamilyFallback: [
-                    'Microsoft YaHei UI',
-                    'Microsoft YaHei',
-                    'PingFang SC',
-                    'Noto Sans CJK SC',
-                  ],
+                style: TextStyle(
+                  fontFamily: appFontFamily,
+                  fontFamilyFallback: appFontFallback,
                 ),
                 decoration: InputDecoration(
                   prefixIcon: const Icon(Icons.search),
@@ -2472,7 +2476,8 @@ class _LibraryPageState extends State<LibraryPage> {
               key: const Key('favorite-filter'),
               labelStyle: TextStyle(
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
-                fontFamily: 'SmileySans',
+                fontFamily: appFontFamily,
+                fontFamilyFallback: appFontFallback,
               ),
               label: Row(
                 mainAxisSize: MainAxisSize.min,
@@ -2499,7 +2504,8 @@ class _LibraryPageState extends State<LibraryPage> {
               key: const Key('capture-date-filter'),
               labelStyle: TextStyle(
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
-                fontFamily: 'SmileySans',
+                fontFamily: appFontFamily,
+                fontFamilyFallback: appFontFallback,
               ),
               avatar: const Icon(Icons.date_range_rounded, size: 18),
               label: Text(
@@ -6575,14 +6581,23 @@ class SettingsPage extends StatefulWidget {
     required this.backend,
     required this.onTagsChanged,
     this.onCheckForUpdates,
+    this.onRestartApplication,
   });
   final SettingsController controller;
   final AppBackend backend;
   final VoidCallback onTagsChanged;
   final Future<void> Function()? onCheckForUpdates;
+  final Future<void> Function()? onRestartApplication;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _CustomFontDraftEntry {
+  const _CustomFontDraftEntry(this.path, {required this.isManaged});
+
+  final String path;
+  final bool isManaged;
 }
 
 class _SettingsPageState extends State<SettingsPage> {
@@ -6594,12 +6609,18 @@ class _SettingsPageState extends State<SettingsPage> {
   int? _rowsDraft;
   bool movingLibrary = false;
   late Future<String> appVersion;
+  late List<_CustomFontDraftEntry> _fontDraft;
+  bool _fontDraftDirty = false;
+  bool _fontBusy = false;
 
   @override
   void initState() {
     super.initState();
     proxy = TextEditingController(text: widget.controller.value.proxyUrl);
     appVersion = loadApplicationVersion();
+    _fontDraft = widget.controller.value.customFontPaths
+        .map((path) => _CustomFontDraftEntry(path, isManaged: true))
+        .toList();
   }
 
   @override
@@ -6844,6 +6865,173 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
             const SizedBox(height: 16),
+            if (Platform.isWindows)
+              Card(
+                key: const Key('font-management-card'),
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: AnimatedBuilder(
+                    animation: widget.controller,
+                    builder: (context, _) {
+                      final current = widget.controller.value;
+                      if (!_fontDraftDirty &&
+                          _fontDraft.map((entry) => entry.path).join('|') !=
+                              current.customFontPaths.join('|')) {
+                        _fontDraft = current.customFontPaths
+                            .map(
+                              (path) =>
+                                  _CustomFontDraftEntry(path, isManaged: true),
+                            )
+                            .toList();
+                      }
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.font_download_outlined),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  context.l10n.select(
+                                    zh: '自定义字体',
+                                    en: 'Custom fonts',
+                                  ),
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .titleMedium,
+                                ),
+                              ),
+                              FilledButton.tonalIcon(
+                                key: const Key('choose-custom-fonts'),
+                                onPressed: _fontBusy ? null : _pickCustomFonts,
+                                icon: const Icon(Icons.add_rounded),
+                                label: Text(
+                                  context.l10n.select(
+                                    zh: '添加字体',
+                                    en: 'Add fonts',
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            context.l10n.select(
+                              zh: '支持 TTF/OTF。列表顺序决定字体优先级；留空时使用按界面语言选择的 Splatoon2 字体。确认后立即生效，无需重启。',
+                              en: 'TTF/OTF only. Order controls priority; an empty list uses the language-specific Splatoon2 fonts. Apply instantly without restarting.',
+                            ),
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                          const SizedBox(height: 12),
+                          if (_fontDraft.isEmpty)
+                            Text(
+                              context.l10n.select(
+                                zh: '尚未选择自定义字体。',
+                                en: 'No custom fonts selected.',
+                              ),
+                              key: const Key('custom-fonts-empty'),
+                            )
+                          else
+                            ReorderableListView.builder(
+                              key: const Key('custom-font-order'),
+                              shrinkWrap: true,
+                              physics: const NeverScrollableScrollPhysics(),
+                              itemCount: _fontDraft.length,
+                              onReorderItem: (oldIndex, newIndex) {
+                                setState(() {
+                                  final item = _fontDraft.removeAt(oldIndex);
+                                  _fontDraft.insert(newIndex, item);
+                                  _fontDraftDirty = true;
+                                });
+                              },
+                              itemBuilder: (context, index) {
+                                final entry = _fontDraft[index];
+                                final path = entry.path;
+                                return ListTile(
+                                  key: ValueKey(path),
+                                  leading: ReorderableDragStartListener(
+                                    index: index,
+                                    child: const Icon(
+                                      Icons.drag_handle_rounded,
+                                    ),
+                                  ),
+                                  title: Text(
+                                    path.split(Platform.pathSeparator).last,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  subtitle: Text(
+                                    context.l10n.select(
+                                      zh: '优先级 ${index + 1}',
+                                      en: 'Priority ${index + 1}',
+                                    ),
+                                  ),
+                                  trailing: IconButton(
+                                    key: ValueKey('remove-custom-font-$index'),
+                                    tooltip: context.l10n.select(
+                                      zh: '移除',
+                                      en: 'Remove',
+                                    ),
+                                    onPressed: () => setState(() {
+                                      _fontDraft.removeAt(index);
+                                      _fontDraftDirty = true;
+                                    }),
+                                    icon: const Icon(Icons.close_rounded),
+                                  ),
+                                );
+                              },
+                            ),
+                          const SizedBox(height: 12),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              OutlinedButton.icon(
+                                key: const Key('clear-custom-fonts'),
+                                onPressed: _fontDraft.isEmpty
+                                    ? null
+                                    : () => setState(() {
+                                        _fontDraft.clear();
+                                        _fontDraftDirty = true;
+                                      }),
+                                icon: const Icon(Icons.restore_rounded),
+                                label: Text(
+                                  context.l10n.select(
+                                    zh: '恢复内置字体',
+                                    en: 'Use built-in fonts',
+                                  ),
+                                ),
+                              ),
+                              FilledButton.icon(
+                                key: const Key('apply-custom-fonts'),
+                                onPressed: !_fontDraftDirty || _fontBusy
+                                    ? null
+                                    : () => _applyCustomFonts(current),
+                                icon: _fontBusy
+                                    ? const SizedBox.square(
+                                        dimension: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(Icons.check_rounded),
+                                label: Text(
+                                  context.l10n.select(
+                                    zh: '立即应用字体',
+                                    en: 'Apply fonts now',
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              ),
+            if (Platform.isWindows) const SizedBox(height: 16),
             Card(
               child: ListTile(
                 contentPadding: const EdgeInsets.all(20),
@@ -7106,7 +7294,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           Text(
                             context.l10n.select(
                               zh: '关于鱿型相册',
-                              en: 'About Fresh Album',
+                              en: 'About $appEnglishName',
                             ),
                             style: Theme.of(context).textTheme.titleMedium,
                           ),
@@ -7115,7 +7303,8 @@ class _SettingsPageState extends State<SettingsPage> {
                             'Cypas_Nya',
                             style: Theme.of(context).textTheme.titleLarge
                                 ?.copyWith(
-                                  fontFamily: 'SmileySans',
+                                  fontFamily: appFontFamily,
+                                  fontFamilyFallback: appFontFallback,
                                   fontWeight: FontWeight.w800,
                                 ),
                           ),
@@ -7216,6 +7405,110 @@ class _SettingsPageState extends State<SettingsPage> {
     } catch (_) {
       // SettingsController exposes the error in the page.
       return false;
+    }
+  }
+
+  Future<void> _pickCustomFonts() async {
+    if (_fontBusy) return;
+    final result = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['ttf', 'otf'],
+      dialogTitle: context.l10n.select(zh: '选择字体文件', en: 'Choose font files'),
+    );
+    if (!mounted) return;
+    final paths = result
+        .map((file) => file.path)
+        .whereType<String>()
+        .toList(growable: false);
+    if (paths.isEmpty) return;
+    setState(() => _fontBusy = true);
+    try {
+      await validateCustomFontFiles(paths);
+      if (!mounted) return;
+      setState(() {
+        for (final path in paths) {
+          _fontDraft.add(_CustomFontDraftEntry(path, isManaged: false));
+        }
+        _fontDraftDirty = true;
+      });
+    } catch (error, stackTrace) {
+      await widget.controller.logError(
+        'Failed to import custom fonts',
+        error,
+        stackTrace,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        _messageSnackBar(
+          context.l10n.select(
+            zh: '字体导入失败：$error',
+            en: 'Failed to import fonts: $error',
+          ),
+          error: true,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _fontBusy = false);
+    }
+  }
+
+  Future<void> _applyCustomFonts(AppSettings value) async {
+    if (_fontBusy || !_fontDraftDirty) return;
+    setState(() => _fontBusy = true);
+    try {
+      final externalPaths = _fontDraft
+          .where((entry) => !entry.isManaged)
+          .map((entry) => entry.path)
+          .toList(growable: false);
+      final importedPaths = externalPaths.isEmpty
+          ? const <String>[]
+          : await widget.backend.importCustomFonts(externalPaths);
+      if (importedPaths.length != externalPaths.length) {
+        throw StateError('Not all selected font files were copied.');
+      }
+      var importedIndex = 0;
+      final savedPaths = _fontDraft
+          .map((entry) {
+            if (entry.isManaged) return entry.path;
+            return importedPaths[importedIndex++];
+          })
+          .toList(growable: false);
+      final saved = await _save(
+        _copySettings(value, customFontPaths: savedPaths),
+      );
+      if (!saved || !mounted) return;
+      setState(() {
+        _fontDraft = savedPaths
+            .map((path) => _CustomFontDraftEntry(path, isManaged: true))
+            .toList();
+        _fontDraftDirty = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        _messageSnackBar(
+          context.l10n.select(
+            zh: '字体已应用，无需重启。',
+            en: 'Fonts applied without restarting.',
+          ),
+        ),
+      );
+    } catch (error, stackTrace) {
+      await widget.controller.logError(
+        'Failed to apply custom fonts',
+        error,
+        stackTrace,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        _messageSnackBar(
+          context.l10n.select(
+            zh: '字体设置未更改：$error',
+            en: 'Font settings were not changed: $error',
+          ),
+          error: true,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _fontBusy = false);
     }
   }
 
@@ -8123,6 +8416,7 @@ AppSettings _copySettings(
   int? galleryRows,
   String? libraryPath,
   String? proxyUrl,
+  List<String>? customFontPaths,
   SyncPolicy? syncPolicy,
 }) => AppSettings(
   proxyUrl: proxyUrl == null
@@ -8139,6 +8433,7 @@ AppSettings _copySettings(
   autoPlayVideo: autoPlayVideo ?? value.autoPlayVideo,
   autoSyncOnLaunch: autoSyncOnLaunch ?? value.autoSyncOnLaunch,
   closeBehavior: closeBehavior ?? value.closeBehavior,
+  customFontPaths: customFontPaths ?? value.customFontPaths,
   syncPolicy: syncPolicy ?? value.syncPolicy,
 );
 

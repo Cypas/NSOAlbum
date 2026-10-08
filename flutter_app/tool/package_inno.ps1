@@ -72,4 +72,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup failed with exit code $LASTEXITCODE."
 }
 
-Write-Host "Inno Setup installer: $(Join-Path $OutputDirectory "FreshAlbum-$Version-Setup.exe")"
+Write-Host "Inno Setup installer: $(Join-Path $OutputDirectory "NSOAlbum-$Version-Setup.exe")"

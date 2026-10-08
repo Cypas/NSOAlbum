@@ -6,4 +6,4 @@ For private reports, use GitHub's **Security → Advisories → Report a vulnera
 
 Include the affected version, platform, impact, and a minimal reproduction. Please allow maintainers reasonable time to investigate and prepare a fix before public disclosure.
 
-Fresh Album is an independent community project and handles Nintendo Account credentials and local media. Vulnerability reports involving token storage, account isolation, update integrity, or media path handling are especially helpful.
+NSOAlbum (鱿型相册 in Simplified Chinese) is an independent community project and handles Nintendo Account credentials and local media. Vulnerability reports involving token storage, account isolation, update integrity, or media path handling are especially helpful.

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:squid_album/src/app_branding.dart';
 import 'package:squid_album/src/release_update.dart';
 
 Uri _serverUri(HttpServer server) => Uri(
@@ -11,6 +12,10 @@ Uri _serverUri(HttpServer server) => Uri(
 );
 
 void main() {
+  test('installer release asset name follows NSOAlbum branding', () {
+    expect(windowsInstallerName('0.2.0'), 'NSOAlbum-0.2.0-Setup.exe');
+  });
+
   test('stable version comparison ignores build metadata', () {
     expect(compareStableVersions('0.1.29+30', 'v0.2.0'), lessThan(0));
     expect(compareStableVersions('1.2.0', 'v1.2.0'), 0);
@@ -24,8 +29,8 @@ void main() {
       'prerelease': false,
       'assets': [
         {
-          'name': 'FreshAlbum-0.2.0-Setup.exe',
-          'browser_download_url': 'https://github.com/Cypas/NSOAlbum/releases/download/v0.2.0/FreshAlbum-0.2.0-Setup.exe',
+          'name': 'NSOAlbum-0.2.0-Setup.exe',
+          'browser_download_url': 'https://github.com/Cypas/NSOAlbum/releases/download/v0.2.0/NSOAlbum-0.2.0-Setup.exe',
           'digest': 'sha256:${'a' * 64}',
         },
       ],
@@ -55,8 +60,8 @@ void main() {
           'prerelease': false,
           'assets': [
             {
-              'name': 'FreshAlbum-0.2.0-Setup.exe',
-              'browser_download_url': 'https://github.com/attacker/other/releases/download/v0.2.0/FreshAlbum-0.2.0-Setup.exe',
+              'name': 'NSOAlbum-0.2.0-Setup.exe',
+              'browser_download_url': 'https://github.com/attacker/other/releases/download/v0.2.0/NSOAlbum-0.2.0-Setup.exe',
               'digest': 'sha256:${'a' * 64}',
             },
           ],
@@ -74,8 +79,8 @@ void main() {
         'prerelease': false,
         'assets': [
           {
-            'name': 'FreshAlbum-0.2.0-Setup.exe',
-            'browser_download_url': 'https://github.com/Cypas/NSOAlbum/releases/download/v0.2.0/FreshAlbum-0.2.0-Setup.exe',
+            'name': 'NSOAlbum-0.2.0-Setup.exe',
+            'browser_download_url': 'https://github.com/Cypas/NSOAlbum/releases/download/v0.2.0/NSOAlbum-0.2.0-Setup.exe',
           },
         ],
       }, '0.1.29+30'),
@@ -160,7 +165,7 @@ void main() {
       StableRelease(
         version: '0.2.0',
         installerUrl: Uri.parse(
-          'https://github.com/Cypas/NSOAlbum/releases/download/v0.2.0/FreshAlbum-0.2.0-Setup.exe',
+          'https://github.com/Cypas/NSOAlbum/releases/download/v0.2.0/NSOAlbum-0.2.0-Setup.exe',
         ),
         sha256:
             'ff7a5e6429d2c8511521e4abf41cd54a3e525ef4a1f24f8d1c67ede9d17874dd',
@@ -169,7 +174,7 @@ void main() {
     );
 
     expect(await installer.readAsBytes(), bytes);
-    expect(installer.path, contains('FreshAlbum-0.2.0-Setup.exe'));
+    expect(installer.path, contains('NSOAlbum-0.2.0-Setup.exe'));
   });
 
   test('cancelling a download removes its partial installer', () async {
@@ -198,7 +203,7 @@ void main() {
         StableRelease(
           version: '0.2.0',
           installerUrl: Uri.parse(
-            'https://github.com/Cypas/NSOAlbum/releases/download/v0.2.0/FreshAlbum-0.2.0-Setup.exe',
+            'https://github.com/Cypas/NSOAlbum/releases/download/v0.2.0/NSOAlbum-0.2.0-Setup.exe',
           ),
           sha256: '0' * 64,
         ),

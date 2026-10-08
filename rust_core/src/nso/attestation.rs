@@ -253,7 +253,7 @@ impl NxapiAttestationClient {
         }
         if is_incompatible_client(&response) {
             return Err(CoreError::Provider(
-                "NXAPI client compatibility identifier is outdated; update Fresh Album".into(),
+                "NXAPI client compatibility identifier is outdated; update NSOAlbum".into(),
             ));
         }
         response.ensure_success(&format!("NXAPI {path}"))?;

@@ -30,6 +30,8 @@ abstract interface class AppBackend {
 
   Future<void> saveSettings(AppSettings value);
 
+  Future<List<String>> importCustomFonts(List<String> sourcePaths);
+
   Future<List<MediaAsset>> listMedia({
     GalleryKindFilter kind = GalleryKindFilter.all,
     int limit = 100,

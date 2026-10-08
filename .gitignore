@@ -5,6 +5,7 @@ rust_core/target/
 # Flutter / Dart
 flutter_app/.dart_tool/
 flutter_app/build/
+flutter_app/build_*/
 flutter_app/**/ephemeral/
 flutter_app/.flutter-plugins-dependencies
 dist/

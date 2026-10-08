@@ -1,6 +1,6 @@
-# Fresh Album / 鱿型相册
+# NSOAlbum / 鱿型相册
 
-Fresh Album is a local-first media library for Nintendo Switch and Nintendo Switch 2 screenshots and videos. It can synchronize Nintendo Switch Online albums, import media over USB or from selected files, organize a local library, and export selected media.
+NSOAlbum (鱿型相册 in Simplified Chinese) is a local-first media library for Nintendo Switch and Nintendo Switch 2 screenshots and videos. It can synchronize Nintendo Switch Online albums, import media over USB or from selected files, organize a local library, and export selected media.
 
 This is an independent community project and is not affiliated with, endorsed by, or sponsored by Nintendo.
 
@@ -11,7 +11,7 @@ This is an independent community project and is not affiliated with, endorsed by
 - Albums, favorites, game names, custom tags, notes, search, and video tools.
 - Nintendo Account sync and Switch/Switch 2 USB media import.
 
-Nintendo's services and community attestation providers are third-party services. Their availability and terms can change. Review [the protocol notes](docs/protocol/nintendo-implementacao-para-comunidade.md) and [third-party notices](docs/legal/THIRD-PARTY-NOTICES.md) before building or redistributing the application.
+Nintendo's services and community attestation providers are third-party services. Their availability and terms can change. Review [third-party notices](docs/legal/THIRD-PARTY-NOTICES.md) and [asset permissions](docs/legal/ASSET-ATTRIBUTION.md) before building or redistributing the application. Internal protocol research and product design notes are not included in this public source tree.
 
 ## Development
 
@@ -50,7 +50,7 @@ Windows packaging scripts are documented in [docs/README.md](docs/README.md). Gi
 
 ## Releases and updates
 
-Stable releases are published from tags in the form `v<major>.<minor>.<patch>`. The application version in `flutter_app/pubspec.yaml` is authoritative; the Rust crate version must use the same semantic version. Update checks query the latest stable release from `Cypas/NSOAlbum`. On Windows, the installer is verified against the SHA-256 digest published by GitHub before the user can launch it. The app never installs an update silently.
+Stable releases are published from tags in the form `v<major>.<minor>.<patch>`. The application version in `flutter_app/pubspec.yaml` is authoritative; the Rust crate version must use the same semantic version. Update checks query the latest stable release from `Cypas/NSOAlbum`. Windows release assets are the NSOAlbum runtime directory and `NSOAlbum-<version>-Setup.exe`; no ZIP package is generated. The installer is verified against the SHA-256 digest published by GitHub before the user can launch it. The app never installs an update silently.
 
 macOS DMGs are currently unsigned and not notarized. Gatekeeper may require users to approve the app on first launch.
 

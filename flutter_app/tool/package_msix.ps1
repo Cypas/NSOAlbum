@@ -83,7 +83,7 @@ $OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
 $staging = Join-Path $OutputDirectory "msix-staging-$Version"
 $assets = Join-Path $staging 'Assets'
 $manifest = Join-Path $staging 'AppxManifest.xml'
-$msixPath = Join-Path $OutputDirectory "SquidAlbum-$Version.msix"
+$msixPath = Join-Path $OutputDirectory "NSOAlbum-$Version.msix"
 if (Test-Path -LiteralPath $staging) {
     Remove-Item -LiteralPath $staging -Recurse -Force
 }

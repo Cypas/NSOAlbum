@@ -8,10 +8,12 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'src/app_branding.dart';
 import 'src/backend/app_backend.dart';
 import 'src/backend/rust_backend.dart';
 import 'src/l10n/app_localizations.dart';
 import 'src/platform/windows_ime_context.dart';
+import 'src/platform/application_restart.dart';
 import 'src/rust/settings.dart';
 import 'src/state/automatic_sync_coordinator.dart';
 import 'src/state/settings_controller.dart';
@@ -19,6 +21,7 @@ import 'src/state/sync_controller.dart';
 import 'src/startup/startup_diagnostics.dart';
 import 'src/startup/startup_options.dart';
 import 'src/ui/home_shell.dart';
+import 'src/ui/font_families.dart';
 import 'src/ui/video_runtime.dart';
 
 Future<void> main(List<String> arguments) async {
@@ -55,6 +58,18 @@ Future<void> main(List<String> arguments) async {
     await diagnostics?.phase('rust-core-initialization-start');
     backend = await RustBackend.open(logger: diagnostics?.logger)
         .timeout(const Duration(seconds: 30));
+    if (Platform.isWindows) {
+      final fontReport = await loadCustomFontFamilies(
+        backend.settings.customFontPaths,
+        language: backend.settings.language,
+      );
+      for (final path in fontReport.failedPaths) {
+        await backend.logError(
+          'Failed to load saved custom font; skipped during startup',
+          FileSystemException('Unable to load custom font', path),
+        );
+      }
+    }
     await diagnostics?.phase('rust-core-initialization-complete');
     FlutterError.onError = (details) {
       FlutterError.presentError(details);
@@ -113,12 +128,14 @@ class SquidAlbumApp extends StatefulWidget {
     this.startupError,
     this.startupOptions = const StartupOptions(),
     this.diagnostics,
+    this.onRestartApplication,
   });
 
   final AppBackend? backend;
   final Object? startupError;
   final StartupOptions startupOptions;
   final StartupDiagnostics? diagnostics;
+  final Future<void> Function()? onRestartApplication;
 
   @override
   State<SquidAlbumApp> createState() => _SquidAlbumAppState();
@@ -233,7 +250,8 @@ class _DesktopTitleBarState extends State<DesktopTitleBar> with WindowListener {
                 widget.title,
                 key: const Key('desktop-titlebar-title'),
                 style: TextStyle(
-                  fontFamily: 'SmileySans',
+                  fontFamily: appFontFamily,
+                  fontFamilyFallback: appFontFallback,
                   color: scheme.onSurface,
                   fontSize: 14,
                   fontWeight: FontWeight.w700,
@@ -289,6 +307,7 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
     super.initState();
     final backend = widget.backend;
     if (backend != null) {
+      selectAppFontLanguage(backend.settings.language);
       settings = SettingsController(backend)..addListener(_settingsChanged);
       sync = SyncController(backend);
       automaticSync = AutomaticSyncCoordinator(backend, settings!, sync!);
@@ -403,7 +422,9 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
   }
 
   Future<void> _updateDesktopChrome() async {
-    final title = settings?.value.language == 'en' ? 'Fresh Album' : '鱿型相册';
+    final title = settings?.value.language == 'en'
+        ? appEnglishName
+        : appChineseName;
     await windowManager.setTitle(title);
     await trayManager.setToolTip(title);
     await _updateTrayMenu();
@@ -456,6 +477,27 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
     await Future<void>.delayed(const Duration(milliseconds: 400));
     if (!desktopLifecycleReady) await _initializeDesktopLifecycle();
     await _quitApplication();
+  }
+
+  Future<void> _restartApplication() async {
+    if (quitting) return;
+    await restartApplication(
+      startNewInstance: () async {
+        await Process.start(
+          Platform.resolvedExecutable,
+          Platform.executableArguments,
+          mode: ProcessStartMode.detached,
+          workingDirectory: File(Platform.resolvedExecutable).parent.path,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+      },
+      quitCurrentInstance: () async {
+        await _quitApplication();
+        if (!quitting) {
+          throw StateError('The current application could not exit.');
+        }
+      },
+    );
   }
 
   Future<void> _showMainWindow() async {
@@ -550,7 +592,7 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
     if (controller == null) {
       return MaterialApp(
         onGenerateTitle: (context) =>
-            context.l10n.select(zh: '鱿型相册', en: 'Fresh Album'),
+            context.l10n.select(zh: appChineseName, en: appEnglishName),
         debugShowCheckedModeBanner: false,
         theme: _themeFor('ocean'),
         supportedLocales: AppLocalizations.supportedLocales,
@@ -561,17 +603,17 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
           GlobalCupertinoLocalizations.delegate,
         ],
         home: DesktopWindowFrame(
-          title: 'Fresh Album',
+          title: appEnglishName,
           child: StartupErrorPage(error: widget.startupError),
         ),
       );
     }
     return AnimatedBuilder(
-      animation: controller,
+      animation: Listenable.merge([controller, appFontRevision]),
       builder: (context, _) => MaterialApp(
         navigatorKey: navigatorKey,
         onGenerateTitle: (context) =>
-            context.l10n.select(zh: '鱿型相册', en: 'Fresh Album'),
+            context.l10n.select(zh: appChineseName, en: appEnglishName),
         debugShowCheckedModeBanner: false,
         theme: _themeFor(controller.value.theme),
         locale: Locale(controller.value.language),
@@ -583,7 +625,9 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
           GlobalCupertinoLocalizations.delegate,
         ],
         home: DesktopWindowFrame(
-          title: controller.value.language == 'en' ? 'Fresh Album' : '鱿型相册',
+          title: controller.value.language == 'en'
+              ? appEnglishName
+              : appChineseName,
           child: HomeShell(
             backend: widget.backend!,
             settings: controller,
@@ -596,6 +640,8 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
             startupDiagnostics: widget.diagnostics,
             onCheckForUpdates: () => _checkForUpdates(automatic: false),
             onInstallUpdate: _installUpdate,
+            onRestartApplication:
+                widget.onRestartApplication ?? _restartApplication,
           ),
         ),
       ),
@@ -622,7 +668,9 @@ class _CloseBehaviorDialogState extends State<_CloseBehaviorDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: Text(context.l10n.select(zh: '关闭鱿型相册', en: 'Close Fresh Album')),
+    title: Text(
+      context.l10n.select(zh: '关闭$appChineseName', en: 'Close $appEnglishName'),
+    ),
     content: Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -685,6 +733,7 @@ AppSettings _settingsWithCloseBehavior(
   autoPlayVideo: value.autoPlayVideo,
   autoSyncOnLaunch: value.autoSyncOnLaunch,
   closeBehavior: closeBehavior,
+  customFontPaths: value.customFontPaths,
   syncPolicy: value.syncPolicy,
 );
 
@@ -705,8 +754,12 @@ ThemeData _themeFor(String name) {
     surfaceContainerHighest: const Color(0xffffffff),
   );
   return ThemeData(
-    fontFamily: 'SmileySans',
-    textTheme: Typography.material2021().black.apply(fontFamily: 'SmileySans'),
+    fontFamily: appFontFamily,
+    fontFamilyFallback: appFontFallback,
+    textTheme: Typography.material2021().black.apply(
+      fontFamily: appFontFamily,
+      fontFamilyFallback: appFontFallback,
+    ),
     colorScheme: lightScheme,
     scaffoldBackgroundColor: const Color(0xffe9edf4),
     cardTheme: CardThemeData(
@@ -744,7 +797,8 @@ ThemeData _themeFor(String name) {
       labelStyle: TextStyle(
         color: lightScheme.onSurfaceVariant,
         fontWeight: FontWeight.w600,
-        fontFamily: 'SmileySans',
+        fontFamily: appFontFamily,
+        fontFamilyFallback: appFontFallback,
       ),
     ),
     filledButtonTheme: FilledButtonThemeData(
@@ -801,8 +855,8 @@ class StartupErrorPage extends StatelessWidget {
                 const SizedBox(height: 16),
                 Text(
                   context.l10n.select(
-                    zh: '鱿型相册核心初始化失败',
-                    en: 'Failed to initialize Fresh Album core',
+                    zh: '$appChineseName 核心初始化失败',
+                    en: 'Failed to initialize $appEnglishName core',
                   ),
                   style: Theme.of(context).textTheme.headlineSmall,
                 ),

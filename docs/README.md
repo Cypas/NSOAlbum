@@ -11,7 +11,7 @@
 
 ## Windows 打包
 
-在 `flutter_app` 目录先生成目录版和 ZIP：
+在 `flutter_app` 目录生成 Windows 运行目录：
 
 ```powershell
 .\tool\package_windows.ps1
@@ -24,7 +24,7 @@
 ```powershell
 $version = (Select-String .\pubspec.yaml -Pattern '^version:\s*(\d+\.\d+\.\d+)\+' | Select-Object -First 1).Matches[0].Groups[1].Value
 .\tool\package_inno.ps1 `
-  -PackageDirectory "..\dist\SquidAlbum-Windows-x64-$version"
+  -PackageDirectory "..\dist\NSOAlbum-Windows-x64-$version"
 ```
 
 安装器会根据 Windows 显示语言自动选择简体中文或英文界面；也可以通过 Inno Setup 的 `/LANG=chinesesimplified` 或 `/LANG=english` 参数强制指定。
@@ -34,10 +34,10 @@ $version = (Select-String .\pubspec.yaml -Pattern '^version:\s*(\d+\.\d+\.\d+)\+
 遇到启动后卡住、闪退或只留下核心初始化日志时，可以在安装目录执行：
 
 ```powershell
-.\FreshAlbum.exe --safe-mode
-.\FreshAlbum.exe --safe-mode=no-video
-.\FreshAlbum.exe --safe-mode=no-ime
-.\FreshAlbum.exe --safe-mode=software
+.\NSOAlbum.exe --safe-mode
+.\NSOAlbum.exe --safe-mode=no-video
+.\NSOAlbum.exe --safe-mode=no-ime
+.\NSOAlbum.exe --safe-mode=software
 ```
 
 完整 `--safe-mode` 会关闭托盘、自动同步、视频缩略图和第三方输入法适配；其他参数只关闭对应组件。诊断日志仍写入应用日志目录；若发生 Windows 原生未处理异常，额外日志会写到 `%TEMP%\squid_album_native_crash.log`。
@@ -47,17 +47,17 @@ $version = (Select-String .\pubspec.yaml -Pattern '^version:\s*(\d+\.\d+\.\d+)\+
 ```powershell
 $version = (Select-String .\pubspec.yaml -Pattern '^version:\s*(\d+\.\d+\.\d+)\+' | Select-Object -First 1).Matches[0].Groups[1].Value
 .\tool\package_msix.ps1 `
-  -PackageDirectory "..\dist\SquidAlbum-Windows-x64-$version" `
+  -PackageDirectory "..\dist\NSOAlbum-Windows-x64-$version" `
   -Publisher 'CN=Cypas'
 ```
 
 MSIX 默认生成未签名包；用于实际安装或分发时，需要提供与 `-Publisher` 完全一致的 `.pfx`：
 
 ```powershell
-$certificatePath = Join-Path $env:USERPROFILE 'certs\FreshAlbum.pfx'
+$certificatePath = Join-Path $env:USERPROFILE 'certs\NSOAlbum.pfx'
 $version = (Select-String .\pubspec.yaml -Pattern '^version:\s*(\d+\.\d+\.\d+)\+' | Select-Object -First 1).Matches[0].Groups[1].Value
 .\tool\package_msix.ps1 `
-  -PackageDirectory "..\dist\SquidAlbum-Windows-x64-$version" `
+  -PackageDirectory "..\dist\NSOAlbum-Windows-x64-$version" `
   -Publisher 'CN=Cypas' `
   -CertificatePath $certificatePath
 ```

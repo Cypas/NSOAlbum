@@ -121,7 +121,7 @@ function Build-FlutterWindows {
     $cmake = Resolve-CMake
     $buildRoot = Join-Path $projectRoot 'build\windows\x64'
     # The Flutter Windows CMake cache stores the executable target name. When
-    # BINARY_NAME changes (for example squid_album -> FreshAlbum), reusing the
+    # BINARY_NAME changes (for example squid_album -> NSOAlbum), reusing the
     # old cache leaves install rules pointing at a non-existent target.
     $cmakeCache = Join-Path $buildRoot 'CMakeCache.txt'
     $cmakeFiles = Join-Path $buildRoot 'CMakeFiles'
@@ -241,12 +241,13 @@ if (-not (Test-Path -LiteralPath $releaseRoot)) {
     throw "Flutter build did not produce $releaseRoot."
 }
 
-# Remove the previous executable name after a BINARY_NAME migration. The
-# Release directory can survive between builds, and copying it wholesale would
-# otherwise ship both FreshAlbum.exe and the obsolete squid_album.exe.
-$staleExecutable = Join-Path $releaseRoot 'squid_album.exe'
-if (Test-Path -LiteralPath $staleExecutable) {
-    Remove-Item -LiteralPath $staleExecutable -Force
+# Remove obsolete executable names from an existing Release directory so the
+# NSOAlbum package contains a single branded executable.
+foreach ($staleName in @('FreshAlbum.exe', 'squid_album.exe')) {
+    $staleExecutable = Join-Path $releaseRoot $staleName
+    if (Test-Path -LiteralPath $staleExecutable) {
+        Remove-Item -LiteralPath $staleExecutable -Force
+    }
 }
 
 # Cargokit can leave a stale native library behind if its custom build step fails.
@@ -258,16 +259,12 @@ if ($sourceDllHash -ne $releaseDllHash) {
     throw 'The packaged Rust DLL does not match the freshly built DLL.'
 }
 
-$packageName = "SquidAlbum-Windows-x64-$Version"
+$packageName = "NSOAlbum-Windows-x64-$Version"
 $packageDirectory = Join-Path $distRoot $packageName
-$zipPath = Join-Path $distRoot "$packageName.zip"
 New-Item -ItemType Directory -Path $distRoot -Force | Out-Null
 
 if (Test-Path -LiteralPath $packageDirectory) {
     Remove-Item -LiteralPath $packageDirectory -Recurse -Force
-}
-if (Test-Path -LiteralPath $zipPath) {
-    Remove-Item -LiteralPath $zipPath -Force
 }
 
 Copy-Item -LiteralPath $releaseRoot -Destination $packageDirectory -Recurse
@@ -277,11 +274,7 @@ Copy-Item -LiteralPath (Join-Path $workspaceRoot 'LICENSE') -Destination (Join-P
 Copy-Item -LiteralPath (Join-Path $workspaceRoot 'docs\legal\THIRD-PARTY-NOTICES.md') -Destination (Join-Path $packageDirectory 'licenses\THIRD-PARTY-NOTICES.md') -Force
 Copy-Item -LiteralPath (Join-Path $workspaceRoot 'docs\legal\ASSET-ATTRIBUTION.md') -Destination (Join-Path $packageDirectory 'licenses\ASSET-ATTRIBUTION.md') -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'assets\fonts\SmileySans-OFL.txt') -Destination (Join-Path $packageDirectory 'licenses\SmileySans-OFL.txt') -Force
-Compress-Archive -Path (Join-Path $packageDirectory '*') -DestinationPath $zipPath -CompressionLevel Optimal
 
-$zipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath).Hash
 Write-Host "Bridge content hash: $($rustHashMatch.Groups[1].Value)"
 Write-Host "Native DLL SHA-256: $sourceDllHash"
 Write-Host "Package: $packageDirectory"
-Write-Host "ZIP: $zipPath"
-Write-Host "ZIP SHA-256: $zipHash"
