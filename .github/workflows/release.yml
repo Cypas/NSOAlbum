@@ -126,6 +126,8 @@ jobs:
         run: flutter pub get
       - name: Install native Rust target
         run: rustup target add aarch64-apple-darwin
+      - name: Configure Flutter for arm64-only release
+        run: flutter config --enable-macos-arm64-only
       - name: Build arm64 app bundle without signing
         working-directory: flutter_app
         env:
@@ -139,7 +141,7 @@ jobs:
             echo "macos-15 runner must be Apple Silicon for this build." >&2
             exit 1
           fi
-          flutter build macos --release --no-codesign --build-name "${{ needs.validate.outputs.version }}" --build-number "${{ needs.validate.outputs.build_number }}"
+          flutter build macos --release --build-name "${{ needs.validate.outputs.version }}" --build-number "${{ needs.validate.outputs.build_number }}"
       - name: Verify arm64 app and create DMG
         shell: bash
         working-directory: flutter_app
