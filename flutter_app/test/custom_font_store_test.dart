@@ -28,12 +28,12 @@ void main() {
       final paths = await store.importFiles([sourceA.path, sourceB.path]);
 
       expect(paths, [
-        '${temporary.path}${Platform.pathSeparator}squid_album_library'
-            '${Platform.pathSeparator}custom_fonts${Platform.pathSeparator}'
+        '${temporary.path}${Platform.pathSeparator}custom_fonts'
+            '${Platform.pathSeparator}'
             'entry-a${Platform.pathSeparator}entry-0'
             '${Platform.pathSeparator}Custom.ttf',
-        '${temporary.path}${Platform.pathSeparator}squid_album_library'
-            '${Platform.pathSeparator}custom_fonts${Platform.pathSeparator}'
+        '${temporary.path}${Platform.pathSeparator}custom_fonts'
+            '${Platform.pathSeparator}'
             'entry-a${Platform.pathSeparator}entry-1'
             '${Platform.pathSeparator}Custom.ttf',
       ]);
@@ -58,10 +58,8 @@ void main() {
       throwsA(isA<FormatException>()),
     );
     expect(
-      await Directory(
-        '${temporary.path}${Platform.pathSeparator}squid_album_library'
-        '${Platform.pathSeparator}custom_fonts',
-      ).exists(),
+      await Directory('${temporary.path}${Platform.pathSeparator}custom_fonts')
+          .exists(),
       isFalse,
     );
   });

@@ -65,7 +65,8 @@ impl Database {
 
     fn migrate(&self) -> CoreResult<()> {
         let mut connection = self.connection.lock().expect("database mutex poisoned");
-        connection.execute_batch(
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_version (
                version INTEGER NOT NULL
              );
@@ -180,11 +181,6 @@ impl Database {
                updated_at TEXT NOT NULL
              );
 
-             CREATE INDEX IF NOT EXISTS idx_media_capture
-               ON media_asset(captured_at DESC, imported_at DESC);
-             CREATE INDEX IF NOT EXISTS idx_media_game ON media_asset(game_title_id, game_name);
-             CREATE INDEX IF NOT EXISTS idx_source_remote ON media_source(provider, remote_id);
-
              INSERT OR IGNORE INTO album(
                id, name, album_type, pinned, system_key, created_at, updated_at
              ) VALUES (
@@ -195,66 +191,77 @@ impl Database {
              ) VALUES (1, 0, 'favorite', 'equals', 'true', CURRENT_TIMESTAMP);",
         )?;
         let schema_version: i64 =
-            connection.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+            transaction.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
                 row.get(0)
             })?;
         if schema_version < 2 {
-            backfill_legacy_nso_names(&connection)?;
-            connection.execute("UPDATE schema_version SET version = 2", [])?;
+            backfill_legacy_nso_names(&transaction)?;
+            transaction.execute("UPDATE schema_version SET version = 2", [])?;
         }
         if schema_version < 3 {
-            let has_description = connection
+            let has_description = transaction
                 .prepare("PRAGMA table_info(album)")?
                 .query_map([], |row| row.get::<_, String>(1))?
                 .collect::<Result<Vec<_>, _>>()?
                 .iter()
                 .any(|name| name == "description");
             if !has_description {
-                connection.execute(
+                transaction.execute(
                     "ALTER TABLE album ADD COLUMN description TEXT NOT NULL DEFAULT ''",
                     [],
                 )?;
             }
-            connection.execute("UPDATE schema_version SET version = 3", [])?;
+            transaction.execute("UPDATE schema_version SET version = 3", [])?;
         }
         if schema_version < 4 {
-            backfill_mtp_display_names(&connection)?;
-            connection.execute("UPDATE schema_version SET version = 4", [])?;
+            backfill_mtp_display_names(&transaction)?;
+            transaction.execute("UPDATE schema_version SET version = 4", [])?;
         }
         if schema_version < 5 {
-            let has_intermediate = connection
+            let has_intermediate = transaction
                 .prepare("PRAGMA table_info(game_tag_alias)")?
                 .query_map([], |row| row.get::<_, String>(1))?
                 .collect::<Result<Vec<_>, _>>()?
                 .iter()
                 .any(|name| name == "is_intermediate");
             if !has_intermediate {
-                connection.execute(
+                transaction.execute(
                     "ALTER TABLE game_tag_alias
                      ADD COLUMN is_intermediate INTEGER NOT NULL DEFAULT 0",
                     [],
                 )?;
             }
-            migrate_game_tag_aliases(&mut connection)?;
-            connection.execute("UPDATE schema_version SET version = 5", [])?;
+            migrate_game_tag_aliases(&transaction)?;
+            transaction.execute("UPDATE schema_version SET version = 5", [])?;
         }
         if schema_version < 6 {
-            let has_source_game_name = connection
+            let has_source_game_name = transaction
                 .prepare("PRAGMA table_info(media_asset)")?
                 .query_map([], |row| row.get::<_, String>(1))?
                 .collect::<Result<Vec<_>, _>>()?
                 .iter()
                 .any(|name| name == "source_game_name");
             if !has_source_game_name {
-                connection.execute(
+                transaction.execute(
                     "ALTER TABLE media_asset
                      ADD COLUMN source_game_name TEXT NOT NULL DEFAULT ''",
                     [],
                 )?;
             }
-            migrate_hidden_source_game_names(&mut connection)?;
-            connection.execute("UPDATE schema_version SET version = 6", [])?;
+            migrate_hidden_source_game_names(&transaction)?;
+            transaction.execute("UPDATE schema_version SET version = 6", [])?;
         }
+        ensure_required_columns(&transaction)?;
+        transaction.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_media_capture
+               ON media_asset(captured_at DESC, imported_at DESC);
+             CREATE INDEX IF NOT EXISTS idx_media_game ON media_asset(game_title_id, game_name);
+             CREATE INDEX IF NOT EXISTS idx_source_remote ON media_source(provider, remote_id);",
+        )?;
+        if schema_version < 7 {
+            transaction.execute("UPDATE schema_version SET version = 7", [])?;
+        }
+        transaction.commit()?;
         Ok(())
     }
 
@@ -1986,8 +1993,7 @@ fn backfill_mtp_display_names(connection: &Connection) -> CoreResult<()> {
     Ok(())
 }
 
-fn migrate_game_tag_aliases(connection: &mut Connection) -> CoreResult<()> {
-    let transaction = connection.transaction()?;
+fn migrate_game_tag_aliases(transaction: &rusqlite::Transaction<'_>) -> CoreResult<()> {
     let aliases = {
         let mut statement = transaction.prepare(
             "SELECT source_name, target_name
@@ -2035,11 +2041,11 @@ fn migrate_game_tag_aliases(connection: &mut Connection) -> CoreResult<()> {
         rows
     };
     for old_name in game_names {
-        let final_name = resolve_game_tag_alias(&transaction, &old_name)?;
+        let final_name = resolve_game_tag_alias(transaction, &old_name)?;
         if old_name.eq_ignore_ascii_case(&final_name) {
             continue;
         }
-        rewrite_generated_media_names(&transaction, &old_name, &final_name)?;
+        rewrite_generated_media_names(transaction, &old_name, &final_name)?;
         transaction.execute(
             "UPDATE media_asset SET game_name=?1
              WHERE game_name=?2 COLLATE NOCASE",
@@ -2075,12 +2081,10 @@ fn migrate_game_tag_aliases(connection: &mut Connection) -> CoreResult<()> {
             )?;
         }
     }
-    transaction.commit()?;
     Ok(())
 }
 
-fn migrate_hidden_source_game_names(connection: &mut Connection) -> CoreResult<()> {
-    let transaction = connection.transaction()?;
+fn migrate_hidden_source_game_names(transaction: &rusqlite::Transaction<'_>) -> CoreResult<()> {
     let visible_aliases = {
         let mut statement = transaction.prepare(
             "SELECT source_name, target_name
@@ -2112,7 +2116,37 @@ fn migrate_hidden_source_game_names(connection: &mut Connection) -> CoreResult<(
     )?;
     transaction.execute("DELETE FROM game_tag_alias WHERE is_intermediate=1", [])?;
     transaction.execute("UPDATE game_tag_alias SET is_intermediate=0", [])?;
-    transaction.commit()?;
+    Ok(())
+}
+
+fn ensure_required_columns(connection: &Connection) -> CoreResult<()> {
+    let required = [
+        ("album", "description", "TEXT NOT NULL DEFAULT ''"),
+        (
+            "game_tag_alias",
+            "is_intermediate",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "media_asset",
+            "source_game_name",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+    ];
+    for (table, column, definition) in required {
+        let exists: bool = connection
+            .prepare(&format!("PRAGMA table_info({table})"))?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|name| name == column);
+        if !exists {
+            connection.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+                [],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -2214,7 +2248,59 @@ mod tests {
             .unwrap()
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
+    }
+
+    #[test]
+    fn repairs_missing_required_columns_when_schema_version_is_current() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("library.sqlite3");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE schema_version(version INTEGER NOT NULL);
+                     INSERT INTO schema_version(version) VALUES (7);
+                     CREATE TABLE album(
+                       id INTEGER PRIMARY KEY, name TEXT NOT NULL,
+                       album_type TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0,
+                       system_key TEXT UNIQUE, created_at TEXT NOT NULL,
+                       updated_at TEXT NOT NULL
+                     );
+                     CREATE TABLE game_tag_alias(
+                       source_name TEXT PRIMARY KEY COLLATE NOCASE,
+                       target_name TEXT NOT NULL
+                     );
+                     CREATE TABLE media_asset(
+                       id INTEGER PRIMARY KEY, sha256 TEXT NOT NULL UNIQUE,
+                       size INTEGER NOT NULL, media_type TEXT NOT NULL,
+                       captured_at TEXT, game_title_id TEXT,
+                       imported_at TEXT NOT NULL, game_name TEXT NOT NULL,
+                       original_name TEXT NOT NULL, storage_path TEXT NOT NULL,
+                       status TEXT NOT NULL
+                     );",
+                )
+                .unwrap();
+        }
+
+        let database = Database::open(&path).unwrap();
+        let connection = database.connection.lock().unwrap();
+        for (table, column) in [
+            ("album", "description"),
+            ("game_tag_alias", "is_intermediate"),
+            ("media_asset", "source_game_name"),
+        ] {
+            let found: i64 = connection
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name='{column}'"
+                    ),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(found, 1, "missing {table}.{column}");
+        }
     }
 
     #[test]

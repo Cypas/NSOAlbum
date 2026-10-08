@@ -18,6 +18,7 @@ import 'package:squid_album/src/state/settings_controller.dart';
 import 'package:squid_album/src/state/sync_controller.dart';
 import 'package:squid_album/src/ui/home_shell.dart';
 import 'package:squid_album/src/ui/font_families.dart';
+import 'package:squid_album/src/backend/storage_paths.dart' as storage_paths;
 import 'package:squid_album/src/ui/media_viewer.dart';
 import 'package:squid_album/src/ui/video_runtime.dart';
 
@@ -1771,7 +1772,7 @@ void main() {
   });
 
   test('Windows default library uses the Pictures known folder', () {
-    final path = defaultLibraryPathForPlatform(
+    final path = storage_paths.defaultLibraryPathForPlatform(
       supportDirectory: r'C:\AppData\SquidAlbum',
       isWindows: true,
       picturesDirectory: r'C:\Pictures',
@@ -1779,6 +1780,20 @@ void main() {
 
     expect(path, r'C:\Pictures\NSOAlbum');
   });
+
+  test(
+    'Windows default library preserves an existing legacy FreshAlbum folder',
+    () {
+      final path = storage_paths.defaultLibraryPathForPlatform(
+        supportDirectory: r'C:\AppData\NSOAlbum',
+        isWindows: true,
+        picturesDirectory: r'C:\Pictures',
+        directoryExists: (path) => path.endsWith('FreshAlbum'),
+      );
+
+      expect(path, r'C:\Pictures\FreshAlbum');
+    },
+  );
 
   testWidgets('storage location change action stays enabled', (tester) async {
     await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));

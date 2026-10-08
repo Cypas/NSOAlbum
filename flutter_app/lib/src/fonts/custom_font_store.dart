@@ -25,8 +25,7 @@ class CustomFontStore {
     }
 
     final root = Directory(
-      '$supportDirectory${Platform.pathSeparator}squid_album_library'
-      '${Platform.pathSeparator}custom_fonts',
+      '$supportDirectory${Platform.pathSeparator}custom_fonts',
     );
     await root.create(recursive: true);
 

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
 import '../backend/app_logger.dart';
+import '../backend/storage_paths.dart';
 import 'startup_options.dart';
 
 class StartupDiagnostics {
@@ -18,12 +19,8 @@ class StartupDiagnostics {
     String logPath;
     try {
       final support = await getApplicationSupportDirectory();
-      logPath = _join(
-        support.path,
-        'squid_album_library',
-        'logs',
-        'squid_album.log',
-      );
+      final applicationRoot = await resolveApplicationRoot(support.path);
+      logPath = _join(applicationRoot, 'logs', 'squid_album.log');
     } catch (_) {
       logPath = _join(
         Directory.systemTemp.path,

@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'app_branding.dart';
+import 'backend/storage_paths.dart';
 
 const githubLatestReleaseApi =
     'https://api.github.com/repos/Cypas/NSOAlbum/releases/latest';
@@ -150,7 +151,7 @@ class ReleaseUpdateService {
   final Directory? _downloadDirectory;
 
   Future<bool> isAutomaticCheckDue() async {
-    final support = await getApplicationSupportDirectory();
+    final support = await _applicationRoot();
     final timestampFile = File(
       '${support.path}${Platform.pathSeparator}update-check-v1.txt',
     );
@@ -164,7 +165,7 @@ class ReleaseUpdateService {
   }
 
   Future<void> recordAutomaticCheck() async {
-    final support = await getApplicationSupportDirectory();
+    final support = await _applicationRoot();
     final timestampFile = File(
       '${support.path}${Platform.pathSeparator}update-check-v1.txt',
     );
@@ -231,7 +232,7 @@ class ReleaseUpdateService {
   }) async {
     final updateDirectory = Directory(
       _downloadDirectory?.path ??
-          '${(await getTemporaryDirectory()).path}${Platform.pathSeparator}NSOAlbumUpdates',
+          '${(await _applicationRoot()).path}${Platform.pathSeparator}updates',
     );
     await updateDirectory.create(recursive: true);
     final destination = File(
@@ -299,6 +300,14 @@ class ReleaseUpdateService {
     throw StateError(
       'Unable to download a verified installer from the mirror or GitHub: $lastError',
     );
+  }
+
+  Future<Directory> _applicationRoot() async {
+    final support = await getApplicationSupportDirectory();
+    final path = await resolveApplicationRoot(support.path);
+    final directory = Directory(path);
+    await directory.create(recursive: true);
+    return directory;
   }
 
   Future<void> close() async {

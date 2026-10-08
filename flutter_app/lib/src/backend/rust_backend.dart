@@ -17,6 +17,7 @@ import '../rust/nso/provider.dart';
 import '../rust/settings.dart';
 import 'app_backend.dart';
 import 'app_logger.dart';
+import 'storage_paths.dart';
 import '../fonts/custom_font_store.dart';
 
 const _windowsPicturesKnownFolderId = '{33E28130-4E1E-4676-835A-98395C3BC3BB}';
@@ -26,7 +27,7 @@ String interfaceLanguageForLocale(Locale locale) =>
 
 class RustBackend
     implements AppBackend, SyncScheduleBackend, SyncHistoryBackend {
-  RustBackend._(this._storage, this._logger);
+  RustBackend._(this._storage, this._logger, this._libraryRoot);
 
   static const _sessionTokenKey = 'nintendo.session_token';
   static const _accountTokensKey = 'nintendo.account_tokens.v1';
@@ -34,6 +35,7 @@ class RustBackend
   static const _selectedAccountKey = 'nintendo.selected_account.v1';
   final FlutterSecureStorage _storage;
   final AppLogger _logger;
+  final String _libraryRoot;
 
   LoginChallenge? _pendingLogin;
   final Map<String, CoralSession> _coralSessions = {};
@@ -44,8 +46,9 @@ class RustBackend
     AppLogger? logger,
   }) async {
     await RustLib.init();
+    final supportDirectory = await getApplicationSupportDirectory();
     final libraryRoot = logger == null
-        ? '${(await getApplicationSupportDirectory()).path}/squid_album_library'
+        ? await resolveApplicationRoot(supportDirectory.path)
         : Directory(logger.path).parent.parent.path;
     await rust_api.initCore(libraryRoot: libraryRoot);
     final appLogger = logger ?? AppLogger('$libraryRoot/logs/squid_album.log');
@@ -53,6 +56,7 @@ class RustBackend
     final backend = RustBackend._(
       storage ?? const FlutterSecureStorage(),
       appLogger,
+      libraryRoot,
     );
     await backend.loadSettings();
     await appLogger.info('Application core initialized');
@@ -126,14 +130,13 @@ class RustBackend
   }
 
   Future<AppSettings> loadSettings() async {
-    final supportDirectory = await getApplicationSupportDirectory();
     final persisted = await rust_api.loadSettings();
     if (persisted != null) {
       _settings = persisted;
       return persisted;
     }
     final defaults = AppSettings(
-      libraryPath: await resolveDefaultLibraryPath(supportDirectory.path),
+      libraryPath: await resolveDefaultLibraryPath(_libraryRoot),
       theme: 'ocean',
       language: interfaceLanguageForLocale(PlatformDispatcher.instance.locale),
       galleryColumns: 4,
@@ -164,8 +167,7 @@ class RustBackend
 
   @override
   Future<List<String>> importCustomFonts(List<String> sourcePaths) async {
-    final supportDirectory = await getApplicationSupportDirectory();
-    return CustomFontStore(supportDirectory: supportDirectory.path)
+    return CustomFontStore(supportDirectory: _libraryRoot)
         .importFiles(sourcePaths);
   }
 
@@ -895,15 +897,4 @@ Future<String> resolveDefaultLibraryPath(String supportDirectory) async {
     isWindows: Platform.isWindows,
     picturesDirectory: pictures,
   );
-}
-
-String defaultLibraryPathForPlatform({
-  required String supportDirectory,
-  required bool isWindows,
-  String? picturesDirectory,
-}) {
-  if (isWindows && picturesDirectory?.trim().isNotEmpty == true) {
-    return '${picturesDirectory!.trim()}${Platform.pathSeparator}NSOAlbum';
-  }
-  return '$supportDirectory${Platform.pathSeparator}squid_album_library';
 }
