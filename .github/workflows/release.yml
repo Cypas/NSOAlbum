@@ -81,13 +81,17 @@ jobs:
           cache: true
       - name: Install Inno Setup
         run: choco install innosetup --yes --no-progress
+      - name: Build Flutter Windows release directory
+        shell: pwsh
+        working-directory: flutter_app
+        run: flutter build windows --release --build-name "${{ needs.validate.outputs.version }}" --build-number "${{ needs.validate.outputs.build_number }}"
       - name: Build Windows directory
         shell: pwsh
         working-directory: flutter_app
         env:
           GITHUB_REF_TYPE: tag
           GITHUB_REF_NAME: ${{ needs.validate.outputs.tag }}
-        run: .\tool\package_windows.ps1 -Version "${{ needs.validate.outputs.version }}"
+        run: .\tool\package_windows.ps1 -Version "${{ needs.validate.outputs.version }}" -SkipTests -UseExistingFlutterBuild
       - name: Build Inno Setup installer
         shell: pwsh
         working-directory: flutter_app
@@ -112,8 +116,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
-        env:
-          CARGO_BUILD_TARGET: aarch64-apple-darwin
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.47.6
@@ -122,18 +124,22 @@ jobs:
       - name: Resolve dependencies
         working-directory: flutter_app
         run: flutter pub get
+      - name: Install native Rust target
+        run: rustup target add aarch64-apple-darwin
       - name: Build arm64 app bundle without signing
         working-directory: flutter_app
         env:
           ARCHS: arm64
           ONLY_ACTIVE_ARCH: "YES"
           CODE_SIGNING_ALLOWED: "NO"
+          CARGO_BUILD_TARGET: aarch64-apple-darwin
+          CARGOKIT_DARWIN_ARCHS: arm64
         run: |
           if [ "$(uname -m)" != "arm64" ]; then
             echo "macos-15 runner must be Apple Silicon for this build." >&2
             exit 1
           fi
-          flutter build macos --release --build-name "${{ needs.validate.outputs.version }}" --build-number "${{ needs.validate.outputs.build_number }}"
+          flutter build macos --release --no-codesign --build-name "${{ needs.validate.outputs.version }}" --build-number "${{ needs.validate.outputs.build_number }}"
       - name: Verify arm64 app and create DMG
         shell: bash
         working-directory: flutter_app
