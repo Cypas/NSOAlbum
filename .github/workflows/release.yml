@@ -71,6 +71,9 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
           components: clippy, rustfmt
+      - name: Install Flutter Rust Bridge code generator
+        shell: pwsh
+        run: cargo install flutter_rust_bridge_codegen --version 2.13.0 --locked
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.47.6
