@@ -9,7 +9,7 @@
 
 当前 Windows 开发环境已启用 Developer Mode，Flutter 插件可以直接创建符号链接；其他开发机若未启用，可使用 Windows 打包脚本的 CMake/目录联接回退流程。
 
-当前发布候选版本为 Flutter `0.2.2+34`、Rust `0.2.2`，发布标签为 `v0.2.2`。升级时会优先使用 `NSOAlbum` 应用支持目录；若新目录没有有效数据库，则继续使用 `squid_album_library`、`FreshAlbum` 或 `squid_album` 中检测到的旧库。Windows 默认图库目录按 `Pictures\NSOAlbum`、`Pictures\FreshAlbum` 的顺序探测，已有设置中的手动路径始终优先。Rust 会在单个 SQLite 事务中显式补齐历史缺失列并回滚失败迁移。
+当前发布候选版本为 Flutter `0.2.3+35`、Rust `0.2.3`，发布标签为 `v0.2.3`。升级时会优先使用 `NSOAlbum` 应用支持目录；若新目录没有有效数据库，则继续使用 `squid_album_library`、`FreshAlbum` 或 `squid_album` 中检测到的旧库。Windows 默认图库目录按 `Pictures\NSOAlbum`、`Pictures\FreshAlbum` 的顺序探测，已有设置中的手动路径始终优先。Rust 会在单个 SQLite 事务中显式补齐历史缺失列并回滚失败迁移。
 
 ## Windows 打包
 

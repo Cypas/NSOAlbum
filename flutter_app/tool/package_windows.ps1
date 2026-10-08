@@ -194,8 +194,8 @@ $releaseTag = if ($env:GITHUB_REF_TYPE -eq 'tag') {
 $versionValidator = Join-Path $PSScriptRoot 'validate_release_version.ps1'
 & $versionValidator -Version $Version -ReleaseTag $releaseTag
 
-$cargo = Resolve-Executable -Name 'cargo.exe' -Fallback (Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe')
-$flutter = Resolve-Executable -Name 'flutter.bat' -Fallback (Join-Path $env:USERPROFILE 'development\flutter\bin\flutter.bat')
+$cargo = Resolve-Executable -Name 'cargo' -Fallback (Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe')
+$flutter = Resolve-Executable -Name 'flutter' -Fallback (Join-Path $env:USERPROFILE 'development\flutter\bin\flutter.bat')
 $dartCandidates = @(
     (Join-Path $env:USERPROFILE 'development\flutter\bin\cache\dart-sdk\bin\dart.exe'),
     (Join-Path $env:USERPROFILE 'development\flutter\bin\cache\dart-sdk\bin\dart.bat')
