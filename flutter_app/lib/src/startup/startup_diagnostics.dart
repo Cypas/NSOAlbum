@@ -6,7 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import '../backend/app_logger.dart';
 import '../backend/storage_paths.dart';
 import '../rust/bridge.dart' as rust_api;
-import '../rust/frb_generated.dart' show RustLib;
+import '../rust/rust_initialization.dart';
 import 'startup_options.dart';
 
 class StartupDiagnostics {
@@ -26,7 +26,7 @@ class StartupDiagnostics {
     String applicationRoot;
     try {
       final support = await getApplicationSupportDirectory();
-      await RustLib.init();
+      await ensureRustLibInitialized();
       applicationRoot = await resolveApplicationRoot(
         support.path,
         isValidLibraryRoot: (path) async {

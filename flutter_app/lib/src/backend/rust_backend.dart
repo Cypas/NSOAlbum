@@ -11,7 +11,6 @@ import 'package:path_provider_windows/path_provider_windows.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../rust/bridge.dart' as rust_api;
-import '../rust/frb_generated.dart';
 import '../rust/models.dart';
 import '../rust/nso/provider.dart';
 import '../rust/settings.dart';
@@ -19,6 +18,7 @@ import 'app_backend.dart';
 import 'app_logger.dart';
 import 'storage_paths.dart';
 import '../fonts/custom_font_store.dart';
+import '../rust/rust_initialization.dart';
 
 const _windowsPicturesKnownFolderId = '{33E28130-4E1E-4676-835A-98395C3BC3BB}';
 
@@ -46,7 +46,7 @@ class RustBackend
     AppLogger? logger,
     String? applicationRoot,
   }) async {
-    await RustLib.init();
+    await ensureRustLibInitialized();
     final supportDirectory = await getApplicationSupportDirectory();
     final libraryRoot =
         applicationRoot ?? await resolveApplicationRoot(supportDirectory.path);

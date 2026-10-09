@@ -54,9 +54,9 @@ Stable releases are published from tags in the form `v<major>.<minor>.<patch>`. 
 
 Upgrades reuse an existing library in `NSOAlbum`, `Fresh Album`, `FreshAlbum`, or
 `squid_album` application data directories when a valid database is found. The
-application does not copy or delete legacy media during this detection. Older
-clients that look for `FreshAlbum-<version>-Setup.exe` remain supported by the
-temporary compatibility installer asset published with the next stable release.
+application does not copy or delete legacy media during this detection. Releases
+from `0.2.9` onward publish only the canonical
+`NSOAlbum-<version>-Setup.exe` installer asset.
 
 macOS DMGs are currently unsigned and not notarized. Gatekeeper may require users to approve the app on first launch.
 
