@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, CoreResult};
 
-pub const MIN_ACTIVE_INTERVAL_MINUTES: u32 = 10;
-pub const SLEEP_INTERVAL_MINUTES: u32 = 60;
+pub const DEFAULT_ACTIVE_INTERVAL_MINUTES: u32 = 30;
+pub const SLEEP_INTERVAL_MINUTES: u32 = 24 * 60;
 
 fn default_language() -> String {
     "zh".into()
@@ -56,7 +56,7 @@ impl Default for SyncPolicy {
     fn default() -> Self {
         Self {
             enabled: false,
-            active_interval_minutes: MIN_ACTIVE_INTERVAL_MINUTES,
+            active_interval_minutes: DEFAULT_ACTIVE_INTERVAL_MINUTES,
             sleep_after_hours: 24,
         }
     }
@@ -64,10 +64,10 @@ impl Default for SyncPolicy {
 
 impl SyncPolicy {
     pub fn validate(&self) -> CoreResult<()> {
-        if self.active_interval_minutes < MIN_ACTIVE_INTERVAL_MINUTES {
-            return Err(CoreError::InvalidConfig(format!(
-                "active sync interval must be at least {MIN_ACTIVE_INTERVAL_MINUTES} minutes"
-            )));
+        if !matches!(self.active_interval_minutes, 30 | 45 | 60 | 90 | 120) {
+            return Err(CoreError::InvalidConfig(
+                "active sync interval must be one of 30, 45, 60, 90, or 120 minutes".into(),
+            ));
         }
         if self.sleep_after_hours == 0 {
             return Err(CoreError::InvalidConfig(
@@ -98,10 +98,7 @@ impl SyncPolicy {
         } else if self.is_sleeping(last_new_media_at, now) {
             Some(SLEEP_INTERVAL_MINUTES)
         } else {
-            Some(
-                self.active_interval_minutes
-                    .max(MIN_ACTIVE_INTERVAL_MINUTES),
-            )
+            Some(self.active_interval_minutes)
         }
     }
 
@@ -141,7 +138,7 @@ pub struct AppSettings {
     pub compact_tag_display: bool,
     #[serde(default)]
     pub auto_play_video: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub auto_sync_on_launch: bool,
     #[serde(default = "default_close_behavior")]
     pub close_behavior: String,
@@ -155,7 +152,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_intervals_below_ten_minutes() {
+    fn rejects_unsupported_intervals() {
         let policy = SyncPolicy {
             enabled: true,
             active_interval_minutes: 5,
@@ -165,16 +162,36 @@ mod tests {
     }
 
     #[test]
-    fn switches_to_hourly_after_inactivity() {
+    fn only_accepts_supported_active_sync_intervals() {
+        for interval in [30, 45, 60, 90, 120] {
+            let policy = SyncPolicy {
+                enabled: true,
+                active_interval_minutes: interval,
+                sleep_after_hours: 24,
+            };
+            assert!(policy.validate().is_ok(), "{interval} should be supported");
+        }
+        for interval in [10, 29, 31, 75, 121] {
+            let policy = SyncPolicy {
+                enabled: true,
+                active_interval_minutes: interval,
+                sleep_after_hours: 24,
+            };
+            assert!(policy.validate().is_err(), "{interval} should be rejected");
+        }
+    }
+
+    #[test]
+    fn switches_to_daily_checks_after_inactivity() {
         let policy = SyncPolicy {
             enabled: true,
-            active_interval_minutes: 15,
+            active_interval_minutes: 30,
             sleep_after_hours: 24,
         };
         let now = Utc::now();
         assert_eq!(
             policy.effective_interval_minutes(Some(now - Duration::hours(25)), now),
-            Some(60)
+            Some(24 * 60)
         );
     }
 
@@ -182,7 +199,7 @@ mod tests {
     fn schedule_uses_remaining_time_after_restart() {
         let policy = SyncPolicy {
             enabled: true,
-            active_interval_minutes: 10,
+            active_interval_minutes: 30,
             sleep_after_hours: 24,
         };
         let now = Utc::now();
@@ -192,8 +209,8 @@ mod tests {
             latest_attempt: None,
         };
         let status = policy.schedule_status(&runtime, now);
-        assert_eq!(status.interval_minutes, Some(10));
-        assert_eq!(status.next_sync_at, Some(now + Duration::minutes(6)));
+        assert_eq!(status.interval_minutes, Some(30));
+        assert_eq!(status.next_sync_at, Some(now + Duration::minutes(26)));
     }
 
     #[test]
@@ -217,9 +234,26 @@ mod tests {
         .unwrap();
 
         assert!(settings.compact_tag_display);
-        assert!(!settings.auto_sync_on_launch);
+        assert!(settings.auto_sync_on_launch);
         assert_eq!(settings.close_behavior, "ask");
         assert!(settings.custom_font_paths.is_empty());
+    }
+
+    #[test]
+    fn preserves_user_selected_sleep_threshold() {
+        let policy = SyncPolicy {
+            enabled: true,
+            active_interval_minutes: 45,
+            sleep_after_hours: 6,
+        };
+        let now = Utc::now();
+
+        assert!(!policy.is_sleeping(Some(now - Duration::hours(5)), now));
+        assert!(policy.is_sleeping(Some(now - Duration::hours(6)), now));
+        assert_eq!(
+            policy.effective_interval_minutes(Some(now - Duration::hours(6)), now),
+            Some(24 * 60)
+        );
     }
 
     #[test]

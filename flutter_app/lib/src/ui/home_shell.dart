@@ -6190,8 +6190,6 @@ class _SyncPolicyPanel extends StatefulWidget {
 }
 
 class _SyncPolicyPanelState extends State<_SyncPolicyPanel> {
-  int? intervalDraft;
-
   Future<void> _save(AppSettings next) async {
     try {
       await widget.controller.save(next);
@@ -6249,8 +6247,8 @@ class _SyncPolicyPanelState extends State<_SyncPolicyPanel> {
             const SizedBox(height: 6),
             Text(
               context.l10n.select(
-                zh: '活跃期按所选周期检查；长时间无新图片视频后降级为休眠期，休眠期每 60 分钟检查一次。',
-                en: 'Checks at the selected interval while active. After a long period without new photos or videos, it enters sleep mode and checks every 60 minutes.',
+                zh: '活跃期按所选周期检查；长时间无新图片视频后降级为休眠期，休眠期每 24 小时检查一次。',
+                en: 'Checks at the selected interval while active. After a long period without new photos or videos, it enters sleep mode and checks every 24 hours.',
               ),
             ),
             Material(
@@ -6306,42 +6304,52 @@ class _SyncPolicyPanelState extends State<_SyncPolicyPanel> {
             ),
             Text(
               context.l10n.select(
-                zh: '活跃期每 ${intervalDraft ?? policy.activeIntervalMinutes} 分钟检查',
-                en: 'Check every ${intervalDraft ?? policy.activeIntervalMinutes} minutes while active',
+                zh: '活跃期每 ${policy.activeIntervalMinutes} 分钟检查',
+                en: 'Check every ${policy.activeIntervalMinutes} minutes while active',
               ),
             ),
-            Slider(
+            DropdownButtonFormField<int>(
               key: const Key('nso-auto-sync-interval'),
-              value: (intervalDraft ?? policy.activeIntervalMinutes).toDouble(),
-              min: 10,
-              max: 60,
-              divisions: 10,
-              label: context.l10n.select(
-                zh: '${intervalDraft ?? policy.activeIntervalMinutes} 分钟',
-                en: '${intervalDraft ?? policy.activeIntervalMinutes} min',
+              initialValue: policy.activeIntervalMinutes,
+              decoration: InputDecoration(
+                labelText: context.l10n.select(
+                  zh: '活跃期检查周期',
+                  en: 'Active check interval',
+                ),
+                border: const OutlineInputBorder(),
               ),
+              items: const [30, 45, 60, 90, 120]
+                  .map(
+                    (minutes) => DropdownMenuItem(
+                      value: minutes,
+                      child: Text(
+                        context.l10n.select(
+                          zh: '$minutes 分钟',
+                          en: '$minutes minutes',
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
               onChanged: widget.controller.saving
                   ? null
-                  : (next) => setState(() => intervalDraft = next.round()),
-              onChangeEnd: widget.controller.saving
-                  ? null
-                  : (next) async {
-                      await _save(
+                  : (minutes) {
+                      if (minutes == null) return;
+                      _save(
                         _copySettings(
                           value,
                           syncPolicy: SyncPolicy(
                             enabled: policy.enabled,
-                            activeIntervalMinutes: next.round(),
+                            activeIntervalMinutes: minutes,
                             sleepAfterHours: policy.sleepAfterHours,
                           ),
                         ),
                       );
-                      if (mounted) setState(() => intervalDraft = null);
                     },
             ),
             const SizedBox(height: 6),
             DropdownButtonFormField<int>(
-              key: ValueKey('nso-sleep-after-${policy.sleepAfterHours}'),
+              key: const Key('nso-sleep-after'),
               initialValue: policy.sleepAfterHours,
               decoration: InputDecoration(
                 labelText: context.l10n.select(
@@ -6383,10 +6391,10 @@ class _SyncPolicyPanelState extends State<_SyncPolicyPanel> {
             Text(
               context.l10n.select(
                 zh: policy.enabled
-                    ? '当前策略：活跃期每 ${policy.activeIntervalMinutes} 分钟检查，连续 ${policy.sleepAfterHours} 小时无更新后进入休眠期，休眠期内每 60 分钟检查一次。'
+                    ? '当前策略：活跃期每 ${policy.activeIntervalMinutes} 分钟检查，连续 ${policy.sleepAfterHours} 小时无更新后进入休眠期，休眠期内每 24 小时检查一次。'
                     : '当前策略：自动同步已关闭，仍可随时手动同步。',
                 en: policy.enabled
-                    ? 'Current policy: check every ${policy.activeIntervalMinutes} minutes while active; enter sleep mode after ${policy.sleepAfterHours} hours without updates, then check every 60 minutes.'
+                    ? 'Current policy: check every ${policy.activeIntervalMinutes} minutes while active; enter sleep mode after ${policy.sleepAfterHours} hours without updates, then check every 24 hours.'
                     : 'Current policy: automatic sync is off; manual sync remains available.',
               ),
               style: Theme.of(context).textTheme.bodySmall,
@@ -7311,6 +7319,76 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             const SizedBox(height: 16),
             Card(
+              key: const Key('about-links-card'),
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      context.l10n.select(zh: '应用与社区', en: 'App & community'),
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        if (Platform.isWindows &&
+                            widget.onCheckForUpdates != null)
+                          OutlinedButton.icon(
+                            key: const Key('check-app-updates'),
+                            onPressed: widget.onCheckForUpdates,
+                            icon: const Icon(Icons.system_update_alt_rounded),
+                            label: Text(
+                              context.l10n.select(
+                                zh: '检查更新',
+                                en: 'Check for updates',
+                              ),
+                            ),
+                          ),
+                        OutlinedButton.icon(
+                          key: const Key('about-github-link'),
+                          onPressed: () => _openAboutLink(
+                            'https://github.com/Cypas/NSOAlbum',
+                          ),
+                          icon: const Icon(Icons.code_rounded),
+                          label: Text(
+                            context.l10n.select(
+                              zh: 'GitHub 仓库',
+                              en: 'GitHub repository',
+                            ),
+                          ),
+                        ),
+                        OutlinedButton.icon(
+                          key: const Key('about-feedback-link'),
+                          onPressed: () =>
+                              _openAboutLink('https://qm.qq.com/q/wXB8g8pxkI'),
+                          icon: const Icon(Icons.forum_outlined),
+                          label: Text(
+                            context.l10n.select(
+                              zh: '软件反馈群',
+                              en: 'Feedback group',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (widget.updateStatusText != null) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        widget.updateStatusText!,
+                        key: const Key('about-latest-version'),
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Card(
+              key: const Key('about-author-card'),
               child: Padding(
                 padding: const EdgeInsets.all(20),
                 child: Row(
@@ -7343,10 +7421,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            context.l10n.select(
-                              zh: '关于鱿型相册',
-                              en: 'About $appEnglishName',
-                            ),
+                            context.l10n.select(zh: '软件作者', en: 'Author'),
                             style: Theme.of(context).textTheme.titleMedium,
                           ),
                           const SizedBox(height: 6),
@@ -7378,77 +7453,22 @@ class _SettingsPageState extends State<SettingsPage> {
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                           ),
-                          if (widget.updateStatusText != null) ...[
-                            const SizedBox(height: 4),
-                            Text(
-                              widget.updateStatusText!,
-                              key: const Key('about-latest-version'),
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                          ],
-                          if (Platform.isWindows &&
-                              widget.onCheckForUpdates != null) ...[
-                            const SizedBox(height: 8),
-                            OutlinedButton.icon(
-                              key: const Key('check-app-updates'),
-                              onPressed: widget.onCheckForUpdates,
-                              icon: const Icon(Icons.system_update_alt_rounded),
-                              label: Text(
-                                context.l10n.select(
-                                  zh: '检查更新',
-                                  en: 'Check for updates',
-                                ),
-                              ),
-                            ),
-                          ],
                         ],
                       ),
                     ),
                     const SizedBox(width: 20),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        OutlinedButton.icon(
-                          key: const Key('about-github-link'),
-                          onPressed: () => _openAboutLink(
-                            'https://github.com/Cypas/NSOAlbum',
-                          ),
-                          icon: const Icon(Icons.code_rounded),
-                          label: Text(
-                            context.l10n.select(
-                              zh: 'GitHub 仓库',
-                              en: 'GitHub repository',
-                            ),
-                          ),
+                    OutlinedButton.icon(
+                      key: const Key('about-xiaoyouyou-link'),
+                      onPressed: () => _openAboutLink(
+                        'https://qun.qq.com/qunpro/robot/qunshare?robot_appid=102083290&robot_uin=3889005657',
+                      ),
+                      icon: const Icon(Icons.smart_toy_outlined),
+                      label: Text(
+                        context.l10n.select(
+                          zh: '小鱿鱿bot',
+                          en: 'Xiao Youyou Bot',
                         ),
-                        const SizedBox(height: 8),
-                        OutlinedButton.icon(
-                          key: const Key('about-xiaoyouyou-link'),
-                          onPressed: () => _openAboutLink(
-                            'https://qun.qq.com/qunpro/robot/qunshare?robot_appid=102083290&robot_uin=3889005657',
-                          ),
-                          icon: const Icon(Icons.smart_toy_outlined),
-                          label: Text(
-                            context.l10n.select(
-                              zh: '小鱿鱿bot',
-                              en: 'Xiao Youyou Bot',
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        OutlinedButton.icon(
-                          key: const Key('about-feedback-link'),
-                          onPressed: () =>
-                              _openAboutLink('https://qm.qq.com/q/wXB8g8pxkI'),
-                          icon: const Icon(Icons.forum_outlined),
-                          label: Text(
-                            context.l10n.select(
-                              zh: '软件反馈群',
-                              en: 'Feedback group',
-                            ),
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ],
                 ),

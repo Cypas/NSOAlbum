@@ -145,12 +145,12 @@ class RustBackend
       showGameTag: true,
       compactTagDisplay: true,
       autoPlayVideo: false,
-      autoSyncOnLaunch: false,
+      autoSyncOnLaunch: true,
       closeBehavior: 'ask',
       customFontPaths: const [],
       syncPolicy: const SyncPolicy(
         enabled: false,
-        activeIntervalMinutes: 10,
+        activeIntervalMinutes: 30,
         sleepAfterHours: 24,
       ),
     );

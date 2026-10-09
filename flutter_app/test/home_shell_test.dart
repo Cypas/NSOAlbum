@@ -878,7 +878,7 @@ void main() {
       customFontPaths: [],
       syncPolicy: SyncPolicy(
         enabled: false,
-        activeIntervalMinutes: 10,
+        activeIntervalMinutes: 30,
         sleepAfterHours: 24,
       ),
     );
@@ -1604,6 +1604,22 @@ void main() {
     }
     expect(find.byKey(const Key('about-xiaoyouyou-link')), findsOneWidget);
     expect(find.byKey(const Key('about-feedback-link')), findsOneWidget);
+    expect(find.byKey(const Key('about-links-card')), findsOneWidget);
+    expect(find.byKey(const Key('about-author-card')), findsOneWidget);
+    expect(
+      find.ancestor(
+        of: find.byKey(const Key('about-feedback-link')),
+        matching: find.byKey(const Key('about-links-card')),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.ancestor(
+        of: find.byKey(const Key('about-xiaoyouyou-link')),
+        matching: find.byKey(const Key('about-author-card')),
+      ),
+      findsOneWidget,
+    );
     expect(find.textContaining('项目路径'), findsNothing);
     expect(find.textContaining('检查更新接口'), findsNothing);
   });
@@ -1840,7 +1856,25 @@ void main() {
     await tester.pumpAndSettle();
     final panel = find.byKey(const Key('nso-auto-sync-settings'));
     expect(panel, findsOneWidget);
-    expect(find.textContaining('休眠期每 60 分钟检查一次'), findsOneWidget);
+    expect(find.textContaining('休眠期每 24 小时检查一次'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('nso-auto-sync-interval')));
+    await tester.pumpAndSettle();
+    for (final label in ['30 分钟', '45 分钟', '60 分钟', '90 分钟', '120 分钟']) {
+      expect(find.text(label), findsWidgets);
+    }
+    await tester.tap(find.text('45 分钟').last);
+    await tester.pumpAndSettle();
+    expect(backend.settings.syncPolicy.activeIntervalMinutes, 45);
+    await tester.ensureVisible(find.byKey(const Key('nso-sleep-after')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('nso-sleep-after')));
+    await tester.pumpAndSettle();
+    for (final label in ['6 小时', '12 小时', '24 小时', '48 小时', '72 小时']) {
+      expect(find.text(label), findsWidgets);
+    }
+    await tester.tap(find.text('6 小时').last);
+    await tester.pumpAndSettle();
+    expect(backend.settings.syncPolicy.sleepAfterHours, 6);
     await tester.ensureVisible(find.byKey(const Key('nso-auto-sync-enabled')));
     await tester.pumpAndSettle();
     await tester.tap(
@@ -2115,7 +2149,7 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
     customFontPaths: [],
     syncPolicy: SyncPolicy(
       enabled: false,
-      activeIntervalMinutes: 10,
+      activeIntervalMinutes: 30,
       sleepAfterHours: 24,
     ),
   );

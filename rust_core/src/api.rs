@@ -54,7 +54,17 @@ impl CoreApi {
     }
 
     pub fn load_settings(&self) -> CoreResult<Option<AppSettings>> {
-        self.database.get_setting("app.settings")
+        let Some(mut settings) = self.database.get_setting::<AppSettings>("app.settings")? else {
+            return Ok(None);
+        };
+        if !matches!(
+            settings.sync_policy.active_interval_minutes,
+            30 | 45 | 60 | 90 | 120
+        ) {
+            settings.sync_policy.active_interval_minutes = 30;
+            self.database.set_setting("app.settings", &settings)?;
+        }
+        Ok(Some(settings))
     }
 
     pub fn save_sync_policy(&self, policy: &SyncPolicy) -> CoreResult<()> {
@@ -1241,6 +1251,38 @@ mod tests {
     use super::{nintendo_capture_sequence, nintendo_capture_time, CoreApi};
     use crate::models::{GalleryQuery, MediaDeletionResult, MediaKind};
     use crate::settings::{AppSettings, SyncPolicy};
+
+    #[test]
+    fn upgrades_legacy_sync_interval_without_changing_sleep_threshold() {
+        let library = tempdir().unwrap();
+        let api = CoreApi::open(library.path()).unwrap();
+        let mut settings = AppSettings {
+            proxy_url: None,
+            library_path: library.path().to_string_lossy().into_owned(),
+            theme: "ocean".into(),
+            language: "zh".into(),
+            gallery_columns: 4,
+            gallery_rows: 3,
+            show_note_preview: true,
+            show_game_tag: true,
+            compact_tag_display: true,
+            auto_play_video: false,
+            auto_sync_on_launch: false,
+            close_behavior: "ask".into(),
+            custom_font_paths: Vec::new(),
+            sync_policy: SyncPolicy {
+                enabled: true,
+                active_interval_minutes: 10,
+                sleep_after_hours: 6,
+            },
+        };
+        api.database.set_setting("app.settings", &settings).unwrap();
+
+        settings = api.load_settings().unwrap().unwrap();
+
+        assert_eq!(settings.sync_policy.active_interval_minutes, 30);
+        assert_eq!(settings.sync_policy.sleep_after_hours, 6);
+    }
 
     #[tokio::test]
     async fn imports_supported_files_and_reports_duplicates() {
