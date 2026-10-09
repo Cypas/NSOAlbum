@@ -52,6 +52,12 @@ Windows packaging scripts are documented in [docs/README.md](docs/README.md). Gi
 
 Stable releases are published from tags in the form `v<major>.<minor>.<patch>`. The application version in `flutter_app/pubspec.yaml` is authoritative; the Rust crate version must use the same semantic version. Update checks query the latest stable release from `Cypas/NSOAlbum`. Windows release assets are the NSOAlbum runtime directory and `NSOAlbum-<version>-Setup.exe`; no ZIP package is generated. The installer is verified against the SHA-256 digest published by GitHub before the user can launch it. The app never installs an update silently.
 
+Upgrades reuse an existing library in `NSOAlbum`, `Fresh Album`, `FreshAlbum`, or
+`squid_album` application data directories when a valid database is found. The
+application does not copy or delete legacy media during this detection. Older
+clients that look for `FreshAlbum-<version>-Setup.exe` remain supported by the
+temporary compatibility installer asset published with the next stable release.
+
 macOS DMGs are currently unsigned and not notarized. Gatekeeper may require users to approve the app on first launch.
 
 ## License and assets

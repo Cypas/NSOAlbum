@@ -257,6 +257,45 @@ class LibraryRelocationResult {
           libraryPath == other.libraryPath;
 }
 
+class LibraryRootProbe {
+  final bool exists;
+  final bool databaseExists;
+  final bool databaseReadable;
+  final BigInt mediaCount;
+  final BigInt accountCount;
+  final BigInt settingsCount;
+
+  const LibraryRootProbe({
+    required this.exists,
+    required this.databaseExists,
+    required this.databaseReadable,
+    required this.mediaCount,
+    required this.accountCount,
+    required this.settingsCount,
+  });
+
+  @override
+  int get hashCode =>
+      exists.hashCode ^
+      databaseExists.hashCode ^
+      databaseReadable.hashCode ^
+      mediaCount.hashCode ^
+      accountCount.hashCode ^
+      settingsCount.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LibraryRootProbe &&
+          runtimeType == other.runtimeType &&
+          exists == other.exists &&
+          databaseExists == other.databaseExists &&
+          databaseReadable == other.databaseReadable &&
+          mediaCount == other.mediaCount &&
+          accountCount == other.accountCount &&
+          settingsCount == other.settingsCount;
+}
+
 class LoginChallenge {
   final String authorizationUrl;
   final String state;

@@ -19,11 +19,13 @@ class StableRelease {
     required this.version,
     required this.installerUrl,
     required this.sha256,
+    this.assetName = '',
   });
 
   final String version;
   final Uri installerUrl;
   final String sha256;
+  final String assetName;
 
   static StableRelease? fromGithubJson(Map<String, dynamic> json) {
     if (json['draft'] != false || json['prerelease'] != false) return null;
@@ -32,33 +34,53 @@ class StableRelease {
       return null;
     }
     final version = tag.substring(1);
-    final expectedAsset = windowsInstallerName(version);
     final assets = json['assets'];
     if (assets is! List) return null;
-    for (final entry in assets) {
-      if (entry is! Map<String, dynamic> || entry['name'] != expectedAsset) {
-        continue;
+    for (final expectedAsset in [
+      windowsInstallerName(version),
+      'FreshAlbum-$version-Setup.exe',
+    ]) {
+      for (final entry in assets) {
+        if (entry is! Map<String, dynamic> || entry['name'] != expectedAsset) {
+          continue;
+        }
+        final url = entry['browser_download_url'];
+        final digest = entry['digest'];
+        if (url is! String || digest is! String) continue;
+        final uri = Uri.tryParse(url);
+        final match = RegExp(r'^sha256:([0-9a-fA-F]{64})$').firstMatch(digest);
+        if (uri == null || uri.scheme != 'https' || uri.host != 'github.com') {
+          continue;
+        }
+        if (uri.path !=
+            '/Cypas/NSOAlbum/releases/download/$tag/$expectedAsset') {
+          continue;
+        }
+        if (match == null) continue;
+        return StableRelease(
+          version: version,
+          installerUrl: uri,
+          sha256: match.group(1)!.toLowerCase(),
+          assetName: expectedAsset,
+        );
       }
-      final url = entry['browser_download_url'];
-      final digest = entry['digest'];
-      if (url is! String || digest is! String) return null;
-      final uri = Uri.tryParse(url);
-      final match = RegExp(r'^sha256:([0-9a-fA-F]{64})$').firstMatch(digest);
-      if (uri == null || uri.scheme != 'https' || uri.host != 'github.com') {
-        return null;
-      }
-      if (uri.path != '/Cypas/NSOAlbum/releases/download/$tag/$expectedAsset') {
-        return null;
-      }
-      if (match == null) return null;
-      return StableRelease(
-        version: version,
-        installerUrl: uri,
-        sha256: match.group(1)!.toLowerCase(),
-      );
     }
     return null;
   }
+}
+
+class LatestReleaseInfo {
+  const LatestReleaseInfo({
+    required this.version,
+    required this.tag,
+    required this.installer,
+    this.body,
+  });
+
+  final String version;
+  final String tag;
+  final StableRelease? installer;
+  final String? body;
 }
 
 int compareStableVersions(String left, String right) {
@@ -105,6 +127,25 @@ StableRelease? latestStableUpdateFromGithubJson(
   return release;
 }
 
+LatestReleaseInfo? latestReleaseInfoFromGithubJson(
+  Map<String, dynamic> json,
+  String currentVersion,
+) {
+  if (json['draft'] != false || json['prerelease'] != false) return null;
+  final tag = json['tag_name'];
+  if (tag is! String || !RegExp(r'^v\d+\.\d+\.\d+$').hasMatch(tag)) {
+    return null;
+  }
+  final version = tag.substring(1);
+  if (compareStableVersions(currentVersion, version) >= 0) return null;
+  return LatestReleaseInfo(
+    version: version,
+    tag: tag,
+    installer: StableRelease.fromGithubJson(json),
+    body: json['body'] is String ? json['body'] as String : null,
+  );
+}
+
 List<Uri> releaseAssetDownloadCandidates(Uri officialUrl) => [
   Uri.parse('https://gh-proxy.org/$officialUrl'),
   officialUrl,
@@ -117,6 +158,14 @@ List<Uri> releaseApiCandidates() => [
 
 bool automaticUpdateCheckDue(DateTime? lastCheck, DateTime now) =>
     lastCheck == null || now.difference(lastCheck) >= const Duration(days: 1);
+
+bool automaticUpdateDateDue(String? lastDate, DateTime now) =>
+    lastDate == null || lastDate != _localDateKey(now);
+
+String _localDateKey(DateTime value) =>
+    '${value.year.toString().padLeft(4, '0')}-'
+    '${value.month.toString().padLeft(2, '0')}-'
+    '${value.day.toString().padLeft(2, '0')}';
 
 Future<bool> verifyInstallerSha256(File file, String expectedSha256) async {
   final expected = expectedSha256.toLowerCase().replaceFirst('sha256:', '');
@@ -140,28 +189,34 @@ class ReleaseUpdateService {
     HttpClient? client,
     ReleaseAssetCandidateBuilder? candidateBuilder,
     ReleaseApiCandidateBuilder? apiCandidateBuilder,
+    String? applicationRoot,
     this._downloadDirectory,
   }) : _client = client ?? HttpClient(),
        _candidateBuilder = candidateBuilder ?? releaseAssetDownloadCandidates,
-       _apiCandidateBuilder = apiCandidateBuilder ?? releaseApiCandidates;
+       _apiCandidateBuilder = apiCandidateBuilder ?? releaseApiCandidates,
+       _applicationRootOverride = applicationRoot;
 
   final HttpClient _client;
   final ReleaseAssetCandidateBuilder _candidateBuilder;
   final ReleaseApiCandidateBuilder _apiCandidateBuilder;
   final Directory? _downloadDirectory;
+  final String? _applicationRootOverride;
 
   Future<bool> isAutomaticCheckDue() async {
     final support = await _applicationRoot();
     final timestampFile = File(
       '${support.path}${Platform.pathSeparator}update-check-v1.txt',
     );
-    DateTime? lastCheck;
+    String? lastDate;
     try {
-      lastCheck = DateTime.tryParse(await timestampFile.readAsString());
+      lastDate = (await timestampFile.readAsString()).trim();
     } on FileSystemException {
-      lastCheck = null;
+      lastDate = null;
     }
-    return automaticUpdateCheckDue(lastCheck, DateTime.now().toUtc());
+    if (lastDate != null && DateTime.tryParse(lastDate) != null) {
+      lastDate = _localDateKey(DateTime.parse(lastDate).toLocal());
+    }
+    return automaticUpdateDateDue(lastDate, DateTime.now());
   }
 
   Future<void> recordAutomaticCheck() async {
@@ -170,15 +225,39 @@ class ReleaseUpdateService {
       '${support.path}${Platform.pathSeparator}update-check-v1.txt',
     );
     final temporary = File('${timestampFile.path}.part');
-    await temporary.writeAsString(
-      DateTime.now().toUtc().toIso8601String(),
-      flush: true,
-    );
+    await temporary.writeAsString(_localDateKey(DateTime.now()), flush: true);
     if (await timestampFile.exists()) await timestampFile.delete();
     await temporary.rename(timestampFile.path);
   }
 
+  Future<String?> ignoredReleaseVersion() async {
+    final file = File(
+      '${(await _applicationRoot()).path}${Platform.pathSeparator}ignored-release-version.txt',
+    );
+    try {
+      final value = (await file.readAsString()).trim();
+      return value.isEmpty ? null : value;
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  Future<void> ignoreReleaseVersion(String version) async {
+    final file = File(
+      '${(await _applicationRoot()).path}${Platform.pathSeparator}ignored-release-version.txt',
+    );
+    final temporary = File('${file.path}.part');
+    await temporary.writeAsString(version, flush: true);
+    if (await file.exists()) await file.delete();
+    await temporary.rename(file.path);
+  }
+
   Future<StableRelease?> checkForUpdate(String currentVersion) async {
+    final info = await checkLatestRelease(currentVersion);
+    return info?.installer;
+  }
+
+  Future<LatestReleaseInfo?> checkLatestRelease(String currentVersion) async {
     Object? lastError;
     for (final uri in _apiCandidateBuilder()) {
       try {
@@ -216,7 +295,7 @@ class ReleaseUpdateService {
             'Release service returned invalid metadata',
           );
         }
-        return latestStableUpdateFromGithubJson(decoded, currentVersion);
+        return latestReleaseInfoFromGithubJson(decoded, currentVersion);
       } catch (error) {
         lastError = error;
       }
@@ -303,6 +382,11 @@ class ReleaseUpdateService {
   }
 
   Future<Directory> _applicationRoot() async {
+    if (_applicationRootOverride != null) {
+      final directory = Directory(_applicationRootOverride);
+      await directory.create(recursive: true);
+      return directory;
+    }
     final support = await getApplicationSupportDirectory();
     final path = await resolveApplicationRoot(support.path);
     final directory = Directory(path);

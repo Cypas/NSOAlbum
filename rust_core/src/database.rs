@@ -10,7 +10,7 @@ use crate::album::{kind_from_type, readable_import_media_name, readable_media_na
 use crate::error::CoreResult;
 use crate::models::{
     AlbumRule, AlbumSummary, GalleryKindFilter, GalleryQuery, GameTagAliasSummary, GameTagSummary,
-    MediaAsset, MediaCandidate, MediaKind, SyncProgress, TagUsageSummary,
+    LibraryRootProbe, MediaAsset, MediaCandidate, MediaKind, SyncProgress, TagUsageSummary,
 };
 use crate::settings::AppSettings;
 use crate::smart_album::matches_album_rules;
@@ -43,6 +43,90 @@ pub struct MediaExportEntry {
 
 pub struct Database {
     connection: Mutex<Connection>,
+}
+
+pub fn probe_library_root(root: impl AsRef<Path>) -> CoreResult<LibraryRootProbe> {
+    let root = root.as_ref();
+    if !root.exists() {
+        return Ok(LibraryRootProbe {
+            exists: false,
+            database_exists: false,
+            database_readable: false,
+            media_count: 0,
+            account_count: 0,
+            settings_count: 0,
+        });
+    }
+    let database_path = root.join("database").join("library.sqlite3");
+    if !database_path.exists() {
+        return Ok(LibraryRootProbe {
+            exists: true,
+            database_exists: false,
+            database_readable: false,
+            media_count: 0,
+            account_count: 0,
+            settings_count: 0,
+        });
+    }
+    let connection = match Connection::open_with_flags(
+        &database_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(connection) => connection,
+        Err(_) => {
+            return Ok(LibraryRootProbe {
+                exists: true,
+                database_exists: true,
+                database_readable: false,
+                media_count: 0,
+                account_count: 0,
+                settings_count: 0,
+            });
+        }
+    };
+    let table_exists = |table: &str| -> rusqlite::Result<bool> {
+        connection.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1
+             )",
+            [table],
+            |row| row.get(0),
+        )
+    };
+    let count = |sql: &str| -> rusqlite::Result<u64> {
+        connection
+            .query_row(sql, [], |row| row.get::<_, i64>(0))
+            .map(|value| value.max(0) as u64)
+    };
+    let media_count = if table_exists("media_asset")? {
+        count("SELECT COUNT(*) FROM media_asset")?
+    } else {
+        0
+    };
+    let settings_count = if table_exists("app_setting")? {
+        count("SELECT COUNT(*) FROM app_setting")?
+    } else {
+        0
+    };
+    let account_count = if table_exists("app_setting")? {
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM app_setting WHERE key LIKE 'sync.runtime.%'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?
+            .max(0) as u64
+    } else {
+        0
+    };
+    Ok(LibraryRootProbe {
+        exists: true,
+        database_exists: true,
+        database_readable: true,
+        media_count,
+        account_count,
+        settings_count,
+    })
 }
 
 impl Database {

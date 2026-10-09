@@ -6,8 +6,8 @@ use std::sync::{Mutex, OnceLock};
 use crate::api::CoreApi;
 use crate::models::{
     AlbumRule, AlbumSummary, GalleryQuery, GameTagAliasSummary, GameTagSummary, ImportSummary,
-    LibraryRelocationResult, LoginChallenge, MediaAsset, MediaDeletionResult, MediaExportSummary,
-    SyncProgress, SyncSummary, TagUsageSummary,
+    LibraryRelocationResult, LibraryRootProbe, LoginChallenge, MediaAsset, MediaDeletionResult,
+    MediaExportSummary, SyncProgress, SyncSummary, TagUsageSummary,
 };
 use crate::nso::CoralSession;
 use crate::settings::{AppSettings, SyncPolicy, SyncRuntimeState, SyncScheduleStatus};
@@ -22,6 +22,10 @@ pub fn init_core(library_root: String) -> Result<(), String> {
     }
     CORE.set(CoreApi::open(library_root).map_err(error_text)?)
         .map_err(|_| "core was initialized concurrently".to_owned())
+}
+
+pub fn probe_library_root(library_root: String) -> Result<LibraryRootProbe, String> {
+    crate::database::probe_library_root(library_root).map_err(error_text)
 }
 
 pub fn load_settings() -> Result<Option<AppSettings>, String> {

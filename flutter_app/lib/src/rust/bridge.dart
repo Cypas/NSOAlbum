@@ -16,6 +16,9 @@ import 'settings.dart';
 Future<void> initCore({required String libraryRoot}) =>
     RustLib.instance.api.crateBridgeInitCore(libraryRoot: libraryRoot);
 
+Future<LibraryRootProbe> probeLibraryRoot({required String libraryRoot}) =>
+    RustLib.instance.api.crateBridgeProbeLibraryRoot(libraryRoot: libraryRoot);
+
 Future<AppSettings?> loadSettings() =>
     RustLib.instance.api.crateBridgeLoadSettings();
 

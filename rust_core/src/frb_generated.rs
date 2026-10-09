@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1616539519;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1518003103;
 
 // Section: executor
 
@@ -1063,6 +1063,39 @@ fn wire__crate__bridge__merge_tags_impl(
         },
     )
 }
+fn wire__crate__bridge__probe_library_root_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "probe_library_root",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_library_root = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::bridge::probe_library_root(api_library_root)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__bridge__record_game_tag_selection_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1953,6 +1986,26 @@ impl SseDecode for crate::models::LibraryRelocationResult {
     }
 }
 
+impl SseDecode for crate::models::LibraryRootProbe {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_exists = <bool>::sse_decode(deserializer);
+        let mut var_databaseExists = <bool>::sse_decode(deserializer);
+        let mut var_databaseReadable = <bool>::sse_decode(deserializer);
+        let mut var_mediaCount = <u64>::sse_decode(deserializer);
+        let mut var_accountCount = <u64>::sse_decode(deserializer);
+        let mut var_settingsCount = <u64>::sse_decode(deserializer);
+        return crate::models::LibraryRootProbe {
+            exists: var_exists,
+            database_exists: var_databaseExists,
+            database_readable: var_databaseReadable,
+            media_count: var_mediaCount,
+            account_count: var_accountCount,
+            settings_count: var_settingsCount,
+        };
+    }
+}
+
 impl SseDecode for Vec<String> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2516,26 +2569,27 @@ fn pde_ffi_dispatcher_primary_impl(
         27 => wire__crate__bridge__load_settings_impl(port, ptr, rust_vec_len, data_len),
         28 => wire__crate__bridge__merge_game_tags_impl(port, ptr, rust_vec_len, data_len),
         29 => wire__crate__bridge__merge_tags_impl(port, ptr, rust_vec_len, data_len),
-        30 => {
+        30 => wire__crate__bridge__probe_library_root_impl(port, ptr, rust_vec_len, data_len),
+        31 => {
             wire__crate__bridge__record_game_tag_selection_impl(port, ptr, rust_vec_len, data_len)
         }
-        31 => wire__crate__bridge__record_sync_attempt_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__bridge__record_sync_outcome_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__bridge__relocate_media_library_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__bridge__remove_media_from_album_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__bridge__rename_game_tag_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__bridge__rename_tag_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__bridge__replace_album_rules_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__crate__bridge__replace_tags_impl(port, ptr, rust_vec_len, data_len),
-        39 => wire__crate__bridge__save_settings_impl(port, ptr, rust_vec_len, data_len),
-        40 => wire__crate__bridge__save_sync_policy_impl(port, ptr, rust_vec_len, data_len),
-        41 => wire__crate__bridge__save_video_frame_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__crate__bridge__set_favorite_impl(port, ptr, rust_vec_len, data_len),
-        43 => wire__crate__bridge__set_note_impl(port, ptr, rust_vec_len, data_len),
-        44 => wire__crate__bridge__sync_account_history_impl(port, ptr, rust_vec_len, data_len),
-        45 => wire__crate__bridge__sync_nso_impl(port, ptr, rust_vec_len, data_len),
-        46 => wire__crate__bridge__sync_schedule_status_impl(port, ptr, rust_vec_len, data_len),
-        47 => wire__crate__bridge__update_album_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__bridge__record_sync_attempt_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__bridge__record_sync_outcome_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__bridge__relocate_media_library_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__bridge__remove_media_from_album_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__bridge__rename_game_tag_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__bridge__rename_tag_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__bridge__replace_album_rules_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__bridge__replace_tags_impl(port, ptr, rust_vec_len, data_len),
+        40 => wire__crate__bridge__save_settings_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__crate__bridge__save_sync_policy_impl(port, ptr, rust_vec_len, data_len),
+        42 => wire__crate__bridge__save_video_frame_impl(port, ptr, rust_vec_len, data_len),
+        43 => wire__crate__bridge__set_favorite_impl(port, ptr, rust_vec_len, data_len),
+        44 => wire__crate__bridge__set_note_impl(port, ptr, rust_vec_len, data_len),
+        45 => wire__crate__bridge__sync_account_history_impl(port, ptr, rust_vec_len, data_len),
+        46 => wire__crate__bridge__sync_nso_impl(port, ptr, rust_vec_len, data_len),
+        47 => wire__crate__bridge__sync_schedule_status_impl(port, ptr, rust_vec_len, data_len),
+        48 => wire__crate__bridge__update_album_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2799,6 +2853,31 @@ impl flutter_rust_bridge::IntoIntoDart<crate::models::LibraryRelocationResult>
     for crate::models::LibraryRelocationResult
 {
     fn into_into_dart(self) -> crate::models::LibraryRelocationResult {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::models::LibraryRootProbe {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.exists.into_into_dart().into_dart(),
+            self.database_exists.into_into_dart().into_dart(),
+            self.database_readable.into_into_dart().into_dart(),
+            self.media_count.into_into_dart().into_dart(),
+            self.account_count.into_into_dart().into_dart(),
+            self.settings_count.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::models::LibraryRootProbe
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::models::LibraryRootProbe>
+    for crate::models::LibraryRootProbe
+{
+    fn into_into_dart(self) -> crate::models::LibraryRootProbe {
         self
     }
 }
@@ -3272,6 +3351,18 @@ impl SseEncode for crate::models::LibraryRelocationResult {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <usize>::sse_encode(self.moved_files, serializer);
         <String>::sse_encode(self.library_path, serializer);
+    }
+}
+
+impl SseEncode for crate::models::LibraryRootProbe {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.exists, serializer);
+        <bool>::sse_encode(self.database_exists, serializer);
+        <bool>::sse_encode(self.database_readable, serializer);
+        <u64>::sse_encode(self.media_count, serializer);
+        <u64>::sse_encode(self.account_count, serializer);
+        <u64>::sse_encode(self.settings_count, serializer);
     }
 }
 

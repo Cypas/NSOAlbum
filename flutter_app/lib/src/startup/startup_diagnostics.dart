@@ -5,33 +5,45 @@ import 'package:path_provider/path_provider.dart';
 
 import '../backend/app_logger.dart';
 import '../backend/storage_paths.dart';
+import '../rust/bridge.dart' as rust_api;
+import '../rust/frb_generated.dart' show RustLib;
 import 'startup_options.dart';
 
 class StartupDiagnostics {
-  StartupDiagnostics({required this.options, required this.logger});
+  StartupDiagnostics({
+    required this.options,
+    required this.logger,
+    required this.applicationRoot,
+  });
 
   final StartupOptions options;
   final AppLogger logger;
+  final String applicationRoot;
 
   String get logPath => logger.path;
 
   static Future<StartupDiagnostics> open(StartupOptions options) async {
-    String logPath;
+    String applicationRoot;
     try {
       final support = await getApplicationSupportDirectory();
-      final applicationRoot = await resolveApplicationRoot(support.path);
-      logPath = _join(applicationRoot, 'logs', 'squid_album.log');
-    } catch (_) {
-      logPath = _join(
-        Directory.systemTemp.path,
-        'squid_album',
-        'logs',
-        'squid_album.log',
+      await RustLib.init();
+      applicationRoot = await resolveApplicationRoot(
+        support.path,
+        isValidLibraryRoot: (path) async {
+          final probe = await rust_api.probeLibraryRoot(libraryRoot: path);
+          return probe.databaseReadable &&
+              (probe.mediaCount > BigInt.zero ||
+                  probe.accountCount > BigInt.zero ||
+                  probe.settingsCount > BigInt.one);
+        },
       );
+    } catch (_) {
+      applicationRoot = _join(Directory.systemTemp.path, 'squid_album');
     }
     final diagnostics = StartupDiagnostics(
       options: options,
-      logger: AppLogger(logPath),
+      applicationRoot: applicationRoot,
+      logger: AppLogger(_join(applicationRoot, 'logs', 'squid_album.log')),
     );
     await diagnostics.logger.ensureExists();
     return diagnostics;

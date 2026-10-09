@@ -31,15 +31,18 @@ Future<void> showLatestReleaseUpdate(
   required bool automatic,
   required Future<void> Function(File installer) onInstall,
   required Future<void> Function(Object error, StackTrace stackTrace) onError,
+  void Function(LatestReleaseInfo? info, Object? error)? onStatus,
+  String? applicationRoot,
 }) async {
-  final service = ReleaseUpdateService();
+  final service = ReleaseUpdateService(applicationRoot: applicationRoot);
   try {
     if (automatic && !await service.isAutomaticCheckDue()) return;
     final currentVersion = await loadApplicationVersion();
-    final release = await service.checkForUpdate(currentVersion);
+    final releaseInfo = await service.checkLatestRelease(currentVersion);
+    onStatus?.call(releaseInfo, null);
     if (automatic) await service.recordAutomaticCheck();
     if (!context.mounted) return;
-    if (release == null) {
+    if (releaseInfo == null) {
       if (!automatic) {
         ScaffoldMessenger.of(context).showSnackBar(
           _messageSnackBar(
@@ -52,9 +55,29 @@ Future<void> showLatestReleaseUpdate(
       }
       return;
     }
+    if (automatic &&
+        await service.ignoredReleaseVersion() == releaseInfo.version) {
+      return;
+    }
+    final release = releaseInfo.installer;
+    if (release == null) {
+      if (!automatic) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          _messageSnackBar(
+            context.l10n.select(
+              zh: '发现新版本 ${releaseInfo.version}，但暂时没有可验证的 Windows 安装包。',
+              en: 'Version ${releaseInfo.version} is available, but no verifiable Windows installer is available yet.',
+            ),
+            error: true,
+          ),
+        );
+      }
+      return;
+    }
 
-    final download = await showDialog<bool>(
+    final download = await showDialog<bool?>(
       context: context,
+      barrierDismissible: false,
       builder: (dialogContext) => AlertDialog(
         title: Text(context.l10n.select(zh: '发现新版本', en: 'Update available')),
         content: Text(
@@ -68,6 +91,12 @@ Future<void> showLatestReleaseUpdate(
             onPressed: () => Navigator.pop(dialogContext, false),
             child: Text(context.l10n.select(zh: '稍后', en: 'Later')),
           ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, null),
+            child: Text(
+              context.l10n.select(zh: '忽略此版本', en: 'Ignore this version'),
+            ),
+          ),
           FilledButton.icon(
             onPressed: () => Navigator.pop(dialogContext, true),
             icon: const Icon(Icons.download_rounded),
@@ -76,6 +105,10 @@ Future<void> showLatestReleaseUpdate(
         ],
       ),
     );
+    if (download == null) {
+      await service.ignoreReleaseVersion(releaseInfo.version);
+      return;
+    }
     if (download != true || !context.mounted) return;
 
     final installer = await showDialog<File>(
@@ -111,6 +144,14 @@ Future<void> showLatestReleaseUpdate(
     );
     if (install == true) await onInstall(installer);
   } catch (error, stackTrace) {
+    onStatus?.call(null, error);
+    if (automatic) {
+      try {
+        await service.recordAutomaticCheck();
+      } catch (_) {
+        // A failed timestamp write must not hide the original update error.
+      }
+    }
     await onError(error, stackTrace);
     if (!automatic && context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -245,6 +286,8 @@ class HomeShell extends StatefulWidget {
     this.onCheckForUpdates,
     this.onInstallUpdate,
     this.onRestartApplication,
+    this.latestReleaseVersion,
+    this.updateStatusText,
   });
 
   final AppBackend backend;
@@ -257,6 +300,8 @@ class HomeShell extends StatefulWidget {
   final Future<void> Function()? onCheckForUpdates;
   final Future<void> Function(File installer)? onInstallUpdate;
   final Future<void> Function()? onRestartApplication;
+  final String? latestReleaseVersion;
+  final String? updateStatusText;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -414,6 +459,8 @@ class _HomeShellState extends State<HomeShell> {
         onTagsChanged: _handleTagsChanged,
         onCheckForUpdates: widget.onCheckForUpdates,
         onRestartApplication: widget.onRestartApplication,
+        latestReleaseVersion: widget.latestReleaseVersion,
+        updateStatusText: widget.updateStatusText,
       ),
     ];
     final content = ActivePageHost(index: index, children: pages);
@@ -6582,12 +6629,16 @@ class SettingsPage extends StatefulWidget {
     required this.onTagsChanged,
     this.onCheckForUpdates,
     this.onRestartApplication,
+    this.latestReleaseVersion,
+    this.updateStatusText,
   });
   final SettingsController controller;
   final AppBackend backend;
   final VoidCallback onTagsChanged;
   final Future<void> Function()? onCheckForUpdates;
   final Future<void> Function()? onRestartApplication;
+  final String? latestReleaseVersion;
+  final String? updateStatusText;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -7327,6 +7378,14 @@ class _SettingsPageState extends State<SettingsPage> {
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                           ),
+                          if (widget.updateStatusText != null) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              widget.updateStatusText!,
+                              key: const Key('about-latest-version'),
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ],
                           if (Platform.isWindows &&
                               widget.onCheckForUpdates != null) ...[
                             const SizedBox(height: 8),
@@ -7349,6 +7408,20 @@ class _SettingsPageState extends State<SettingsPage> {
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
+                        OutlinedButton.icon(
+                          key: const Key('about-github-link'),
+                          onPressed: () => _openAboutLink(
+                            'https://github.com/Cypas/NSOAlbum',
+                          ),
+                          icon: const Icon(Icons.code_rounded),
+                          label: Text(
+                            context.l10n.select(
+                              zh: 'GitHub 仓库',
+                              en: 'GitHub repository',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
                         OutlinedButton.icon(
                           key: const Key('about-xiaoyouyou-link'),
                           onPressed: () => _openAboutLink(

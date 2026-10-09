@@ -115,6 +115,16 @@ pub struct LibraryRelocationResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryRootProbe {
+    pub exists: bool,
+    pub database_exists: bool,
+    pub database_readable: bool,
+    pub media_count: u64,
+    pub account_count: u64,
+    pub settings_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncSummary {
     pub job_id: String,
     pub total_found: usize,

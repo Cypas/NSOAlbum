@@ -1,28 +1,55 @@
 import 'dart:io';
 
 const String currentApplicationRootName = 'NSOAlbum';
+const String libraryDirectoryName = 'squid_album_library';
 const List<String> legacyApplicationRootNames = [
-  'squid_album_library',
+  'Fresh Album',
   'FreshAlbum',
   'squid_album',
 ];
 
-Future<String> resolveApplicationRoot(String supportDirectory) async {
-  final root = Directory(supportDirectory);
-  final candidates = <Directory>[
-    Directory(_join(root.path, currentApplicationRootName)),
+List<String> applicationRootCandidates(String supportDirectory) {
+  final normalized = Directory(supportDirectory).absolute;
+  final parent = normalized.parent;
+  final candidates = <String>[
+    normalized.path,
+    _join(normalized.path, libraryDirectoryName),
+    _join(normalized.path, currentApplicationRootName, libraryDirectoryName),
+    _join(parent.path, currentApplicationRootName, libraryDirectoryName),
     ...legacyApplicationRootNames.map(
-      (name) => Directory(_join(root.path, name)),
+      (name) => _join(parent.path, name, libraryDirectoryName),
     ),
-  ];
-  for (final candidate in candidates) {
-    if (await _hasLibraryDatabase(candidate)) return candidate.path;
-  }
-  return candidates.first.path;
+    ...legacyApplicationRootNames.map(
+      (name) => _join(normalized.path, name, libraryDirectoryName),
+    ),
+  ].toSet().toList();
+  return candidates;
 }
 
-Future<bool> _hasLibraryDatabase(Directory root) =>
-    File(_join(root.path, 'database', 'library.sqlite3')).exists();
+Future<String> resolveApplicationRoot(
+  String supportDirectory, {
+  Future<bool> Function(String path)? isValidLibraryRoot,
+}) async {
+  final candidates = applicationRootCandidates(supportDirectory);
+  final valid = isValidLibraryRoot ?? _hasLibraryDatabasePath;
+  for (final candidate in candidates) {
+    if (await valid(candidate)) return candidate;
+  }
+  final normalized = Directory(supportDirectory).absolute.path;
+  return normalized.endsWith(currentApplicationRootName)
+      ? _join(normalized, libraryDirectoryName)
+      : _join(normalized, currentApplicationRootName, libraryDirectoryName);
+}
+
+Future<bool> _hasLibraryDatabasePath(String root) async {
+  final database = File(_join(root, 'database', 'library.sqlite3'));
+  if (!await database.exists()) return false;
+  try {
+    return await database.length() > 4096;
+  } on FileSystemException {
+    return false;
+  }
+}
 
 String defaultLibraryPathForPlatform({
   required String supportDirectory,

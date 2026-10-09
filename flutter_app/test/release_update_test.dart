@@ -50,6 +50,41 @@ void main() {
     );
   });
 
+  test('release metadata accepts the legacy FreshAlbum installer name', () {
+    final release = StableRelease.fromGithubJson({
+      'tag_name': 'v0.2.7',
+      'draft': false,
+      'prerelease': false,
+      'assets': [
+        {
+          'name': 'FreshAlbum-0.2.7-Setup.exe',
+          'browser_download_url': 'https://github.com/Cypas/NSOAlbum/releases/download/v0.2.7/FreshAlbum-0.2.7-Setup.exe',
+          'digest': 'sha256:${'b' * 64}',
+        },
+      ],
+    });
+
+    expect(release, isNotNull);
+    expect(release!.assetName, 'FreshAlbum-0.2.7-Setup.exe');
+  });
+
+  test(
+    'new release metadata remains visible when installer is unavailable',
+    () {
+      final info = latestReleaseInfoFromGithubJson({
+        'tag_name': 'v0.2.7',
+        'draft': false,
+        'prerelease': false,
+        'body': 'notes',
+        'assets': const [],
+      }, '0.2.0+31');
+
+      expect(info, isNotNull);
+      expect(info!.version, '0.2.7');
+      expect(info.installer, isNull);
+    },
+  );
+
   test(
     'release parser rejects an asset URL outside the expected repository',
     () {

@@ -11,19 +11,21 @@ void main() {
       currentApplicationRootName,
       ...legacyApplicationRootNames,
     ]) {
-      await Directory(
+      final database = Directory(
         '${support.path}${Platform.pathSeparator}$name'
+        '${Platform.pathSeparator}$libraryDirectoryName'
         '${Platform.pathSeparator}database',
-      ).create(recursive: true);
-      await File(
-        '${support.path}${Platform.pathSeparator}$name'
-        '${Platform.pathSeparator}database${Platform.pathSeparator}library.sqlite3',
-      ).writeAsString('');
+      );
+      await database.create(recursive: true);
+      await File('${database.path}${Platform.pathSeparator}library.sqlite3')
+          .writeAsString('x' * 4097);
     }
 
     expect(
       await resolveApplicationRoot(support.path),
-      endsWith(currentApplicationRootName),
+      endsWith(
+        '$currentApplicationRootName${Platform.pathSeparator}$libraryDirectoryName',
+      ),
     );
   });
 
@@ -36,24 +38,29 @@ void main() {
 
     expect(
       await resolveApplicationRoot(support.path),
-      endsWith(currentApplicationRootName),
+      endsWith(
+        '$currentApplicationRootName${Platform.pathSeparator}$libraryDirectoryName',
+      ),
     );
   });
 
   test('legacy root is selected when it contains a library database', () async {
     final support = await Directory.systemTemp.createTemp('nsoalbum-paths-');
     addTearDown(() => support.delete(recursive: true));
-    final legacy = Directory(
+    final database = Directory(
       '${support.path}${Platform.pathSeparator}${legacyApplicationRootNames.first}'
+      '${Platform.pathSeparator}$libraryDirectoryName'
       '${Platform.pathSeparator}database',
     );
-    await legacy.create(recursive: true);
-    await File('${legacy.path}${Platform.pathSeparator}library.sqlite3')
-        .writeAsString('');
+    await database.create(recursive: true);
+    await File('${database.path}${Platform.pathSeparator}library.sqlite3')
+        .writeAsString('x' * 4097);
 
     expect(
       await resolveApplicationRoot(support.path),
-      endsWith(legacyApplicationRootNames.first),
+      endsWith(
+        '${legacyApplicationRootNames.first}${Platform.pathSeparator}$libraryDirectoryName',
+      ),
     );
   });
 }

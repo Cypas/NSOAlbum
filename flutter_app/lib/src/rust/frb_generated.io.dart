@@ -101,6 +101,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   LibraryRelocationResult dco_decode_library_relocation_result(dynamic raw);
 
   @protected
+  LibraryRootProbe dco_decode_library_root_probe(dynamic raw);
+
+  @protected
   List<String> dco_decode_list_String(dynamic raw);
 
   @protected
@@ -312,6 +315,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   LibraryRelocationResult sse_decode_library_relocation_result(
     SseDeserializer deserializer,
   );
+
+  @protected
+  LibraryRootProbe sse_decode_library_root_probe(SseDeserializer deserializer);
 
   @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
@@ -574,6 +580,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_library_relocation_result(
     LibraryRelocationResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_library_root_probe(
+    LibraryRootProbe self,
     SseSerializer serializer,
   );
 

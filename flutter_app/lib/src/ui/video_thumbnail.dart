@@ -19,6 +19,12 @@ class VideoThumbnailData {
 class VideoThumbnailCache {
   static final Map<String, Future<VideoThumbnailData>> _cache = {};
   static Future<void> _queue = Future.value();
+  static String? _cacheRootOverride;
+
+  static void configureCacheRoot(String root) {
+    _cacheRootOverride =
+        '$root${Platform.pathSeparator}cache${Platform.pathSeparator}video_thumbnails';
+  }
 
   static Future<VideoThumbnailData> readCachedFiles({
     required String cacheRoot,
@@ -86,8 +92,9 @@ class VideoThumbnailCache {
     }
     final separator = Platform.pathSeparator;
     final cacheRoot = Directory(
-      '${(await getApplicationCacheDirectory()).path}'
-      '${separator}squid_album${separator}video_thumbnails',
+      _cacheRootOverride ??
+          '${(await getApplicationCacheDirectory()).path}'
+              '${separator}squid_album${separator}video_thumbnails',
     );
     await cacheRoot.create(recursive: true);
     final thumbnail = File('${cacheRoot.path}$separator${asset.sha256}.jpg');

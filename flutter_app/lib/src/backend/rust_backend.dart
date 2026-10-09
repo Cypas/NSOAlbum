@@ -44,12 +44,12 @@ class RustBackend
   static Future<RustBackend> open({
     FlutterSecureStorage? storage,
     AppLogger? logger,
+    String? applicationRoot,
   }) async {
     await RustLib.init();
     final supportDirectory = await getApplicationSupportDirectory();
-    final libraryRoot = logger == null
-        ? await resolveApplicationRoot(supportDirectory.path)
-        : Directory(logger.path).parent.parent.path;
+    final libraryRoot =
+        applicationRoot ?? await resolveApplicationRoot(supportDirectory.path);
     await rust_api.initCore(libraryRoot: libraryRoot);
     final appLogger = logger ?? AppLogger('$libraryRoot/logs/squid_album.log');
     await appLogger.ensureExists();

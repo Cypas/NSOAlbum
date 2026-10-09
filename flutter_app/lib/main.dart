@@ -23,6 +23,7 @@ import 'src/startup/startup_options.dart';
 import 'src/ui/home_shell.dart';
 import 'src/ui/font_families.dart';
 import 'src/ui/video_runtime.dart';
+import 'src/ui/video_thumbnail.dart';
 
 Future<void> main(List<String> arguments) async {
   final startupOptions = StartupOptions.parse(arguments);
@@ -30,6 +31,7 @@ Future<void> main(List<String> arguments) async {
   StartupDiagnostics? diagnostics;
   try {
     diagnostics = await StartupDiagnostics.open(startupOptions);
+    VideoThumbnailCache.configureCacheRoot(diagnostics.applicationRoot);
     await diagnostics.phase(
       'process-start',
       'exe=${Platform.resolvedExecutable}; os=${Platform.operatingSystemVersion}; '
@@ -56,8 +58,10 @@ Future<void> main(List<String> arguments) async {
   Object? startupError;
   try {
     await diagnostics?.phase('rust-core-initialization-start');
-    backend = await RustBackend.open(logger: diagnostics?.logger)
-        .timeout(const Duration(seconds: 30));
+    backend = await RustBackend.open(
+      logger: diagnostics?.logger,
+      applicationRoot: diagnostics?.applicationRoot,
+    ).timeout(const Duration(seconds: 30));
     if (Platform.isWindows) {
       final fontReport = await loadCustomFontFamilies(
         backend.settings.customFontPaths,
@@ -296,6 +300,8 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
   bool desktopLifecycleReady = false;
   bool quitting = false;
   bool startupSyncStarted = false;
+  String? latestReleaseVersion;
+  String? updateStatusText;
 
   bool get supportsDesktopLifecycle =>
       widget.backend is RustBackend &&
@@ -459,7 +465,19 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
     await showLatestReleaseUpdate(
       context,
       automatic: automatic,
+      applicationRoot: widget.diagnostics?.applicationRoot,
       onInstall: _installUpdate,
+      onStatus: (info, error) {
+        if (!mounted) return;
+        setState(() {
+          latestReleaseVersion = info?.version;
+          updateStatusText = error == null
+              ? info == null
+                    ? '已是最新版本'
+                    : '最新版本 ${info.version}'
+              : '更新检查失败：$error';
+        });
+      },
       onError: (error, stackTrace) => backend.logError(
         'Failed to check or install application update',
         error,
@@ -642,6 +660,8 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
             onInstallUpdate: _installUpdate,
             onRestartApplication:
                 widget.onRestartApplication ?? _restartApplication,
+            latestReleaseVersion: latestReleaseVersion,
+            updateStatusText: updateStatusText,
           ),
         ),
       ),
