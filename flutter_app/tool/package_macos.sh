@@ -108,7 +108,7 @@ is_system_path() {
 }
 
 check_rpaths() {
-  local binary="$1" rpath expanded resolved
+  local binary="$1" rpath expanded resolved parent leaf parent_resolved
   while IFS= read -r rpath; do
     case "$rpath" in
       /System/Library/*|/usr/lib/*)
@@ -117,7 +117,18 @@ check_rpaths() {
       @loader_path*|@executable_path*)
         expanded="$(expand_runtime_path "$rpath" "$binary")"
         # Ignore a missing optional bundle directory, but never an escaping path.
-        resolved="$(realpath "$expanded")"
+        if [[ -e "$expanded" ]]; then
+          resolved="$(realpath "$expanded")"
+        else
+          parent="$(dirname "$expanded")"
+          leaf="$(basename "$expanded")"
+          parent_resolved="$(realpath "$parent" 2>/dev/null || true)"
+          [[ -n "$parent_resolved" ]] || {
+            echo "LC_RPATH parent cannot be resolved: $rpath" >&2
+            return 1
+          }
+          resolved="$parent_resolved/$leaf"
+        fi
         case "$resolved" in
           "$APP_CANONICAL"|"$APP_CANONICAL"/*) ;;
           *) echo "LC_RPATH escapes the app bundle: $rpath" >&2; return 1 ;;
