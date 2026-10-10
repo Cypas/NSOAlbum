@@ -200,7 +200,7 @@ while IFS= read -r -d '' nested; do
     [[ " $arches " == *" $EXPECTED "* ]] || { echo "Missing $EXPECTED slice: $nested ($arches)" >&2; exit 1; }
     sanitize_build_rpaths "$resolved_nested"
     check_dependencies "$resolved_nested"
-    codesign --force --timestamp=none --sign - "$resolved_nested"
+    codesign --force --options runtime --timestamp=none --sign - "$resolved_nested"
   fi
 done < <(find "$APP/Contents" \( -type f -o -type l \) -print0)
 
@@ -216,7 +216,7 @@ while IFS= read -r -d '' framework; do
       [[ " $arches " == *" $EXPECTED "* ]] || { echo "Missing $EXPECTED slice: $executable ($arches)" >&2; exit 1; }
       sanitize_build_rpaths "$resolved_executable"
       check_dependencies "$resolved_executable"
-      codesign --force --timestamp=none --sign - "$resolved_executable"
+      codesign --force --options runtime --timestamp=none --sign - "$resolved_executable"
     fi
   done < <(
     find "$framework" -type f -o -type l |
@@ -237,17 +237,18 @@ while IFS= read -r -d '' bundle; do
       if file -L -b "$resolved_version_binary" | grep -q 'Mach-O'; then
         sanitize_build_rpaths "$resolved_version_binary"
         check_dependencies "$resolved_version_binary"
-        codesign --force --timestamp=none --sign - "$resolved_version_binary"
+        codesign --force --options runtime --timestamp=none --sign - "$resolved_version_binary"
       fi
     done < <(find "$bundle/Versions" \( -type f -o -type l \) -print0)
   fi
   # Third-party frameworks may use a nonstandard versioned layout; let
   # codesign discover and sign all nested code inside this one container.
-  codesign --force --deep --timestamp=none --sign - "$bundle"
+  codesign --force --deep --options runtime --timestamp=none --sign - "$bundle"
+  codesign --force --options runtime --timestamp=none --sign - "$bundle"
 done < <(find "$APP/Contents" -depth -type d \( -name '*.framework' -o -name '*.app' -o -name '*.xpc' -o -name '*.appex' \) -print0)
 # Use --deep only as a final bundle-level safety net after all nested code has
 # already been signed explicitly above.
-codesign --force --deep --timestamp=none --sign - --entitlements "$PROJECT_ROOT/macos/Runner/Release.entitlements" "$APP"
+codesign --force --deep --options runtime --timestamp=none --sign - --entitlements "$PROJECT_ROOT/macos/Runner/Release.entitlements" "$APP"
 codesign --verify --deep --strict "$APP"
 ENTITLEMENTS="$(codesign -d --entitlements :- "$APP" 2>/dev/null)"
 if [[ "$ENTITLEMENTS" == *"com.apple.security.app-sandbox"* ]]; then
