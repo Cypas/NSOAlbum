@@ -18,7 +18,37 @@ void main() {
 
       expect(options.timeoutSeconds, 60);
       expect(options.fault, 'video-first-frame');
+      expect(options.softwareRendering, isFalse);
       expect(options.scenarios, ['normal', 'reopen', 'safe']);
+    });
+
+    test('adds the Flutter software renderer switch when requested', () async {
+      final temp = await Directory.systemTemp.createTemp('smoke-driver-render-');
+      addTearDown(() => temp.delete(recursive: true));
+      final bundle = await Directory('${temp.path}/bundle').create();
+      final app = File('${bundle.path}/NSOAlbum.exe')..createSync();
+      final reports = Directory('${temp.path}/reports');
+      final launched = <List<String>>[];
+
+      final result = await smoke.runReleaseSmoke(
+        smoke.SmokeDriverOptions(
+          appPath: app.path,
+          reportsDirectory: reports.path,
+          scenarios: const ['safe'],
+          softwareRendering: true,
+        ),
+        launch: (executable, arguments, timeout) async {
+          launched.add(arguments);
+          final root = _argumentRoot(arguments);
+          await Directory(root).create(recursive: true);
+          await File('$root/safe.json')
+              .writeAsString(jsonEncode(_report('safe')));
+          return const smoke.SmokeProcessResult(exitCode: 0);
+        },
+      );
+
+      expect(result.exitCode, 0);
+      expect(launched.single, contains('--enable-software-rendering'));
     });
 
     test('rejects timeout outside supported bounds', () {

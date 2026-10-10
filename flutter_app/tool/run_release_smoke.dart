@@ -31,6 +31,7 @@ class SmokeDriverOptions {
     required this.reportsDirectory,
     this.timeoutSeconds = 600,
     this.fault,
+    this.softwareRendering = false,
     this.scenarios = const ['normal', 'reopen', 'safe'],
   });
 
@@ -38,6 +39,7 @@ class SmokeDriverOptions {
   final String reportsDirectory;
   final int timeoutSeconds;
   final String? fault;
+  final bool softwareRendering;
   final List<String> scenarios;
 
   Duration get timeout => Duration(seconds: timeoutSeconds);
@@ -47,6 +49,7 @@ class SmokeDriverOptions {
     String? reports;
     var timeout = 600;
     String? fault;
+    var softwareRendering = false;
     for (var i = 0; i < args.length; i++) {
       final arg = args[i];
       String? value;
@@ -74,6 +77,9 @@ class SmokeDriverOptions {
         value = arg.substring('--fault='.length);
         fault = value;
         continue;
+      } else if (arg == '--software-rendering') {
+        softwareRendering = true;
+        continue;
       } else {
         throw FormatException('Unknown argument: $arg');
       }
@@ -96,6 +102,7 @@ class SmokeDriverOptions {
           reports ?? p.join(Directory.current.path, 'smoke-reports'),
       timeoutSeconds: timeout,
       fault: fault,
+      softwareRendering: softwareRendering,
     );
   }
 }
@@ -156,6 +163,7 @@ Future<SmokeDriverResult> runReleaseSmoke(
           '--ci-smoke',
           '--ci-smoke-root=$root',
           '--ci-smoke-scenario=$scenario',
+          if (options.softwareRendering) '--enable-software-rendering',
           if (scenario == 'safe') '--safe-mode',
           if (options.fault != null) '--ci-smoke-fail=${options.fault}',
         ];

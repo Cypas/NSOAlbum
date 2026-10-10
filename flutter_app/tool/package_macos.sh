@@ -38,6 +38,12 @@ APP="$PROJECT_ROOT/build/macos/Build/Products/Release/NSOAlbum.app"
 DIST="$WORKSPACE_ROOT/dist"
 DMG="$DIST/NSOAlbum-macOS-${ARCH}-${VERSION}.dmg"
 SMOKE_RUNNER="$SCRIPT_DIR/run_release_smoke.dart"
+SMOKE_RENDERING_ARGS=()
+if [[ "$ARCH" == "x64" ]]; then
+  # Hosted Intel runners can hang Impeller/Metal while decoding a generated
+  # thumbnail. Keep the real media smoke, but use Flutter's CPU renderer.
+  SMOKE_RENDERING_ARGS+=(--software-rendering)
+fi
 [[ -f "$SMOKE_RUNNER" ]] || { echo "Missing native smoke driver" >&2; exit 1; }
 [[ ! -e "$DMG" ]] || { echo "Refusing to overwrite existing DMG: $DMG" >&2; exit 1; }
 
@@ -239,11 +245,11 @@ fi
 else
   echo "Skipping macOS code signing and signature verification for CI validation"
 fi
-dart run "$SMOKE_RUNNER" --launch-app "$APP" --reports-dir "$REPORTS/app"
+dart run "$SMOKE_RUNNER" --launch-app "$APP" --reports-dir "$REPORTS/app" "${SMOKE_RENDERING_ARGS[@]}"
 
 for fault in rust-initialization video-first-frame trim; do
   fault_reports="$REPORTS/faults/$fault"
-  if dart run "$SMOKE_RUNNER" --launch-app "$APP" --reports-dir "$fault_reports" --fault "$fault"; then
+  if dart run "$SMOKE_RUNNER" --launch-app "$APP" --reports-dir "$fault_reports" --fault "$fault" "${SMOKE_RENDERING_ARGS[@]}"; then
     echo "Smoke incorrectly passed injected failure: $fault" >&2
     exit 1
   fi
@@ -289,7 +295,7 @@ if [[ "${NSOALBUM_SKIP_CODESIGN:-0}" != "1" ]]; then
   codesign --verify --deep --strict "$MOUNTED_APP"
 fi
 [[ "$(lipo -archs "$MOUNTED_APP/Contents/MacOS/$EXECUTABLE")" == "$EXPECTED" ]] || exit 1
-dart run "$SMOKE_RUNNER" --launch-app "$MOUNTED_APP" --reports-dir "$REPORTS/dmg"
+dart run "$SMOKE_RUNNER" --launch-app "$MOUNTED_APP" --reports-dir "$REPORTS/dmg" "${SMOKE_RENDERING_ARGS[@]}"
 hdiutil detach "$MOUNT" -quiet
 rmdir "$MOUNT"
 MOUNT=""
