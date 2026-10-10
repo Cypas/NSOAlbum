@@ -177,11 +177,23 @@ check_dependencies() {
   done < <(otool -L "$binary" | tail -n +2 | sed -E 's/^[[:space:]]*//; s/ \(compatibility version.*$//')
 }
 
+sanitize_build_rpaths() {
+  local binary="$1" rpath
+  while IFS= read -r rpath; do
+    case "$rpath" in
+      /Applications/Xcode*.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx|\
+      /Volumes/Xcode*.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx)
+        install_name_tool -delete_rpath "$rpath" "$binary" ;;
+    esac
+  done < <(read_rpaths "$binary")
+}
+
 # Inspect and sign Mach-O leaves first, including extensionless framework binaries.
 while IFS= read -r -d '' nested; do
   if file -b "$nested" | grep -q 'Mach-O'; then
     arches="$(lipo -archs "$nested")"
     [[ " $arches " == *" $EXPECTED "* ]] || { echo "Missing $EXPECTED slice: $nested ($arches)" >&2; exit 1; }
+    sanitize_build_rpaths "$nested"
     check_dependencies "$nested"
     codesign --force --timestamp=none --sign - "$nested"
   fi
