@@ -188,6 +188,11 @@ sanitize_build_rpaths() {
   done < <(read_rpaths "$binary")
 }
 
+# CI validation can opt out of signing entirely.  This is useful on hosted
+# runners where Flutter/Xcode embeds third-party media frameworks that cannot
+# be re-signed without a real identity.  Release packaging keeps the ad-hoc
+# signing path below enabled by default.
+if [[ "${NSOALBUM_SKIP_CODESIGN:-0}" != "1" ]]; then
 # Inspect and sign Mach-O leaves first, including extensionless framework
 # binaries.  Some media frameworks use a nonstandard layout where the
 # framework's executable is not discoverable by codesign's --deep traversal.
@@ -255,6 +260,9 @@ if [[ "$ENTITLEMENTS" == *"com.apple.security.app-sandbox"* ]]; then
   echo "Packaged app must not contain an app-sandbox entitlement" >&2
   exit 1
 fi
+else
+  echo "Skipping macOS code signing and signature verification for CI validation"
+fi
 dart run "$SMOKE_RUNNER" --launch-app "$APP" --reports-dir "$REPORTS/app"
 
 for fault in rust-initialization video-first-frame trim; do
@@ -301,7 +309,9 @@ MOUNT="$(mktemp -d "${TMPDIR:-/tmp}/nsoalbum-dmg.XXXXXX")"
 hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$MOUNT"
 MOUNTED_APP="$MOUNT/NSOAlbum.app"
 [[ -d "$MOUNTED_APP" ]] || { echo "DMG did not contain NSOAlbum.app" >&2; exit 1; }
-codesign --verify --deep --strict "$MOUNTED_APP"
+if [[ "${NSOALBUM_SKIP_CODESIGN:-0}" != "1" ]]; then
+  codesign --verify --deep --strict "$MOUNTED_APP"
+fi
 [[ "$(lipo -archs "$MOUNTED_APP/Contents/MacOS/$EXECUTABLE")" == "$EXPECTED" ]] || exit 1
 dart run "$SMOKE_RUNNER" --launch-app "$MOUNTED_APP" --reports-dir "$REPORTS/dmg"
 hdiutil detach "$MOUNT" -quiet

@@ -365,6 +365,10 @@ jobs:
           PACKAGE_VERSION: ${{ steps.version.outputs.version }}
           PACKAGE_BUILD: ${{ steps.version.outputs.build }}
           PACKAGE_ARCH: ${{ matrix.mac_arch }}
+          CODE_SIGNING_ALLOWED: "NO"
+          CODE_SIGNING_REQUIRED: "NO"
+          CODE_SIGN_IDENTITY: ""
+          NSOALBUM_SKIP_CODESIGN: "1"
         run: |
           set -euo pipefail
           wrong_arch="$([[ "$PACKAGE_ARCH" == arm64 ]] && echo x64 || echo arm64)"
