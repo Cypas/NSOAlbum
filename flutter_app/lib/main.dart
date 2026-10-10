@@ -136,11 +136,13 @@ Future<void> main(List<String> arguments) async {
         backend: backend,
         options: startupOptions,
         diagnostics: diagnostics,
-        gallery: SquidAlbumApp(
-          backend: backend,
-          startupOptions: startupOptions,
-          diagnostics: diagnostics,
-        ),
+        gallery: startupOptions.ciSmokeScenario == 'reopen'
+            ? const SizedBox.shrink()
+            : SquidAlbumApp(
+                backend: backend,
+                startupOptions: startupOptions,
+                diagnostics: diagnostics,
+              ),
       ),
     );
     return;
