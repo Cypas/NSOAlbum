@@ -402,7 +402,16 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
     if (previous != null) await previous.dispose();
     VideoRuntime.ensureInitialized();
     final next = Player();
-    final output = VideoController(next);
+    // Hosted macOS runners can expose a Metal surface but still crash inside
+    // media_kit's hardware video output when the app is launched by the CI
+    // smoke driver.  Keep the real decode/playback path while selecting the
+    // CPU-backed output for this isolated diagnostic mode only.
+    final output = VideoController(
+      next,
+      configuration: const VideoControllerConfiguration(
+        enableHardwareAcceleration: false,
+      ),
+    );
     setState(() {
       player = next;
       controller = output;
