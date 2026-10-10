@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:crypto/crypto.dart';
@@ -195,20 +196,14 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
         (await rootBundle.loadString('assets/ci/synthetic-h264-aac.base64'))
             .replaceAll(RegExp(r'\s'), ''),
       );
-      final picture = ui.PictureRecorder();
-      Canvas(picture).drawRect(
-        const Rect.fromLTWH(0, 0, 160, 90),
-        Paint()..color = const Color(0xff2896dc),
-      );
-      final recording = picture.endRecording();
-      final png = await recording.toImage(160, 90);
-      final encoded = (await png.toByteData(format: ui.ImageByteFormat.png))!;
-      png.dispose();
-      recording.dispose();
+      // Keep fixture creation independent from the hosted runner's GPU. A
+      // small deterministic PNG is enough; the next step decodes it through
+      // Flutter's actual image pipeline.
+      final encoded = _syntheticPng(160, 90, 0x28, 0x96, 0xdc);
       final imagePath = p.join(directory.path, 'original.png');
       final videoPath = p.join(directory.path, 'original.mp4');
       final secondPath = p.join(directory.path, 'second.mp4');
-      await File(imagePath).writeAsBytes(encoded.buffer.asUint8List());
+      await File(imagePath).writeAsBytes(encoded);
       await File(videoPath).writeAsBytes(video);
       await _ffmpeg([
         '-y',
@@ -556,6 +551,70 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
     if (!ReturnCode.isSuccess(await session.getReturnCode())) {
       throw StateError('Bundled FFmpeg rejected synthetic media');
     }
+  }
+
+  Uint8List _syntheticPng(
+    int width,
+    int height,
+    int red,
+    int green,
+    int blue,
+  ) {
+    final scanlines = BytesBuilder(copy: false);
+    for (var y = 0; y < height; y++) {
+      scanlines.addByte(0);
+      for (var x = 0; x < width; x++) {
+        scanlines.add(<int>[red, green, blue]);
+      }
+    }
+    final output = BytesBuilder(copy: false)
+      ..add(<int>[137, 80, 78, 71, 13, 10, 26, 10])
+      ..add(_pngChunk(
+        'IHDR',
+        <int>[
+          ..._u32(width),
+          ..._u32(height),
+          8,
+          2,
+          0,
+          0,
+          0,
+        ],
+      ))
+      ..add(_pngChunk(
+        'IDAT',
+        ZLibCodec(level: 6).encode(scanlines.takeBytes()),
+      ))
+      ..add(_pngChunk('IEND', const <int>[]));
+    return output.takeBytes();
+  }
+
+  List<int> _pngChunk(String type, List<int> data) {
+    final typeBytes = ascii.encode(type);
+    final payload = <int>[...typeBytes, ...data];
+    return <int>[
+      ..._u32(data.length),
+      ...payload,
+      ..._u32(_crc32(payload)),
+    ];
+  }
+
+  List<int> _u32(int value) => <int>[
+        (value >> 24) & 0xff,
+        (value >> 16) & 0xff,
+        (value >> 8) & 0xff,
+        value & 0xff,
+      ];
+
+  int _crc32(List<int> bytes) {
+    var crc = 0xffffffff;
+    for (final byte in bytes) {
+      crc ^= byte;
+      for (var bit = 0; bit < 8; bit++) {
+        crc = (crc >> 1) ^ (crc & 1 == 1 ? 0xedb88320 : 0);
+      }
+    }
+    return (~crc) & 0xffffffff;
   }
 
   Future<String> _hash(String path) async =>
