@@ -209,30 +209,6 @@ while IFS= read -r -d '' nested; do
   fi
 done < <(find "$APP/Contents" \( -type f -o -type l \) -print0)
 
-# Explicitly sign framework executables after leaf discovery as well.  This
-# covers versioned/nonstandard frameworks such as Avformat.framework whose
-# executable may be hidden behind a symlink or a layout that --deep skips.
-while IFS= read -r -d '' framework; do
-  framework_name="$(basename "$framework" .framework)"
-  while IFS= read -r -d '' executable; do
-    if file -L -b "$executable" | grep -q 'Mach-O'; then
-      resolved_executable="$(realpath "$executable")"
-      arches="$(lipo -archs "$resolved_executable")"
-      [[ " $arches " == *" $EXPECTED "* ]] || { echo "Missing $EXPECTED slice: $executable ($arches)" >&2; exit 1; }
-      sanitize_build_rpaths "$resolved_executable"
-      check_dependencies "$resolved_executable"
-      codesign --force --options runtime --timestamp=none --sign - "$resolved_executable"
-    fi
-  done < <(
-    find "$framework" -type f -o -type l |
-      while IFS= read -r candidate; do
-        case "$(basename "$candidate")" in
-          "$framework_name"|"$framework_name".*) printf '%s\0' "$candidate" ;;
-        esac
-      done
-  )
-done < <(find "$APP/Contents/Frameworks" -type d -name '*.framework' -print0 2>/dev/null)
-
 # Bundle containers follow their leaves, deepest first.  Keep the explicit
 # leaf pass above, then let codesign refresh each container's nested metadata.
 while IFS= read -r -d '' bundle; do
