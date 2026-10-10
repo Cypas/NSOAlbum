@@ -212,6 +212,9 @@ while IFS= read -r -d '' bundle; do
       fi
     done < <(find "$bundle/Versions" \( -type f -o -type l \) -print0)
   fi
+  # Third-party frameworks may use a nonstandard versioned layout; let
+  # codesign discover and sign all nested code inside this one container.
+  codesign --force --deep --timestamp=none --sign - "$bundle"
   codesign --force --timestamp=none --sign - "$bundle"
 done < <(find "$APP/Contents" -depth -type d \( -name '*.framework' -o -name '*.app' -o -name '*.xpc' -o -name '*.appex' \) -print0)
 codesign --force --timestamp=none --sign - --entitlements "$PROJECT_ROOT/macos/Runner/Release.entitlements" "$APP"
