@@ -163,7 +163,10 @@ Future<SmokeDriverResult> runReleaseSmoke(
           '--ci-smoke',
           '--ci-smoke-root=$root',
           '--ci-smoke-scenario=$scenario',
-          if (options.softwareRendering) '--enable-software-rendering',
+          if (options.softwareRendering) ...[
+            '--enable-software-rendering',
+            '--no-enable-impeller',
+          ],
           if (scenario == 'safe') '--safe-mode',
           if (options.fault != null) '--ci-smoke-fail=${options.fault}',
         ];

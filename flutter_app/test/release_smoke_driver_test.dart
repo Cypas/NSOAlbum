@@ -49,6 +49,7 @@ void main() {
 
       expect(result.exitCode, 0);
       expect(launched.single, contains('--enable-software-rendering'));
+      expect(launched.single, contains('--no-enable-impeller'));
     });
 
     test('rejects timeout outside supported bounds', () {
