@@ -21,6 +21,7 @@ import 'package:squid_album/src/ui/font_families.dart';
 import 'package:squid_album/src/backend/storage_paths.dart' as storage_paths;
 import 'package:squid_album/src/ui/media_viewer.dart';
 import 'package:squid_album/src/ui/video_runtime.dart';
+import 'package:squid_album/src/release_update.dart';
 
 void main() {
   setUp(() async {
@@ -1621,6 +1622,32 @@ void main() {
     expect(find.textContaining('检查更新接口'), findsNothing);
   });
 
+  testWidgets(
+    'about update status is localized instead of storing Chinese text',
+    (tester) async {
+      final backend = FakeBackend();
+      final settings = SettingsController(backend);
+      addTearDown(settings.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          localizationsDelegates: const [AppLocalizations.delegate],
+          supportedLocales: AppLocalizations.supportedLocales,
+          locale: const Locale('en'),
+          home: SettingsPage(
+            controller: settings,
+            backend: backend,
+            onTagsChanged: () {},
+            updateStatus: UpdateStatusKind.latest,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('about-latest-version')));
+      expect(find.text('You are using the latest version.'), findsOneWidget);
+      expect(find.text('已是最新版本'), findsNothing);
+    },
+  );
+
   testWidgets('shows the connected Nintendo nickname and avatar', (
     tester,
   ) async {
@@ -2030,27 +2057,32 @@ void main() {
     expect(find.byType(MaterialBanner), findsOneWidget);
   });
 
-  testWidgets('persists the desktop window close behavior', (tester) async {
-    final backend = FakeBackend();
-    await tester.pumpWidget(SquidAlbumApp(backend: backend));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('设置').last);
-    await tester.pumpAndSettle();
+  testWidgets(
+    'persists the desktop window close behavior',
+    (tester) async {
+      final backend = FakeBackend();
+      await tester.pumpWidget(SquidAlbumApp(backend: backend));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('设置').last);
+      await tester.pumpAndSettle();
 
-    final selector = find.byKey(const Key('close-behavior-ask'));
-    await tester.drag(
-      find.byType(CustomScrollView).last,
-      const Offset(0, -750),
-    );
-    await tester.pumpAndSettle();
-    expect(tester.getCenter(selector).dy, lessThan(600));
-    await tester.tap(selector);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('最小化到托盘').last);
-    await tester.pumpAndSettle();
+      final selector = find.byKey(const Key('close-behavior-ask'));
+      await tester.drag(
+        find.byType(CustomScrollView).last,
+        const Offset(0, -750),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.getCenter(selector).dy, lessThan(600));
+      await tester.tap(selector);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('最小化到托盘').last);
+      await tester.pumpAndSettle();
 
-    expect(backend.settings.closeBehavior, 'minimize_to_tray');
-  });
+      expect(backend.settings.closeBehavior, 'minimize_to_tray');
+    },
+    // Explicitly skipped on Linux/CI hosts without desktop window settings.
+    skip: !Platform.isWindows && !Platform.isMacOS,
+  );
 
   testWidgets('shows Nintendo synchronization totals and progress', (
     tester,

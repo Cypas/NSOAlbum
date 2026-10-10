@@ -70,4 +70,8 @@ String defaultLibraryPathForPlatform({
 }
 
 String _join(String first, String second, [String? third]) =>
-    [first, second, ?third].join(Platform.pathSeparator);
+    [first, second, ?third].join(
+      first.contains(r'\') || RegExp(r'^[A-Za-z]:').hasMatch(first)
+          ? r'\'
+          : Platform.pathSeparator,
+    );
