@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -402,14 +403,16 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
     if (previous != null) await previous.dispose();
     VideoRuntime.ensureInitialized();
     final next = Player();
-    // Hosted macOS runners can expose a Metal surface but still crash inside
-    // media_kit's hardware video output when the app is launched by the CI
-    // smoke driver.  Keep the real decode/playback path while selecting the
-    // CPU-backed output for this isolated diagnostic mode only.
+    // The arm64 hosted runner can crash inside media_kit's Metal output during
+    // isolated smoke startup, while the Intel runner needs the hardware path
+    // for a visible first frame.  Keep the real decode/playback path and only
+    // disable hardware output for the affected architecture.
+    final useHardwareVideoOutput =
+        !(Platform.isMacOS && ffi.Abi.current() == ffi.Abi.macosArm64);
     final output = VideoController(
       next,
-      configuration: const VideoControllerConfiguration(
-        enableHardwareAcceleration: false,
+      configuration: VideoControllerConfiguration(
+        enableHardwareAcceleration: useHardwareVideoOutput,
       ),
     );
     setState(() {
