@@ -188,7 +188,11 @@ sanitize_build_rpaths() {
   done < <(read_rpaths "$binary")
 }
 
-# Inspect and sign Mach-O leaves first, including extensionless framework binaries.
+# Inspect and sign Mach-O leaves first, including extensionless framework
+# binaries.  Some media frameworks use a nonstandard layout where the
+# framework's executable is not discoverable by codesign's --deep traversal.
+# Walking every file below Contents/Frameworks explicitly keeps those binaries
+# signed before the app bundle is signed.
 while IFS= read -r -d '' nested; do
   if file -L -b "$nested" | grep -q 'Mach-O'; then
     resolved_nested="$(realpath "$nested")"
@@ -200,7 +204,32 @@ while IFS= read -r -d '' nested; do
   fi
 done < <(find "$APP/Contents" \( -type f -o -type l \) -print0)
 
-# Bundle containers follow their leaves, deepest first. Never use --deep to sign.
+# Explicitly sign framework executables after leaf discovery as well.  This
+# covers versioned/nonstandard frameworks such as Avformat.framework whose
+# executable may be hidden behind a symlink or a layout that --deep skips.
+while IFS= read -r -d '' framework; do
+  framework_name="$(basename "$framework" .framework)"
+  while IFS= read -r -d '' executable; do
+    if file -L -b "$executable" | grep -q 'Mach-O'; then
+      resolved_executable="$(realpath "$executable")"
+      arches="$(lipo -archs "$resolved_executable")"
+      [[ " $arches " == *" $EXPECTED "* ]] || { echo "Missing $EXPECTED slice: $executable ($arches)" >&2; exit 1; }
+      sanitize_build_rpaths "$resolved_executable"
+      check_dependencies "$resolved_executable"
+      codesign --force --timestamp=none --sign - "$resolved_executable"
+    fi
+  done < <(
+    find "$framework" -type f -o -type l |
+      while IFS= read -r candidate; do
+        case "$(basename "$candidate")" in
+          "$framework_name"|"$framework_name".*) printf '%s\0' "$candidate" ;;
+        esac
+      done
+  )
+done < <(find "$APP/Contents/Frameworks" -type d -name '*.framework' -print0 2>/dev/null)
+
+# Bundle containers follow their leaves, deepest first.  Keep the explicit
+# leaf pass above, then let codesign refresh each container's nested metadata.
 while IFS= read -r -d '' bundle; do
   if [[ -d "$bundle/Versions" ]]; then
     while IFS= read -r -d '' version_binary; do
@@ -216,7 +245,9 @@ while IFS= read -r -d '' bundle; do
   # codesign discover and sign all nested code inside this one container.
   codesign --force --deep --timestamp=none --sign - "$bundle"
 done < <(find "$APP/Contents" -depth -type d \( -name '*.framework' -o -name '*.app' -o -name '*.xpc' -o -name '*.appex' \) -print0)
-codesign --force --timestamp=none --sign - --entitlements "$PROJECT_ROOT/macos/Runner/Release.entitlements" "$APP"
+# Use --deep only as a final bundle-level safety net after all nested code has
+# already been signed explicitly above.
+codesign --force --deep --timestamp=none --sign - --entitlements "$PROJECT_ROOT/macos/Runner/Release.entitlements" "$APP"
 codesign --verify --deep --strict "$APP"
 ENTITLEMENTS="$(codesign -d --entitlements :- "$APP" 2>/dev/null)"
 if [[ "$ENTITLEMENTS" == *"com.apple.security.app-sandbox"* ]]; then
