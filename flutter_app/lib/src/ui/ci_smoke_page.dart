@@ -432,7 +432,15 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
     final deadline = DateTime.now().add(const Duration(seconds: 5));
     var decoded = false;
     while (DateTime.now().isBefore(deadline)) {
-      final frame = await next.screenshot(format: 'image/png');
+      Uint8List? frame;
+      try {
+        frame = await next
+            .screenshot(format: 'image/png')
+            .timeout(const Duration(seconds: 1));
+      } on TimeoutException {
+        // A native texture can temporarily block screenshot acquisition while
+        // its first software frame is being uploaded; keep the bounded poll.
+      }
       if (frame != null && frame.isNotEmpty) {
         try {
           await _decodeCover(frame, expectedColor: true);
