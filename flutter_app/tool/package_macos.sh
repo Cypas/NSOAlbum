@@ -191,11 +191,12 @@ sanitize_build_rpaths() {
 # Inspect and sign Mach-O leaves first, including extensionless framework binaries.
 while IFS= read -r -d '' nested; do
   if file -L -b "$nested" | grep -q 'Mach-O'; then
-    arches="$(lipo -archs "$nested")"
+    resolved_nested="$(realpath "$nested")"
+    arches="$(lipo -archs "$resolved_nested")"
     [[ " $arches " == *" $EXPECTED "* ]] || { echo "Missing $EXPECTED slice: $nested ($arches)" >&2; exit 1; }
-    sanitize_build_rpaths "$nested"
-    check_dependencies "$nested"
-    codesign --force --timestamp=none --sign - "$nested"
+    sanitize_build_rpaths "$resolved_nested"
+    check_dependencies "$resolved_nested"
+    codesign --force --timestamp=none --sign - "$resolved_nested"
   fi
 done < <(find "$APP/Contents" \( -type f -o -type l \) -print0)
 
