@@ -75,7 +75,10 @@ jobs:
           name: validation-ubuntu
           if-no-files-found: ignore
           retention-days: 14
-          path: native-reports/test-counts.json
+          path: |
+            native-reports/test-counts.json
+            ${{ runner.temp }}/flutter-tests.jsonl
+            ${{ runner.temp }}/rust-tests.log
 
   secrets:
     name: Scan repository history for secrets
@@ -379,6 +382,9 @@ jobs:
           retention-days: 14
           path: |
             native-reports/test-counts.json
+            ${{ runner.temp }}/flutter-tests.jsonl
+            ${{ runner.temp }}/flutter-tests-stderr.log
+            ${{ runner.temp }}/rust-tests.log
             native-reports/**/report.json
             native-reports/**/native-*.json
             native-reports/**/sanitized*.log

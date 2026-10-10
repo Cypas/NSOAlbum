@@ -17,7 +17,7 @@ function New-UnavailableTestSummary {
     }
     [pscustomobject]@{
         Status = $Status; Total = $null; Passed = $null; Failed = $null; Skipped = $null
-        Success = $false; Categories = $categories; SkippedTests = @()
+        Success = $false; Categories = $categories; SkippedTests = @(); FailedTests = @()
     }
 }
 
@@ -112,6 +112,9 @@ function Get-FlutterTestSummary {
         Categories = $categories
         SkippedTests = @($visible | Where-Object { $_.skipped } | Sort-Object name | ForEach-Object {
             [pscustomobject]@{ Name = $_.name; Category = $_.category; Reason = $_.reason }
+        })
+        FailedTests = @($visible | Where-Object { $_.failed } | Sort-Object name | ForEach-Object {
+            [pscustomobject]@{ Name = $_.name; Category = $_.category }
         })
     }
 }
