@@ -140,6 +140,32 @@ void main() {
     expect(candidates.last.host, 'api.github.com');
   });
 
+  test('custom update proxy is used only after direct candidates fail', () {
+    expect(
+      updateRequestAttempts(
+        apiCandidates: const [
+          'https://gh-proxy.org/api',
+          'https://api.github.com/api',
+        ],
+        customProxyUrl: 'http://127.0.0.1:7890',
+      ),
+      [
+        const UpdateRequestAttempt(
+          uri: 'https://gh-proxy.org/api',
+          proxy: null,
+        ),
+        const UpdateRequestAttempt(
+          uri: 'https://api.github.com/api',
+          proxy: null,
+        ),
+        const UpdateRequestAttempt(
+          uri: 'https://api.github.com/api',
+          proxy: 'PROXY 127.0.0.1:7890',
+        ),
+      ],
+    );
+  });
+
   test('automatic checks are limited to once in a 24 hour window', () {
     final now = DateTime.utc(2026, 10, 7, 12);
 

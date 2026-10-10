@@ -22,6 +22,7 @@ import 'src/startup/startup_diagnostics.dart';
 import 'src/startup/startup_options.dart';
 import 'src/ui/ci_smoke_page.dart';
 import 'src/ui/home_shell.dart';
+import 'src/release_update.dart';
 import 'src/ui/font_families.dart';
 import 'src/ui/video_runtime.dart';
 import 'src/ui/video_thumbnail.dart';
@@ -240,12 +241,9 @@ class _DesktopTitleBarState extends State<DesktopTitleBar> with WindowListener {
   }
 
   Future<void> _toggleMaximize() async {
-    if (await windowManager.isMaximized()) {
-      await windowManager.unmaximize();
-    } else {
-      await windowManager.maximize();
-    }
-    await _refreshMaximized();
+    final next = !maximized;
+    if (mounted) setState(() => maximized = next);
+    unawaited(next ? windowManager.maximize() : windowManager.unmaximize());
   }
 
   @override
@@ -269,55 +267,61 @@ class _DesktopTitleBarState extends State<DesktopTitleBar> with WindowListener {
             ),
           ),
         ),
-        child: DragToMoveArea(
-          child: Row(
-            children: [
-              const SizedBox(width: 10),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(7),
-                child: Image.asset(
-                  widget.iconAsset,
-                  key: const Key('desktop-titlebar-icon'),
-                  width: 24,
-                  height: 24,
-                ),
-              ),
-              const SizedBox(width: 9),
-              Text(
-                widget.title,
-                key: const Key('desktop-titlebar-title'),
-                style: TextStyle(
-                  fontFamily: appFontFamily,
-                  fontFamilyFallback: appFontFallback,
-                  color: scheme.onSurface,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const Spacer(),
-              WindowCaptionButton.minimize(
-                key: const Key('desktop-titlebar-minimize'),
-                brightness: Theme.of(context).brightness,
-                onPressed: () => windowManager.minimize(),
-              ),
-              maximized
-                  ? WindowCaptionButton.unmaximize(
-                      key: const Key('desktop-titlebar-maximize'),
-                      brightness: Theme.of(context).brightness,
-                      onPressed: _toggleMaximize,
-                    )
-                  : WindowCaptionButton.maximize(
-                      key: const Key('desktop-titlebar-maximize'),
-                      brightness: Theme.of(context).brightness,
-                      onPressed: _toggleMaximize,
+        child: Row(
+          children: [
+            Expanded(
+              child: DragToMoveArea(
+                child: Row(
+                  children: [
+                    const SizedBox(width: 10),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(7),
+                      child: Image.asset(
+                        widget.iconAsset,
+                        key: const Key('desktop-titlebar-icon'),
+                        width: 24,
+                        height: 24,
+                      ),
                     ),
-              WindowCaptionButton.close(
-                key: const Key('desktop-titlebar-close'),
-                brightness: Theme.of(context).brightness,
-                onPressed: () => windowManager.close(),
+                    const SizedBox(width: 9),
+                    Text(
+                      widget.title,
+                      key: const Key('desktop-titlebar-title'),
+                      style: TextStyle(
+                        fontFamily: appFontFamily,
+                        fontFamilyFallback: appFontFallback,
+                        color: scheme.onSurface,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const Spacer(),
+                  ],
+                ),
               ),
-            ],
-          ),
+            ),
+            WindowCaptionButton.minimize(
+              key: const Key('desktop-titlebar-minimize'),
+              brightness: Theme.of(context).brightness,
+              onPressed: () => unawaited(windowManager.minimize()),
+            ),
+            maximized
+                ? WindowCaptionButton.unmaximize(
+                    key: const Key('desktop-titlebar-maximize'),
+                    brightness: Theme.of(context).brightness,
+                    onPressed: _toggleMaximize,
+                  )
+                : WindowCaptionButton.maximize(
+                    key: const Key('desktop-titlebar-maximize'),
+                    brightness: Theme.of(context).brightness,
+                    onPressed: _toggleMaximize,
+                  ),
+            WindowCaptionButton.close(
+              key: const Key('desktop-titlebar-close'),
+              brightness: Theme.of(context).brightness,
+              onPressed: () => unawaited(windowManager.close()),
+            ),
+          ],
         ),
       ),
     );
@@ -334,7 +338,8 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
   bool quitting = false;
   bool startupSyncStarted = false;
   String? latestReleaseVersion;
-  String? updateStatusText;
+  UpdateStatusKind? updateStatus;
+  Object? updateStatusError;
 
   bool get supportsDesktopLifecycle =>
       widget.backend is RustBackend &&
@@ -503,15 +508,17 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
       automatic: automatic,
       applicationRoot: widget.diagnostics?.applicationRoot,
       onInstall: _installUpdate,
+      customProxyUrl: backend.settings.proxyUrl,
       onStatus: (info, error) {
         if (!mounted) return;
         setState(() {
           latestReleaseVersion = info?.version;
-          updateStatusText = error == null
-              ? info == null
-                    ? '已是最新版本'
-                    : '最新版本 ${info.version}'
-              : '更新检查失败：$error';
+          updateStatus = error != null
+              ? UpdateStatusKind.failed
+              : info == null
+              ? UpdateStatusKind.latest
+              : UpdateStatusKind.available;
+          updateStatusError = error;
         });
       },
       onError: (error, stackTrace) => backend.logError(
@@ -693,12 +700,16 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
             enableMtpDetection: !widget.startupOptions.disableMtpDetection,
             startupDiagnostics: widget.diagnostics,
             onCheckForUpdates: widget.startupOptions.ciSmoke
-                ? null : () => _checkForUpdates(automatic: false),
-            onInstallUpdate: widget.startupOptions.ciSmoke ? null : _installUpdate,
+                ? null
+                : () => _checkForUpdates(automatic: false),
+            onInstallUpdate: widget.startupOptions.ciSmoke
+                ? null
+                : _installUpdate,
             onRestartApplication:
                 widget.onRestartApplication ?? _restartApplication,
             latestReleaseVersion: latestReleaseVersion,
-            updateStatusText: updateStatusText,
+            updateStatus: updateStatus,
+            updateStatusError: updateStatusError,
           ),
         ),
       ),

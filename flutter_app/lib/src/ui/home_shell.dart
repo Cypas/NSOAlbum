@@ -33,8 +33,12 @@ Future<void> showLatestReleaseUpdate(
   required Future<void> Function(Object error, StackTrace stackTrace) onError,
   void Function(LatestReleaseInfo? info, Object? error)? onStatus,
   String? applicationRoot,
+  String? customProxyUrl,
 }) async {
-  final service = ReleaseUpdateService(applicationRoot: applicationRoot);
+  final service = ReleaseUpdateService(
+    applicationRoot: applicationRoot,
+    customProxyUrl: customProxyUrl,
+  );
   try {
     if (automatic && !await service.isAutomaticCheckDue()) return;
     final currentVersion = await loadApplicationVersion();
@@ -287,7 +291,8 @@ class HomeShell extends StatefulWidget {
     this.onInstallUpdate,
     this.onRestartApplication,
     this.latestReleaseVersion,
-    this.updateStatusText,
+    this.updateStatus,
+    this.updateStatusError,
   });
 
   final AppBackend backend;
@@ -301,7 +306,8 @@ class HomeShell extends StatefulWidget {
   final Future<void> Function(File installer)? onInstallUpdate;
   final Future<void> Function()? onRestartApplication;
   final String? latestReleaseVersion;
-  final String? updateStatusText;
+  final UpdateStatusKind? updateStatus;
+  final Object? updateStatusError;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -460,7 +466,8 @@ class _HomeShellState extends State<HomeShell> {
         onCheckForUpdates: widget.onCheckForUpdates,
         onRestartApplication: widget.onRestartApplication,
         latestReleaseVersion: widget.latestReleaseVersion,
-        updateStatusText: widget.updateStatusText,
+        updateStatus: widget.updateStatus,
+        updateStatusError: widget.updateStatusError,
       ),
     ];
     final content = ActivePageHost(index: index, children: pages);
@@ -6638,7 +6645,8 @@ class SettingsPage extends StatefulWidget {
     this.onCheckForUpdates,
     this.onRestartApplication,
     this.latestReleaseVersion,
-    this.updateStatusText,
+    this.updateStatus,
+    this.updateStatusError,
   });
   final SettingsController controller;
   final AppBackend backend;
@@ -6646,7 +6654,8 @@ class SettingsPage extends StatefulWidget {
   final Future<void> Function()? onCheckForUpdates;
   final Future<void> Function()? onRestartApplication;
   final String? latestReleaseVersion;
-  final String? updateStatusText;
+  final UpdateStatusKind? updateStatus;
+  final Object? updateStatusError;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -7387,10 +7396,24 @@ class _SettingsPageState extends State<SettingsPage> {
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                           ),
-                          if (widget.updateStatusText != null) ...[
+                          if (widget.updateStatus != null) ...[
                             const SizedBox(height: 4),
                             Text(
-                              widget.updateStatusText!,
+                              switch (widget.updateStatus) {
+                                UpdateStatusKind.latest => context.l10n.select(
+                                  zh: '已是最新版本',
+                                  en: 'You are using the latest version.',
+                                ),
+                                UpdateStatusKind.available => context.l10n.select(
+                                  zh: '最新版本 ${widget.latestReleaseVersion ?? '—'}',
+                                  en: 'Latest version ${widget.latestReleaseVersion ?? '—'}',
+                                ),
+                                UpdateStatusKind.failed => context.l10n.select(
+                                  zh: '更新检查失败',
+                                  en: 'Update check failed',
+                                ),
+                                null => '',
+                              },
                               key: const Key('about-latest-version'),
                               style: Theme.of(context).textTheme.bodySmall,
                             ),

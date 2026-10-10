@@ -14,6 +14,51 @@ const _maxInstallerBytes = 512 * 1024 * 1024;
 typedef ReleaseAssetCandidateBuilder = List<Uri> Function(Uri officialUrl);
 typedef ReleaseApiCandidateBuilder = List<Uri> Function();
 
+enum UpdateStatusKind { latest, available, failed }
+
+class UpdateRequestAttempt {
+  const UpdateRequestAttempt({required this.uri, required this.proxy});
+
+  final String uri;
+  final String? proxy;
+
+  @override
+  bool operator ==(Object other) =>
+      other is UpdateRequestAttempt && other.uri == uri && other.proxy == proxy;
+
+  @override
+  int get hashCode => Object.hash(uri, proxy);
+}
+
+List<UpdateRequestAttempt> updateRequestAttempts({
+  required List<String> apiCandidates,
+  String? customProxyUrl,
+}) {
+  final attempts = <UpdateRequestAttempt>[
+    for (final uri in apiCandidates)
+      UpdateRequestAttempt(uri: uri, proxy: null),
+  ];
+  final proxy = _proxyDirective(customProxyUrl);
+  if (proxy != null && apiCandidates.isNotEmpty) {
+    attempts.add(UpdateRequestAttempt(uri: apiCandidates.last, proxy: proxy));
+  }
+  return attempts;
+}
+
+String? _proxyDirective(String? proxyUrl) {
+  final value = proxyUrl?.trim();
+  if (value == null || value.isEmpty) return null;
+  final uri = Uri.tryParse(value);
+  if (uri == null ||
+      !uri.hasScheme ||
+      !{'http', 'https'}.contains(uri.scheme) ||
+      uri.host.isEmpty) {
+    return null;
+  }
+  final port = uri.hasPort ? uri.port : 80;
+  return 'PROXY ${uri.host}:$port';
+}
+
 class StableRelease {
   const StableRelease({
     required this.version,
@@ -190,6 +235,7 @@ class ReleaseUpdateService {
     ReleaseAssetCandidateBuilder? candidateBuilder,
     ReleaseApiCandidateBuilder? apiCandidateBuilder,
     String? applicationRoot,
+    this.customProxyUrl,
     this._downloadDirectory,
   }) : _client = client ?? HttpClient(),
        _candidateBuilder = candidateBuilder ?? releaseAssetDownloadCandidates,
@@ -201,6 +247,9 @@ class ReleaseUpdateService {
   final ReleaseApiCandidateBuilder _apiCandidateBuilder;
   final Directory? _downloadDirectory;
   final String? _applicationRootOverride;
+  final String? customProxyUrl;
+
+  String? get _customProxyDirective => _proxyDirective(customProxyUrl);
 
   Future<bool> isAutomaticCheckDue() async {
     final support = await _applicationRoot();
@@ -259,9 +308,16 @@ class ReleaseUpdateService {
 
   Future<LatestReleaseInfo?> checkLatestRelease(String currentVersion) async {
     Object? lastError;
-    for (final uri in _apiCandidateBuilder()) {
+    final candidates = _apiCandidateBuilder();
+    final attempts = [
+      ...candidates.map((uri) => (uri: uri, proxy: null as String?)),
+      if (_customProxyDirective != null && candidates.isNotEmpty)
+        (uri: candidates.last, proxy: _customProxyDirective),
+    ];
+    for (final attempt in attempts) {
+      _setProxy(attempt.proxy);
       try {
-        final request = await _client.getUrl(uri);
+        final request = await _client.getUrl(attempt.uri);
         request.headers.set(
           HttpHeaders.acceptHeader,
           'application/vnd.github+json',
@@ -282,7 +338,7 @@ class ReleaseUpdateService {
           await response.drain<void>();
           throw HttpException(
             'Release lookup failed (HTTP ${response.statusCode})',
-            uri: uri,
+            uri: attempt.uri,
           );
         }
         final body = await response
@@ -298,6 +354,8 @@ class ReleaseUpdateService {
         return latestReleaseInfoFromGithubJson(decoded, currentVersion);
       } catch (error) {
         lastError = error;
+      } finally {
+        _setProxy(null);
       }
     }
     throw lastError ??
@@ -318,12 +376,22 @@ class ReleaseUpdateService {
       '${updateDirectory.path}${Platform.pathSeparator}${windowsInstallerName(release.version)}',
     );
     Object? lastError;
-    for (final uri in _candidateBuilder(release.installerUrl)) {
-      if (cancellation.isCancelled) throw const UpdateCancelled();
+    final candidates = _candidateBuilder(release.installerUrl);
+    final attempts = [
+      ...candidates.map((uri) => (uri: uri, proxy: null as String?)),
+      if (_customProxyDirective != null && candidates.length > 1)
+        (uri: candidates.last, proxy: _customProxyDirective),
+    ];
+    for (final attempt in attempts) {
+      _setProxy(attempt.proxy);
+      if (cancellation.isCancelled) {
+        _setProxy(null);
+        throw const UpdateCancelled();
+      }
       final partial = File('${destination.path}.part');
       try {
         if (await partial.exists()) await partial.delete();
-        final request = await _client.getUrl(uri);
+        final request = await _client.getUrl(attempt.uri);
         request.headers.set(HttpHeaders.userAgentHeader, appEnglishName);
         final response = await request.close().timeout(
           const Duration(seconds: 30),
@@ -332,7 +400,7 @@ class ReleaseUpdateService {
           await response.drain<void>();
           throw HttpException(
             'Installer download failed (HTTP ${response.statusCode})',
-            uri: uri,
+            uri: attempt.uri,
           );
         }
         if (response.contentLength > _maxInstallerBytes) {
@@ -370,15 +438,22 @@ class ReleaseUpdateService {
         return await partial.rename(destination.path);
       } on UpdateCancelled {
         if (await partial.exists()) await partial.delete();
+        _setProxy(null);
         rethrow;
       } catch (error) {
         lastError = error;
         if (await partial.exists()) await partial.delete();
+      } finally {
+        _setProxy(null);
       }
     }
     throw StateError(
       'Unable to download a verified installer from the mirror or GitHub: $lastError',
     );
+  }
+
+  void _setProxy(String? proxy) {
+    _client.findProxy = proxy == null ? (_) => 'DIRECT' : (_) => proxy;
   }
 
   Future<Directory> _applicationRoot() async {

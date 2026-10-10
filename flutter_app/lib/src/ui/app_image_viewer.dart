@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../l10n/app_localizations.dart';
+
 class AppImageViewerItem {
   const AppImageViewerItem({required this.image, required this.label});
 
@@ -128,7 +130,7 @@ class _AppImageViewerDialogState extends State<_AppImageViewerDialog> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.save_alt_rounded),
-                  label: const Text('另存为 / Save as'),
+                  label: Text(context.l10n.select(zh: '另存为', en: 'Save as')),
                 ),
               const SizedBox(width: 12),
               Text(
