@@ -18,7 +18,7 @@ import 'app_backend.dart';
 import 'app_logger.dart';
 import 'storage_paths.dart';
 import '../fonts/custom_font_store.dart';
-import '../rust/rust_initialization.dart';
+import 'rust_initialization.dart';
 
 const _windowsPicturesKnownFolderId = '{33E28130-4E1E-4676-835A-98395C3BC3BB}';
 
@@ -27,7 +27,7 @@ String interfaceLanguageForLocale(Locale locale) =>
 
 class RustBackend
     implements AppBackend, SyncScheduleBackend, SyncHistoryBackend {
-  RustBackend._(this._storage, this._logger, this._libraryRoot);
+  RustBackend._(this._storage, this._logger, this._libraryRoot, this._isolated);
 
   static const _sessionTokenKey = 'nintendo.session_token';
   static const _accountTokensKey = 'nintendo.account_tokens.v1';
@@ -36,6 +36,7 @@ class RustBackend
   final FlutterSecureStorage _storage;
   final AppLogger _logger;
   final String _libraryRoot;
+  final bool _isolated;
 
   LoginChallenge? _pendingLogin;
   final Map<String, CoralSession> _coralSessions = {};
@@ -45,11 +46,17 @@ class RustBackend
     FlutterSecureStorage? storage,
     AppLogger? logger,
     String? applicationRoot,
+    bool isolated = false,
   }) async {
     await ensureRustLibInitialized();
-    final supportDirectory = await getApplicationSupportDirectory();
+    if (isolated && applicationRoot == null) {
+      throw ArgumentError('Isolated backend requires an explicit root');
+    }
     final libraryRoot =
-        applicationRoot ?? await resolveApplicationRoot(supportDirectory.path);
+        applicationRoot ??
+        await resolveApplicationRoot(
+          (await getApplicationSupportDirectory()).path,
+        );
     await rust_api.initCore(libraryRoot: libraryRoot);
     final appLogger = logger ?? AppLogger('$libraryRoot/logs/squid_album.log');
     await appLogger.ensureExists();
@@ -57,6 +64,7 @@ class RustBackend
       storage ?? const FlutterSecureStorage(),
       appLogger,
       libraryRoot,
+      isolated,
     );
     await backend.loadSettings();
     await appLogger.info('Application core initialized');
@@ -136,7 +144,9 @@ class RustBackend
       return persisted;
     }
     final defaults = AppSettings(
-      libraryPath: await resolveDefaultLibraryPath(_libraryRoot),
+      libraryPath: _isolated
+          ? '$_libraryRoot${Platform.pathSeparator}media'
+          : await resolveDefaultLibraryPath(_libraryRoot),
       theme: 'ocean',
       language: interfaceLanguageForLocale(PlatformDispatcher.instance.locale),
       galleryColumns: 4,
@@ -410,9 +420,7 @@ class RustBackend
 
   @override
   Future<void> discardTemporaryMedia(String path) async {
-    final root = Directory(
-      '${(await getTemporaryDirectory()).path}${Platform.pathSeparator}squid_album_video_processing',
-    ).absolute.path;
+    final root = (await _videoProcessingDirectory()).absolute.path;
     final candidate = File(path).absolute.path;
     final normalizedRoot = Platform.isWindows ? root.toLowerCase() : root;
     final normalizedCandidate = Platform.isWindows
@@ -431,12 +439,16 @@ class RustBackend
     String prefix,
     String extension,
   ) async {
-    final root = Directory(
-      '${(await getTemporaryDirectory()).path}${Platform.pathSeparator}squid_album_video_processing',
-    );
+    final root = await _videoProcessingDirectory();
     await root.create(recursive: true);
     return '${root.path}${Platform.pathSeparator}$prefix-${DateTime.now().microsecondsSinceEpoch}.$extension';
   }
+
+  Future<Directory> _videoProcessingDirectory() async => Directory(
+    _isolated
+        ? '$_libraryRoot${Platform.pathSeparator}video_processing'
+        : '${(await getTemporaryDirectory()).path}${Platform.pathSeparator}squid_album_video_processing',
+  );
 
   Future<void> _runFfmpeg(List<String> arguments) async {
     final session = await FFmpegKit.executeWithArguments(arguments);
@@ -508,6 +520,7 @@ class RustBackend
       rust_api.renameGameTag(gameName: gameName, targetName: targetName);
 
   Future<LoginChallenge> _beginNintendoLogin({bool openBrowser = true}) async {
+    _requireAccountAccess();
     final challenge = await rust_api.createNintendoLoginChallenge(
       proxyUrl: settings.proxyUrl,
     );
@@ -533,6 +546,7 @@ class RustBackend
 
   @override
   Future<void> completeNintendoLogin(String callbackUrl) async {
+    _requireAccountAccess();
     final pending = _pendingLogin;
     if (pending == null) {
       throw StateError(
@@ -564,6 +578,7 @@ class RustBackend
 
   @override
   Future<bool> get isSignedIn async {
+    if (_isolated) return false;
     if ((await _readStoredAccountTokens()).isNotEmpty) return true;
     return (await _storage.read(key: _sessionTokenKey))?.isNotEmpty == true;
   }
@@ -577,6 +592,7 @@ class RustBackend
 
   @override
   Future<List<NintendoAccountProfile>> listNintendoAccounts() async {
+    if (_isolated) return const [];
     final tokens = await _readAccountTokens();
     final selected = await selectedNintendoAccountId;
     final accountIds = tokens.keys.toList(growable: false)
@@ -602,6 +618,7 @@ class RustBackend
 
   @override
   Future<String?> get selectedNintendoAccountId async {
+    if (_isolated) return null;
     final tokens = await _readAccountTokens();
     if (tokens.isEmpty) return null;
     final selected = await _storage.read(key: _selectedAccountKey);
@@ -613,6 +630,7 @@ class RustBackend
 
   @override
   Future<void> selectNintendoAccount(String accountId) async {
+    _requireAccountAccess();
     final tokens = await _readAccountTokens();
     if (!tokens.containsKey(accountId)) {
       throw StateError('Nintendo account is no longer available');
@@ -622,6 +640,7 @@ class RustBackend
 
   @override
   Future<void> removeNintendoAccount(String accountId) async {
+    _requireAccountAccess();
     final tokens = await _readAccountTokens();
     tokens.remove(accountId);
     _coralSessions.remove(accountId);
@@ -673,6 +692,7 @@ class RustBackend
   }
 
   Future<Map<String, String>> _readStoredAccountTokens() async {
+    _requireAccountAccess();
     final raw = await _storage.read(key: _accountTokensKey);
     if (raw == null || raw.isEmpty) return {};
     final decoded = jsonDecode(raw);
@@ -683,6 +703,7 @@ class RustBackend
   }
 
   Future<Map<String, String>> _readAccountTokens() async {
+    _requireAccountAccess();
     final tokens = await _readStoredAccountTokens();
     if (tokens.isNotEmpty) return tokens;
     final legacy = await _storage.read(key: _sessionTokenKey);
@@ -702,6 +723,7 @@ class RustBackend
   }
 
   Future<void> _writeAccountTokens(Map<String, String> tokens) async {
+    _requireAccountAccess();
     if (tokens.isEmpty) {
       await _storage.delete(key: _accountTokensKey);
       return;
@@ -710,6 +732,7 @@ class RustBackend
   }
 
   Future<Map<String, NintendoAccountProfile>> _readCachedProfiles() async {
+    _requireAccountAccess();
     final raw = await _storage.read(key: _accountProfilesKey);
     if (raw == null || raw.isEmpty) return {};
     dynamic decoded;
@@ -749,6 +772,7 @@ class RustBackend
   Future<void> _writeCachedProfiles(
     Map<String, NintendoAccountProfile> profiles,
   ) async {
+    _requireAccountAccess();
     if (profiles.isEmpty) {
       await _storage.delete(key: _accountProfilesKey);
       return;
@@ -781,6 +805,7 @@ class RustBackend
 
   @override
   Future<SyncSummary> syncNintendoAlbum() async {
+    _requireAccountAccess();
     final tokens = await _readAccountTokens();
     final accountId = await selectedNintendoAccountId;
     if (accountId == null || tokens[accountId] == null) {
@@ -875,9 +900,16 @@ class RustBackend
 
   @override
   Future<void> signOut() async {
+    _requireAccountAccess();
     _pendingLogin = null;
     final selected = await selectedNintendoAccountId;
     if (selected != null) await removeNintendoAccount(selected);
+  }
+
+  void _requireAccountAccess() {
+    if (_isolated) {
+      throw StateError('Nintendo account access disabled in CI diagnostics');
+    }
   }
 }
 

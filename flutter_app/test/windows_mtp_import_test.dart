@@ -14,7 +14,7 @@ void main() {
       cleanPowerShellError(raw),
       'Game folder disappeared from the Nintendo Album: 喷射战士3',
     );
-  });
+  }, tags: 'common');
 
   test('leaves plain PowerShell errors readable', () {
     expect(
@@ -23,12 +23,11 @@ void main() {
       ),
       'Nintendo media device disconnected: Nintendo Switch 2',
     );
-  });
+  }, tags: 'common');
 
   test(
-    'PowerShell 5.1 reads Nintendo selection JSON as strict UTF-8',
+    '[Windows] PowerShell 5.1 reads Nintendo selection JSON as strict UTF-8',
     () async {
-      if (!Platform.isWindows) return;
       final directory = await Directory.systemTemp.createTemp('mtp_json_test_');
       addTearDown(() => directory.delete(recursive: true));
       final selection = File('${directory.path}\\selection.json');
@@ -77,5 +76,7 @@ Write-Output (\$document.entries | ConvertTo-Json -Compress)
       expect(decoded['gameName'], 'ゼルダ無双 封印戦記');
       expect(decoded['fileName'], '2025122612345601.jpg');
     },
+    tags: 'platform-windows',
+    skip: Platform.isWindows ? false : 'Requires Windows PowerShell 5.1',
   );
 }

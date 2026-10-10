@@ -16,12 +16,12 @@ permissions:
 
 jobs:
   validate:
-    name: Validate release version
+    name: Resolve and validate the exact release tag
     runs-on: windows-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
-      build_number: ${{ steps.build_number.outputs.value }}
+      sha: ${{ steps.commit.outputs.sha }}
     steps:
       - name: Resolve release reference
         id: version
@@ -31,13 +31,9 @@ jobs:
           MANUAL_TAG: ${{ inputs.tag }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          $tag = if ($env:EVENT_NAME -eq 'workflow_dispatch') {
-            $env:MANUAL_TAG
-          } else {
-            $env:PUSH_TAG
-          }
+          $tag = if ($env:EVENT_NAME -eq 'workflow_dispatch') { $env:MANUAL_TAG } else { $env:PUSH_TAG }
           if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
-            throw "Release tag must use vMAJOR.MINOR.PATCH: $tag"
+            throw 'Release tag must use vMAJOR.MINOR.PATCH.'
           }
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "version=$($tag.Substring(1))" >> $env:GITHUB_OUTPUT
@@ -45,170 +41,94 @@ jobs:
         with:
           ref: ${{ steps.version.outputs.tag }}
           fetch-depth: 0
-      - name: Verify app, Rust, and tag versions
+      - name: Pin the release tag commit
+        id: commit
         shell: pwsh
-        working-directory: flutter_app
-        run: .\tool\validate_release_version.ps1 -Version "${{ steps.version.outputs.version }}" -ReleaseTag "${{ steps.version.outputs.tag }}"
-      - name: Read Flutter build number
-        id: build_number
-        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          EVENT_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          $manifest = Get-Content -Raw flutter_app/pubspec.yaml
-          if ($manifest -notmatch '(?m)^version:\s*\d+\.\d+\.\d+\+(\d+)\s*$') {
-            throw 'Flutter pubspec.yaml must declare a numeric build number.'
-          }
-          "value=$($Matches[1])" >> $env:GITHUB_OUTPUT
+          $sha = git rev-parse HEAD
+          $tagSha = git rev-parse "refs/tags/$env:RELEASE_TAG^{commit}"
+          if ($LASTEXITCODE -ne 0 -or $sha -ne $tagSha) { throw 'Release tag does not resolve to the checkout commit.' }
+          if ($env:EVENT_NAME -eq 'push' -and $sha -ne $env:EVENT_SHA) { throw 'Release tag moved after the push event.' }
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+      - name: Verify source and release tag versions
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: ./flutter_app/tool/validate_release_version.ps1 -Version $env:RELEASE_VERSION -ReleaseTag $env:RELEASE_TAG
 
-  windows:
-    name: Build Windows packages
+  platforms:
+    name: Validate, build, and smoke all native platforms
     needs: validate
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.validate.outputs.tag }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-          components: clippy, rustfmt
-      - name: Install Flutter Rust Bridge code generator
-        shell: pwsh
-        run: cargo install flutter_rust_bridge_codegen --version 2.13.0 --locked
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.47.6
-          channel: stable
-          cache: true
-      - name: Install Inno Setup
-        run: choco install innosetup --yes --no-progress
-      - name: Build Flutter Windows release directory
-        shell: pwsh
-        working-directory: flutter_app
-        run: flutter build windows --release --build-name "${{ needs.validate.outputs.version }}" --build-number "${{ needs.validate.outputs.build_number }}"
-      - name: Build Windows directory
-        shell: pwsh
-        working-directory: flutter_app
-        env:
-          GITHUB_REF_TYPE: tag
-          GITHUB_REF_NAME: ${{ needs.validate.outputs.tag }}
-        run: .\tool\package_windows.ps1 -Version "${{ needs.validate.outputs.version }}" -SkipTests -UseExistingFlutterBuild
-      - name: Build Inno Setup installer
-        shell: pwsh
-        working-directory: flutter_app
-        run: .\tool\package_inno.ps1 -PackageDirectory "..\dist\NSOAlbum-Windows-x64-${{ needs.validate.outputs.version }}" -Version "${{ needs.validate.outputs.version }}"
-      - name: Upload Windows packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-release
-          if-no-files-found: error
-          path: |
-            dist/NSOAlbum-Windows-x64-${{ needs.validate.outputs.version }}
-            dist/installers/NSOAlbum-${{ needs.validate.outputs.version }}-Setup.exe
-
-  macos-arm64:
-    name: Build macOS Apple Silicon DMG
-    needs: validate
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.validate.outputs.tag }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.47.6
-          channel: stable
-          cache: true
-      - name: Resolve dependencies
-        working-directory: flutter_app
-        run: flutter pub get
-      - name: Install native Rust target
-        run: rustup target add aarch64-apple-darwin
-      - name: Configure Flutter for arm64-only release
-        run: flutter config --enable-macos-arm64-only
-      - name: Build arm64 app bundle without signing
-        working-directory: flutter_app
-        env:
-          ARCHS: arm64
-          ONLY_ACTIVE_ARCH: "YES"
-          CODE_SIGNING_ALLOWED: "NO"
-          CARGO_BUILD_TARGET: aarch64-apple-darwin
-          CARGOKIT_DARWIN_ARCHS: arm64
-        run: |
-          if [ "$(uname -m)" != "arm64" ]; then
-            echo "macos-15 runner must be Apple Silicon for this build." >&2
-            exit 1
-          fi
-          flutter build macos --release --build-name "${{ needs.validate.outputs.version }}" --build-number "${{ needs.validate.outputs.build_number }}"
-      - name: Verify arm64 app and create DMG
-        shell: bash
-        working-directory: flutter_app
-        env:
-          VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          APP="build/macos/Build/Products/Release/NSOAlbum.app"
-          test -d "$APP"
-          EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
-          ARCHS_FOUND=$(lipo -archs "$APP/Contents/MacOS/$EXECUTABLE")
-          if [ "$ARCHS_FOUND" != "arm64" ]; then
-            echo "Expected an arm64-only app binary; got: $ARCHS_FOUND" >&2
-            exit 1
-          fi
-          mkdir -p ../dist
-          hdiutil create \
-            -volname "NSOAlbum" \
-            -srcfolder "$APP" \
-            -ov \
-            -format UDZO \
-            "../dist/NSOAlbum-macOS-arm64-${VERSION}.dmg"
-      - name: Upload macOS DMG
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-arm64-release
-          if-no-files-found: error
-          path: dist/NSOAlbum-macOS-arm64-${{ needs.validate.outputs.version }}.dmg
+    uses: ./.github/workflows/native-validation.yml
+    with:
+      ref: ${{ needs.validate.outputs.sha }}
+      release: true
+      release_tag: ${{ needs.validate.outputs.tag }}
 
   publish:
-    name: Publish GitHub Release
+    name: Publish only after every platform gate succeeds
     needs:
       - validate
-      - windows
-      - macos-arm64
+      - platforms
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.validate.outputs.tag }}
+          ref: ${{ needs.validate.outputs.sha }}
+          fetch-depth: 0
+      - name: Refuse publication if the release tag moved
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          EXPECTED_SHA: ${{ needs.validate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$EXPECTED_SHA"
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
-          pattern: "*-release"
+          pattern: native-*
           merge-multiple: true
-      - name: Collect release assets
+      - name: Collect exactly the installer and two architecture DMGs
         shell: bash
         env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          mkdir -p upload
-          find release-assets -type f \
-            \( -name "NSOAlbum-${VERSION}-Setup.exe" \
-               -o -name "NSOAlbum-macOS-arm64-${VERSION}.dmg" \) \
-            -exec cp {} upload/ \;
-          test "$(find upload -maxdepth 1 -type f | wc -l)" -eq 2
+          set -euo pipefail
+          mkdir upload
+          for name in \
+            "NSOAlbum-${VERSION}-Setup.exe" \
+            "NSOAlbum-macOS-arm64-${VERSION}.dmg" \
+            "NSOAlbum-macOS-x64-${VERSION}.dmg"; do
+            mapfile -t matches < <(find release-assets -type f -name "$name")
+            test "${#matches[@]}" -eq 1
+            test -s "${matches[0]}"
+            cp "${matches[0]}" "upload/$name"
+          done
+          (cd upload && sha256sum ./* > SHA256SUMS.txt)
       - name: Publish stable release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.validate.outputs.tag }}
+          target_commitish: ${{ needs.validate.outputs.sha }}
           name: NSOAlbum ${{ needs.validate.outputs.version }}
           generate_release_notes: true
           body: |
-            macOS package: Apple Silicon arm64 only. The DMG is unsigned and not notarized; macOS Gatekeeper may require manually allowing the app on first launch.
+            macOS packages are provided separately for Apple Silicon (arm64) and Intel (x64). They are ad-hoc signed for integrity, not Developer ID signed or notarized. Gatekeeper may require manually allowing the app on first launch.
 
-            Windows updates download the Inno Setup asset and verify it against the SHA-256 digest exposed by the GitHub Releases API.
+            All three native builds must pass Rust checks, Dart analysis, the complete Flutter test suite, and isolated packaged-app smoke tests before publication. macOS DMGs are also mounted and smoke-tested.
+
+            Windows updates verify the Inno Setup installer using the SHA-256 digest exposed by the official GitHub Releases API. SHA256SUMS.txt is included for manual verification.
           files: |
             upload/*-Setup.exe
             upload/*.dmg
+            upload/SHA256SUMS.txt

@@ -16,4 +16,10 @@ Thanks for helping improve NSOAlbum (鱿型相册 in Simplified Chinese). Please
 
 `flutter_app/pubspec.yaml` is the application version source. Keep `rust_core/Cargo.toml` on the same semantic version. Release tags use `v<major>.<minor>.<patch>` and must match both manifests; release automation rejects mismatches. Increment the Flutter build number for every distributable build and update the changelog.
 
-Only maintainers create stable release tags. GitHub Actions produces a Windows runtime directory and Inno Setup installer, plus an Apple Silicon arm64 macOS DMG. ZIP release packages are not produced. macOS builds are currently unsigned and not notarized.
+Only maintainers create stable release tags. The exact release commit must pass
+the shared [native validation gates](docs/TESTING.md) on Windows x64, macOS
+arm64 and macOS Intel x64. Platform-only tests must explicitly skip on other
+hosts with a reason; never return early and count unexecuted assertions as
+passing. CI publishes a Windows runtime directory and Inno Setup installer, plus
+separate arm64/x64 macOS DMGs. ZIP release packages are not produced. macOS
+builds are non-sandboxed and ad-hoc signed, not Developer ID signed or notarized.

@@ -28,6 +28,9 @@ $dart = $dartCommand.Source
     --stop-on-error `
     --skip-fvm-install `
     --no-deps-check
+if ($LASTEXITCODE -ne 0) {
+    throw "Flutter/Rust bridge generation failed with exit code $LASTEXITCODE."
+}
 
 $generated = Join-Path $projectRoot 'lib\src\rust\frb_generated.dart'
 $contents = Get-Content -Raw -LiteralPath $generated -Encoding UTF8

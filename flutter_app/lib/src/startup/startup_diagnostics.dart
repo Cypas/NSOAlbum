@@ -6,7 +6,8 @@ import 'package:path_provider/path_provider.dart';
 import '../backend/app_logger.dart';
 import '../backend/storage_paths.dart';
 import '../rust/bridge.dart' as rust_api;
-import '../rust/rust_initialization.dart';
+import '../backend/rust_initialization.dart';
+import 'ci_smoke_contract.dart';
 import 'startup_options.dart';
 
 class StartupDiagnostics {
@@ -24,6 +25,24 @@ class StartupDiagnostics {
 
   static Future<StartupDiagnostics> open(StartupOptions options) async {
     String applicationRoot;
+    if (options.ciSmokeRoot != null) {
+      await CiSmokeRoot.claim(
+        options.ciSmokeRoot!,
+        reopen: options.ciSmokeScenario == 'reopen',
+      );
+      applicationRoot = options.ciSmokeRoot!;
+      final diagnostics = StartupDiagnostics(
+        options: options,
+        applicationRoot: applicationRoot,
+        logger: AppLogger(_join(applicationRoot, 'logs', 'ci-smoke.log')),
+      );
+      await diagnostics.logger.ensureExists();
+      await diagnostics.phase(
+        'ci-smoke-root-selected',
+        options.ciSmokeScenario,
+      );
+      return diagnostics;
+    }
     try {
       final support = await getApplicationSupportDirectory();
       await ensureRustLibInitialized();

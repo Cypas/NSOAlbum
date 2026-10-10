@@ -7319,76 +7319,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             const SizedBox(height: 16),
             Card(
-              key: const Key('about-links-card'),
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      context.l10n.select(zh: '应用与社区', en: 'App & community'),
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 10,
-                      runSpacing: 10,
-                      children: [
-                        if (Platform.isWindows &&
-                            widget.onCheckForUpdates != null)
-                          OutlinedButton.icon(
-                            key: const Key('check-app-updates'),
-                            onPressed: widget.onCheckForUpdates,
-                            icon: const Icon(Icons.system_update_alt_rounded),
-                            label: Text(
-                              context.l10n.select(
-                                zh: '检查更新',
-                                en: 'Check for updates',
-                              ),
-                            ),
-                          ),
-                        OutlinedButton.icon(
-                          key: const Key('about-github-link'),
-                          onPressed: () => _openAboutLink(
-                            'https://github.com/Cypas/NSOAlbum',
-                          ),
-                          icon: const Icon(Icons.code_rounded),
-                          label: Text(
-                            context.l10n.select(
-                              zh: 'GitHub 仓库',
-                              en: 'GitHub repository',
-                            ),
-                          ),
-                        ),
-                        OutlinedButton.icon(
-                          key: const Key('about-feedback-link'),
-                          onPressed: () =>
-                              _openAboutLink('https://qm.qq.com/q/wXB8g8pxkI'),
-                          icon: const Icon(Icons.forum_outlined),
-                          label: Text(
-                            context.l10n.select(
-                              zh: '软件反馈群',
-                              en: 'Feedback group',
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (widget.updateStatusText != null) ...[
-                      const SizedBox(height: 10),
-                      Text(
-                        widget.updateStatusText!,
-                        key: const Key('about-latest-version'),
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Card(
-              key: const Key('about-author-card'),
+              key: const Key('about-card'),
               child: Padding(
                 padding: const EdgeInsets.all(20),
                 child: Row(
@@ -7421,7 +7352,10 @@ class _SettingsPageState extends State<SettingsPage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            context.l10n.select(zh: '软件作者', en: 'Author'),
+                            context.l10n.select(
+                              zh: '关于鱿型相册',
+                              en: 'About $appEnglishName',
+                            ),
                             style: Theme.of(context).textTheme.titleMedium,
                           ),
                           const SizedBox(height: 6),
@@ -7453,22 +7387,62 @@ class _SettingsPageState extends State<SettingsPage> {
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                           ),
+                          if (widget.updateStatusText != null) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              widget.updateStatusText!,
+                              key: const Key('about-latest-version'),
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ],
                         ],
                       ),
                     ),
                     const SizedBox(width: 20),
-                    OutlinedButton.icon(
-                      key: const Key('about-xiaoyouyou-link'),
-                      onPressed: () => _openAboutLink(
-                        'https://qun.qq.com/qunpro/robot/qunshare?robot_appid=102083290&robot_uin=3889005657',
-                      ),
-                      icon: const Icon(Icons.smart_toy_outlined),
-                      label: Text(
-                        context.l10n.select(
-                          zh: '小鱿鱿bot',
-                          en: 'Xiao Youyou Bot',
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        if (Platform.isWindows &&
+                            widget.onCheckForUpdates != null)
+                          OutlinedButton.icon(
+                            key: const Key('check-app-updates'),
+                            onPressed: widget.onCheckForUpdates,
+                            icon: const Icon(Icons.system_update_alt_rounded),
+                            label: Text(
+                              context.l10n.select(
+                                zh: '检查更新',
+                                en: 'Check for updates',
+                              ),
+                            ),
+                          ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          key: const Key('about-github-link'),
+                          onPressed: () => _openAboutLink(
+                            'https://github.com/Cypas/NSOAlbum',
+                          ),
+                          icon: const Icon(Icons.code_rounded),
+                          label: Text(
+                            context.l10n.select(
+                              zh: 'GitHub 仓库',
+                              en: 'GitHub repository',
+                            ),
+                          ),
                         ),
-                      ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          key: const Key('about-feedback-link'),
+                          onPressed: () =>
+                              _openAboutLink('https://qm.qq.com/q/wXB8g8pxkI'),
+                          icon: const Icon(Icons.forum_outlined),
+                          label: Text(
+                            context.l10n.select(
+                              zh: '软件反馈群',
+                              en: 'Feedback group',
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),

@@ -1,0 +1,404 @@
+name: Reusable platform validation
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact immutable commit SHA to validate
+        type: string
+        required: true
+      release:
+        description: Also produce the Windows Inno installer
+        type: boolean
+        default: false
+      release_tag:
+        description: Stable tag checked by the release version gate
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu:
+    name: Ubuntu Rust and Flutter validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Assert exact validation commit
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          test "$EXPECTED_SHA" != "" && [[ "$EXPECTED_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.6
+          channel: stable
+          cache: true
+      - name: Resolve Flutter dependencies
+        working-directory: flutter_app
+        run: flutter pub get
+      - name: Rust formatting, Clippy, and unit tests
+        working-directory: rust_core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --lib 2>&1 | tee "$RUNNER_TEMP/rust-tests.log"
+      - name: Dart analysis and full Flutter test suite
+        working-directory: flutter_app
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart analyze
+          flutter test --machine --no-pub > "$RUNNER_TEMP/flutter-tests.jsonl"
+      - name: Summarize actual test totals
+        if: always()
+        shell: pwsh
+        run: |
+          $rust = Join-Path $env:RUNNER_TEMP 'rust-tests.log'
+          $flutter = Join-Path $env:RUNNER_TEMP 'flutter-tests.jsonl'
+          ./flutter_app/tool/ci_native.ps1 -RustLog $rust -FlutterMachineLog $flutter -ReportsDirectory native-reports
+      - name: Upload sanitized validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-ubuntu
+          if-no-files-found: ignore
+          retention-days: 14
+          path: native-reports/test-counts.json
+
+  secrets:
+    name: Scan repository history for secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Assert exact scan commit
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: gitleaks/gitleaks-action@v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  native:
+    name: Native ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            runner: windows-latest
+            architecture: X64
+            target: x86_64-pc-windows-msvc
+            mac_arch: ""
+          - platform: macos-arm64
+            runner: macos-15
+            architecture: Arm64
+            target: aarch64-apple-darwin
+            mac_arch: arm64
+          - platform: macos-x64
+            runner: macos-15-intel
+            architecture: X64
+            target: x86_64-apple-darwin
+            mac_arch: x64
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Assert exact native validation commit
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+        run: |
+          if ($env:EXPECTED_SHA -notmatch '^[0-9a-fA-F]{40}$' -or (git rev-parse HEAD) -ne $env:EXPECTED_SHA) {
+            throw 'Native validation checkout is not the requested immutable commit.'
+          }
+      - name: Assert native Windows host architecture
+        if: matrix.platform == 'windows-x64'
+        env:
+          EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          $os = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+          $process = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+          if ($os -ne $env:EXPECTED_ARCHITECTURE -or $process -ne $env:EXPECTED_ARCHITECTURE) {
+            throw "Expected native $env:EXPECTED_ARCHITECTURE runner; OS=$os process=$process"
+          }
+      - name: Assert native macOS host architecture
+        if: matrix.mac_arch != ''
+        shell: bash
+        env:
+          EXPECTED_ARCHITECTURE: ${{ matrix.mac_arch }}
+        run: |
+          set -euo pipefail
+          actual="$(uname -m)"
+          expected="$([[ "$EXPECTED_ARCHITECTURE" == arm64 ]] && echo arm64 || echo x86_64)"
+          test "$actual" = "$expected" || { echo "Expected native $expected runner; got $actual" >&2; exit 1; }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy, rustfmt
+      - name: Assert Rust host matches the target
+        if: matrix.platform == 'windows-x64'
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          $hostLine = rustc -vV | Select-String '^host:'
+          if ($hostLine.ToString().Trim() -ne "host: $env:EXPECTED_TARGET") {
+            throw "Rust toolchain is not native: $hostLine"
+          }
+      - name: Assert Rust macOS host matches the target
+        if: matrix.mac_arch != ''
+        shell: bash
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          actual="$(rustc -vV | sed -n 's/^host: //p')"
+          test "$actual" = "$EXPECTED_TARGET" || { echo "Expected native Rust target $EXPECTED_TARGET, got $actual" >&2; exit 1; }
+      - uses: subosito/flutter-action@v2
+        if: matrix.platform == 'windows-x64'
+        with:
+          flutter-version: 3.47.6
+          channel: stable
+          cache: true
+      - uses: subosito/flutter-action@v2
+        if: matrix.mac_arch != ''
+        with:
+          flutter-version: 3.47.6
+          channel: stable
+          cache: true
+      - name: Resolve Flutter dependencies
+        working-directory: flutter_app
+        run: |
+          flutter pub get
+          if ($LASTEXITCODE -ne 0) { throw 'flutter pub get failed.' }
+      - name: Install pinned Flutter Rust Bridge generator
+        run: |
+          cargo install flutter_rust_bridge_codegen --version 2.13.0 --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Bridge generator installation failed.' }
+      - name: Regenerate the bridge before validation
+        working-directory: flutter_app
+        run: ./tool/generate_bridge.ps1
+      - name: Read and validate source versions
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          $manifest = Get-Content -LiteralPath flutter_app/pubspec.yaml -Raw
+          if ($manifest -notmatch '(?m)^version:\s*(\d+\.\d+\.\d+)\+(\d+)\s*$') {
+            throw 'pubspec.yaml must declare stable SemVer+build.'
+          }
+          $version = $Matches[1]
+          $build = $Matches[2]
+          ./flutter_app/tool/validate_release_version.ps1 -Version $version -ReleaseTag $env:RELEASE_TAG
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "build=$build" >> $env:GITHUB_OUTPUT
+      - name: Rust formatting, Clippy, and unit tests
+        working-directory: rust_core
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Rust formatting failed.' }
+          cargo clippy --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Rust Clippy failed.' }
+          cargo test --lib 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'rust-tests.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Rust unit tests failed.' }
+      - name: Dart analysis and full Flutter test suite
+        working-directory: flutter_app
+        run: |
+          dart analyze
+          if ($LASTEXITCODE -ne 0) { throw 'Dart analysis failed.' }
+          flutter test --machine --no-pub 1> (Join-Path $env:RUNNER_TEMP 'flutter-tests.jsonl') 2> (Join-Path $env:RUNNER_TEMP 'flutter-tests-stderr.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Flutter tests failed; see structured test summary.' }
+      - name: Verify and summarize actual test totals
+        if: always()
+        run: |
+          $rust = Join-Path $env:RUNNER_TEMP 'rust-tests.log'
+          $flutter = Join-Path $env:RUNNER_TEMP 'flutter-tests.jsonl'
+          ./flutter_app/tool/ci_native.ps1 -RustLog $rust -FlutterMachineLog $flutter -ReportsDirectory native-reports
+      - name: Build fresh Windows release directory
+        if: matrix.platform == 'windows-x64'
+        working-directory: flutter_app
+        env:
+          GITHUB_REF_TYPE: ${{ inputs.release && 'tag' || 'branch' }}
+          GITHUB_REF_NAME: ${{ inputs.release_tag }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ./tool/package_windows.ps1 -Version $env:PACKAGE_VERSION -SkipTests
+          $package = [System.IO.Path]::GetFullPath("../dist/NSOAlbum-Windows-x64-$env:PACKAGE_VERSION")
+          foreach ($name in @(
+            'NSOAlbum.exe', 'flutter_windows.dll', 'squid_album_core.dll',
+            'ffmpeg_kit_flutter_new_video_plugin.dll', 'libffmpegkit.dll',
+            'libmpv-2.dll', 'media_kit_video_plugin.dll',
+            'media_kit_libs_windows_video_plugin.dll', 'data/app.so', 'data/icudtl.dat'
+          )) {
+            $file = Join-Path $package $name
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or (Get-Item -LiteralPath $file).Length -eq 0) {
+              throw "Required Windows runtime file is missing or empty: $name"
+            }
+          }
+          foreach ($family in @('avcodec-*.dll', 'avformat-*.dll', 'avutil-*.dll', 'swresample-*.dll', 'swscale-*.dll')) {
+            $files = @(Get-ChildItem -LiteralPath $package -Filter $family -File)
+            if ($files.Count -ne 1 -or $files[0].Length -eq 0) {
+              throw "Required FFmpeg runtime family is missing, empty, or ambiguous: $family"
+            }
+          }
+          $assetRoot = Join-Path $package 'data/flutter_assets'
+          if (-not (Test-Path -LiteralPath $assetRoot -PathType Container) -or
+              @(Get-ChildItem -LiteralPath $assetRoot -File -Recurse).Count -eq 0) {
+            throw 'Required Flutter asset directory is missing or empty.'
+          }
+          $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath '../rust_core/target/release/squid_album_core.dll').Hash
+          $packageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $package 'squid_album_core.dll')).Hash
+          if ($sourceHash -ne $packageHash) { throw 'Packaged Rust DLL does not match the fresh source build.' }
+      - name: Smoke test the packaged Windows executable
+        if: matrix.platform == 'windows-x64'
+        working-directory: flutter_app
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $executable = (Resolve-Path -LiteralPath "../dist/NSOAlbum-Windows-x64-$env:PACKAGE_VERSION/NSOAlbum.exe").Path
+          $reports = [System.IO.Path]::GetFullPath('../native-reports/smoke')
+          dart run tool/run_release_smoke.dart --launch-app $executable --reports-dir $reports
+          if ($LASTEXITCODE -ne 0) { throw 'Windows packaged native smoke failed.' }
+      - name: Prove Windows smoke detects injected native failures
+        if: matrix.platform == 'windows-x64'
+        working-directory: flutter_app
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $executable = (Resolve-Path -LiteralPath "../dist/NSOAlbum-Windows-x64-$env:PACKAGE_VERSION/NSOAlbum.exe").Path
+          foreach ($fault in @('rust-initialization', 'video-first-frame', 'trim')) {
+            $reports = [System.IO.Path]::GetFullPath("../native-reports/faults/$fault")
+            dart run tool/run_release_smoke.dart --launch-app $executable --reports-dir $reports --fault $fault
+            $faultExitCode = $LASTEXITCODE
+            if ($faultExitCode -eq 0) { throw "Smoke incorrectly passed injected failure: $fault" }
+            $reportFile = Join-Path $reports 'native-normal.json'
+            if (-not (Test-Path -LiteralPath $reportFile -PathType Leaf)) {
+              throw "Injected failure did not produce a native report: $fault"
+            }
+            $report = Get-Content -LiteralPath $reportFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            $failedSteps = @($report.steps | Where-Object { $_.name -eq $fault -and $_.status -eq 'failed' })
+            if ($report.status -ne 'failed' -or $failedSteps.Count -ne 1) {
+              throw "Injected failure did not fail the requested native step: $fault"
+            }
+          }
+          exit 0
+      - name: Prove a missing packaged Rust DLL cannot pass smoke
+        if: matrix.platform == 'windows-x64'
+        working-directory: flutter_app
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $source = (Resolve-Path -LiteralPath "../dist/NSOAlbum-Windows-x64-$env:PACKAGE_VERSION").Path
+          $scratchRoot = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+          $scratch = [System.IO.Path]::GetFullPath((Join-Path $scratchRoot "missing-core-$([guid]::NewGuid().ToString('N'))"))
+          if (-not $scratch.StartsWith("$scratchRoot$([System.IO.Path]::DirectorySeparatorChar)", [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Missing-DLL fixture is outside the runner temporary directory.'
+          }
+          New-Item -ItemType Directory -Path $scratch | Out-Null
+          foreach ($item in Get-ChildItem -LiteralPath $source) {
+            if ($item.Name -ne 'squid_album_core.dll') {
+              Copy-Item -LiteralPath $item.FullName -Destination $scratch -Recurse
+            }
+          }
+          if (Test-Path -LiteralPath (Join-Path $scratch 'squid_album_core.dll')) {
+            throw 'Missing-DLL fixture unexpectedly contains the Rust library.'
+          }
+          $reports = [System.IO.Path]::GetFullPath('../native-reports/faults/missing-core-dll')
+          dart run tool/run_release_smoke.dart --launch-app (Join-Path $scratch 'NSOAlbum.exe') --reports-dir $reports --timeout-seconds 60
+          if ($LASTEXITCODE -eq 0) { throw 'Smoke incorrectly passed with the packaged Rust DLL missing.' }
+          $aggregate = Get-Content -LiteralPath (Join-Path $reports 'report.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($aggregate.status -ne 'failed' -or @($aggregate.failures | Where-Object { $_ -match 'timeout|exceeded' }).Count -gt 0) {
+            throw 'Missing-DLL smoke must fail promptly and produce a failed aggregate report.'
+          }
+          $normalReport = Join-Path $reports 'native-normal.json'
+          if (Test-Path -LiteralPath $normalReport) {
+            $normal = Get-Content -LiteralPath $normalReport -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($normal.status -ne 'failed') { throw 'Missing-DLL native report incorrectly passed.' }
+          }
+          exit 0
+      - name: Install Inno Setup for release
+        if: matrix.platform == 'windows-x64' && inputs.release
+        run: |
+          choco install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed.' }
+      - name: Build Windows installer after smoke passes
+        if: matrix.platform == 'windows-x64' && inputs.release
+        working-directory: flutter_app
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ./tool/package_inno.ps1 -PackageDirectory "../dist/NSOAlbum-Windows-x64-$env:PACKAGE_VERSION" -Version $env:PACKAGE_VERSION
+          $installer = "../dist/installers/NSOAlbum-$env:PACKAGE_VERSION-Setup.exe"
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf) -or (Get-Item -LiteralPath $installer).Length -eq 0) {
+            throw 'Expected versioned Inno installer is missing or empty.'
+          }
+      - name: Build and smoke test macOS app and mounted DMG
+        if: matrix.mac_arch != ''
+        working-directory: flutter_app
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          PACKAGE_BUILD: ${{ steps.version.outputs.build }}
+          PACKAGE_ARCH: ${{ matrix.mac_arch }}
+        run: |
+          set -euo pipefail
+          wrong_arch="$([[ "$PACKAGE_ARCH" == arm64 ]] && echo x64 || echo arm64)"
+          if bash tool/package_macos.sh --architecture "$wrong_arch" --version "$PACKAGE_VERSION" --build-number "$PACKAGE_BUILD" --reports ../native-reports/wrong-architecture; then
+            echo "Packaging architecture guard incorrectly accepted $wrong_arch on this runner" >&2
+            exit 1
+          fi
+          bash tool/package_macos.sh --architecture "$PACKAGE_ARCH" --version "$PACKAGE_VERSION" --build-number "$PACKAGE_BUILD" --reports ../native-reports/smoke
+      - name: Upload sanitized native reports even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-${{ matrix.platform }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            native-reports/test-counts.json
+            native-reports/**/report.json
+            native-reports/**/native-*.json
+            native-reports/**/sanitized*.log
+            native-reports/**/failure*.png
+            !native-reports/**/work/**
+      - name: Upload Windows binaries only after all native gates pass
+        if: success() && matrix.platform == 'windows-x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-windows-x64
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            dist/NSOAlbum-Windows-x64-${{ steps.version.outputs.version }}/
+            dist/installers/NSOAlbum-${{ steps.version.outputs.version }}-Setup.exe
+      - name: Upload macOS DMG only after both smoke runs pass
+        if: success() && matrix.mac_arch != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.platform }}
+          if-no-files-found: error
+          retention-days: 7
+          path: dist/NSOAlbum-macOS-${{ matrix.mac_arch }}-${{ steps.version.outputs.version }}.dmg

@@ -20,13 +20,20 @@ import 'src/state/settings_controller.dart';
 import 'src/state/sync_controller.dart';
 import 'src/startup/startup_diagnostics.dart';
 import 'src/startup/startup_options.dart';
+import 'src/ui/ci_smoke_page.dart';
 import 'src/ui/home_shell.dart';
 import 'src/ui/font_families.dart';
 import 'src/ui/video_runtime.dart';
 import 'src/ui/video_thumbnail.dart';
 
 Future<void> main(List<String> arguments) async {
-  final startupOptions = StartupOptions.parse(arguments);
+  late final StartupOptions startupOptions;
+  try {
+    startupOptions = StartupOptions.parse(arguments);
+  } catch (error) {
+    stderr.writeln('NSOAlbum startup arguments rejected: $error');
+    exit(64);
+  }
   WidgetsFlutterBinding.ensureInitialized();
   StartupDiagnostics? diagnostics;
   try {
@@ -35,15 +42,21 @@ Future<void> main(List<String> arguments) async {
     await diagnostics.phase(
       'process-start',
       'exe=${Platform.resolvedExecutable}; os=${Platform.operatingSystemVersion}; '
-          'args=${arguments.where((arg) => arg.startsWith('--safe-mode')).join(',')}',
+          'args=${arguments.where((arg) => arg.startsWith('--safe-mode') || arg.startsWith('--ci-smoke')).join(',')}',
     );
   } catch (_) {
+    if (startupOptions.ciSmoke) {
+      stderr.writeln('NSOAlbum refused isolated CI diagnostic root');
+      exit(1);
+    }
     // The regular backend logger will be created as soon as Rust initializes.
   }
   await diagnostics?.phase('flutter-binding-ready');
-  WindowsImeContextCoordinator.instance.start(
-    enabled: !startupOptions.disableIme && !startupOptions.safeMode,
-  );
+  if (!startupOptions.ciSmoke) {
+    WindowsImeContextCoordinator.instance.start(
+      enabled: !startupOptions.disableIme && !startupOptions.safeMode,
+    );
+  }
   await diagnostics?.phase(
     startupOptions.disableIme || startupOptions.safeMode
         ? 'ime-coordinator-disabled'
@@ -61,8 +74,9 @@ Future<void> main(List<String> arguments) async {
     backend = await RustBackend.open(
       logger: diagnostics?.logger,
       applicationRoot: diagnostics?.applicationRoot,
+      isolated: startupOptions.ciSmoke,
     ).timeout(const Duration(seconds: 30));
-    if (Platform.isWindows) {
+    if (Platform.isWindows && !startupOptions.ciSmoke) {
       final fontReport = await loadCustomFontFamilies(
         backend.settings.customFontPaths,
         language: backend.settings.language,
@@ -110,6 +124,25 @@ Future<void> main(List<String> arguments) async {
   } catch (error) {
     startupError = error;
     await diagnostics?.failure('rust-core-initialization', error);
+  }
+  if (startupOptions.ciSmoke) {
+    if (backend == null || diagnostics == null) {
+      stderr.writeln('NSOAlbum CI smoke core initialization failed');
+      exit(1);
+    }
+    runApp(
+      CiSmokeApp(
+        backend: backend,
+        options: startupOptions,
+        diagnostics: diagnostics,
+        gallery: SquidAlbumApp(
+          backend: backend,
+          startupOptions: startupOptions,
+          diagnostics: diagnostics,
+        ),
+      ),
+    );
+    return;
   }
   await diagnostics?.phase('run-app-start');
   runApp(
@@ -338,10 +371,12 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
         }
         if (Platform.isWindows &&
             !kDebugMode &&
+            !widget.startupOptions.ciSmoke &&
             !widget.startupOptions.safeMode) {
           unawaited(_checkForUpdates(automatic: true));
         }
-        if (!Platform.environment.containsKey('FLUTTER_TEST') &&
+        if (!widget.startupOptions.ciSmoke &&
+            !Platform.environment.containsKey('FLUTTER_TEST') &&
             !widget.startupOptions.disableVideoThumbnails &&
             !widget.startupOptions.safeMode) {
           unawaited(
@@ -459,6 +494,7 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
   }
 
   Future<void> _checkForUpdates({required bool automatic}) async {
+    if (widget.startupOptions.ciSmoke) return;
     final context = navigatorKey.currentContext;
     final backend = widget.backend;
     if (context == null || backend == null) return;
@@ -656,8 +692,9 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
             enableVideoFeatures: !widget.startupOptions.disableVideoThumbnails,
             enableMtpDetection: !widget.startupOptions.disableMtpDetection,
             startupDiagnostics: widget.diagnostics,
-            onCheckForUpdates: () => _checkForUpdates(automatic: false),
-            onInstallUpdate: _installUpdate,
+            onCheckForUpdates: widget.startupOptions.ciSmoke
+                ? null : () => _checkForUpdates(automatic: false),
+            onInstallUpdate: widget.startupOptions.ciSmoke ? null : _installUpdate,
             onRestartApplication:
                 widget.onRestartApplication ?? _restartApplication,
             latestReleaseVersion: latestReleaseVersion,

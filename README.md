@@ -46,7 +46,11 @@ cd flutter_app
 .\tool\generate_bridge.ps1
 ```
 
-Windows packaging scripts are documented in [docs/README.md](docs/README.md). GitHub Actions validates pull requests and creates Windows packages plus an Apple Silicon macOS DMG for version tags.
+Windows packaging scripts are documented in [docs/README.md](docs/README.md).
+[Testing and native release gates](docs/TESTING.md) distinguish portable tests,
+platform-specific tests and real packaged-app diagnostics. GitHub Actions
+validates Windows x64, macOS Apple Silicon arm64 and Intel x64 on their own
+native runners before version-tag publication.
 
 ## Releases and updates
 
@@ -58,7 +62,12 @@ application does not copy or delete legacy media during this detection. Releases
 from `0.2.9` onward publish only the canonical
 `NSOAlbum-<version>-Setup.exe` installer asset.
 
-macOS DMGs are currently unsigned and not notarized. Gatekeeper may require users to approve the app on first launch.
+macOS DMGs are distributed separately for arm64 and Intel x64, outside the App
+Sandbox, with ad-hoc integrity signatures. They are not Developer ID signed or
+notarized; Gatekeeper may require users to approve the app on first launch.
+Every platform must pass its full Rust/Flutter suite, real image/video playback,
+FFmpeg cover/duration, trim/merge, and isolated-library restart checks before
+publication. No real Nintendo credentials or personal media are used by CI.
 
 ## License and assets
 

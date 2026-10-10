@@ -51,102 +51,104 @@ void main() {
     expect(search.style?.fontFamilyFallback, appFontFallback);
   });
 
-  testWidgets(
-    'font management persists reorder and applies without restarting',
-    (tester) async {
-      if (!Platform.isWindows) return;
-      final backend = _FontSettingsBackend()..mediaItems = [];
-      final firstFont = File(
-        'assets/fonts/splatoon_web/Splatoon2-common-2LVXcHij.ttf',
-      ).absolute.path;
-      final secondFont = File(
-        'assets/fonts/splatoon_web/Splatoon2CHzh-level1-CUZXdiKS.ttf',
-      ).absolute.path;
-      backend.settings = AppSettings(
-        proxyUrl: backend.settings.proxyUrl,
-        libraryPath: backend.settings.libraryPath,
-        theme: backend.settings.theme,
-        language: backend.settings.language,
-        galleryColumns: backend.settings.galleryColumns,
-        galleryRows: backend.settings.galleryRows,
-        showNotePreview: backend.settings.showNotePreview,
-        showGameTag: backend.settings.showGameTag,
-        compactTagDisplay: backend.settings.compactTagDisplay,
-        autoPlayVideo: backend.settings.autoPlayVideo,
-        autoSyncOnLaunch: backend.settings.autoSyncOnLaunch,
-        closeBehavior: backend.settings.closeBehavior,
-        customFontPaths: [firstFont, secondFont],
-        syncPolicy: backend.settings.syncPolicy,
-      );
-      var restartCount = 0;
-      await tester.pumpWidget(
-        SquidAlbumApp(
-          backend: backend,
-          onRestartApplication: () async => restartCount++,
-        ),
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('设置').last);
-      await tester.pumpAndSettle();
-
-      final fontCard = find.byKey(const Key('font-management-card'));
-      await tester.ensureVisible(fontCard);
-      await tester.pumpAndSettle();
-      final ordering = tester.widget<ReorderableListView>(
-        find.byKey(const Key('custom-font-order')),
-      );
-      ordering.onReorderItem!(0, 1);
-      await tester.pumpAndSettle();
-      await tester.ensureVisible(find.byKey(const Key('apply-custom-fonts')));
-      await tester.runAsync(() async {
-        backend.fontSettingsSaved = Completer<void>();
-        await tester.tap(find.byKey(const Key('apply-custom-fonts')));
-        await backend.fontSettingsSaved!.future.timeout(
-          const Duration(seconds: 10),
+  group('[Windows]', () {
+    testWidgets(
+      'font management persists reorder and applies without restarting',
+      (tester) async {
+        final backend = _FontSettingsBackend()..mediaItems = [];
+        final firstFont = File(
+          'assets/fonts/splatoon_web/Splatoon2-common-2LVXcHij.ttf',
+        ).absolute.path;
+        final secondFont = File(
+          'assets/fonts/splatoon_web/Splatoon2CHzh-level1-CUZXdiKS.ttf',
+        ).absolute.path;
+        backend.settings = AppSettings(
+          proxyUrl: backend.settings.proxyUrl,
+          libraryPath: backend.settings.libraryPath,
+          theme: backend.settings.theme,
+          language: backend.settings.language,
+          galleryColumns: backend.settings.galleryColumns,
+          galleryRows: backend.settings.galleryRows,
+          showNotePreview: backend.settings.showNotePreview,
+          showGameTag: backend.settings.showGameTag,
+          compactTagDisplay: backend.settings.compactTagDisplay,
+          autoPlayVideo: backend.settings.autoPlayVideo,
+          autoSyncOnLaunch: backend.settings.autoSyncOnLaunch,
+          closeBehavior: backend.settings.closeBehavior,
+          customFontPaths: [firstFont, secondFont],
+          syncPolicy: backend.settings.syncPolicy,
         );
-      });
-      await tester.pumpAndSettle();
+        var restartCount = 0;
+        await tester.pumpWidget(
+          SquidAlbumApp(
+            backend: backend,
+            onRestartApplication: () async => restartCount++,
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('设置').last);
+        await tester.pumpAndSettle();
 
-      expect(backend.settings.customFontPaths, [secondFont, firstFont]);
-      expect(find.textContaining('字体已应用'), findsOneWidget);
-      expect(restartCount, 0);
-      expect(appFontFamily, startsWith('NSOAlbumCustomFont_'));
-      final appliedFamily = appFontFamily;
-      expect(
-        Theme.of(tester.element(fontCard)).textTheme.bodyMedium?.fontFamily,
-        appliedFamily,
-      );
-      expect(
-        Theme.of(tester.element(fontCard))
-            .textTheme
-            .bodyMedium
-            ?.fontFamilyFallback,
-        hasLength(1),
-      );
+        final fontCard = find.byKey(const Key('font-management-card'));
+        await tester.ensureVisible(fontCard);
+        await tester.pumpAndSettle();
+        final ordering = tester.widget<ReorderableListView>(
+          find.byKey(const Key('custom-font-order')),
+        );
+        ordering.onReorderItem!(0, 1);
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.byKey(const Key('apply-custom-fonts')));
+        await tester.runAsync(() async {
+          backend.fontSettingsSaved = Completer<void>();
+          await tester.tap(find.byKey(const Key('apply-custom-fonts')));
+          await backend.fontSettingsSaved!.future.timeout(
+            const Duration(seconds: 10),
+          );
+        });
+        await tester.pumpAndSettle();
 
-      await tester.ensureVisible(find.byKey(const Key('clear-custom-fonts')));
-      await tester.tap(find.byKey(const Key('clear-custom-fonts')));
-      await tester.pumpAndSettle();
-      await tester.ensureVisible(find.byKey(const Key('apply-custom-fonts')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('apply-custom-fonts')));
-      await tester.pumpAndSettle();
-      expect(backend.settings.customFontPaths, isEmpty);
-      expect(restartCount, 0);
-      expect(appFontFamily, 'Splatoon2');
-      expect(
-        Theme.of(tester.element(fontCard)).textTheme.bodyMedium?.fontFamily,
-        'Splatoon2',
-      );
-      expect(
-        Theme.of(tester.element(fontCard))
-            .textTheme
-            .bodyMedium
-            ?.fontFamilyFallback,
-        contains('Splatoon2ChzhLevel1'),
-      );
-    },
-  );
+        expect(backend.settings.customFontPaths, [secondFont, firstFont]);
+        expect(find.textContaining('字体已应用'), findsOneWidget);
+        expect(restartCount, 0);
+        expect(appFontFamily, startsWith('NSOAlbumCustomFont_'));
+        final appliedFamily = appFontFamily;
+        expect(
+          Theme.of(tester.element(fontCard)).textTheme.bodyMedium?.fontFamily,
+          appliedFamily,
+        );
+        expect(
+          Theme.of(tester.element(fontCard))
+              .textTheme
+              .bodyMedium
+              ?.fontFamilyFallback,
+          hasLength(1),
+        );
+
+        await tester.ensureVisible(find.byKey(const Key('clear-custom-fonts')));
+        await tester.tap(find.byKey(const Key('clear-custom-fonts')));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.byKey(const Key('apply-custom-fonts')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('apply-custom-fonts')));
+        await tester.pumpAndSettle();
+        expect(backend.settings.customFontPaths, isEmpty);
+        expect(restartCount, 0);
+        expect(appFontFamily, 'Splatoon2');
+        expect(
+          Theme.of(tester.element(fontCard)).textTheme.bodyMedium?.fontFamily,
+          'Splatoon2',
+        );
+        expect(
+          Theme.of(tester.element(fontCard))
+              .textTheme
+              .bodyMedium
+              ?.fontFamilyFallback,
+          contains('Splatoon2ChzhLevel1'),
+        );
+      },
+      tags: 'platform-windows',
+    );
+  }, skip: Platform.isWindows ? false : 'Requires Windows font management UI');
 
   test('selects the initial interface language from the system locale', () {
     expect(interfaceLanguageForLocale(const Locale('zh', 'TW')), 'zh');
@@ -1540,9 +1542,7 @@ void main() {
 
     expect(find.text('Settings'), findsWidgets);
     expect(backend.settings.language, 'en');
-    final settingsTheme = Theme.of(
-      tester.element(find.byKey(const Key('font-management-card'))),
-    );
+    final settingsTheme = Theme.of(tester.element(find.byType(SettingsPage)));
     expect(
       settingsTheme.textTheme.bodyMedium?.fontFamilyFallback,
       contains('Splatoon2JpLevel1'),
@@ -1577,7 +1577,7 @@ void main() {
     expect(backend.logOpened, isTrue);
   });
 
-  testWidgets('about section shows the author profile and feedback links', (
+  testWidgets('about section combines profile and community links', (
     tester,
   ) async {
     PackageInfo.setMockInitialValues(
@@ -1602,24 +1602,21 @@ void main() {
     if (Platform.isWindows) {
       expect(find.byKey(const Key('check-app-updates')), findsOneWidget);
     }
-    expect(find.byKey(const Key('about-xiaoyouyou-link')), findsOneWidget);
     expect(find.byKey(const Key('about-feedback-link')), findsOneWidget);
-    expect(find.byKey(const Key('about-links-card')), findsOneWidget);
-    expect(find.byKey(const Key('about-author-card')), findsOneWidget);
-    expect(
-      find.ancestor(
-        of: find.byKey(const Key('about-feedback-link')),
-        matching: find.byKey(const Key('about-links-card')),
-      ),
-      findsOneWidget,
-    );
-    expect(
-      find.ancestor(
-        of: find.byKey(const Key('about-xiaoyouyou-link')),
-        matching: find.byKey(const Key('about-author-card')),
-      ),
-      findsOneWidget,
-    );
+    final aboutCard = find.byKey(const Key('about-card'));
+    expect(aboutCard, findsOneWidget);
+    for (final content in [
+      find.text('Cypas_Nya'),
+      find.byKey(const Key('about-app-version')),
+      find.byKey(const Key('about-github-link')),
+      find.byKey(const Key('about-feedback-link')),
+      if (Platform.isWindows) find.byKey(const Key('check-app-updates')),
+    ]) {
+      expect(find.descendant(of: aboutCard, matching: content), findsOneWidget);
+    }
+    expect(find.byKey(const Key('about-links-card')), findsNothing);
+    expect(find.byKey(const Key('about-author-card')), findsNothing);
+    expect(find.byKey(const Key('about-xiaoyouyou-link')), findsNothing);
     expect(find.textContaining('项目路径'), findsNothing);
     expect(find.textContaining('检查更新接口'), findsNothing);
   });
