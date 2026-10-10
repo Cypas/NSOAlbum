@@ -202,6 +202,11 @@ done < <(find "$APP/Contents" \( -type f -o -type l \) -print0)
 
 # Bundle containers follow their leaves, deepest first. Never use --deep to sign.
 while IFS= read -r -d '' bundle; do
+  if [[ -d "$bundle/Versions" ]]; then
+    while IFS= read -r -d '' version_dir; do
+      codesign --force --timestamp=none --sign - "$version_dir"
+    done < <(find "$bundle/Versions" -mindepth 1 -maxdepth 1 -type d -print0)
+  fi
   codesign --force --timestamp=none --sign - "$bundle"
 done < <(find "$APP/Contents" -depth -type d \( -name '*.framework' -o -name '*.app' -o -name '*.xpc' -o -name '*.appex' \) -print0)
 codesign --force --timestamp=none --sign - --entitlements "$PROJECT_ROOT/macos/Runner/Release.entitlements" "$APP"
