@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -164,6 +165,126 @@ void main() {
         ),
       ],
     );
+  });
+
+  test('custom HTTPS proxy gets its default port', () {
+    final attempts = updateRequestAttempts(
+      apiCandidates: const ['https://api.github.com/releases/latest'],
+      customProxyUrl: 'https://proxy.example',
+    );
+    expect(attempts.last.proxy, 'PROXY proxy.example:443');
+  });
+
+  test(
+    'custom proxy serves release metadata after both direct lookups fail',
+    () async {
+      final mirror = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final github = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final customProxy = await HttpServer.bind(
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      addTearDown(() async {
+        await mirror.close(force: true);
+        await github.close(force: true);
+        await customProxy.close(force: true);
+      });
+      var mirrorRequests = 0;
+      var githubRequests = 0;
+      var proxyRequests = 0;
+      mirror.listen((request) async {
+        mirrorRequests++;
+        request.response.statusCode = HttpStatus.serviceUnavailable;
+        await request.response.close();
+      });
+      github.listen((request) async {
+        githubRequests++;
+        request.response.statusCode = HttpStatus.serviceUnavailable;
+        await request.response.close();
+      });
+      customProxy.listen((request) async {
+        proxyRequests++;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(
+          jsonEncode({
+            'tag_name': 'v0.2.7',
+            'draft': false,
+            'prerelease': false,
+            'assets': const [],
+          }),
+        );
+        await request.response.close();
+      });
+      final service = ReleaseUpdateService(
+        apiCandidateBuilder: () => [_serverUri(mirror), _serverUri(github)],
+        customProxyUrl: _serverUri(customProxy).toString(),
+      );
+      addTearDown(service.close);
+
+      final release = await service.checkLatestRelease('0.2.7');
+
+      expect(release, isNull);
+      expect(mirrorRequests, 1);
+      expect(githubRequests, 1);
+      expect(proxyRequests, 1);
+    },
+  );
+
+  test('custom proxy downloads installer after mirror and GitHub fail', () async {
+    final mirror = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final github = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final customProxy = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final directory = await Directory.systemTemp.createTemp(
+      'nso-album-proxy-update-test-',
+    );
+    addTearDown(() async {
+      await mirror.close(force: true);
+      await github.close(force: true);
+      await customProxy.close(force: true);
+      await directory.delete(recursive: true);
+    });
+    var mirrorRequests = 0;
+    var githubRequests = 0;
+    var proxyRequests = 0;
+    mirror.listen((request) async {
+      mirrorRequests++;
+      request.response.statusCode = HttpStatus.serviceUnavailable;
+      await request.response.close();
+    });
+    github.listen((request) async {
+      githubRequests++;
+      request.response.statusCode = HttpStatus.serviceUnavailable;
+      await request.response.close();
+    });
+    final bytes = 'installer through custom proxy'.codeUnits;
+    customProxy.listen((request) async {
+      proxyRequests++;
+      request.response.add(bytes);
+      await request.response.close();
+    });
+    final service = ReleaseUpdateService(
+      downloadDirectory: directory,
+      candidateBuilder: (_) => [_serverUri(mirror), _serverUri(github)],
+      customProxyUrl: _serverUri(customProxy).toString(),
+    );
+    addTearDown(service.close);
+
+    final installer = await service.downloadInstaller(
+      StableRelease(
+        version: '0.2.7',
+        installerUrl: Uri.parse(
+          'https://github.com/Cypas/NSOAlbum/releases/download/v0.2.7/NSOAlbum-0.2.7-Setup.exe',
+        ),
+        sha256:
+            '041835a5fb1e68f422c30c6baa4c6ef67c6d0c4a97bc0996ce0a0905561a25c3',
+      ),
+      cancellation: UpdateCancellation(),
+    );
+
+    expect(await installer.readAsBytes(), bytes);
+    expect(mirrorRequests, 1);
+    expect(githubRequests, 1);
+    expect(proxyRequests, 1);
   });
 
   test('automatic checks are limited to once in a 24 hour window', () {

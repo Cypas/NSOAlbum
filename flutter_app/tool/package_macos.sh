@@ -190,14 +190,14 @@ sanitize_build_rpaths() {
 
 # Inspect and sign Mach-O leaves first, including extensionless framework binaries.
 while IFS= read -r -d '' nested; do
-  if file -b "$nested" | grep -q 'Mach-O'; then
+  if file -L -b "$nested" | grep -q 'Mach-O'; then
     arches="$(lipo -archs "$nested")"
     [[ " $arches " == *" $EXPECTED "* ]] || { echo "Missing $EXPECTED slice: $nested ($arches)" >&2; exit 1; }
     sanitize_build_rpaths "$nested"
     check_dependencies "$nested"
     codesign --force --timestamp=none --sign - "$nested"
   fi
-done < <(find "$APP/Contents" -type f -print0)
+done < <(find "$APP/Contents" \( -type f -o -type l \) -print0)
 
 # Bundle containers follow their leaves, deepest first. Never use --deep to sign.
 while IFS= read -r -d '' bundle; do

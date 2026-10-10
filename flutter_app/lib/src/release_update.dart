@@ -55,7 +55,7 @@ String? _proxyDirective(String? proxyUrl) {
       uri.host.isEmpty) {
     return null;
   }
-  final port = uri.hasPort ? uri.port : 80;
+  final port = uri.hasPort ? uri.port : (uri.scheme == 'https' ? 443 : 80);
   return 'PROXY ${uri.host}:$port';
 }
 
