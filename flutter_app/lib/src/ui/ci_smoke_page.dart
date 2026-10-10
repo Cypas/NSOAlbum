@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -403,12 +402,10 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
     if (previous != null) await previous.dispose();
     VideoRuntime.ensureInitialized();
     final next = Player();
-    // The arm64 hosted runner can crash inside media_kit's Metal output during
-    // isolated smoke startup, while the Intel runner needs the hardware path
-    // for a visible first frame.  Keep the real decode/playback path and only
-    // disable hardware output for the affected architecture.
-    final useHardwareVideoOutput =
-        !(Platform.isMacOS && ffi.Abi.current() == ffi.Abi.macosArm64);
+    // Hosted macOS runners can crash in the Metal output on both Intel and
+    // arm64.  The CPU-backed output is stable; the frame check below waits
+    // for the software texture to contain decoded pixels before continuing.
+    final useHardwareVideoOutput = !Platform.isMacOS;
     final output = VideoController(
       next,
       configuration: VideoControllerConfiguration(
@@ -432,11 +429,23 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
     await next.stream.position
         .firstWhere((value) => value.inMilliseconds >= 100)
         .timeout(const Duration(seconds: 10));
-    final frame = await next.screenshot(format: 'image/png');
-    if (frame == null || frame.isEmpty) {
-      throw StateError('No decoded video frame');
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    var decoded = false;
+    while (DateTime.now().isBefore(deadline)) {
+      final frame = await next.screenshot(format: 'image/png');
+      if (frame != null && frame.isNotEmpty) {
+        try {
+          await _decodeCover(frame, expectedColor: true);
+          decoded = true;
+          break;
+        } on StateError {
+          // The software texture can report its first frame before the pixels
+          // have been uploaded. Poll briefly until the decoded image is ready.
+        }
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
     }
-    await _decodeCover(frame, expectedColor: true);
+    if (!decoded) throw StateError('No decoded video frame');
     await next.pause();
   }
 
