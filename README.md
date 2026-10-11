@@ -54,7 +54,7 @@ native runners before version-tag publication.
 
 ## Releases and updates
 
-The current release candidate is `0.2.11+44` (Rust `0.2.11`, tag `v0.2.11`).
+The current release candidate is `0.2.12+45` (Rust `0.2.12`, tag `v0.2.12`).
 It includes localized update messages, Windows title-bar interaction fixes,
 update proxy fallback, and native validation for Windows and both macOS architectures.
 The tag workflow publishes the installer only after all platform gates succeed.
