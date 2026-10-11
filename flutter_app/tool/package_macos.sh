@@ -197,16 +197,8 @@ sanitize_build_rpaths() {
   done < <(read_rpaths "$binary")
 }
 
-# CI validation can opt out of signing entirely.  This is useful on hosted
-# runners where Flutter/Xcode embeds third-party media frameworks that cannot
-# be re-signed without a real identity.  Release packaging keeps the ad-hoc
-# signing path below enabled by default.
-if [[ "${NSOALBUM_SKIP_CODESIGN:-0}" != "1" ]]; then
-# Inspect and sign Mach-O leaves first, including extensionless framework
-# binaries.  Some media frameworks use a nonstandard layout where the
-# framework's executable is not discoverable by codesign's --deep traversal.
-# Walking every file below Contents/Frameworks explicitly keeps those binaries
-# signed before the app bundle is signed.
+# Finish ALL binary modifications before signing any enclosing container.
+# Symlinks are checked through their resolved targets as well.
 while IFS= read -r -d '' nested; do
   if file -L -b "$nested" | grep -q 'Mach-O'; then
     resolved_nested="$(realpath "$nested")"
@@ -214,39 +206,14 @@ while IFS= read -r -d '' nested; do
     [[ " $arches " == *" $EXPECTED "* ]] || { echo "Missing $EXPECTED slice: $nested ($arches)" >&2; exit 1; }
     sanitize_build_rpaths "$resolved_nested"
     check_dependencies "$resolved_nested"
-    codesign --force --options runtime --timestamp=none --sign - "$resolved_nested"
   fi
 done < <(find "$APP/Contents" \( -type f -o -type l \) -print0)
 
-# Bundle containers follow their leaves, deepest first.  Keep the explicit
-# leaf pass above, then let codesign refresh each container's nested metadata.
-while IFS= read -r -d '' bundle; do
-  if [[ -d "$bundle/Versions" ]]; then
-    while IFS= read -r -d '' version_binary; do
-      resolved_version_binary="$(realpath "$version_binary")"
-      if file -L -b "$resolved_version_binary" | grep -q 'Mach-O'; then
-        sanitize_build_rpaths "$resolved_version_binary"
-        check_dependencies "$resolved_version_binary"
-        codesign --force --options runtime --timestamp=none --sign - "$resolved_version_binary"
-      fi
-    done < <(find "$bundle/Versions" \( -type f -o -type l \) -print0)
-  fi
-  # Third-party frameworks may use a nonstandard versioned layout; let
-  # codesign discover and sign all nested code inside this one container.
-  codesign --force --deep --options runtime --timestamp=none --sign - "$bundle"
-  codesign --force --options runtime --timestamp=none --sign - "$bundle"
-done < <(find "$APP/Contents" -depth -type d \( -name '*.framework' -o -name '*.app' -o -name '*.xpc' -o -name '*.appex' \) -print0)
-# Use --deep only as a final bundle-level safety net after all nested code has
-# already been signed explicitly above.
-codesign --force --deep --options runtime --timestamp=none --sign - --entitlements "$PROJECT_ROOT/macos/Runner/Release.entitlements" "$APP"
-codesign --verify --deep --strict "$APP"
+bash "$SCRIPT_DIR/sign_macos_app.sh" "$APP" "$PROJECT_ROOT/macos/Runner/Release.entitlements"
 ENTITLEMENTS="$(codesign -d --entitlements :- "$APP" 2>/dev/null)"
 if [[ "$ENTITLEMENTS" == *"com.apple.security.app-sandbox"* ]]; then
   echo "Packaged app must not contain an app-sandbox entitlement" >&2
   exit 1
-fi
-else
-  echo "Skipping macOS code signing and signature verification for CI validation"
 fi
 run_smoke --launch-app "$APP" --reports-dir "$REPORTS/app"
 
@@ -294,9 +261,7 @@ MOUNT="$(mktemp -d "${TMPDIR:-/tmp}/nsoalbum-dmg.XXXXXX")"
 hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$MOUNT"
 MOUNTED_APP="$MOUNT/NSOAlbum.app"
 [[ -d "$MOUNTED_APP" ]] || { echo "DMG did not contain NSOAlbum.app" >&2; exit 1; }
-if [[ "${NSOALBUM_SKIP_CODESIGN:-0}" != "1" ]]; then
-  codesign --verify --deep --strict "$MOUNTED_APP"
-fi
+codesign --verify --deep --strict "$MOUNTED_APP"
 [[ "$(lipo -archs "$MOUNTED_APP/Contents/MacOS/$EXECUTABLE")" == "$EXPECTED" ]] || exit 1
 run_smoke --launch-app "$MOUNTED_APP" --reports-dir "$REPORTS/dmg"
 hdiutil detach "$MOUNT" -quiet

@@ -59,6 +59,17 @@ It includes localized update messages, Windows title-bar interaction fixes,
 update proxy fallback, and native validation for Windows and both macOS architectures.
 The tag workflow publishes the installer only after all platform gates succeed.
 
+To test packaging without changing the version or creating a tag, run the
+**Validate** workflow manually with `package_installer=true` and an optional
+`ref` (branch or commit). It runs the same signing, testing and packaged-app
+checks and uploads the Windows installer and both macOS DMGs as Actions
+artifacts, without creating a GitHub Release:
+
+```sh
+gh workflow run validate.yml --ref codex/public-release \
+  -f ref=codex/public-release -f package_installer=true
+```
+
 Stable releases are published from tags in the form `v<major>.<minor>.<patch>`. The application version in `flutter_app/pubspec.yaml` is authoritative; the Rust crate version must use the same semantic version. Update checks query the latest stable release from `Cypas/NSOAlbum`. Windows release assets are the NSOAlbum runtime directory and `NSOAlbum-<version>-Setup.exe`; no ZIP package is generated. The installer is verified against the SHA-256 digest published by GitHub before the user can launch it. The app never installs an update silently.
 
 Upgrades reuse an existing library in `NSOAlbum`, `Fresh Album`, `FreshAlbum`, or

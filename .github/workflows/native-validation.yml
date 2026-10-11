@@ -8,7 +8,7 @@ on:
         type: string
         required: true
       release:
-        description: Also produce the Windows Inno installer
+        description: Also produce the Windows Inno installer (does not publish a Release)
         type: boolean
         default: false
       release_tag:
@@ -161,6 +161,10 @@ jobs:
         with:
           targets: ${{ matrix.target }}
           components: clippy, rustfmt
+      - name: Native nested code signing regression
+        if: matrix.mac_arch != ''
+        shell: bash
+        run: bash flutter_app/tool/test_macos_signing.sh
       - name: Assert Rust host matches the target
         if: matrix.platform == 'windows-x64'
         env:
@@ -243,7 +247,7 @@ jobs:
         if: matrix.platform == 'windows-x64'
         working-directory: flutter_app
         env:
-          GITHUB_REF_TYPE: ${{ inputs.release && 'tag' || 'branch' }}
+          GITHUB_REF_TYPE: ${{ inputs.release_tag != '' && 'tag' || 'branch' }}
           GITHUB_REF_NAME: ${{ inputs.release_tag }}
           PACKAGE_VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -368,7 +372,6 @@ jobs:
           CODE_SIGNING_ALLOWED: "NO"
           CODE_SIGNING_REQUIRED: "NO"
           CODE_SIGN_IDENTITY: ""
-          NSOALBUM_SKIP_CODESIGN: ${{ inputs.release && '0' || '1' }}
         run: |
           set -euo pipefail
           wrong_arch="$([[ "$PACKAGE_ARCH" == arm64 ]] && echo x64 || echo arm64)"

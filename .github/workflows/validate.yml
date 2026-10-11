@@ -13,6 +13,11 @@ on:
         description: Optional exact commit or branch to validate (defaults to selected ref)
         required: false
         type: string
+      package_installer:
+        description: Build test installer and DMGs as artifacts only (no tag or Release)
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -36,3 +41,4 @@ jobs:
     uses: ./.github/workflows/native-validation.yml
     with:
       ref: ${{ needs.resolve.outputs.sha }}
+      release: ${{ github.event_name == 'workflow_dispatch' && inputs.package_installer == true }}

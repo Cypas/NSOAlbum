@@ -111,8 +111,22 @@ macOS 包装流程使用 `tool/package_macos.sh`，分别验证构建后的 `.ap
 非 App Sandbox 的 DMG；ad-hoc 签名不是 Apple 信任背书，不宣称可直接通过 Gatekeeper。
 不得发布 ZIP。
 
-分支验证允许跳过 macOS 签名，以独立检查运行流程；正式标签发布必须启用并验证
-ad-hoc 签名。未签名分支产物不是已通过正式签名门禁的发行包。
+所有分支、手动测试打包与正式标签流程都执行 ad-hoc 签名及签名验证。原生签名
+回归使用合成版本化 framework，验证签名、启动及资源篡改拒绝；全部 Mach-O 的
+路径清理完成后，签名从嵌套叶子/容器开始，主应用最后签名，不以 `--deep` 代替
+明确签名顺序。
+
+无需创建新版本或标签即可测试打包：在 Actions 的 **Validate → Run workflow**
+选择分支，可填写 `ref` 为提交/分支并勾选 `package_installer`。也可执行：
+
+```sh
+gh workflow run validate.yml --ref codex/public-release \
+  -f ref=codex/public-release -f package_installer=true
+```
+
+测试产物仅上传 Actions artifacts，没有 publish job、写入 Release 权限或标签
+操作。`package_installer=false` 仍执行完整签名/测试/运行检查，只省略 Inno 编译。
+失败后修复代码并再次手动运行即可；正式 tag 仍绑定固定提交，不覆盖已有标签。
 
 ## 失败报告与发布门禁
 
