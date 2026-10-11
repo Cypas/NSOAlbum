@@ -95,6 +95,10 @@ common/Windows/macOS；不在文档、工作流或脚本中固定测试数量。
 
 无需用户自行安装系统 FFmpeg。widget 中的模拟播放器或 channel 不能代替这些步骤。
 
+合成 PNG 使用纯 Dart CPU 编码，素材生成不依赖 GPU。Windows 视频输出另检查截图
+像素内容；macOS hosted runner 使用软件视频输出，以原生首帧事件和播放位置推进
+验证播放器流程，不调用可能阻塞的纹理截图，也不宣称已验证 GPU 画面的像素内容。
+
 Windows 可在 `flutter_app` 中对已有、刚构建完成的运行目录执行：
 
 ```powershell
@@ -106,6 +110,9 @@ macOS 包装流程使用 `tool/package_macos.sh`，分别验证构建后的 `.ap
 架构、依赖与签名。当前发行策略是 ad-hoc 签名、未 Developer ID 签名/未公证、
 非 App Sandbox 的 DMG；ad-hoc 签名不是 Apple 信任背书，不宣称可直接通过 Gatekeeper。
 不得发布 ZIP。
+
+分支验证允许跳过 macOS 签名，以独立检查运行流程；正式标签发布必须启用并验证
+ad-hoc 签名。未签名分支产物不是已通过正式签名门禁的发行包。
 
 ## 失败报告与发布门禁
 

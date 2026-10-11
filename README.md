@@ -54,6 +54,11 @@ native runners before version-tag publication.
 
 ## Releases and updates
 
+The current release candidate is `0.2.11+44` (Rust `0.2.11`, tag `v0.2.11`).
+It includes localized update messages, Windows title-bar interaction fixes,
+update proxy fallback, and native validation for Windows and both macOS architectures.
+The tag workflow publishes the installer only after all platform gates succeed.
+
 Stable releases are published from tags in the form `v<major>.<minor>.<patch>`. The application version in `flutter_app/pubspec.yaml` is authoritative; the Rust crate version must use the same semantic version. Update checks query the latest stable release from `Cypas/NSOAlbum`. Windows release assets are the NSOAlbum runtime directory and `NSOAlbum-<version>-Setup.exe`; no ZIP package is generated. The installer is verified against the SHA-256 digest published by GitHub before the user can launch it. The app never installs an update silently.
 
 Upgrades reuse an existing library in `NSOAlbum`, `Fresh Album`, `FreshAlbum`, or
