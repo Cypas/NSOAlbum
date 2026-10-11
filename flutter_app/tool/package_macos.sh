@@ -32,6 +32,7 @@ case "$ARCH" in
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/macos_rpaths.sh"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)"
 APP="$PROJECT_ROOT/build/macos/Build/Products/Release/NSOAlbum.app"
@@ -104,10 +105,6 @@ require_bundle_file() {
   esac
 }
 
-read_rpaths() {
-  otool -l "$1" | awk '/cmd LC_RPATH/{in_rpath=1; next} in_rpath && /path /{sub(/^ *path /, ""); sub(/ \(offset.*$/, ""); print; in_rpath=0}'
-}
-
 is_system_path() {
   case "$1" in
     */../*|*/..) return 1 ;;
@@ -142,7 +139,7 @@ check_rpaths() {
           "$APP_CANONICAL"|"$APP_CANONICAL"/*) ;;
           *) echo "LC_RPATH escapes the app bundle: $rpath" >&2; return 1 ;;
         esac ;;
-      *) echo "LC_RPATH relies on a build/cache path: $rpath" >&2; return 1 ;;
+      *) echo "LC_RPATH relies on a build/cache path: $rpath in $binary" >&2; return 1 ;;
     esac
   done < <(read_rpaths "$binary")
 }
@@ -184,17 +181,6 @@ check_dependencies() {
       *) echo "Non-portable dependency: $dependency in $binary" >&2; return 1 ;;
     esac
   done < <(otool -L "$binary" | tail -n +2 | sed -E 's/^[[:space:]]*//; s/ \(compatibility version.*$//')
-}
-
-sanitize_build_rpaths() {
-  local binary="$1" rpath
-  while IFS= read -r rpath; do
-    case "$rpath" in
-      /Applications/Xcode*.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx|\
-      /Volumes/Xcode*.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx)
-        install_name_tool -delete_rpath "$rpath" "$binary" ;;
-    esac
-  done < <(read_rpaths "$binary")
 }
 
 # Finish ALL binary modifications before signing any enclosing container.

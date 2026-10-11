@@ -116,6 +116,10 @@ macOS 包装流程使用 `tool/package_macos.sh`，分别验证构建后的 `.ap
 路径清理完成后，签名从嵌套叶子/容器开始，主应用最后签名，不以 `--deep` 代替
 明确签名顺序。
 
+签名前移除已确认的 Xcode 工具链与 `/usr/local/lib` 宿主机回退 RPATH，再检查每个
+动态依赖都能从应用包或允许的系统库解析；未知外部搜索路径仍拒绝。可移植策略
+回归验证只删除允许清理的路径，macOS 原生回归另验证真实 Mach-O 修改后签名和启动。
+
 无需创建新版本或标签即可测试打包：在 Actions 的 **Validate → Run workflow**
 选择分支，可填写 `ref` 为提交/分支并勾选 `package_installer`。也可执行：
 

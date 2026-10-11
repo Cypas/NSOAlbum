@@ -3,6 +3,8 @@ set -euo pipefail
 
 [[ "$(uname -s)" == Darwin ]] || { echo "Native signing regression requires macOS" >&2; exit 1; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bash "$SCRIPT_DIR/test_macos_rpaths.sh"
+source "$SCRIPT_DIR/macos_rpaths.sh"
 FIXTURE="$(mktemp -d "${TMPDIR:-/tmp}/nsoalbum-signing.XXXXXX")"
 trap 'rm -rf "$FIXTURE"' EXIT
 APP="$FIXTURE/NSOAlbum.app"
@@ -23,7 +25,15 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 <key>CFBundlePackageType</key><string>APPL</string>
 </dict></plist>
 EOF
-clang "$FIXTURE/main.c" -o "$APP/Contents/MacOS/NSOAlbum"
+clang "$FIXTURE/main.c" -Wl,-rpath,/usr/local/lib/. -Wl,-rpath,@executable_path/../Frameworks -o "$APP/Contents/MacOS/NSOAlbum"
+native_rpaths="$(read_rpaths "$APP/Contents/MacOS/NSOAlbum")"
+[[ "$native_rpaths" == *"/usr/local/lib/."* ]] || {
+  echo "Native fixture did not reproduce the vendor host rpath" >&2; exit 1;
+}
+sanitize_build_rpaths "$APP/Contents/MacOS/NSOAlbum"
+[[ "$(read_rpaths "$APP/Contents/MacOS/NSOAlbum")" == '@executable_path/../Frameworks' ]] || {
+  echo "Native runtime path cleanup did not preserve the bundled search path" >&2; exit 1;
+}
 
 # Exercise a normal versioned framework and FFmpeg's nonmatching executable
 # names, plus the symlinks that previously caused duplicate/reordered signing.
