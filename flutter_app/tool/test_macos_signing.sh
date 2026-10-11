@@ -33,6 +33,13 @@ for spec in "Standard:Standard" "Avformat:libavformat"; do
   framework="$APP/Contents/Frameworks/$name.framework"
   mkdir -p "$framework/Versions/A/Resources"
   clang -dynamiclib "$FIXTURE/library.c" -o "$framework/Versions/A/$executable"
+  # arm64 clang implicitly signs Mach-O output. Explicitly remove that
+  # signature so both architectures really exercise unsigned nested code.
+  codesign --remove-signature "$framework/Versions/A/$executable" 2>/dev/null || true
+  if codesign --verify "$framework/Versions/A/$executable" 2>/dev/null; then
+    echo "Unsigned fixture binary still has a valid signature" >&2
+    exit 1
+  fi
   cat > "$framework/Versions/A/Resources/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -49,7 +56,7 @@ EOF
 done
 # Reproduce the original failure: signing the outer executable before its
 # nested frameworks must not be accepted.
-if codesign --force --sign - "$APP/Contents/MacOS/NSOAlbum" 2>"$FIXTURE/early-sign.log"; then
+if codesign --force --sign - "$APP" 2>"$FIXTURE/early-sign.log"; then
   echo "Fixture did not reproduce unsigned nested-code rejection" >&2
   exit 1
 fi
