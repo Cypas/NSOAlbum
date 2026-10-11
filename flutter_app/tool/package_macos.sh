@@ -180,7 +180,7 @@ check_dependencies() {
         [[ "$found" == true ]] || { echo "Unresolved rpath: $dependency in $binary" >&2; return 1; } ;;
       *) echo "Non-portable dependency: $dependency in $binary" >&2; return 1 ;;
     esac
-  done < <(otool -L "$binary" | tail -n +2 | sed -E 's/^[[:space:]]*//; s/ \(compatibility version.*$//')
+  done < <(read_dependencies "$binary")
 }
 
 # Finish ALL binary modifications before signing any enclosing container.

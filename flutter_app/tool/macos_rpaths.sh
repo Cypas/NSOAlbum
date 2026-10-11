@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Shared by the packaging gate and its native signing regression.
 read_rpaths() {
-  otool -l "$1" | awk '/cmd LC_RPATH/{in_rpath=1; next} in_rpath && /path /{sub(/^ *path /, ""); sub(/ \(offset.*$/, ""); print; in_rpath=0}'
+  otool -l "$1" | awk '/cmd LC_RPATH/{in_rpath=1; next} in_rpath && /path /{sub(/^ *path /, ""); sub(/ \(offset.*$/, ""); if (!seen[$0]++) print; in_rpath=0}'
+}
+
+read_dependencies() {
+  # Universal Mach-O output has a separate unindented header for EACH slice.
+  # Only indented dependency records belong in the validation input.
+  otool -L "$1" | awk '/^[[:space:]]/ {sub(/^[[:space:]]*/, ""); sub(/ \(compatibility version.*$/, ""); if (!seen[$0]++) print}'
 }
 
 sanitize_build_rpaths() {

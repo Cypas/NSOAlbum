@@ -42,7 +42,29 @@ for spec in "Standard:Standard" "Avformat:libavformat"; do
   executable="${spec#*:}"
   framework="$APP/Contents/Frameworks/$name.framework"
   mkdir -p "$framework/Versions/A/Resources"
-  clang -dynamiclib "$FIXTURE/library.c" -o "$framework/Versions/A/$executable"
+  if [[ "$name" == Standard ]]; then
+    # Vendor frameworks can be universal even though the root app is native.
+    # Reproduce per-slice otool headers and duplicate LC_RPATH records.
+    clang -dynamiclib -arch arm64 -arch x86_64 "$FIXTURE/library.c" \
+      -Wl,-install_name,@rpath/Standard.framework/Standard \
+      -Wl,-rpath,/usr/local/lib/. \
+      -Wl,-rpath,@loader_path/../../../ \
+      -o "$framework/Versions/A/$executable"
+    fixture_dependencies="$(read_dependencies "$framework/Versions/A/$executable")"
+    [[ "$fixture_dependencies" != *"(architecture "* ]] || {
+      echo "Universal native dependency parser returned a slice header" >&2; exit 1;
+    }
+    [[ "$fixture_dependencies" == *'@rpath/Standard.framework/Standard'* &&
+       "$fixture_dependencies" == *'/usr/lib/libSystem.B.dylib'* ]] || {
+      echo "Universal native dependency parser lost real dependencies" >&2; exit 1;
+    }
+    sanitize_build_rpaths "$framework/Versions/A/$executable"
+    [[ "$(read_rpaths "$framework/Versions/A/$executable")" == '@loader_path/../../../' ]] || {
+      echo "Universal native runtime path cleanup failed" >&2; exit 1;
+    }
+  else
+    clang -dynamiclib "$FIXTURE/library.c" -o "$framework/Versions/A/$executable"
+  fi
   # arm64 clang implicitly signs Mach-O output. Explicitly remove that
   # signature so both architectures really exercise unsigned nested code.
   codesign --remove-signature "$framework/Versions/A/$executable" 2>/dev/null || true
