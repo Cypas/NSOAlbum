@@ -1,0 +1,64 @@
+name: Dev validation
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Optional exact commit or branch to validate
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu:
+    name: Ubuntu Rust and Flutter checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.6
+          channel: stable
+          cache: true
+      - name: Resolve Flutter dependencies
+        working-directory: flutter_app
+        run: flutter pub get
+      - name: Rust formatting, Clippy, and unit tests
+        working-directory: rust_core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --lib
+      - name: Dart analysis and Flutter tests
+        working-directory: flutter_app
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart analyze
+          flutter test --no-pub
+
+  secrets:
+    name: Scan repository history for secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

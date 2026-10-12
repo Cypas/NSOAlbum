@@ -11,6 +11,10 @@ Thanks for helping improve NSOAlbum (鱿型相册 in Simplified Chinese). Please
   conversations are resolved. The gate includes Windows x64, both macOS
   architectures, Ubuntu, and the history secret scan; no extra reviewer is
   required for maintainer-authored changes.
+- Pushes to `dev` intentionally run only the fast Ubuntu Rust/Flutter checks
+  and history scan. The complete native build, signing and media smoke matrix
+  runs on the pull request and on `main`; use the manual Validate workflow for
+  an on-demand packaging check.
 - Keep changes focused and include tests for behavior changes.
 - Rust remains the only owner of SQLite and content-addressed media files; Flutter talks to Rust through the generated bridge.
 - Never add Nintendo session tokens, account data, local library databases, private proxy credentials, signing keys, or user media.

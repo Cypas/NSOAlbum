@@ -74,8 +74,10 @@ Stable releases are published from tags in the form `v<major>.<minor>.<patch>`. 
 
 `main` is the default stable branch. Maintainers develop on `dev` and merge
 `dev` into `main` through pull requests after `Required validation` succeeds.
-That check includes all native platform gates, Ubuntu checks, and the history
-scan. Stable release tags must point to commits already merged into `main`.
+Pushes to `dev` run the faster Ubuntu Rust/Flutter checks and history scan;
+the full Windows/macOS native matrix runs on the pull request, `main` pushes,
+manual packaging checks and stable release tags. Stable release tags must
+point to commits already merged into `main`.
 
 Upgrades reuse an existing library in `NSOAlbum`, `Fresh Album`, `FreshAlbum`, or
 `squid_album` application data directories when a valid database is found. The
