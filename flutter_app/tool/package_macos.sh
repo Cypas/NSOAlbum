@@ -39,14 +39,8 @@ APP="$PROJECT_ROOT/build/macos/Build/Products/Release/NSOAlbum.app"
 DIST="$WORKSPACE_ROOT/dist"
 DMG="$DIST/NSOAlbum-macOS-${ARCH}-${VERSION}.dmg"
 SMOKE_RUNNER="$SCRIPT_DIR/run_release_smoke.dart"
-# Hosted Intel runners can hang Impeller/Metal while decoding a generated
-# thumbnail. Keep the real media smoke, but use Flutter's CPU renderer there.
 run_smoke() {
-  if [[ "$ARCH" == "x64" ]]; then
-    dart run "$SMOKE_RUNNER" "$@" --software-rendering
-  else
-    dart run "$SMOKE_RUNNER" "$@"
-  fi
+  dart run "$SMOKE_RUNNER" "$@"
 }
 [[ -f "$SMOKE_RUNNER" ]] || { echo "Missing native smoke driver" >&2; exit 1; }
 [[ ! -e "$DMG" ]] || { echo "Refusing to overwrite existing DMG: $DMG" >&2; exit 1; }
@@ -76,6 +70,7 @@ export CARGO_BUILD_TARGET="$RUST_TARGET"
 
 flutter build macos --release --build-name "$VERSION" --build-number "$BUILD_NUMBER"
 [[ -d "$APP" ]] || { echo "Missing app bundle: $APP" >&2; exit 1; }
+bash "$SCRIPT_DIR/configure_macos_renderer.sh" "$APP" "$ARCH"
 
 EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
 MAIN="$APP/Contents/MacOS/$EXECUTABLE"

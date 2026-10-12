@@ -42,6 +42,8 @@ macOS 的 About 包含版本检查入口，但不提供应用内安装器执行�
 每日节流、忽略版本及失败回退；真实解析器和临时目录状态文件保持启用。
 浏览器 channel 是模拟边界，不代表已验证真实 Mac 浏览器打开或 DMG 安装。
 `macos_platform_test.dart` 则只在原生 macOS 检查 About 入口和平台 UI。
+`macos_renderer_test.dart` 在原生 macOS 使用真实 PlistBuddy/plutil 验证 Intel
+最终包的布尔渲染设置、缺省字段补充、arm64 元数据保持不变及错误架构拒绝。
 
 平台专用测试使用 `Platform.isWindows` / `Platform.isMacOS` 的实际主机判断，
 不伪装 `TargetPlatform`。在其他平台通过 `skip` 显式说明原因，不能在测试体内
@@ -113,9 +115,15 @@ common/Windows/macOS；不在文档、工作流或脚本中固定测试数量。
 报告的原生崩溃。进程输出按行脱敏，保留有界捕获范围内的后续错误；日志和
 进度记录只用于排错，不能代替成功报告与零退出码。
 
-合成 PNG 使用纯 Dart CPU 编码，素材生成不依赖 GPU。Windows 视频输出另检查截图
-像素内容；macOS hosted runner 使用软件视频输出，以原生首帧事件和播放位置推进
-验证播放器流程，不调用可能阻塞的纹理截图，也不宣称已验证 GPU 画面的像素内容。
+合成 PNG 使用纯 Dart CPU 编码，素材生成不依赖 GPU。隔离检查复用一个播放器，
+但原视频、剪辑和合并结果必须分别获取并解码新的原生播放器截图；仅复用已完成
+的首帧信号或播放位置推进不能通过。Windows 另检查截图像素内容；macOS 使用软件
+视频输出，不把解码帧验证描述为 Flutter GPU 画面像素验收。
+
+Intel 最终包在签名前通过 `Info.plist` 的布尔 `FLTEnableImpeller=false` 选择
+Skia 渲染器，arm64 保留原配置。该设置保存在 DMG 内同一应用中；传给 Dart 的
+启动参数不能替代 macOS Release 引擎配置。构建后的应用与挂载后的 DMG 均执行
+完整媒体检查，不能用安全模式代替。
 
 Windows 可在 `flutter_app` 中对已有、刚构建完成的运行目录执行：
 

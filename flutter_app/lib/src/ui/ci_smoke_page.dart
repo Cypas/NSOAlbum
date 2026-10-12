@@ -654,7 +654,9 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
     if (!report.passed) await _captureFailure();
     try {
       if (player != null) {
+        await widget.diagnostics.phase('ci-video-cleanup-start');
         await player!.dispose().timeout(const Duration(seconds: 10));
+        await widget.diagnostics.phase('ci-video-cleanup-complete');
       }
       if (trayCreated) {
         await trayManager.destroy().timeout(const Duration(seconds: 10));
