@@ -193,10 +193,10 @@ Future<SmokeDriverResult> runReleaseSmoke(
               '${process.timedOut ? ' timeout=true' : ''}',
             )
             ..writeln(
-              sanitizeSmokeDiagnostic(
-                '${process.stdout}\n${process.stderr}',
-                roots: roots,
-              ),
+              '${process.stdout}\n${process.stderr}'
+                  .split('\n')
+                  .map((line) => sanitizeSmokeDiagnostic(line, roots: roots))
+                  .join('\n'),
             ),
         );
         final nativeLog = File(p.join(root, 'logs', 'ci-smoke.log'));
