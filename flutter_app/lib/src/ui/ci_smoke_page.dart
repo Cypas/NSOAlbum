@@ -389,11 +389,9 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
 
   Future<void> _play(String path) async {
     VideoRuntime.ensureInitialized();
-    // Hosted macOS runners can abort when multiple native video controllers
-    // are created and destroyed in one process. Reuse one Player/controller
-    // for every media assertion and replace only its opened media source.
-    // This keeps the real first-frame/playback checks while avoiding native
-    // texture teardown/recreation between trim and merge playback.
+    // Keep one native output for sequential playback, as in the real viewer.
+    // Intel's observed abort occurred at merge playback; its native cause is
+    // still unknown. Reuse avoids unnecessary controller teardown in smoke.
     var next = player;
     var output = controller;
     if (next == null || output == null) {
@@ -404,8 +402,10 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
           enableHardwareAcceleration: !Platform.isMacOS,
         ),
       );
-      player = next;
-      controller = output;
+      setState(() {
+        player = next;
+        controller = output;
+      });
       await WidgetsBinding.instance.endOfFrame;
     } else {
       await next.pause();
@@ -424,18 +424,13 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
     await playbackPlayer.stream.position
         .firstWhere((value) => value.inMilliseconds >= 100)
         .timeout(const Duration(seconds: 10));
-    // On macOS, media_kit's software texture screenshot channel can block the
-    // runner even after the native first-frame event has fired. The event plus
-    // advancing playback position prove a decoded frame was produced; keep
-    // pixel-level screenshot validation for Windows where the texture API is
-    // stable.
-    if (!Platform.isMacOS) {
-      final frame = await playbackPlayer.screenshot(format: 'image/png');
-      if (frame == null || frame.isEmpty) {
-        throw StateError('No decoded video frame');
-      }
-      await _decodeCover(frame, expectedColor: true);
-    }
+    // The controller's first-frame Future completes only once. A new native
+    // decoder snapshot is therefore mandatory for each source/trim/merge,
+    // including macOS; an earlier rendered frame or audio is insufficient.
+    await verifySmokeVideoFrame(
+      capture: () => playbackPlayer.screenshot(format: 'image/png'),
+      decode: (bytes) => _decodeCover(bytes, expectedColor: true),
+    ).timeout(const Duration(seconds: 15));
     await playbackPlayer.pause();
   }
 
