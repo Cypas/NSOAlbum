@@ -621,17 +621,23 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
       (await sha256.bind(File(path).openRead()).first).toString();
 
   Future<void> _step(String name, Future<void> Function() action) async {
+    await widget.diagnostics.phase('ci-step-$name-start');
     try {
       if (widget.options.ciSmokeFailure == name) {
         throw StateError('Deliberate CI fault: $name');
       }
       await action().timeout(const Duration(seconds: 60));
       report.record(name, passed: true);
+      await widget.diagnostics.phase('ci-step-$name-complete');
     } catch (error) {
       report.record(
         name,
         passed: false,
         error: sanitizeSmokeDiagnostic('$error', roots: [root]),
+      );
+      await widget.diagnostics.failure(
+        'ci-step-$name',
+        sanitizeSmokeDiagnostic('$error', roots: [root]),
       );
       rethrow;
     }

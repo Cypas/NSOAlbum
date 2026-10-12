@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/src/fonts/custom_font_store.dart';
 import 'package:squid_album/src/rust/settings.dart';
@@ -11,37 +12,33 @@ import 'home_shell_test.dart' show FakeBackend;
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  final commonPath = File(
-    'assets/fonts/splatoon_web/Splatoon2-common-2LVXcHij.ttf',
-  ).absolute.path;
-  final chinesePath = File(
-    'assets/fonts/splatoon_web/Splatoon2CHzh-level1-CUZXdiKS.ttf',
-  ).absolute.path;
+  final commonPath = File('assets/fonts/default/BlitzMain.otf').absolute.path;
+  final chinesePath = File('assets/fonts/default/DFPT_ZY9.ttf').absolute.path;
 
   setUp(() async {
     await loadCustomFontFamilies(const []);
   });
 
-  test('built-in web font shards are real OpenType/TrueType files', () async {
-    final paths = [
-      commonPath,
-      chinesePath,
-      ...[
-        'Splatoon2-symbol-common-aF2KKpUQ.ttf',
-        'Splatoon2-cjk-common-BEzXpdSx.ttf',
-        'Splatoon2CHzh-level2-DDnDbTcP.ttf',
-        'Splatoon2JP-level1-rL37kLr1.ttf',
-        'Splatoon2JP-level2-DR2Y1cVj.ttf',
-        'Splatoon2JP-hiragana-katakana-D98dgzMx.ttf',
-      ].map((name) => 'assets/fonts/splatoon_web/$name'),
-    ];
-    await CustomFontStore.validateFiles(paths);
-    final report = await prepareCustomFontFamilies(paths);
-    expect(report.loadedFamilies, hasLength(paths.length));
-    expect(report.failedPaths, isEmpty);
-    // Preparing resources must not replace the live built-in font chain.
-    expect(appFontFamily, 'Splatoon2');
-  });
+  test(
+    'bundled default fonts are loadable OpenType/TrueType resources',
+    () async {
+      final paths = [
+        commonPath,
+        chinesePath,
+        'assets/fonts/default/DFP_GBZY9.ttf',
+      ];
+      await CustomFontStore.validateFiles(paths);
+      final report = await prepareCustomFontFamilies(paths);
+      expect(report.loadedFamilies, hasLength(paths.length));
+      expect(report.failedPaths, isEmpty);
+      // Preparing resources must not replace the live built-in font chain.
+      expect(appFontFamily, 'DFPT_ZY9');
+      for (final name in ['DFPT_ZY9.ttf', 'DFP_GBZY9.ttf', 'BlitzMain.otf']) {
+        final bytes = await rootBundle.load('assets/fonts/default/$name');
+        expect(bytes.lengthInBytes, greaterThan(0));
+      }
+    },
+  );
 
   test('renamed WOFF2 cannot be accepted as a custom TTF font', () async {
     final directory = await Directory.systemTemp.createTemp('font-format-');
@@ -54,25 +51,24 @@ void main() {
       prepareCustomFontFamilies([renamed.path]),
       throwsA(isA<FormatException>()),
     );
-    expect(appFontFamily, 'Splatoon2');
+    expect(appFontFamily, 'DFPT_ZY9');
   });
 
-  test('uses the web font shard chain for simplified Chinese', () {
+  test('uses the configured default priority for simplified Chinese', () {
+    selectAppFontLanguage('zh');
+    expect(appFontFamily, 'DFPT_ZY9');
     expect(builtInFontFallbackForLanguage('zh'), const [
-      'Splatoon2Symbol',
-      'Splatoon2Cjk',
-      'Splatoon2ChzhLevel1',
-      'Splatoon2ChzhLevel2',
+      'DFP_GBZY9',
+      'BlitzMain',
     ]);
   });
 
-  test('uses the web font shard chain for English', () {
+  test('uses the configured default priority for English', () {
+    selectAppFontLanguage('en');
+    expect(appFontFamily, 'BlitzMain');
     expect(builtInFontFallbackForLanguage('en'), const [
-      'Splatoon2Symbol',
-      'Splatoon2Cjk',
-      'Splatoon2JpLevel1',
-      'Splatoon2JpLevel2',
-      'Splatoon2JpKana',
+      'DFPT_ZY9',
+      'DFP_GBZY9',
     ]);
   });
 
@@ -80,28 +76,33 @@ void main() {
     final report = await loadCustomFontFamilies(const [], language: 'zh');
 
     expect(report.loadedFamilies, isEmpty);
-    expect(appFontFamily, 'Splatoon2');
-    expect(appFontFallback, builtInFontFallbackForLanguage('zh'));
-  });
-
-  test('switching language changes only the built-in fallback shards', () {
-    selectAppFontLanguage('en');
-    expect(appFontFamily, 'Splatoon2');
-    expect(appFontFallback, contains('Splatoon2JpLevel1'));
-    expect(appFontFallback, isNot(contains('Splatoon2ChzhLevel1')));
-    selectAppFontLanguage('zh');
-    expect(appFontFallback, contains('Splatoon2ChzhLevel1'));
-    expect(appFontFallback, isNot(contains('Splatoon2JpLevel1')));
+    expect(appFontFamily, 'DFPT_ZY9');
+    expect(appFontFallback, ['DFP_GBZY9', 'BlitzMain']);
   });
 
   test(
-    'custom fonts keep their order and exclude all built-in shards',
+    'switching language updates the default main font and fallback order',
+    () {
+      final revision = appFontRevision.value;
+      selectAppFontLanguage('en');
+      expect(appFontFamily, 'BlitzMain');
+      expect(appFontFallback, ['DFPT_ZY9', 'DFP_GBZY9']);
+      expect(appFontRevision.value, revision + 1);
+      selectAppFontLanguage('zh');
+      expect(appFontFamily, 'DFPT_ZY9');
+      expect(appFontFallback, ['DFP_GBZY9', 'BlitzMain']);
+      expect(appFontRevision.value, revision + 2);
+    },
+  );
+
+  test(
+    'custom fonts keep their order and fully replace the default chain',
     () async {
       final report = await loadCustomFontFamilies([commonPath, chinesePath]);
 
       expect(appFontFamily, report.loadedFamilies.first);
       expect(appFontFallback, [report.loadedFamilies.last]);
-      expect(appFontFallback, isNot(contains('Splatoon2Cjk')));
+      expect(appFontFallback, isNot(contains('DFP_GBZY9')));
       selectAppFontLanguage('en');
       expect(appFontFamily, report.loadedFamilies.first);
       expect(appFontFallback, [report.loadedFamilies.last]);
@@ -136,8 +137,8 @@ void main() {
         'missing-font.ttf',
       ], language: 'en');
       expect(report.failedPaths, ['missing-font.ttf']);
-      expect(appFontFamily, 'Splatoon2');
-      expect(appFontFallback, contains('Splatoon2JpLevel1'));
+      expect(appFontFamily, 'BlitzMain');
+      expect(appFontFallback, ['DFPT_ZY9', 'DFP_GBZY9']);
     },
   );
 
@@ -182,7 +183,7 @@ void main() {
       );
 
       expect(backend.settings.customFontPaths, isEmpty);
-      expect(appFontFamily, 'Splatoon2');
+      expect(appFontFamily, 'DFPT_ZY9');
       expect(appFontFallback, previous);
     },
   );
@@ -198,7 +199,7 @@ void main() {
     );
 
     expect(backend.settings.customFontPaths, isEmpty);
-    expect(appFontFamily, 'Splatoon2');
+    expect(appFontFamily, 'DFPT_ZY9');
   });
 }
 

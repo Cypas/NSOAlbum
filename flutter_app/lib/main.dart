@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ffi' show Abi;
 import 'dart:io';
 import 'dart:ui';
 
@@ -376,7 +377,7 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
                 Future<void>.value(),
           );
         }
-        if (Platform.isWindows &&
+        if ((Platform.isWindows || Platform.isMacOS) &&
             !kDebugMode &&
             !widget.startupOptions.ciSmoke &&
             !widget.startupOptions.safeMode) {
@@ -511,6 +512,9 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
       applicationRoot: widget.diagnostics?.applicationRoot,
       onInstall: _installUpdate,
       customProxyUrl: backend.settings.proxyUrl,
+      macosArchitecture: Platform.isMacOS
+          ? (Abi.current() == Abi.macosArm64 ? 'arm64' : 'x64')
+          : null,
       onStatus: (info, error) {
         if (!mounted) return;
         setState(() {
@@ -519,6 +523,11 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
               ? UpdateStatusKind.failed
               : info == null
               ? UpdateStatusKind.latest
+              : Platform.isMacOS &&
+                    !info.macosArchitectures.contains(
+                      Abi.current() == Abi.macosArm64 ? 'arm64' : 'x64',
+                    )
+              ? UpdateStatusKind.macosPackageUnavailable
               : UpdateStatusKind.available;
           updateStatusError = error;
         });
@@ -532,6 +541,9 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
   }
 
   Future<void> _installUpdate(File installer) async {
+    if (!Platform.isWindows) {
+      throw UnsupportedError('In-app installer updates are Windows-only');
+    }
     await Process.start(
       installer.path,
       const [],

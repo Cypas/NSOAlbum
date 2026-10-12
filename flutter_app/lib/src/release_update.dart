@@ -9,12 +9,13 @@ import 'backend/storage_paths.dart';
 
 const githubLatestReleaseApi =
     'https://api.github.com/repos/Cypas/NSOAlbum/releases/latest';
+const githubReleasesPage = 'https://github.com/Cypas/NSOAlbum/releases';
 const _maxInstallerBytes = 512 * 1024 * 1024;
 
 typedef ReleaseAssetCandidateBuilder = List<Uri> Function(Uri officialUrl);
 typedef ReleaseApiCandidateBuilder = List<Uri> Function();
 
-enum UpdateStatusKind { latest, available, failed }
+enum UpdateStatusKind { latest, available, macosPackageUnavailable, failed }
 
 class UpdateRequestAttempt {
   const UpdateRequestAttempt({required this.uri, required this.proxy});
@@ -120,12 +121,16 @@ class LatestReleaseInfo {
     required this.tag,
     required this.installer,
     this.body,
+    this.macosArchitectures = const [],
   });
 
   final String version;
   final String tag;
   final StableRelease? installer;
   final String? body;
+
+  /// Availability only. Manual DMG downloads are not verified by this client.
+  final List<String> macosArchitectures;
 }
 
 int compareStableVersions(String left, String right) {
@@ -188,6 +193,28 @@ LatestReleaseInfo? latestReleaseInfoFromGithubJson(
     tag: tag,
     installer: StableRelease.fromGithubJson(json),
     body: json['body'] is String ? json['body'] as String : null,
+    macosArchitectures: List.unmodifiable([
+      for (final architecture in ['arm64', 'x64'])
+        if (_hasMacosDmg(json['assets'], tag, version, architecture))
+          architecture,
+    ]),
+  );
+}
+
+bool _hasMacosDmg(
+  Object? assets,
+  String tag,
+  String version,
+  String architecture,
+) {
+  if (assets is! List) return false;
+  final name = 'NSOAlbum-macOS-$architecture-$version.dmg';
+  final url = 'https://github.com/Cypas/NSOAlbum/releases/download/$tag/$name';
+  return assets.any(
+    (entry) =>
+        entry is Map<String, dynamic> &&
+        entry['name'] == name &&
+        entry['browser_download_url'] == url,
   );
 }
 

@@ -11,24 +11,16 @@ List<String> _customFamilies = const [];
 final appFontRevision = ValueNotifier<int>(0);
 final _loadedFamilies = <String, Future<void>>{};
 
-String get appFontFamily =>
-    _customFamilies.isEmpty ? 'Splatoon2' : _customFamilies.first;
+String get appFontFamily => _customFamilies.isEmpty
+    ? (_language == 'zh' ? 'DFPT_ZY9' : 'BlitzMain')
+    : _customFamilies.first;
 List<String> get appFontFallback => _customFamilies.isEmpty
     ? builtInFontFallbackForLanguage(_language)
     : List<String>.unmodifiable(_customFamilies.skip(1));
 
-List<String> builtInFontFallbackForLanguage(String language) => [
-  'Splatoon2Symbol',
-  'Splatoon2Cjk',
-  if (language == 'zh') ...[
-    'Splatoon2ChzhLevel1',
-    'Splatoon2ChzhLevel2',
-  ] else ...[
-    'Splatoon2JpLevel1',
-    'Splatoon2JpLevel2',
-    'Splatoon2JpKana',
-  ],
-];
+List<String> builtInFontFallbackForLanguage(String language) => language == 'zh'
+    ? const ['DFP_GBZY9', 'BlitzMain']
+    : const ['DFPT_ZY9', 'DFP_GBZY9'];
 
 void selectAppFontLanguage(String language) {
   if (_language == language) return;

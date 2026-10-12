@@ -45,7 +45,7 @@ void main() {
     );
 
     testWidgets(
-      'macOS settings omit Windows fonts and installer updater controls',
+      'macOS settings expose update checks but omit Windows font controls',
       (tester) async {
         await loadCustomFontFamilies(const []);
         await tester.binding.setSurfaceSize(const Size(1200, 1000));
@@ -62,7 +62,8 @@ void main() {
         await tester.drag(settingsScroll, const Offset(0, -1600));
         await tester.pumpAndSettle();
         expect(find.byKey(const Key('about-card')), findsOneWidget);
-        expect(find.byKey(const Key('check-app-updates')), findsNothing);
+        expect(find.byKey(const Key('check-app-updates')), findsOneWidget);
+        expect(find.text('检查更新'), findsOneWidget);
         expect(find.byKey(const Key('font-management-card')), findsNothing);
         expect(tester.takeException(), isNull);
       },

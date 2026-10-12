@@ -198,6 +198,36 @@ void main() {
       expect(log, isNot(contains(temp.path)));
       expect(log, isNot(contains('test-secret')));
     });
+
+    test('retains late native errors after lengthy process output', () async {
+      final temp = await Directory.systemTemp.createTemp('smoke-native-error-');
+      addTearDown(() => temp.delete(recursive: true));
+      final app = File('${temp.path}/NSOAlbum.exe')..createSync();
+      final reports = '${temp.path}/reports';
+
+      final result = await smoke.runReleaseSmoke(
+        smoke.SmokeDriverOptions(
+          appPath: app.path,
+          reportsDirectory: reports,
+          scenarios: const ['normal'],
+        ),
+        launch: (executable, arguments, timeout) async =>
+            smoke.SmokeProcessResult(
+              exitCode: -6,
+              stdout: List.filled(80, 'Native texture initialized').join('\n'),
+              stderr:
+                  '${List.filled(80, 'Renderer frame diagnostic').join('\n')}\n'
+                  'Authorization: Bearer private-test-value\n'
+                  'Native abort: video output failed\n',
+            ),
+      );
+
+      expect(result.exitCode, 1);
+      final log = await File('$reports/sanitized-process.log').readAsString();
+      expect(log, contains('Native abort: video output failed'));
+      expect(log, isNot(contains('private-test-value')));
+      expect(result.failures, contains('normal exited with code -6'));
+    });
   });
 
   group('owned executable smoke process', () {

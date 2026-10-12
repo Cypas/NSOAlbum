@@ -36,6 +36,13 @@ common 归类，新建可移植测试可显式使用 `common`。
 | `platform-windows` | Windows 字体管理 UI、IME channel 生命周期、实际 PowerShell 5.1 UTF-8 清单读取 | 搜狗输入法候选窗口和 USB 真机已验收 |
 | `platform-macos` | 当前 macOS 主机的窗口内容不插入 Windows 自绘标题栏、设置不显示 Windows 字体/安装器控制、Windows IME channel 不被启动、原生路径规则 | AppKit 窗口装饰、Gatekeeper 或真实播放器已验收 |
 
+macOS 的 About 包含版本检查入口，但不提供应用内安装器执行。
+`macos_release_update_test.dart` 标记为 `common`，在各主机上以明确的 macOS
+更新分支和合成 Release 元数据验证提示、架构 DMG 可用性、浏览器链接、
+每日节流、忽略版本及失败回退；真实解析器和临时目录状态文件保持启用。
+浏览器 channel 是模拟边界，不代表已验证真实 Mac 浏览器打开或 DMG 安装。
+`macos_platform_test.dart` 则只在原生 macOS 检查 About 入口和平台 UI。
+
 平台专用测试使用 `Platform.isWindows` / `Platform.isMacOS` 的实际主机判断，
 不伪装 `TargetPlatform`。在其他平台通过 `skip` 显式说明原因，不能在测试体内
 直接 `return` 后把未执行的断言计为通过。混合测试文件的专用测试标题使用
@@ -54,6 +61,12 @@ flutter test --exclude-tags "platform-windows || platform-macos"
 `--tags common` 代替完整通用套件。
 
 ## CI 主机矩阵
+
+Validate 对 `main`、`dev` push 和目标为 `main` 的 PR 执行完整检查。
+固定汇总检查 `Required validation` 只有提交解析与全部平台工作流成功时才
+通过；失败、取消或跳过均不得通过。维护者通过 `dev → main` PR 合并。
+正式 Release 除验证标签提交不可变和版本一致外，还验证提交属于 `main`
+历史；手动 Validate 可指定 ref 生成测试产物，不创建标签或 Release。
 
 `.github/workflows/native-validation.yml` 是 PR、主分支和正式 tag 共用的验证流程。
 Ubuntu 保留 Rust/Dart/Flutter 基础验证；原生矩阵必须分别在真实目标架构主机执行，
@@ -94,6 +107,10 @@ common/Windows/macOS；不在文档、工作流或脚本中固定测试数量。
    并核对桌面生命周期、自动同步、视频预热/缩略图与 MTP 检测禁用。
 
 无需用户自行安装系统 FFmpeg。widget 中的模拟播放器或 channel 不能代替这些步骤。
+
+每个原生检查步骤在执行前、完成或失败时写入隔离诊断日志，便于定位没有最终
+报告的原生崩溃。进程输出按行脱敏，保留有界捕获范围内的后续错误；日志和
+进度记录只用于排错，不能代替成功报告与零退出码。
 
 合成 PNG 使用纯 Dart CPU 编码，素材生成不依赖 GPU。Windows 视频输出另检查截图
 像素内容；macOS hosted runner 使用软件视频输出，以原生首帧事件和播放位置推进

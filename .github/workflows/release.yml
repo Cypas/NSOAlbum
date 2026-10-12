@@ -54,6 +54,13 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $sha -ne $tagSha) { throw 'Release tag does not resolve to the checkout commit.' }
           if ($env:EVENT_NAME -eq 'push' -and $sha -ne $env:EVENT_SHA) { throw 'Release tag moved after the push event.' }
           "sha=$sha" >> $env:GITHUB_OUTPUT
+      - name: Require the release commit to be merged into main
+        shell: pwsh
+        run: |
+          git fetch origin "refs/heads/main:refs/remotes/origin/main"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch the main release branch.' }
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'Release tag must point to a commit already merged into main.' }
       - name: Verify source and release tag versions
         shell: pwsh
         env:
@@ -93,6 +100,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$EXPECTED_SHA"
+          git fetch origin refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$EXPECTED_SHA" refs/remotes/origin/main
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
