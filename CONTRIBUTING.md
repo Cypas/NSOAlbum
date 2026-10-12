@@ -32,6 +32,7 @@ the `main` ancestry check (a tag on unmerged `dev` code cannot publish) and
 the shared [native validation gates](docs/TESTING.md) on Windows x64, macOS
 arm64 and macOS Intel x64. Platform-only tests must explicitly skip on other
 hosts with a reason; never return early and count unexecuted assertions as
-passing. CI publishes a Windows runtime directory and Inno Setup installer, plus
-separate arm64/x64 macOS DMGs. ZIP release packages are not produced. macOS
-builds are non-sandboxed and ad-hoc signed, not Developer ID signed or notarized.
+passing. CI retains the Windows runtime directory as a validation artifact and
+publishes the Inno Setup installer plus separate arm64/x64 macOS DMGs in the
+GitHub Release. ZIP release packages are not produced. macOS builds are
+non-sandboxed and ad-hoc signed, not Developer ID signed or notarized.

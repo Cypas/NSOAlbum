@@ -12,6 +12,8 @@
 
 应用版本和构建号以 `flutter_app/pubspec.yaml` 为准，Rust crate 使用相同 SemVer，正式发布标签使用 `v<SemVer>`。升级时会优先使用 `NSOAlbum` 应用支持目录；若新目录没有有效数据，则继续使用 `Fresh Album`、`FreshAlbum` 或 `squid_album` 中检测到的旧库。Windows 默认图库目录按 `Pictures\NSOAlbum`、`Pictures\FreshAlbum` 的顺序探测，已有设置中的手动路径始终优先。Rust 会在单个 SQLite 事务中显式补齐历史缺失列并回滚失败迁移。
 
+当前公开开发流程为 `dev → main` pull request；`dev` push 仅运行 Ubuntu 快速检查和历史扫描，目标为 `main` 的 PR、`main` push、手动打包和稳定 tag 才运行完整 Windows/macOS 原生门禁。正式 Windows 发布只生成 NSOAlbum 目录版和 Inno Setup 安装器，不生成 ZIP。
+
 ## Windows 打包
 
 在 `flutter_app` 目录生成 Windows 运行目录：

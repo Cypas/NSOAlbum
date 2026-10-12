@@ -1,6 +1,6 @@
 # Third-party notices
 
-鱿型相册的 Rust 实现参考了以下项目公开展示的协议流程和相册目录行为。项目没有把这些参考项目作为 Python/C++ 运行时依赖，也没有直接复制其框架耦合代码。
+NSOAlbum（简体中文界面名“鱿型相册”）的 Rust 实现参考了以下项目公开展示的协议流程和相册目录行为。项目没有把这些参考项目作为 Python/C++ 运行时依赖，也没有直接复制其框架耦合代码。协议研究参考与当前运行时实现边界见被忽略的内部文档 `docs/protocol/nintendo-implementacao-para-comunidade.md`；公开源码和发布包不包含该内部研究文档。
 
 The repository's MIT `LICENSE` covers original source code only. Artwork, personal images, Nintendo marks, fonts, and bundled native dependencies retain separate rights and licenses. See [`ASSET-ATTRIBUTION.md`](ASSET-ATTRIBUTION.md) for the known image assets and the pre-release permission review requirement.
 
@@ -48,9 +48,16 @@ The repository's MIT `LICENSE` covers original source code only. Artwork, person
 - Used only for local video trimming and multi-video concatenation. The application passes local file paths to the bundled native libraries and does not upload video content.
 - Release packaging must preserve the plugin's generated `licenses/ffmpeg_kit_flutter_new_video/` notices and must not replace this dependency with a GPL codec variant without a separate license review.
 
-## Smiley Sans / 得意黑
+## Smiley Sans / 得意黑（历史字体）
 
 - Project: `atelier-anchor/smiley-sans`
 - Version: 2.0.1
 - License: SIL Open Font License 1.1
 - Legacy source asset only; it is no longer registered or bundled by the application. Its license text remains at `flutter_app/assets/fonts/SmileySans-OFL.txt`.
+
+## Current built-in fonts
+
+The current built-in UI font resources are `DFPT_ZY9.ttf`, `DFP_GBZY9.ttf`, and
+`BlitzMain.otf` under `flutter_app/assets/fonts/default/`. Their license or
+redistribution status is separate from the MIT source license and must be
+confirmed by the maintainer before public binary redistribution.

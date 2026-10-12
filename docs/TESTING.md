@@ -144,8 +144,8 @@ macOS 包装流程使用 `tool/package_macos.sh`，分别验证构建后的 `.ap
 选择分支，可填写 `ref` 为提交/分支并勾选 `package_installer`。也可执行：
 
 ```sh
-gh workflow run validate.yml --ref codex/public-release \
-  -f ref=codex/public-release -f package_installer=true
+gh workflow run validate.yml --ref dev \
+  -f ref=dev -f package_installer=true
 ```
 
 测试产物仅上传 Actions artifacts，没有 publish job、写入 Release 权限或标签

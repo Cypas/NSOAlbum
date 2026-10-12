@@ -55,10 +55,10 @@ native runners before version-tag publication.
 ## Releases and updates
 
 The current development version is `0.2.13+46` (Rust `0.2.13`); the latest
-stable release remains `v0.2.12`.
-It includes localized update messages, Windows title-bar interaction fixes,
-update proxy fallback, and native validation for Windows and both macOS architectures.
-The tag workflow publishes the installer only after all platform gates succeed.
+stable release is `v0.2.12`. Development work is performed on `dev` and merged
+to `main` by pull request. The full native validation matrix is required for
+the pull request and for release publication; a failed or cancelled platform
+gate blocks the merge/release.
 
 To test packaging without changing the version or creating a tag, run the
 **Validate** workflow manually with `package_installer=true` and an optional
@@ -71,7 +71,7 @@ gh workflow run validate.yml --ref dev \
   -f ref=dev -f package_installer=true
 ```
 
-Stable releases are published from tags in the form `v<major>.<minor>.<patch>`. The application version in `flutter_app/pubspec.yaml` is authoritative; the Rust crate version must use the same semantic version. Update checks query the latest stable release from `Cypas/NSOAlbum`. Windows release assets are the NSOAlbum runtime directory and `NSOAlbum-<version>-Setup.exe`; no ZIP package is generated. The installer is verified against the SHA-256 digest published by GitHub before the user can launch it. The app never installs an update silently.
+Stable releases are published from tags in the form `v<major>.<minor>.<patch>`. The application version in `flutter_app/pubspec.yaml` is authoritative; the Rust crate version must use the same semantic version. Update checks query the latest stable release from `Cypas/NSOAlbum`. CI produces a Windows runtime directory for validation and packaging; the public GitHub Release publishes `NSOAlbum-<version>-Setup.exe`, the arm64/x64 macOS DMGs, and `SHA256SUMS.txt`. No ZIP package is generated. The installer is verified against the SHA-256 digest published by GitHub before the user can launch it. The app never installs an update silently.
 
 `main` is the default stable branch. Maintainers develop on `dev` and merge
 `dev` into `main` through pull requests after `Required validation` succeeds.
