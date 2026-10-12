@@ -1,7 +1,19 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
+
+Future<void> verifySmokeVideoFrame({
+  required Future<Uint8List?> Function() capture,
+  required Future<void> Function(Uint8List) decode,
+}) async {
+  final frame = await capture();
+  if (frame == null || frame.isEmpty) {
+    throw StateError('No decoded frame for the current video');
+  }
+  await decode(frame);
+}
 
 /// A diagnostic library is never allowed to adopt an existing user directory.
 class CiSmokeRoot {

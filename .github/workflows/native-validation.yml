@@ -374,6 +374,12 @@ jobs:
           CODE_SIGN_IDENTITY: ""
         run: |
           set -euo pipefail
+          # Hosted macOS images may restore a partially downloaded SwiftPM
+          # binary artifact. Xcode reports that stale path as "already exists
+          # in file system" and aborts before the app build starts. Native
+          # validation must resolve dependencies from a clean artifact cache.
+          rm -rf "$HOME/Library/Caches/org.swift.swiftpm/artifacts"
+          mkdir -p "$HOME/Library/Caches/org.swift.swiftpm/artifacts"
           wrong_arch="$([[ "$PACKAGE_ARCH" == arm64 ]] && echo x64 || echo arm64)"
           if bash tool/package_macos.sh --architecture "$wrong_arch" --version "$PACKAGE_VERSION" --build-number "$PACKAGE_BUILD" --reports ../native-reports/wrong-architecture; then
             echo "Packaging architecture guard incorrectly accepted $wrong_arch on this runner" >&2

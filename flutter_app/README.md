@@ -1,4 +1,7 @@
-# 鱿型相册 Flutter 客户端
+# NSOAlbum Flutter 客户端
+
+简体中文界面显示名为“鱿型相册”；英文界面和 Windows 可执行文件使用
+`NSOAlbum`。Flutter package、Rust crate、数据库和既有用户数据目录保持兼容名称。
 
 Flutter 负责跨平台界面与系统集成，Rust Core 负责 SQLite、媒体文件、Nintendo/NXAPI/Coral、导入与同步状态。
 
@@ -41,4 +44,4 @@ flutter test
 
 当前 Windows 开发机已启用系统“开发者模式”，因此可以直接运行 `flutter build windows --release` 创建插件符号链接。若在未启用开发者模式的机器上构建，请使用 `tool/package_windows.ps1` 中的 CMake/目录联接回退流程。Android 构建还需配置 Android SDK/NDK 和兼容 JDK。
 
-若本机全局 Git/Cargo 代理指向未运行的 `127.0.0.1:7890`，只在当前终端清除代理后执行下载命令；不要把临时网络配置提交到项目。
+若本机全局 Git/Cargo 代理指向未运行的本地地址，只在当前终端清除代理后执行下载命令；不要把临时网络配置提交到项目。

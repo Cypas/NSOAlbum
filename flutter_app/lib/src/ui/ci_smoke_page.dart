@@ -388,55 +388,50 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
   }
 
   Future<void> _play(String path) async {
-    final previous = player;
-    setState(() {
-      controller = null;
-      player = null;
-    });
-    await WidgetsBinding.instance.endOfFrame;
-    if (previous != null) await previous.dispose();
     VideoRuntime.ensureInitialized();
-    final next = Player();
-    // Hosted macOS runners can crash in the Metal output on both Intel and
-    // arm64.  The CPU-backed output is stable; the frame check below waits
-    // for the software texture to contain decoded pixels before continuing.
-    final useHardwareVideoOutput = !Platform.isMacOS;
-    final output = VideoController(
-      next,
-      configuration: VideoControllerConfiguration(
-        enableHardwareAcceleration: useHardwareVideoOutput,
-      ),
-    );
-    setState(() {
-      player = next;
-      controller = output;
-    });
-    await WidgetsBinding.instance.endOfFrame;
+    // Keep one native output for sequential playback, as in the real viewer.
+    // Intel's observed abort occurred at merge playback; its native cause is
+    // still unknown. Reuse avoids unnecessary controller teardown in smoke.
+    var next = player;
+    var output = controller;
+    if (next == null || output == null) {
+      next = Player();
+      output = VideoController(
+        next,
+        configuration: VideoControllerConfiguration(
+          enableHardwareAcceleration: !Platform.isMacOS,
+        ),
+      );
+      setState(() {
+        player = next;
+        controller = output;
+      });
+      await WidgetsBinding.instance.endOfFrame;
+    } else {
+      await next.pause();
+    }
+    final playbackPlayer = next;
+    final playbackController = output;
     await VideoRuntime.openAndPlayWhenReady(
-      waitForVideoOutput: () => output.platform.future,
-      open: () => next.open(Media(path), play: false),
-      play: next.play,
+      waitForVideoOutput: () => playbackController.platform.future,
+      open: () => playbackPlayer.open(Media(path), play: false),
+      play: playbackPlayer.play,
       timeout: const Duration(seconds: 15),
     );
-    await output.waitUntilFirstFrameRendered.timeout(
+    await playbackController.waitUntilFirstFrameRendered.timeout(
       const Duration(seconds: 15),
     );
-    await next.stream.position
+    await playbackPlayer.stream.position
         .firstWhere((value) => value.inMilliseconds >= 100)
         .timeout(const Duration(seconds: 10));
-    // On macOS, media_kit's software texture screenshot channel can block the
-    // runner even after the native first-frame event has fired. The event plus
-    // advancing playback position prove a decoded frame was produced; keep
-    // pixel-level screenshot validation for Windows where the texture API is
-    // stable.
-    if (!Platform.isMacOS) {
-      final frame = await next.screenshot(format: 'image/png');
-      if (frame == null || frame.isEmpty) {
-        throw StateError('No decoded video frame');
-      }
-      await _decodeCover(frame, expectedColor: true);
-    }
-    await next.pause();
+    // The controller's first-frame Future completes only once. A new native
+    // decoder snapshot is therefore mandatory for each source/trim/merge,
+    // including macOS; an earlier rendered frame or audio is insufficient.
+    await verifySmokeVideoFrame(
+      capture: () => playbackPlayer.screenshot(format: 'image/png'),
+      decode: (bytes) => _decodeCover(bytes, expectedColor: true),
+    ).timeout(const Duration(seconds: 15));
+    await playbackPlayer.pause();
   }
 
   Future<VideoThumbnailData> _cover(MediaAsset asset) async {
@@ -553,13 +548,7 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
     }
   }
 
-  Uint8List _syntheticPng(
-    int width,
-    int height,
-    int red,
-    int green,
-    int blue,
-  ) {
+  Uint8List _syntheticPng(int width, int height, int red, int green, int blue) {
     final scanlines = BytesBuilder(copy: false);
     for (var y = 0; y < height; y++) {
       scanlines.addByte(0);
@@ -569,9 +558,8 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
     }
     final output = BytesBuilder(copy: false)
       ..add(<int>[137, 80, 78, 71, 13, 10, 26, 10])
-      ..add(_pngChunk(
-        'IHDR',
-        <int>[
+      ..add(
+        _pngChunk('IHDR', <int>[
           ..._u32(width),
           ..._u32(height),
           8,
@@ -579,12 +567,11 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
           0,
           0,
           0,
-        ],
-      ))
-      ..add(_pngChunk(
-        'IDAT',
-        ZLibCodec(level: 6).encode(scanlines.takeBytes()),
-      ))
+        ]),
+      )
+      ..add(
+        _pngChunk('IDAT', ZLibCodec(level: 6).encode(scanlines.takeBytes())),
+      )
       ..add(_pngChunk('IEND', const <int>[]));
     return output.takeBytes();
   }
@@ -592,19 +579,15 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
   List<int> _pngChunk(String type, List<int> data) {
     final typeBytes = ascii.encode(type);
     final payload = <int>[...typeBytes, ...data];
-    return <int>[
-      ..._u32(data.length),
-      ...payload,
-      ..._u32(_crc32(payload)),
-    ];
+    return <int>[..._u32(data.length), ...payload, ..._u32(_crc32(payload))];
   }
 
   List<int> _u32(int value) => <int>[
-        (value >> 24) & 0xff,
-        (value >> 16) & 0xff,
-        (value >> 8) & 0xff,
-        value & 0xff,
-      ];
+    (value >> 24) & 0xff,
+    (value >> 16) & 0xff,
+    (value >> 8) & 0xff,
+    value & 0xff,
+  ];
 
   int _crc32(List<int> bytes) {
     var crc = 0xffffffff;
@@ -671,7 +654,9 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
     if (!report.passed) await _captureFailure();
     try {
       if (player != null) {
+        await widget.diagnostics.phase('ci-video-cleanup-start');
         await player!.dispose().timeout(const Duration(seconds: 10));
+        await widget.diagnostics.phase('ci-video-cleanup-complete');
       }
       if (trayCreated) {
         await trayManager.destroy().timeout(const Duration(seconds: 10));
