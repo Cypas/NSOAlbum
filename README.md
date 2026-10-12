@@ -54,7 +54,7 @@ native runners before version-tag publication.
 
 ## Releases and updates
 
-The current development version is `0.2.13+46` (Rust `0.2.13`); the latest
+The current development version is `0.2.14+47` (Rust `0.2.14`); the latest
 stable release is `v0.2.12`. Development work is performed on `dev` and merged
 to `main` by pull request. The full native validation matrix is required for
 the pull request and for release publication; a failed or cancelled platform

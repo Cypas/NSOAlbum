@@ -48,7 +48,6 @@ run_smoke() {
 cd "$PROJECT_ROOT"
 mkdir -p "$DIST" "$REPORTS"
 REPORTS="$(cd "$REPORTS" && pwd)"
-flutter pub get
 flutter config --enable-macos-desktop
 
 if [[ "$ARCH" == "arm64" ]]; then
