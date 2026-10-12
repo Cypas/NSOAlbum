@@ -1,6 +1,6 @@
 # Third-party notices
 
-NSOAlbum（简体中文界面名“鱿型相册”）的 Rust 实现参考了以下项目公开展示的协议流程和相册目录行为。项目没有把这些参考项目作为 Python/C++ 运行时依赖，也没有直接复制其框架耦合代码。协议研究参考与当前运行时实现边界见被忽略的内部文档 `docs/protocol/nintendo-implementacao-para-comunidade.md`；公开源码和发布包不包含该内部研究文档。
+NSOAlbum（简体中文界面名“鱿型相册”）的 Rust 实现参考了以下项目公开展示的协议流程和相册目录行为。项目没有把这些参考项目作为 Python/C++ 运行时依赖，也没有直接复制其框架耦合代码。以下引用仅说明协议研究来源，应用当前行为以仓库内 Rust 实现为准。
 
 The repository's MIT `LICENSE` covers original source code only. Artwork, personal images, Nintendo marks, fonts, and bundled native dependencies retain separate rights and licenses. See [`ASSET-ATTRIBUTION.md`](ASSET-ATTRIBUTION.md) for the known image assets and the pre-release permission review requirement.
 
