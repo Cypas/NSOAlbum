@@ -34,12 +34,15 @@ void main() {
     expect(adjacentVideoIndices(3, 4), {2, 3});
   });
 
-  test('application typography uses the built-in web font shard chain', () {
-    expect(appFontFamily, 'Splatoon2');
-    expect(appFontFallback, contains('Splatoon2Symbol'));
-  });
+  test(
+    'application typography uses the ordered Chinese default font chain',
+    () {
+      expect(appFontFamily, 'DFPT_ZY9');
+      expect(appFontFallback, ['DFP_GBZY9', 'BlitzMain']);
+    },
+  );
 
-  testWidgets('gallery search uses the application Splatoon 2 font chain', (
+  testWidgets('gallery search uses the application default font chain', (
     tester,
   ) async {
     await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
@@ -57,12 +60,12 @@ void main() {
       'font management persists reorder and applies without restarting',
       (tester) async {
         final backend = _FontSettingsBackend()..mediaItems = [];
-        final firstFont = File(
-          'assets/fonts/splatoon_web/Splatoon2-common-2LVXcHij.ttf',
-        ).absolute.path;
-        final secondFont = File(
-          'assets/fonts/splatoon_web/Splatoon2CHzh-level1-CUZXdiKS.ttf',
-        ).absolute.path;
+        final firstFont = File('assets/fonts/default/BlitzMain.otf')
+            .absolute
+            .path;
+        final secondFont = File('assets/fonts/default/DFPT_ZY9.ttf')
+            .absolute
+            .path;
         backend.settings = AppSettings(
           proxyUrl: backend.settings.proxyUrl,
           libraryPath: backend.settings.libraryPath,
@@ -134,17 +137,17 @@ void main() {
         await tester.pumpAndSettle();
         expect(backend.settings.customFontPaths, isEmpty);
         expect(restartCount, 0);
-        expect(appFontFamily, 'Splatoon2');
+        expect(appFontFamily, 'DFPT_ZY9');
         expect(
           Theme.of(tester.element(fontCard)).textTheme.bodyMedium?.fontFamily,
-          'Splatoon2',
+          'DFPT_ZY9',
         );
         expect(
           Theme.of(tester.element(fontCard))
               .textTheme
               .bodyMedium
               ?.fontFamilyFallback,
-          contains('Splatoon2ChzhLevel1'),
+          ['DFP_GBZY9', 'BlitzMain'],
         );
       },
       tags: 'platform-windows',
@@ -1544,14 +1547,11 @@ void main() {
     expect(find.text('Settings'), findsWidgets);
     expect(backend.settings.language, 'en');
     final settingsTheme = Theme.of(tester.element(find.byType(SettingsPage)));
-    expect(
-      settingsTheme.textTheme.bodyMedium?.fontFamilyFallback,
-      contains('Splatoon2JpLevel1'),
-    );
-    expect(
-      settingsTheme.textTheme.bodyMedium?.fontFamilyFallback,
-      isNot(contains('Splatoon2ChzhLevel1')),
-    );
+    expect(settingsTheme.textTheme.bodyMedium?.fontFamily, 'BlitzMain');
+    expect(settingsTheme.textTheme.bodyMedium?.fontFamilyFallback, [
+      'DFPT_ZY9',
+      'DFP_GBZY9',
+    ]);
 
     final proxyField = find.byType(TextField).last;
     await tester.ensureVisible(proxyField);
@@ -1647,6 +1647,45 @@ void main() {
       expect(find.text('已是最新版本'), findsNothing);
     },
   );
+
+  testWidgets('about reports unavailable macOS DMG in both languages', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    final settings = SettingsController(backend);
+    addTearDown(settings.dispose);
+    for (final language in ['zh', 'en']) {
+      await tester.pumpWidget(
+        MaterialApp(
+          localizationsDelegates: const [
+            AppLocalizations.delegate,
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          supportedLocales: AppLocalizations.supportedLocales,
+          locale: Locale(language),
+          home: SettingsPage(
+            controller: settings,
+            backend: backend,
+            onTagsChanged: () {},
+            latestReleaseVersion: '0.2.13',
+            updateStatus: UpdateStatusKind.macosPackageUnavailable,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('about-latest-version')));
+      expect(
+        find.text(
+          language == 'zh'
+              ? '最新版本 0.2.13，暂时没有适用于此 Mac 的 DMG'
+              : 'Latest version 0.2.13; no DMG is available for this Mac yet.',
+        ),
+        findsOneWidget,
+      );
+    }
+  });
 
   testWidgets('shows the connected Nintendo nickname and avatar', (
     tester,
@@ -1768,6 +1807,40 @@ void main() {
     },
   );
 
+  testWidgets('shows NXAPI disclosure before signing in or adding an account', (
+    tester,
+  ) async {
+    await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('导入与同步').last);
+    await tester.pumpAndSettle();
+
+    final notice = find.byKey(const Key('nxapi-login-disclosure'));
+    expect(notice, findsOneWidget);
+    expect(
+      tester.getTopLeft(notice).dy,
+      lessThan(
+        tester
+            .getTopLeft(find.byKey(const Key('nintendo-login-help-image')))
+            .dy,
+      ),
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(
+      SquidAlbumApp(backend: FakeBackend(signedIn: true)),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('导入与同步').last);
+    await tester.pumpAndSettle();
+    expect(notice, findsNothing);
+
+    await tester.tap(find.byKey(const Key('add-nintendo-account')));
+    await tester.pumpAndSettle();
+    expect(notice, findsOneWidget);
+  });
+
   testWidgets('confirms before removing the current Nintendo account', (
     tester,
   ) async {
@@ -1881,6 +1954,9 @@ void main() {
     final panel = find.byKey(const Key('nso-auto-sync-settings'));
     expect(panel, findsOneWidget);
     expect(find.textContaining('休眠期每 24 小时检查一次'), findsOneWidget);
+    expect(find.text('活跃期每 30 分钟检查'), findsNothing);
+    await tester.ensureVisible(find.byKey(const Key('nso-auto-sync-interval')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('nso-auto-sync-interval')));
     await tester.pumpAndSettle();
     for (final label in ['30 分钟', '45 分钟', '60 分钟', '90 分钟', '120 分钟']) {
@@ -1889,6 +1965,7 @@ void main() {
     await tester.tap(find.text('45 分钟').last);
     await tester.pumpAndSettle();
     expect(backend.settings.syncPolicy.activeIntervalMinutes, 45);
+    expect(find.text('活跃期每 45 分钟检查'), findsNothing);
     await tester.ensureVisible(find.byKey(const Key('nso-sleep-after')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('nso-sleep-after')));

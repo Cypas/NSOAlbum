@@ -87,36 +87,15 @@ flutter:
     - assets/tray/app_icon.png
 
   fonts:
-    - family: Splatoon2
+    - family: DFPT_ZY9
       fonts:
-        - asset: assets/fonts/splatoon_web/Splatoon2-common-2LVXcHij.ttf
-    - family: Splatoon2Symbol
+        - asset: assets/fonts/default/DFPT_ZY9.ttf
+    - family: DFP_GBZY9
       fonts:
-        - asset: assets/fonts/splatoon_web/Splatoon2-symbol-common-aF2KKpUQ.ttf
-    - family: Splatoon2Cjk
+        - asset: assets/fonts/default/DFP_GBZY9.ttf
+    - family: BlitzMain
       fonts:
-        - asset: assets/fonts/splatoon_web/Splatoon2-cjk-common-BEzXpdSx.ttf
-    - family: Splatoon2JpKana
-      fonts:
-        - asset: assets/fonts/splatoon_web/Splatoon2JP-hiragana-katakana-D98dgzMx.ttf
-    - family: Splatoon2JpLevel1
-      fonts:
-        - asset: assets/fonts/splatoon_web/Splatoon2JP-level1-rL37kLr1.ttf
-    - family: Splatoon2JpLevel2
-      fonts:
-        - asset: assets/fonts/splatoon_web/Splatoon2JP-level2-DR2Y1cVj.ttf
-    - family: Splatoon2ChzhLevel1
-      fonts:
-        - asset: assets/fonts/splatoon_web/Splatoon2CHzh-level1-CUZXdiKS.ttf
-    - family: Splatoon2ChzhLevel2
-      fonts:
-        - asset: assets/fonts/splatoon_web/Splatoon2CHzh-level2-DDnDbTcP.ttf
-    - family: Splatoon2TwzhLevel1
-      fonts:
-        - asset: assets/fonts/splatoon_web/Splatoon2TWzh-level1-DzeF0cQ3.ttf
-    - family: Splatoon2TwzhLevel2
-      fonts:
-        - asset: assets/fonts/splatoon_web/Splatoon2TWzh-level2-BpPG6hHS.ttf
+        - asset: assets/fonts/default/BlitzMain.otf
 
   # To add assets to your application, add an assets section, like this:
   # assets:

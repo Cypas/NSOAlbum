@@ -86,6 +86,31 @@ void main() {
     },
   );
 
+  test('macOS release metadata lists only matching official DMG assets', () {
+    final info = latestReleaseInfoFromGithubJson({
+      'tag_name': 'v0.2.13',
+      'draft': false,
+      'prerelease': false,
+      'assets': [
+        {
+          'name': 'NSOAlbum-macOS-arm64-0.2.13.dmg',
+          'browser_download_url': 'https://github.com/Cypas/NSOAlbum/releases/download/v0.2.13/NSOAlbum-macOS-arm64-0.2.13.dmg',
+        },
+        {
+          'name': 'NSOAlbum-macOS-x64-0.2.13.dmg',
+          'browser_download_url': 'https://github.com/other/repo/releases/download/v0.2.13/NSOAlbum-macOS-x64-0.2.13.dmg',
+        },
+        {
+          'name': 'NSOAlbum-macOS-x64-0.2.12.dmg',
+          'browser_download_url': 'https://github.com/Cypas/NSOAlbum/releases/download/v0.2.12/NSOAlbum-macOS-x64-0.2.12.dmg',
+        },
+      ],
+    }, '0.2.12+45');
+    expect(info, isNotNull);
+    expect(info!.macosArchitectures, ['arm64']);
+    expect(info.installer, isNull);
+  });
+
   test(
     'release parser rejects an asset URL outside the expected repository',
     () {

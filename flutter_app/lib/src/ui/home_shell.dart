@@ -25,6 +25,8 @@ import 'video_merge_page.dart';
 import 'video_thumbnail.dart';
 import 'active_page_host.dart';
 import 'font_families.dart';
+import 'nxapi_disclosure_card.dart';
+import 'macos_update_dialog.dart';
 
 Future<void> showLatestReleaseUpdate(
   BuildContext context, {
@@ -34,11 +36,15 @@ Future<void> showLatestReleaseUpdate(
   void Function(LatestReleaseInfo? info, Object? error)? onStatus,
   String? applicationRoot,
   String? customProxyUrl,
+  String? macosArchitecture,
+  ReleaseUpdateService? updateService,
 }) async {
-  final service = ReleaseUpdateService(
-    applicationRoot: applicationRoot,
-    customProxyUrl: customProxyUrl,
-  );
+  final service =
+      updateService ??
+      ReleaseUpdateService(
+        applicationRoot: applicationRoot,
+        customProxyUrl: customProxyUrl,
+      );
   try {
     if (automatic && !await service.isAutomaticCheckDue()) return;
     final currentVersion = await loadApplicationVersion();
@@ -61,6 +67,39 @@ Future<void> showLatestReleaseUpdate(
     }
     if (automatic &&
         await service.ignoredReleaseVersion() == releaseInfo.version) {
+      return;
+    }
+    if (!context.mounted) return;
+    if (macosArchitecture != null) {
+      final choice = await showMacosReleaseUpdateDialog(
+        context,
+        release: releaseInfo,
+        architecture: macosArchitecture,
+      );
+      if (choice == MacosUpdateAction.ignore) {
+        await service.ignoreReleaseVersion(releaseInfo.version);
+      } else if (choice == MacosUpdateAction.downloadPage && context.mounted) {
+        try {
+          final opened = await launchUrl(
+            Uri.parse(githubReleasesPage),
+            mode: LaunchMode.externalApplication,
+          );
+          if (!opened) throw StateError('Unable to open GitHub Releases');
+        } catch (error, stackTrace) {
+          await onError(error, stackTrace);
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              _messageSnackBar(
+                context.l10n.select(
+                  zh: '无法打开 GitHub Releases，请稍后重试。',
+                  en: 'Unable to open GitHub Releases. Please try again later.',
+                ),
+                error: true,
+              ),
+            );
+          }
+        }
+      }
       return;
     }
     final release = releaseInfo.installer;
@@ -2479,8 +2518,8 @@ class _LibraryPageState extends State<LibraryPage> {
                 decoration: InputDecoration(
                   prefixIcon: const Icon(Icons.search),
                   hintText: context.l10n.select(
-                    zh: '搜索文件名、备注、游戏或标签',
-                    en: 'Search file name, note, game, or tag',
+                    zh: '搜索游戏名、标签、或备注内容',
+                    en: 'Search game names, tags, or notes',
                   ),
                   suffixIcon: ValueListenableBuilder<TextEditingValue>(
                     valueListenable: searchController,
@@ -5060,6 +5099,8 @@ class _TransferPageState extends State<TransferPage>
                         ],
                         const SizedBox(height: 18),
                         if (signedIn != true || addingAccount) ...[
+                          const NxapiDisclosureCard(),
+                          const SizedBox(height: 18),
                           Text(
                             context.l10n.select(
                               zh: '点击登录后会打开 Nintendo Account 页面。完成登录后，将浏览器的“选择此人”按钮的地址完整复制到下方。',
@@ -6309,12 +6350,6 @@ class _SyncPolicyPanelState extends State<_SyncPolicyPanel> {
                       ),
               ),
             ),
-            Text(
-              context.l10n.select(
-                zh: '活跃期每 ${policy.activeIntervalMinutes} 分钟检查',
-                en: 'Check every ${policy.activeIntervalMinutes} minutes while active',
-              ),
-            ),
             DropdownButtonFormField<int>(
               key: const Key('nso-auto-sync-interval'),
               initialValue: policy.activeIntervalMinutes,
@@ -6986,8 +7021,8 @@ class _SettingsPageState extends State<SettingsPage> {
                           const SizedBox(height: 6),
                           Text(
                             context.l10n.select(
-                              zh: '支持 TTF/OTF。列表顺序决定字体优先级；留空时使用按界面语言选择的 Splatoon2 字体。确认后立即生效，无需重启。',
-                              en: 'TTF/OTF only. Order controls priority; an empty list uses the language-specific Splatoon2 fonts. Apply instantly without restarting.',
+                              zh: '支持 TTF/OTF，列表顺序决定字体优先级。留空时使用内置字体，应用后立即生效，无需重启。',
+                              en: 'Supports TTF/OTF. List order determines font priority. Leave empty to use built-in fonts. Changes apply immediately without restarting.',
                             ),
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
@@ -7412,6 +7447,11 @@ class _SettingsPageState extends State<SettingsPage> {
                                   zh: '更新检查失败',
                                   en: 'Update check failed',
                                 ),
+                                UpdateStatusKind.macosPackageUnavailable =>
+                                  context.l10n.select(
+                                    zh: '最新版本 ${widget.latestReleaseVersion ?? '—'}，暂时没有适用于此 Mac 的 DMG',
+                                    en: 'Latest version ${widget.latestReleaseVersion ?? '—'}; no DMG is available for this Mac yet.',
+                                  ),
                                 null => '',
                               },
                               key: const Key('about-latest-version'),
@@ -7425,7 +7465,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        if (Platform.isWindows &&
+                        if ((Platform.isWindows || Platform.isMacOS) &&
                             widget.onCheckForUpdates != null)
                           OutlinedButton.icon(
                             key: const Key('check-app-updates'),

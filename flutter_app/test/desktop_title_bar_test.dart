@@ -8,6 +8,8 @@ import 'package:squid_album/src/ui/font_families.dart';
 import 'package:window_manager/window_manager.dart';
 
 void main() {
+  setUp(() async => loadCustomFontFamilies(const []));
+
   testWidgets('custom title bar renders app branding and window controls', (
     tester,
   ) async {
@@ -42,7 +44,7 @@ void main() {
           .widget<Text>(find.byKey(const Key('desktop-titlebar-title')))
           .style
           ?.fontFamily,
-      'Splatoon2',
+      'DFPT_ZY9',
     );
   });
 }

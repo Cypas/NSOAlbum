@@ -66,11 +66,16 @@ checks and uploads the Windows installer and both macOS DMGs as Actions
 artifacts, without creating a GitHub Release:
 
 ```sh
-gh workflow run validate.yml --ref codex/public-release \
-  -f ref=codex/public-release -f package_installer=true
+gh workflow run validate.yml --ref dev \
+  -f ref=dev -f package_installer=true
 ```
 
 Stable releases are published from tags in the form `v<major>.<minor>.<patch>`. The application version in `flutter_app/pubspec.yaml` is authoritative; the Rust crate version must use the same semantic version. Update checks query the latest stable release from `Cypas/NSOAlbum`. Windows release assets are the NSOAlbum runtime directory and `NSOAlbum-<version>-Setup.exe`; no ZIP package is generated. The installer is verified against the SHA-256 digest published by GitHub before the user can launch it. The app never installs an update silently.
+
+`main` is the default stable branch. Maintainers develop on `dev` and merge
+`dev` into `main` through pull requests after `Required validation` succeeds.
+That check includes all native platform gates, Ubuntu checks, and the history
+scan. Stable release tags must point to commits already merged into `main`.
 
 Upgrades reuse an existing library in `NSOAlbum`, `Fresh Album`, `FreshAlbum`, or
 `squid_album` application data directories when a valid database is found. The
@@ -81,6 +86,15 @@ from `0.2.9` onward publish only the canonical
 macOS DMGs are distributed separately for arm64 and Intel x64, outside the App
 Sandbox, with ad-hoc integrity signatures. They are not Developer ID signed or
 notarized; Gatekeeper may require users to approve the app on first launch.
+macOS checks for stable releases at most once per local calendar day on normal
+Release startup, with a manual check in About. Update prompts show release notes
+and whether a DMG exists for the running architecture. "Go to downloads" opens
+the project's GitHub Releases page in the default browser; macOS never downloads
+or replaces the app automatically. Quit the app and install the appropriate
+arm64 or Intel x64 DMG manually. Dismissing a prompt postpones it; ignoring a
+version suppresses only that version's automatic prompt. Manual checks bypass
+the daily limit and ignored-version preference. Safe mode and CI smoke do not
+perform automatic update checks.
 Every platform must pass its full Rust/Flutter suite, real image/video playback,
 FFmpeg cover/duration, trim/merge, and isolated-library restart checks before
 publication. No real Nintendo credentials or personal media are used by CI.

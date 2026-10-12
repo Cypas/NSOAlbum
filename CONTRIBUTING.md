@@ -4,6 +4,13 @@ Thanks for helping improve NSOAlbum (鱿型相册 in Simplified Chinese). Please
 
 ## Pull requests
 
+- Maintainers make code and workflow changes on `dev`, then open a pull request
+  into the default branch `main`. Contributors may submit pull requests from
+  their forks. Never directly push changes to `main` or force-push it.
+- Merge with a merge commit only after `Required validation` succeeds and review
+  conversations are resolved. The gate includes Windows x64, both macOS
+  architectures, Ubuntu, and the history secret scan; no extra reviewer is
+  required for maintainer-authored changes.
 - Keep changes focused and include tests for behavior changes.
 - Rust remains the only owner of SQLite and content-addressed media files; Flutter talks to Rust through the generated bridge.
 - Never add Nintendo session tokens, account data, local library databases, private proxy credentials, signing keys, or user media.
@@ -17,6 +24,7 @@ Thanks for helping improve NSOAlbum (鱿型相册 in Simplified Chinese). Please
 `flutter_app/pubspec.yaml` is the application version source. Keep `rust_core/Cargo.toml` on the same semantic version. Release tags use `v<major>.<minor>.<patch>` and must match both manifests; release automation rejects mismatches. Increment the Flutter build number for every distributable build and update the changelog.
 
 Only maintainers create stable release tags. The exact release commit must pass
+the `main` ancestry check (a tag on unmerged `dev` code cannot publish) and
 the shared [native validation gates](docs/TESTING.md) on Windows x64, macOS
 arm64 and macOS Intel x64. Platform-only tests must explicitly skip on other
 hosts with a reason; never return early and count unexecuted assertions as

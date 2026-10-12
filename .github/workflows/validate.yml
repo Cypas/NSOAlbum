@@ -2,11 +2,12 @@ name: Validate
 
 on:
   pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
-      - master
-      - codex/public-release
+      - dev
   workflow_dispatch:
     inputs:
       ref:
@@ -42,3 +43,20 @@ jobs:
     with:
       ref: ${{ needs.resolve.outputs.sha }}
       release: ${{ github.event_name == 'workflow_dispatch' && inputs.package_installer == true }}
+  validation:
+    name: Required validation
+    if: always()
+    needs:
+      - resolve
+      - platforms
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every validation gate
+        shell: bash
+        env:
+          RESOLVE_RESULT: ${{ needs.resolve.result }}
+          PLATFORM_RESULT: ${{ needs.platforms.result }}
+        run: |
+          set -euo pipefail
+          test "$RESOLVE_RESULT" = success
+          test "$PLATFORM_RESULT" = success
