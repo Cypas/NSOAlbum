@@ -62,7 +62,8 @@ flutter test --exclude-tags "platform-windows || platform-macos"
 
 ## CI 主机矩阵
 
-Validate 对 `main`、`dev` push 和目标为 `main` 的 PR 执行完整检查。
+目标为 `main` 的 PR 和 `main` push 执行完整检查；`dev` push 只执行快速
+Ubuntu Rust/Flutter 检查和历史扫描，避免每次开发提交重复构建三个原生平台。
 固定汇总检查 `Required validation` 只有提交解析与全部平台工作流成功时才
 通过；失败、取消或跳过均不得通过。维护者通过 `dev → main` PR 合并。
 正式 Release 除验证标签提交不可变和版本一致外，还验证提交属于 `main`
