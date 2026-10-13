@@ -4,6 +4,30 @@
 `flutter test` 不等于真实桌面窗口、播放器、FFmpeg 或 USB 设备已通过验收。
 所有测试均使用合成数据，不需要真实 Nintendo 账号或个人媒体。
 
+## 分支与触发规则
+
+| 事件 | 工作流与检查 | 可下载产物 | 正式发布 |
+| --- | --- | --- | --- |
+| push 到 `dev` | Dev validation：Ubuntu Rust fmt/Clippy/单测、Dart 分析、完整 Flutter 测试、Git 历史敏感扫描 | 不构建安装包 | 否 |
+| 新建/更新目标为 `main` 的 PR | Validate：Ubuntu/历史扫描及 Windows x64、macOS arm64/x64 各自完整测试、构建、签名和原生媒体验收；Required validation 汇总 | Windows 运行目录、两种 DMG；不编译 Inno | 否 |
+| PR 合入后 push 到 `main` | 同一 Validate 完整门禁，并自动编译 Windows Inno 安装器 | 运行目录、安装器、两种 DMG，保留 7 天 | 否 |
+| 手动 Dev validation | 对所选 ref 运行 Ubuntu 基础检查及历史扫描 | 不构建安装包 | 否 |
+| 手动 Validate | 固定所选 ref 的提交，运行完整门禁；`package_installer=true` 时额外编译 Inno | 运行目录、两种 DMG；开启时含安装器 | 否 |
+| push `v*` tag 或手动 Release | 稳定 tag/版本/main 祖先检查及完整门禁 | 安装器、两种 DMG、SHA256SUMS.txt | 全部成功后发布 |
+| 其他分支 push / 目标不是 `main` 的 PR | 当前没有自动触发；可手动指定 ref 验证 | 无自动产物 | 否 |
+
+PR 更新时，dev push 的轻量检查和 PR 的完整检查都可能运行，范围不同。
+PR 完整检查验收拟合并提交；合入后 main push 验收实际主分支提交并提供测试安装器，
+因此两次运行各有用途。稳定 tag 流程重新验证该 tag 固定提交，不借用其他 run 的通过记录。
+以运行事件、提交 SHA 和完整工作流结果区分各次检查，不以单个 artifact 判断正式发布。
+
+三平台通过可复用工作流各自执行“构建与完整单测 → 同平台验收与打包”，
+Windows 验收无需等待 macOS 构建完成，反之亦然。每个平台仅使用同次运行的
+对应平台 artifact，提交、SemVer、构建号、文件哈希、链接及权限均须匹配。
+各平台显式汇总构建与验收结果，上层再汇总三平台、Ubuntu 和历史扫描；
+失败、取消或跳过均不能使 Required validation 或正式 publish 成功。
+按平台独立验收只改变调度顺序，不改变三平台齐备和统一版本的正式发布要求。
+
 ## 本地基础验证
 
 从仓库根目录分别进入对应目录，执行全部命令：
@@ -198,6 +222,14 @@ macOS 包装流程使用 `tool/package_macos.sh`；构建 job 的 `--build-only`
 gh workflow run validate.yml --ref dev \
   -f ref=dev -f package_installer=true
 ```
+
+合入 `main` 后，现有 Validate 自动生成 Windows Inno 安装器及两种 macOS DMG，
+复用该次验证中的构建产物，不额外触发构建工作流。PR 仍执行完整原生门禁，
+但不自动编译 Inno；手动运行继续由 `package_installer` 控制。
+测试安装包可在该次 Actions 运行的 `native-windows-x64`、
+`native-macos-arm64` 和 `native-macos-x64` artifacts 中下载，保留 7 天。
+下载前须确认整个工作流和 `Required validation` 成功；某个平台先上传了
+artifact 不代表其他平台或完整验证已通过。
 
 测试产物仅上传 Actions artifacts，没有 publish job、写入 Release 权限或标签
 操作。`package_installer=false` 仍执行完整签名/测试/运行检查，只省略 Inno 编译。

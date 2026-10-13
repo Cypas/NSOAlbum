@@ -2,7 +2,7 @@ use chrono::{Duration, Utc};
 use serde_json::{json, Value};
 
 use crate::error::{CoreError, CoreResult};
-use crate::transport::{HttpResponseData, HttpTransport};
+use crate::transport::{nintendo_user_agent, HttpResponseData, HttpTransport};
 
 use super::attestation::AttestationService;
 use super::auth::NintendoAuthClient;
@@ -61,10 +61,7 @@ impl<A: AttestationService> CoralSessionClient<A> {
                     &[
                         ("X-Platform", "Android".into()),
                         ("X-ProductVersion", version.clone()),
-                        (
-                            "User-Agent",
-                            format!("com.nintendo.znca/{version}(Android/14)"),
-                        ),
+                        ("User-Agent", nintendo_user_agent(&version)),
                         ("Content-Type", "application/octet-stream".into()),
                         ("Accept", "application/octet-stream,application/json".into()),
                     ],
@@ -79,7 +76,13 @@ impl<A: AttestationService> CoralSessionClient<A> {
             response.ensure_success("Coral Account/Login")?;
             let mut session = parse_session(&decoded, &profile)?;
             if let Some(avatar_url) = session.avatar_url.as_deref() {
-                session.avatar_bytes = self.transport.download_avatar(avatar_url).await.ok();
+                session.avatar_bytes = self
+                    .transport
+                    .clone()
+                    .with_nso_downloads(&version)
+                    .download_avatar(avatar_url)
+                    .await
+                    .ok();
             }
             return Ok(session);
         }

@@ -10,7 +10,13 @@ use url::Url;
 use crate::error::{CoreError, CoreResult};
 
 pub const DEFAULT_MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
+const DEFAULT_USER_AGENT: &str =
+    "Mozilla/5.0 (Linux; Android 14; Pixel 7a) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36";
 const MAX_AVATAR_BYTES: u64 = 4 * 1024 * 1024;
+
+pub(crate) fn nintendo_user_agent(nso_version: &str) -> String {
+    format!("com.nintendo.znca/{nso_version}(Android/14)")
+}
 
 #[derive(Debug, Clone)]
 pub struct HttpResponseData {
@@ -67,13 +73,14 @@ impl Default for TransportConfig {
 pub struct HttpTransport {
     client: Client,
     config: TransportConfig,
+    download_user_agent: Option<String>,
 }
 
 impl HttpTransport {
     pub fn new(config: TransportConfig) -> CoreResult<Self> {
         let mut builder = Client::builder()
             .timeout(config.timeout)
-            .user_agent("SquidAlbum/0.1.12");
+            .user_agent(DEFAULT_USER_AGENT);
         if let Some(proxy_url) = config.proxy_url.as_deref().filter(|v| !v.trim().is_empty()) {
             let parsed = Url::parse(proxy_url)?;
             if !matches!(parsed.scheme(), "http" | "https") {
@@ -86,7 +93,24 @@ impl HttpTransport {
         Ok(Self {
             client: builder.build()?,
             config,
+            download_user_agent: None,
         })
+    }
+
+    /// Applies only to public media/avatar downloads on this transport clone.
+    pub(crate) fn with_nso_downloads(mut self, nso_version: &str) -> Self {
+        self.download_user_agent = Some(nintendo_user_agent(nso_version));
+        self
+    }
+
+    fn public_download_request(&self, url: &str) -> CoreResult<reqwest::RequestBuilder> {
+        validate_public_https_url(url)?;
+        Ok(self.client.get(url).header(
+            "User-Agent",
+            self.download_user_agent
+                .as_deref()
+                .unwrap_or(DEFAULT_USER_AGENT),
+        ))
     }
 
     pub async fn get_json<T: DeserializeOwned>(
@@ -214,8 +238,11 @@ impl HttpTransport {
         expected_size: Option<u64>,
         limit: u64,
     ) -> CoreResult<Vec<u8>> {
-        validate_public_https_url(url)?;
-        let mut response = self.client.get(url).send().await?.error_for_status()?;
+        let mut response = self
+            .public_download_request(url)?
+            .send()
+            .await?
+            .error_for_status()?;
         if let Some(length) = response.content_length() {
             validate_size(length, limit)?;
         }
@@ -316,8 +343,129 @@ pub fn validate_public_https_url(raw: &str) -> CoreResult<Url> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
     use super::*;
+
+    pub(crate) fn capture_request(body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut connection = loop {
+                match listener.accept() {
+                    Ok((connection, _)) => break connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "request was never sent"
+                        );
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("failed to accept request: {error}"),
+                }
+            };
+            connection.set_nonblocking(false).unwrap();
+            connection
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let length = connection.read(&mut buffer).unwrap();
+                assert!(length > 0, "connection closed before request headers");
+                request.extend_from_slice(&buffer[..length]);
+                assert!(
+                    request.len() <= 64 * 1024,
+                    "request headers exceeded test limit"
+                );
+            }
+            let header_end = request
+                .windows(4)
+                .position(|bytes| bytes == b"\r\n\r\n")
+                .unwrap()
+                + 4;
+            let headers = String::from_utf8(request[..header_end].to_vec()).unwrap();
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            while request.len() < header_end + content_length {
+                let length = connection.read(&mut buffer).unwrap();
+                assert!(length > 0, "connection closed before request body");
+                request.extend_from_slice(&buffer[..length]);
+            }
+            write!(
+                connection,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        (url, server)
+    }
+
+    #[tokio::test]
+    async fn unspecified_requests_send_browser_fallback_without_overriding_protocol_headers() {
+        let transport = HttpTransport::new(Default::default())
+            .unwrap()
+            .with_nso_downloads("3.8.0");
+        for (headers, expected) in [
+            (
+                vec![],
+                "Mozilla/5.0 (Linux; Android 14; Pixel 7a) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
+            ),
+            (
+                vec![("User-Agent", "NASDKAPI; Android".into())],
+                "NASDKAPI; Android",
+            ),
+        ] {
+            let (url, server) = capture_request("{}");
+            transport.get_raw(&url, &headers).await.unwrap();
+            let request = server.join().unwrap();
+            assert!(
+                request
+                    .lines()
+                    .any(|line| line.eq_ignore_ascii_case(&format!("user-agent: {expected}"))),
+                "unexpected request headers: {request}"
+            );
+        }
+    }
+
+    #[test]
+    fn nintendo_download_requests_use_nso_version_without_changing_other_clones() {
+        let transport = HttpTransport::new(Default::default()).unwrap();
+        let first_account = transport.clone().with_nso_downloads("3.8.0");
+        let second_account = transport.clone().with_nso_downloads("3.9.1");
+        for (scoped, expected) in [
+            (&first_account, "com.nintendo.znca/3.8.0(Android/14)"),
+            (&second_account, "com.nintendo.znca/3.9.1(Android/14)"),
+            (
+                &transport,
+                "Mozilla/5.0 (Linux; Android 14; Pixel 7a) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
+            ),
+        ] {
+            for url in [
+                "https://example.com/video.mp4",
+                "https://example.com/avatar.png",
+            ] {
+                let request = scoped.public_download_request(url).unwrap().build().unwrap();
+                assert_eq!(request.headers()["user-agent"], expected);
+                assert!(!request.headers().contains_key("authorization"));
+                assert!(!request.headers().contains_key("cookie"));
+            }
+            assert!(scoped.public_download_request("http://127.0.0.1/private").is_err());
+        }
+    }
 
     #[test]
     fn rejects_local_media_urls() {

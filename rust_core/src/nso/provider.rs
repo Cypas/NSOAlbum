@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use crate::album::{kind_from_type, readable_media_name};
 use crate::error::{CoreError, CoreResult};
 use crate::models::{MediaCandidate, ProviderPage, SourceType};
-use crate::transport::HttpTransport;
+use crate::transport::{nintendo_user_agent, HttpTransport};
 
 use super::attestation::AttestationService;
 
@@ -70,10 +70,7 @@ impl<A: AttestationService> CoralAlbumProvider<A> {
                         "Authorization",
                         format!("Bearer {}", self.session.access_token),
                     ),
-                    (
-                        "User-Agent",
-                        format!("com.nintendo.znca/{version}(Android/14)"),
-                    ),
+                    ("User-Agent", nintendo_user_agent(&version)),
                     ("X-Platform", "Android".into()),
                     ("X-ProductVersion", version),
                     ("Content-Type", "application/octet-stream".into()),

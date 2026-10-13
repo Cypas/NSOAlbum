@@ -41,7 +41,7 @@ jobs:
     uses: ./.github/workflows/native-validation.yml
     with:
       ref: ${{ needs.resolve.outputs.sha }}
-      release: ${{ github.event_name == 'workflow_dispatch' && inputs.package_installer == true }}
+      release: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.package_installer == true) }}
   validation:
     name: Required validation
     if: always()

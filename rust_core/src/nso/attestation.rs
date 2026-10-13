@@ -121,7 +121,7 @@ impl Default for NxapiConfig {
             znca_base_url: DEFAULT_ZNCA_BASE_URL.into(),
             oauth_url: DEFAULT_OAUTH_URL.into(),
             client_id: DEFAULT_CLIENT_ID.into(),
-            user_agent: format!("Cypas/NSOAlbum/{}", env!("CARGO_PKG_VERSION")),
+            user_agent: format!("Cypas-NSOAlbum/{}", env!("CARGO_PKG_VERSION")),
         }
     }
 }
@@ -416,6 +416,31 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test]
+    async fn oauth_and_znca_config_send_the_application_user_agent() {
+        let expected = format!("user-agent: Cypas-NSOAlbum/{}", env!("CARGO_PKG_VERSION"));
+        let (oauth_url, oauth_server) = crate::transport::tests::capture_request(
+            r#"{"access_token":"test-only-token","expires_in":300}"#,
+        );
+        let (znca_base_url, config_server) =
+            crate::transport::tests::capture_request(r#"{"nso_version":"3.8.0"}"#);
+        let client = NxapiAttestationClient::new(
+            HttpTransport::new(Default::default()).unwrap(),
+            NxapiConfig {
+                oauth_url,
+                znca_base_url,
+                ..Default::default()
+            },
+        );
+        client.oauth_token().await.unwrap();
+        assert_eq!(client.nso_version().await.unwrap(), "3.8.0");
+        for request in [oauth_server.join().unwrap(), config_server.join().unwrap()] {
+            assert!(request
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case(&expected)));
+        }
+    }
+
     #[test]
     fn uses_current_nxapi_client_identifiers() {
         let config = NxapiConfig::default();
@@ -423,7 +448,7 @@ mod tests {
         assert_eq!(config.client_id, "OhFZ3YmNeYnls5Fo-z3BkA");
         assert_eq!(
             config.user_agent,
-            format!("Cypas/NSOAlbum/{}", env!("CARGO_PKG_VERSION"))
+            format!("Cypas-NSOAlbum/{}", env!("CARGO_PKG_VERSION"))
         );
         assert_eq!(ZNCA_CLIENT_VERSION, "d8fAZDPzwimzQ7c6");
     }

@@ -16,8 +16,8 @@ use crate::models::{
     SyncProgress, SyncSummary, TagUsageSummary,
 };
 use crate::nso::{
-    CoralAlbumProvider, CoralSession, CoralSessionClient, MediaProvider, NintendoAuthClient,
-    NxapiAttestationClient, NxapiConfig,
+    AttestationService, CoralAlbumProvider, CoralSession, CoralSessionClient, MediaProvider,
+    NintendoAuthClient, NxapiAttestationClient, NxapiConfig,
 };
 use crate::settings::{
     AppSettings, SyncAttemptSummary, SyncPolicy, SyncRuntimeState, SyncScheduleStatus,
@@ -230,12 +230,16 @@ impl CoreApi {
         proxy_url: Option<String>,
         cancellation: &CancellationToken,
     ) -> CoreResult<SyncSummary> {
+        cancellation.check()?;
         let transport = self.transport(proxy_url)?;
         let attestation = NxapiAttestationClient::new(transport.clone(), NxapiConfig::default());
+        let download_transport = transport
+            .clone()
+            .with_nso_downloads(&attestation.nso_version().await?);
         let provider = CoralAlbumProvider::new(transport.clone(), attestation, session);
         let provider_name = provider.provider_name().to_owned();
         let repository = MediaRepository::new(self.media_root()?, Arc::clone(&self.database));
-        let engine = SyncEngine::new(provider, transport, repository);
+        let engine = SyncEngine::new(provider, download_transport, repository);
         let cursor = self.database.latest_sync_cursor(&provider_name)?;
         engine.sync(cursor.as_deref(), cancellation).await
     }

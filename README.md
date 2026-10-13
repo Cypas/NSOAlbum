@@ -55,7 +55,7 @@ native runners before version-tag publication.
 ## Releases and updates
 
 The current development version is `0.2.14+47` (Rust `0.2.14`); the latest
-stable release is `v0.2.12`. Development work is performed on `dev` and merged
+stable release is `v0.2.14`. Development work is performed on `dev` and merged
 to `main` by pull request. The full native validation matrix is required for
 the pull request and for release publication; a failed or cancelled platform
 gate blocks the merge/release.
@@ -79,6 +79,19 @@ Pushes to `dev` run the faster Ubuntu Rust/Flutter checks and history scan;
 the full Windows/macOS native matrix runs on the pull request, `main` pushes,
 manual packaging checks and stable release tags. Stable release tags must
 point to commits already merged into `main`.
+
+Each native platform starts verifying its own build as soon as it is ready.
+All platform builds and verification jobs still use the same pinned commit,
+version and build number. `Required validation` and official publication
+wait for all three platforms, Ubuntu checks and the history scan.
+The [CI trigger table](docs/TESTING.md#分支与触发规则) documents each event.
+
+After a merge to `main`, the existing Validate run also builds the Windows
+installer and both macOS DMGs as test artifacts, retained for seven days.
+Download them from a run whose `Required validation` and all jobs succeeded;
+an individual platform artifact does not imply the whole run passed.
+This does not create a tag or GitHub Release. Official publication still
+requires every platform gate to pass for the same stable tag commit.
 
 Upgrades reuse an existing library in `NSOAlbum`, `Fresh Album`, `FreshAlbum`, or
 `squid_album` application data directories when a valid database is found. The
