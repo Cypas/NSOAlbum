@@ -87,6 +87,47 @@ Flutter 测试，然后构建当前提交的 Release 包。报告从当次 Rust 
 common/Windows/macOS；不在文档、工作流或脚本中固定测试数量。
 未运行、跳过、超时、缺少报告与测试失败必须如实显示，不能写成通过。
 
+### 缓存、构建与验收分离
+
+Ubuntu 基础验证和三个原生构建使用平台/架构隔离的 Cargo 缓存；Rust cache
+同时区分工具链与 Cargo 依赖配置。Flutter SDK/Pub cache 继续复用；Bridge
+generator 单独按架构、Rust 工具链和固定版本缓存，命中后仍核对实际版本。
+macOS 的 SwiftPM binary artifact / CocoaPods 缓存按架构、Xcode、Flutter
+及依赖锁隔离，不缓存整个 Xcode 工程或最终 `.app` 来替代本次构建。
+
+原生流程分为两个 job：
+
+1. `Build and test <platform>`：准确提交 checkout、完整本机测试、一次
+   Windows Release 目录构建或 macOS 最终签名应用构建。Windows 的显式 Cargo
+   Release 和 Cargokit 分别缓存其编译目录，不混用 Debug DLL。MSBuild 环境
+   变化可能让 C 依赖重编译；不强行共享指纹或压制 Cargo 的失效判断。
+   发布 DLL 仍使用本次显式 Release 构建结果替换并逐项核对。
+2. `Verify and package <platform>`：只下载当前 workflow run 的对应中间
+   artifact，验证提交、版本、构建号、平台和全部文件 SHA-256，拒绝缺失/
+   新增文件和越界链接。tar 只作为内部传输容器，保留 macOS framework 链接和
+   执行权限，不是用户发布包。随后重新检查签名、依赖和架构，执行原生
+   normal/reopen/safe、故障拒绝、Inno 或 DMG 挂载检查，不重新编译应用。
+
+`built-<platform>-<commit>` 保留 3 天，仅供同次运行复用；测试报告为
+`validation-<platform>`，运行报告为 `smoke-<platform>`。正式输出仍为
+`native-<platform>`。只有完整验收成功后才能上传正式产物，Release publish
+和 `Required validation` 同时等待两个阶段；中间 artifact 不是通过证明。
+同次工作流的验收 job 失败可用 `gh run rerun <run-id> --failed` 重跑，构建
+job 成功的 artifact 可复用；若 artifact 已过期则完整重跑，不使用其他提交的包。
+等待结果使用 `gh run watch <run-id> --exit-status --interval 60`。
+
+SwiftPM 不再无条件清空全缓存。构建包装器仅在日志明确指向该缓存内的
+FFmpeg `.xcframework` 同名下载冲突时删除对应条目，最多重试一次；其他
+构建错误立即失败，再次冲突仍失败。它不声称修复所有 SwiftPM 并发或网络问题。
+缓存未命中、缓存过期或丢失时正常从头构建；所有测试和发布门禁照常执行。
+实际加速效果必须由原生 CI 冷/热缓存报告确认，不能根据本地单测估算。
+
+`ci_bundle_test.dart` 使用真实 PowerShell 和 tar 验证元数据/内容校验、
+链接及传输；Unix 权限及符号链接用例在 Windows 明确跳过，Windows 仍验证
+普通文件的完整 tar 往返。`macos_cache_retry_test.dart`
+执行真实 bash 包装器，但构建命令为可控 fixture；只证明有限重试控制流程，
+不代表真实 macOS 打包已验收。
+
 ## 真实 Release 冒烟
 
 `--ci-smoke` 是显式启用的诊断入口，普通启动不会运行。诊断还必须提供
@@ -131,7 +172,9 @@ Windows 可在 `flutter_app` 中对已有、刚构建完成的运行目录执行
 dart run tool/run_release_smoke.dart --launch-app "../dist/NSOAlbum-Windows-x64-<SemVer>/NSOAlbum.exe" --reports-dir "<绝对诊断报告目录>"
 ```
 
-macOS 包装流程使用 `tool/package_macos.sh`，分别验证构建后的 `.app` 和挂载为
+macOS 包装流程使用 `tool/package_macos.sh`；构建 job 的 `--build-only` 仅产生
+签名后的中间 `.app`，验收 job 用 `--reuse-app` 检查同一个包，不再改写或重签。
+完整流程分别验证构建后的 `.app` 和挂载为
 只读卷后的 DMG 内 `.app`，两次均运行真实冒烟。每种架构单独构建并校验 Mach-O
 架构、依赖与签名。当前发行策略是 ad-hoc 签名、未 Developer ID 签名/未公证、
 非 App Sandbox 的 DMG；ad-hoc 签名不是 Apple 信任背书，不宣称可直接通过 Gatekeeper。

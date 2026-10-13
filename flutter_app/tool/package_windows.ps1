@@ -1,6 +1,7 @@
 param(
     [string]$Version,
     [switch]$SkipTests,
+    [switch]$SkipBridgeGeneration,
     [switch]$UseExistingFlutterBuild
 )
 
@@ -215,10 +216,16 @@ if ($null -eq $dart) {
     $dart = $dartCommand.Source
 }
 
-Write-Host 'Generating Flutter/Rust bridge code...'
-& $bridgeScript
-if ($LASTEXITCODE -ne 0) {
-    throw "Bridge generation failed with exit code $LASTEXITCODE."
+if ($SkipBridgeGeneration) {
+    if ($env:GITHUB_ACTIONS -ne 'true') {
+        throw 'Skipping bridge generation is only supported by the pinned CI build job.'
+    }
+} else {
+    Write-Host 'Generating Flutter/Rust bridge code...'
+    & $bridgeScript
+    if ($LASTEXITCODE -ne 0) {
+        throw "Bridge generation failed with exit code $LASTEXITCODE."
+    }
 }
 
 $rustGenerated = Get-Content -Raw -LiteralPath (Join-Path $rustRoot 'src\frb_generated.rs')

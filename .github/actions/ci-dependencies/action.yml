@@ -1,0 +1,49 @@
+name: Cache native build dependencies
+description: Reuse dependencies without reusing validation results or release packages
+inputs:
+  platform:
+    description: OS and native architecture cache namespace
+    required: true
+  codegen:
+    description: Install the pinned bridge generator for native builds
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Cache Cargo dependencies and build intermediates
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: nso-v1-${{ inputs.platform }}
+        workspaces: rust_core -> target
+        cache-bin: false
+        cache-on-failure: false
+        cache-directories: ${{ inputs.platform == 'windows-x64' && 'flutter_app/build/windows/x64/plugins/squid_album_core/cargokit_build' || '' }}
+    - name: Identify the native generator toolchain
+      if: inputs.codegen == 'true'
+      id: toolchain
+      shell: pwsh
+      run: |
+        $identity = (rustc -vV | Out-String)
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the Rust toolchain.' }
+        $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($identity)))
+        "hash=$digest" >> $env:GITHUB_OUTPUT
+    - name: Restore only the bridge generator executable
+      if: inputs.codegen == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/bin/flutter_rust_bridge_codegen*
+        key: nso-codegen-v1-${{ inputs.platform }}-${{ steps.toolchain.outputs.hash }}-2.13.0
+    - name: Verify or install pinned bridge generator
+      if: inputs.codegen == 'true'
+      shell: pwsh
+      run: |
+        $generator = Get-Command flutter_rust_bridge_codegen -ErrorAction SilentlyContinue
+        if ($null -ne $generator) {
+          $version = (& $generator.Source --version | Out-String).Trim()
+          if ($LASTEXITCODE -eq 0 -and $version -match '\b2\.13\.0$') {
+            Write-Host 'Using verified cached flutter_rust_bridge_codegen 2.13.0'
+            exit 0
+          }
+        }
+        cargo install flutter_rust_bridge_codegen --version 2.13.0 --locked --force
+        if ($LASTEXITCODE -ne 0) { throw 'Bridge generator installation failed.' }

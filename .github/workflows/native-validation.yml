@@ -38,6 +38,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - uses: ./.github/actions/ci-dependencies
+        with:
+          platform: ubuntu-x64
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.47.6
@@ -101,7 +104,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   native:
-    name: Native ${{ matrix.platform }}
+    name: Build and test ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
@@ -161,6 +164,10 @@ jobs:
         with:
           targets: ${{ matrix.target }}
           components: clippy, rustfmt
+      - uses: ./.github/actions/ci-dependencies
+        with:
+          platform: ${{ matrix.platform }}
+          codegen: "true"
       - name: Native nested code signing regression
         if: matrix.mac_arch != ''
         shell: bash
@@ -200,10 +207,21 @@ jobs:
         run: |
           flutter pub get
           if ($LASTEXITCODE -ne 0) { throw 'flutter pub get failed.' }
-      - name: Install pinned Flutter Rust Bridge generator
+      - name: Identify Xcode dependency cache
+        if: matrix.mac_arch != ''
+        id: xcode
+        shell: bash
         run: |
-          cargo install flutter_rust_bridge_codegen --version 2.13.0 --locked
-          if ($LASTEXITCODE -ne 0) { throw 'Bridge generator installation failed.' }
+          set -euo pipefail
+          echo "version=$(xcodebuild -version | shasum -a 256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Cache architecture-specific SwiftPM and CocoaPods dependencies
+        if: matrix.mac_arch != ''
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm/artifacts
+            ~/Library/Caches/CocoaPods
+          key: nso-macos-deps-v1-${{ matrix.platform }}-${{ steps.xcode.outputs.version }}-flutter-3.47.6-${{ hashFiles('flutter_app/pubspec.lock', 'flutter_app/macos/**/Package.resolved', 'flutter_app/macos/Podfile.lock') }}
       - name: Regenerate the bridge before validation
         working-directory: flutter_app
         run: ./tool/generate_bridge.ps1
@@ -251,7 +269,7 @@ jobs:
           GITHUB_REF_NAME: ${{ inputs.release_tag }}
           PACKAGE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          ./tool/package_windows.ps1 -Version $env:PACKAGE_VERSION -SkipTests
+          ./tool/package_windows.ps1 -Version $env:PACKAGE_VERSION -SkipTests -SkipBridgeGeneration
           $package = [System.IO.Path]::GetFullPath("../dist/NSOAlbum-Windows-x64-$env:PACKAGE_VERSION")
           foreach ($name in @(
             'NSOAlbum.exe', 'flutter_windows.dll', 'squid_album_core.dll',
@@ -278,6 +296,143 @@ jobs:
           $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath '../rust_core/target/release/squid_album_core.dll').Hash
           $packageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $package 'squid_album_core.dll')).Hash
           if ($sourceHash -ne $packageHash) { throw 'Packaged Rust DLL does not match the fresh source build.' }
+      - name: Build and sign macOS app once
+        if: matrix.mac_arch != ''
+        working-directory: flutter_app
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          PACKAGE_BUILD: ${{ steps.version.outputs.build }}
+          PACKAGE_ARCH: ${{ matrix.mac_arch }}
+          CODE_SIGNING_ALLOWED: "NO"
+          CODE_SIGNING_REQUIRED: "NO"
+          CODE_SIGN_IDENTITY: ""
+        run: |
+          set -euo pipefail
+          wrong_arch="$([[ "$PACKAGE_ARCH" == arm64 ]] && echo x64 || echo arm64)"
+          if bash tool/package_macos.sh --architecture "$wrong_arch" --version "$PACKAGE_VERSION" --build-number "$PACKAGE_BUILD" --reports ../native-reports/wrong-architecture --build-only; then
+            echo "Packaging architecture guard incorrectly accepted $wrong_arch" >&2
+            exit 1
+          fi
+          bash tool/package_macos.sh --architecture "$PACKAGE_ARCH" --version "$PACKAGE_VERSION" --build-number "$PACKAGE_BUILD" --reports ../native-reports/build --build-only
+          mkdir -p "../dist/ci-build/macos-$PACKAGE_ARCH"
+          ditto build/macos/Build/Products/Release/NSOAlbum.app "../dist/ci-build/macos-$PACKAGE_ARCH/NSOAlbum.app"
+      - name: Seal the exact build and archive without losing links or permissions
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+          PACKAGE_PLATFORM: ${{ matrix.platform }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          PACKAGE_BUILD: ${{ steps.version.outputs.build }}
+        run: |
+          $directory = if ($env:PACKAGE_PLATFORM -eq 'windows-x64') {
+            "dist/NSOAlbum-Windows-x64-$env:PACKAGE_VERSION"
+          } else { "dist/ci-build/$env:PACKAGE_PLATFORM" }
+          ./flutter_app/tool/ci_bundle.ps1 -Mode Seal -Directory $directory -Commit $env:EXPECTED_SHA -Platform $env:PACKAGE_PLATFORM -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD
+          New-Item -ItemType Directory -Path dist/ci-transfer -Force | Out-Null
+          tar -cf "dist/ci-transfer/$env:PACKAGE_PLATFORM.tar" -C $directory .
+          if ($LASTEXITCODE -ne 0) { throw 'Archiving native build failed.' }
+      - name: Upload intermediate build for same-run native verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-${{ matrix.platform }}-${{ inputs.ref }}
+          path: dist/ci-transfer/${{ matrix.platform }}.tar
+          compression-level: 1
+          retention-days: 3
+          if-no-files-found: error
+      - name: Upload build test reports even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-${{ matrix.platform }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            native-reports/test-counts.json
+            ${{ runner.temp }}/flutter-tests.jsonl
+            ${{ runner.temp }}/flutter-tests-stderr.log
+            ${{ runner.temp }}/rust-tests.log
+
+  smoke:
+    name: Verify and package ${{ matrix.platform }}
+    needs: native
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            runner: windows-latest
+            mac_arch: ""
+          - platform: macos-arm64
+            runner: macos-15
+            mac_arch: arm64
+          - platform: macos-x64
+            runner: macos-15-intel
+            mac_arch: x64
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Verify source and native host architecture
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+          PACKAGE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          if ((git rev-parse HEAD) -ne $env:EXPECTED_SHA) { throw 'Verification source commit differs.' }
+          $expected = if ($env:PACKAGE_PLATFORM -eq 'macos-arm64') { 'Arm64' } else { 'X64' }
+          if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ne $expected -or
+              [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString() -ne $expected) {
+            throw 'Native verification must run on the actual target architecture.'
+          }
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.6
+          channel: stable
+          cache: true
+      - name: Resolve smoke driver dependencies only
+        working-directory: flutter_app
+        run: |
+          flutter pub get
+          if ($LASTEXITCODE -ne 0) { throw 'Smoke driver dependency resolution failed.' }
+      - name: Read exact source version
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          $manifest = Get-Content -LiteralPath flutter_app/pubspec.yaml -Raw
+          if ($manifest -notmatch '(?m)^version:\s*(\d+\.\d+\.\d+)\+(\d+)\s*$') { throw 'Invalid source version.' }
+          $version = $Matches[1]
+          $build = $Matches[2]
+          ./flutter_app/tool/validate_release_version.ps1 -Version $version -ReleaseTag $env:RELEASE_TAG
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "build=$build" >> $env:GITHUB_OUTPUT
+      - uses: actions/download-artifact@v4
+        with:
+          name: built-${{ matrix.platform }}-${{ inputs.ref }}
+          path: dist/ci-transfer
+      - name: Restore and verify every file of the same-run native build
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+          PACKAGE_PLATFORM: ${{ matrix.platform }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          PACKAGE_BUILD: ${{ steps.version.outputs.build }}
+        run: |
+          $directory = if ($env:PACKAGE_PLATFORM -eq 'windows-x64') {
+            "dist/NSOAlbum-Windows-x64-$env:PACKAGE_VERSION"
+          } else { "dist/ci-build/$env:PACKAGE_PLATFORM" }
+          if (Test-Path -LiteralPath $directory) { throw 'Verification bundle directory must be new.' }
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          tar -xpf "dist/ci-transfer/$env:PACKAGE_PLATFORM.tar" -C $directory
+          if ($LASTEXITCODE -ne 0) { throw 'Extracting native build failed.' }
+          ./flutter_app/tool/ci_bundle.ps1 -Mode Verify -Directory $directory -Commit $env:EXPECTED_SHA -Platform $env:PACKAGE_PLATFORM -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD
+          if ($env:PACKAGE_PLATFORM -eq 'windows-x64') {
+            # Transfer metadata is CI-only, not an installed application file.
+            Remove-Item -LiteralPath (Join-Path $directory '.nso-ci-bundle.json')
+          }
       - name: Smoke test the packaged Windows executable
         if: matrix.platform == 'windows-x64'
         working-directory: flutter_app
@@ -361,7 +516,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $installer -PathType Leaf) -or (Get-Item -LiteralPath $installer).Length -eq 0) {
             throw 'Expected versioned Inno installer is missing or empty.'
           }
-      - name: Build and smoke test macOS app and mounted DMG
+      - name: Verify the signed macOS app and smoke test the mounted DMG
         if: matrix.mac_arch != ''
         working-directory: flutter_app
         shell: bash
@@ -374,30 +529,15 @@ jobs:
           CODE_SIGN_IDENTITY: ""
         run: |
           set -euo pipefail
-          # Hosted macOS images may restore a partially downloaded SwiftPM
-          # binary artifact. Xcode reports that stale path as "already exists
-          # in file system" and aborts before the app build starts. Native
-          # validation must resolve dependencies from a clean artifact cache.
-          rm -rf "$HOME/Library/Caches/org.swift.swiftpm/artifacts"
-          mkdir -p "$HOME/Library/Caches/org.swift.swiftpm/artifacts"
-          wrong_arch="$([[ "$PACKAGE_ARCH" == arm64 ]] && echo x64 || echo arm64)"
-          if bash tool/package_macos.sh --architecture "$wrong_arch" --version "$PACKAGE_VERSION" --build-number "$PACKAGE_BUILD" --reports ../native-reports/wrong-architecture; then
-            echo "Packaging architecture guard incorrectly accepted $wrong_arch on this runner" >&2
-            exit 1
-          fi
-          bash tool/package_macos.sh --architecture "$PACKAGE_ARCH" --version "$PACKAGE_VERSION" --build-number "$PACKAGE_BUILD" --reports ../native-reports/smoke
+          bash tool/package_macos.sh --architecture "$PACKAGE_ARCH" --version "$PACKAGE_VERSION" --build-number "$PACKAGE_BUILD" --reports ../native-reports/smoke --reuse-app "../dist/ci-build/macos-$PACKAGE_ARCH/NSOAlbum.app"
       - name: Upload sanitized native reports even on failure
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: validation-${{ matrix.platform }}
+          name: smoke-${{ matrix.platform }}
           if-no-files-found: ignore
           retention-days: 14
           path: |
-            native-reports/test-counts.json
-            ${{ runner.temp }}/flutter-tests.jsonl
-            ${{ runner.temp }}/flutter-tests-stderr.log
-            ${{ runner.temp }}/rust-tests.log
             native-reports/**/report.json
             native-reports/**/native-*.json
             native-reports/**/sanitized*.log
@@ -413,6 +553,7 @@ jobs:
           path: |
             dist/NSOAlbum-Windows-x64-${{ steps.version.outputs.version }}/
             dist/installers/NSOAlbum-${{ steps.version.outputs.version }}-Setup.exe
+            !dist/**/.nso-ci-bundle.json
       - name: Upload macOS DMG only after both smoke runs pass
         if: success() && matrix.mac_arch != ''
         uses: actions/upload-artifact@v4
