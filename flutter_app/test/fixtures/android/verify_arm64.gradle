@@ -1,0 +1,104 @@
+import groovy.xml.XmlSlurper
+
+gradle.projectsEvaluated {
+    def root = gradle.rootProject
+    root.tasks.register("verifyArm64BuildConfiguration") {
+        doLast {
+            def app = root.project(":app")
+            def filters = app.android.defaultConfig.ndk.abiFilters.toSet()
+            def core = root.project(":squid_album_core")
+            println("APK ABI filters: ${filters}")
+            if (filters != ["arm64-v8a"].toSet()) {
+                throw new GradleException("APK must package ARM64 only, found ${filters}")
+            }
+            for (def mode in ["Debug", "Profile", "Release"]) {
+                def cargo = core.tasks.getByName("cargokitCargoBuildSquid_album_core${mode}")
+                def platforms = cargo.targetPlatforms.toSet()
+                println("Rust ${mode} targets: ${platforms}")
+                if (platforms != ["android-arm64"].toSet()) {
+                    throw new GradleException("Rust ${mode} build must target ARM64 only, found ${platforms}")
+                }
+            }
+        }
+    }
+    root.tasks.register("verifyAndroidApplicationIdentity") {
+        def app = root.project(":app")
+        def manifestTask = app.tasks.getByName("processDebugMainManifest")
+        def kotlinTask = app.tasks.getByName("compileDebugKotlin")
+        dependsOn(manifestTask, kotlinTask)
+        doLast {
+            def expectedId = "io.github.cypas.nsoalbum"
+            if (app.android.namespace != expectedId) {
+                throw new GradleException("Android namespace must be ${expectedId}, found ${app.android.namespace}")
+            }
+            app.android.applicationVariants.each { variant ->
+                if (variant.applicationId != expectedId) {
+                    throw new GradleException("${variant.name} application ID must be ${expectedId}, found ${variant.applicationId}")
+                }
+            }
+            def manifests = manifestTask.outputs.files.asFileTree.matching {
+                include("**/AndroidManifest.xml")
+            }.files
+            if (manifests.isEmpty()) {
+                throw new GradleException("The merged Android launch manifest is missing")
+            }
+            manifests.each { file ->
+                def manifest = new XmlSlurper(false, false).parse(file)
+                if (manifest.@package.toString() != expectedId) {
+                    throw new GradleException("Merged manifest has a different application ID: ${manifest.@package}")
+                }
+                def launcher = manifest.application.activity.find { activity ->
+                    activity."intent-filter".any { filter ->
+                        filter.action.any { it.@"android:name".toString() == "android.intent.action.MAIN" } &&
+                            filter.category.any { it.@"android:name".toString() == "android.intent.category.LAUNCHER" }
+                    }
+                }
+                if (launcher.@"android:name".toString() != "${expectedId}.MainActivity") {
+                    throw new GradleException("Launcher does not resolve to ${expectedId}.MainActivity")
+                }
+            }
+            def entryPoints = kotlinTask.outputs.files.asFileTree.matching {
+                include("**/io/github/cypas/nsoalbum/MainActivity.class")
+            }.files
+            if (entryPoints.size() != 1) {
+                throw new GradleException("Expected exactly one compiled NSOAlbum MainActivity, found ${entryPoints.size()}")
+            }
+            println("Verified Android identity and compiled launcher: ${expectedId}")
+        }
+    }
+    root.tasks.register("verifyAndroidLocalizedBranding") {
+        def app = root.project(":app")
+        def resourceTask = app.tasks.getByName("processDebugResources")
+        dependsOn(resourceTask)
+        doLast {
+            def packages = resourceTask.outputs.files.asFileTree.matching {
+                include("**/*.ap_")
+            }.files
+            if (packages.size() != 1) {
+                throw new GradleException("Expected one linked Android resource package, found ${packages.size()}")
+            }
+            def executable = System.getProperty("os.name").toLowerCase().contains("windows") ? "aapt2.exe" : "aapt2"
+            def aapt = new File(app.android.sdkDirectory, "build-tools/${app.android.buildToolsVersion}/${executable}")
+            def dump = root.providers.exec {
+                commandLine(aapt.absolutePath, "dump", "badging", packages.first().absolutePath)
+            }
+            // AAPT emits UTF-8 even when Windows/JDK 17 defaults to GBK.
+            def badging = new String(dump.standardOutput.asBytes.get(), java.nio.charset.StandardCharsets.UTF_8)
+            for (def label in [
+                "application-label:'NSOAlbum'",
+                "application-label-zh:'鱿型相册'",
+                "application-label-zh-CN:'鱿型相册'",
+                "application-label-zh-HK:'鱿型相册'",
+                "application-label-zh-TW:'鱿型相册'"
+            ]) {
+                if (!badging.readLines().contains(label)) {
+                    throw new GradleException("Compiled APK resources are missing localized label: ${label}")
+                }
+            }
+            if (!badging.contains("application-icon-")) {
+                throw new GradleException("Compiled Android launcher icon is missing")
+            }
+            println("Verified compiled default/Chinese application labels and launcher icon")
+        }
+    }
+}

@@ -1,0 +1,33 @@
+import '../rust/settings.dart';
+
+AppSettings copyAppSettings(
+  AppSettings value, {
+  String? theme,
+  String? language,
+  int? galleryColumns,
+  bool? showNotePreview,
+  bool? showGameTag,
+  bool? compactTagDisplay,
+  bool? autoPlayVideo,
+  bool? autoSyncOnLaunch,
+  String? proxyUrl,
+  String? libraryPath,
+  SyncPolicy? syncPolicy,
+}) => AppSettings(
+  proxyUrl: proxyUrl == null
+      ? value.proxyUrl
+      : (proxyUrl.isEmpty ? null : proxyUrl),
+  libraryPath: libraryPath ?? value.libraryPath,
+  theme: theme ?? value.theme,
+  language: language ?? value.language,
+  galleryColumns: galleryColumns ?? value.galleryColumns,
+  galleryRows: value.galleryRows,
+  showNotePreview: showNotePreview ?? value.showNotePreview,
+  showGameTag: showGameTag ?? value.showGameTag,
+  compactTagDisplay: compactTagDisplay ?? value.compactTagDisplay,
+  autoPlayVideo: autoPlayVideo ?? value.autoPlayVideo,
+  autoSyncOnLaunch: autoSyncOnLaunch ?? value.autoSyncOnLaunch,
+  closeBehavior: value.closeBehavior,
+  customFontPaths: value.customFontPaths,
+  syncPolicy: syncPolicy ?? value.syncPolicy,
+);

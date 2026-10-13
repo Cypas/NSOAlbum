@@ -1,4 +1,4 @@
-package io.squidalbum.squid_album
+package io.github.cypas.nsoalbum
 
 import io.flutter.embedding.android.FlutterActivity
 

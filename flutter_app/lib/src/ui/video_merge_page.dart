@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../state/media_edit_controller.dart';
 
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
@@ -52,6 +53,7 @@ class VideoMergePage extends StatefulWidget {
 }
 
 class _VideoMergePageState extends State<VideoMergePage> {
+  late final MediaEditController mediaEditor = MediaEditController(widget.backend);
   late final List<MediaAsset> videos = List.of(widget.videos);
   Player? previewPlayer;
   VideoController? previewController;
@@ -66,6 +68,7 @@ class _VideoMergePageState extends State<VideoMergePage> {
 
   @override
   void dispose() {
+    unawaited(mediaEditor.dispose());
     final player = previewPlayer;
     final path = previewPath;
     if (player != null) unawaited(player.dispose());
@@ -156,7 +159,7 @@ class _VideoMergePageState extends State<VideoMergePage> {
     previewController = null;
     previewPath = null;
     try {
-      final asset = await widget.backend.saveMergedVideo(
+      final asset = await mediaEditor.merge(
         videos,
         preparedPath: path,
       );

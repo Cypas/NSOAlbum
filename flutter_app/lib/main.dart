@@ -1,6 +1,11 @@
 import 'dart:async';
 import 'dart:ffi' show Abi;
 import 'dart:io';
+
+import 'src/ui/platform_ui.dart';
+import 'src/ui/android/android_shell.dart';
+import 'src/ui/android/android_theme.dart';
+
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart' show kDebugMode;
@@ -10,6 +15,7 @@ import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'src/app_branding.dart';
+import 'src/app_version.dart';
 import 'src/backend/app_backend.dart';
 import 'src/backend/rust_backend.dart';
 import 'src/l10n/app_localizations.dart';
@@ -170,6 +176,7 @@ class SquidAlbumApp extends StatefulWidget {
     this.startupOptions = const StartupOptions(),
     this.diagnostics,
     this.onRestartApplication,
+    this.uiPlatform,
   });
 
   final AppBackend? backend;
@@ -177,6 +184,7 @@ class SquidAlbumApp extends StatefulWidget {
   final StartupOptions startupOptions;
   final StartupDiagnostics? diagnostics;
   final Future<void> Function()? onRestartApplication;
+  final AppUiPlatform? uiPlatform;
 
   @override
   State<SquidAlbumApp> createState() => _SquidAlbumAppState();
@@ -506,6 +514,38 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
     final context = navigatorKey.currentContext;
     final backend = widget.backend;
     if (context == null || backend == null) return;
+    if (Platform.isAndroid) {
+      final service = ReleaseUpdateService(
+        applicationRoot: widget.diagnostics?.applicationRoot,
+        customProxyUrl: backend.settings.proxyUrl,
+      );
+      try {
+        final currentVersion = await loadApplicationVersion();
+        final info = await service.checkLatestRelease(currentVersion);
+        if (!mounted) return;
+        setState(() {
+          latestReleaseVersion = info?.version;
+          updateStatus = info == null
+              ? UpdateStatusKind.latest
+              : UpdateStatusKind.available;
+          updateStatusError = null;
+        });
+      } catch (error, stackTrace) {
+        await backend.logError(
+          'Failed to check Android application update',
+          error,
+          stackTrace,
+        );
+        if (!mounted) return;
+        setState(() {
+          updateStatus = UpdateStatusKind.failed;
+          updateStatusError = error;
+        });
+      } finally {
+        await service.close();
+      }
+      return;
+    }
     await showLatestReleaseUpdate(
       context,
       automatic: automatic,
@@ -664,12 +704,14 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
   @override
   Widget build(BuildContext context) {
     final controller = settings;
+    final android =
+        (widget.uiPlatform ?? resolveAppUiPlatform()) == AppUiPlatform.android;
     if (controller == null) {
       return MaterialApp(
         onGenerateTitle: (context) =>
             context.l10n.select(zh: appChineseName, en: appEnglishName),
         debugShowCheckedModeBanner: false,
-        theme: _themeFor('ocean'),
+        theme: android ? androidTheme('ocean') : _themeFor('ocean'),
         supportedLocales: AppLocalizations.supportedLocales,
         localizationsDelegates: const [
           AppLocalizations.delegate,
@@ -690,7 +732,9 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
         onGenerateTitle: (context) =>
             context.l10n.select(zh: appChineseName, en: appEnglishName),
         debugShowCheckedModeBanner: false,
-        theme: _themeFor(controller.value.theme),
+        theme: android
+            ? androidTheme(controller.value.theme)
+            : _themeFor(controller.value.theme),
         locale: Locale(controller.value.language),
         supportedLocales: AppLocalizations.supportedLocales,
         localizationsDelegates: const [
@@ -699,33 +743,51 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
           GlobalWidgetsLocalizations.delegate,
           GlobalCupertinoLocalizations.delegate,
         ],
-        home: DesktopWindowFrame(
-          title: controller.value.language == 'en'
-              ? appEnglishName
-              : appChineseName,
-          child: HomeShell(
-            backend: widget.backend!,
-            settings: controller,
-            syncController: sync,
-            onNintendoAccountChanged: widget.startupOptions.disableAutomaticSync
-                ? null
-                : automaticSync?.accountChanged,
-            enableVideoFeatures: !widget.startupOptions.disableVideoThumbnails,
-            enableMtpDetection: !widget.startupOptions.disableMtpDetection,
-            startupDiagnostics: widget.diagnostics,
-            onCheckForUpdates: widget.startupOptions.ciSmoke
-                ? null
-                : () => _checkForUpdates(automatic: false),
-            onInstallUpdate: widget.startupOptions.ciSmoke
-                ? null
-                : _installUpdate,
-            onRestartApplication:
-                widget.onRestartApplication ?? _restartApplication,
-            latestReleaseVersion: latestReleaseVersion,
-            updateStatus: updateStatus,
-            updateStatusError: updateStatusError,
-          ),
-        ),
+        home: android
+            ? AndroidShell(
+                backend: widget.backend!,
+                settings: controller,
+                sync: sync!,
+                onNintendoAccountChanged:
+                    widget.startupOptions.disableAutomaticSync
+                    ? null
+                    : automaticSync?.accountChanged,
+                onCheckForUpdates: widget.startupOptions.ciSmoke
+                    ? null
+                    : () => _checkForUpdates(automatic: false),
+                latestReleaseVersion: latestReleaseVersion,
+                updateStatus: updateStatus,
+              )
+            : DesktopWindowFrame(
+                title: controller.value.language == 'en'
+                    ? appEnglishName
+                    : appChineseName,
+                child: HomeShell(
+                  backend: widget.backend!,
+                  settings: controller,
+                  syncController: sync,
+                  onNintendoAccountChanged:
+                      widget.startupOptions.disableAutomaticSync
+                      ? null
+                      : automaticSync?.accountChanged,
+                  enableVideoFeatures:
+                      !widget.startupOptions.disableVideoThumbnails,
+                  enableMtpDetection:
+                      !widget.startupOptions.disableMtpDetection,
+                  startupDiagnostics: widget.diagnostics,
+                  onCheckForUpdates: widget.startupOptions.ciSmoke
+                      ? null
+                      : () => _checkForUpdates(automatic: false),
+                  onInstallUpdate: widget.startupOptions.ciSmoke
+                      ? null
+                      : _installUpdate,
+                  onRestartApplication:
+                      widget.onRestartApplication ?? _restartApplication,
+                  latestReleaseVersion: latestReleaseVersion,
+                  updateStatus: updateStatus,
+                  updateStatusError: updateStatusError,
+                ),
+              ),
       ),
     );
   }

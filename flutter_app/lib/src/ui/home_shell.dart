@@ -16,6 +16,8 @@ import '../rust/models.dart';
 import '../rust/settings.dart';
 import '../search/search_normalizer.dart';
 import '../state/settings_controller.dart';
+import '../state/library_controller.dart';
+import '../state/transfer_controller.dart';
 import '../state/sync_controller.dart';
 import '../startup/startup_diagnostics.dart';
 import 'media_metadata_editor.dart';
@@ -1527,8 +1529,8 @@ class _LibraryPageState extends State<LibraryPage> {
     final generation = ++loadGeneration;
     late final List<MediaAsset> items;
     try {
-      items = await widget.backend
-          .listMedia(
+      items = await LibraryController.query(
+            widget.backend,
             kind: kind,
             favoriteOnly: favoritesOnly,
             albumId: widget.albumId,
@@ -5735,20 +5737,9 @@ class _TransferPageState extends State<TransferPage>
       completingLogin = true;
     });
     try {
-      await widget.backend.completeNintendoLogin(value);
-      final current = widget.settings.value;
-      if (!current.syncPolicy.enabled) {
-        await widget.settings.save(
-          _copySettings(
-            current,
-            syncPolicy: SyncPolicy(
-              enabled: true,
-              activeIntervalMinutes: current.syncPolicy.activeIntervalMinutes,
-              sleepAfterHours: current.syncPolicy.sleepAfterHours,
-            ),
-          ),
-        );
-      }
+      await completeNintendoAccountLogin(
+        backend: widget.backend, settings: widget.settings, callback: value,
+      );
       await _loadAccountState();
       if (!mounted) return;
       setState(() => addingAccount = false);

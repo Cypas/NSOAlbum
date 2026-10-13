@@ -2,3 +2,4 @@ tags:
   common: {}
   platform-windows: {}
   platform-macos: {}
+  native-android: {}

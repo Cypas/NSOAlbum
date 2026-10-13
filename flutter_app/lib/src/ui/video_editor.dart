@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../state/media_edit_controller.dart';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
@@ -69,6 +70,7 @@ class VideoEditorPage extends StatefulWidget {
 }
 
 class _VideoEditorPageState extends State<VideoEditorPage> {
+  late final MediaEditController mediaEditor = MediaEditController(widget.backend);
   late final Player player = _createPlayer();
   late final VideoController controller = VideoController(player);
 
@@ -139,6 +141,7 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
     playingSubscription?.cancel();
     keyboardFocus.dispose();
     player.dispose();
+    unawaited(mediaEditor.dispose());
     super.dispose();
   }
 
@@ -247,7 +250,7 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
     setState(() => busy = true);
     await player.pause();
     try {
-      final asset = await widget.backend.trimVideo(
+      final asset = await mediaEditor.trim(
         widget.source,
         selectionStart,
         selectionEnd,
@@ -284,7 +287,7 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
         extension = 'jpg';
       }
       if (bytes == null) throw StateError('The current frame is not available');
-      await widget.backend.saveVideoFrame(widget.source, bytes, extension);
+      await mediaEditor.frame(widget.source, bytes, extension: extension);
       widget.onMediaCreated?.call();
       if (!mounted) return;
       setState(() => busy = false);
