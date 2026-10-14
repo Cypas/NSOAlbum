@@ -1,6 +1,7 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use chrono::{Local, NaiveDateTime, TimeZone, Utc};
 use sha2::{Digest, Sha256};
@@ -12,8 +13,8 @@ use crate::error::{CoreError, CoreResult};
 use crate::models::{
     AlbumRule, AlbumSummary, GalleryQuery, GameTagAliasSummary, GameTagSummary, ImportItemError,
     ImportSummary, LibraryRelocationResult, LoginChallenge, MediaAsset, MediaCandidate,
-    MediaDeletionResult, MediaExportItemError, MediaExportSummary, MediaKind, SourceType,
-    SyncProgress, SyncSummary, TagUsageSummary,
+    MediaDeletionResult, MediaExportItemError, MediaExportSummary, MediaKind, OperationProgress,
+    SourceType, SyncProgress, SyncSummary, TagUsageSummary,
 };
 use crate::nso::{
     AttestationService, CoralAlbumProvider, CoralSession, CoralSessionClient, MediaProvider,
@@ -29,7 +30,17 @@ use crate::transport::{HttpTransport, TransportConfig};
 pub struct CoreApi {
     library_root: PathBuf,
     database: Arc<Database>,
+    disable_app_proxy: AtomicBool,
+    import_progress: Mutex<ImportProgressStore>,
 }
+
+#[derive(Default)]
+struct ImportProgressStore {
+    operations: HashMap<String, OperationProgress>,
+    terminal_order: VecDeque<String>,
+}
+
+const MAX_TERMINAL_IMPORT_PROGRESS: usize = 32;
 
 impl CoreApi {
     pub fn open(library_root: impl AsRef<Path>) -> CoreResult<Self> {
@@ -41,6 +52,8 @@ impl CoreApi {
         Ok(Self {
             library_root,
             database,
+            disable_app_proxy: AtomicBool::new(false),
+            import_progress: Mutex::new(ImportProgressStore::default()),
         })
     }
 
@@ -146,7 +159,12 @@ impl CoreApi {
         }
         if !matches!(
             status,
-            "success" | "partial_failure" | "failure" | "cancelled"
+            "success"
+                | "partial_failure"
+                | "failure"
+                | "cancelled"
+                | "rate_limited"
+                | "authentication_failure"
         ) {
             return Err(CoreError::InvalidConfig(
                 "sync attempt status is invalid".into(),
@@ -176,11 +194,13 @@ impl CoreApi {
         &self,
         proxy_url: Option<String>,
     ) -> CoreResult<LoginChallenge> {
-        let transport = HttpTransport::new(TransportConfig {
-            proxy_url,
-            ..TransportConfig::default()
-        })?;
+        let transport = self.transport(proxy_url)?;
         NintendoAuthClient::new(transport).create_login_challenge()
+    }
+
+    pub fn set_runtime_proxy_policy(&self, disable_app_proxy: bool) {
+        self.disable_app_proxy
+            .store(disable_app_proxy, Ordering::SeqCst);
     }
 
     pub fn database(&self) -> Arc<Database> {
@@ -208,10 +228,44 @@ impl CoreApi {
         session_token: String,
         proxy_url: Option<String>,
     ) -> CoreResult<CoralSession> {
+        self.establish_coral_session_with_cancellation(
+            session_token,
+            proxy_url,
+            &CancellationToken::default(),
+        )
+        .await
+    }
+
+    async fn establish_coral_session_with_cancellation(
+        &self,
+        session_token: String,
+        proxy_url: Option<String>,
+        cancellation: &CancellationToken,
+    ) -> CoreResult<CoralSession> {
+        cancellation.check()?;
         let transport = self.transport(proxy_url)?;
         let attestation = NxapiAttestationClient::new(transport.clone(), NxapiConfig::default());
-        CoralSessionClient::new(transport, attestation)
-            .login_with_session_token(&session_token)
+        let client = CoralSessionClient::new(transport, attestation);
+        tokio::select! {
+            _ = cancellation.cancelled() => Err(CoreError::Cancelled),
+            result = client.login_with_session_token(&session_token) => result,
+        }
+    }
+
+    pub async fn sync_nso_from_session_token(
+        &self,
+        session_token: String,
+        proxy_url: Option<String>,
+        cancellation: &CancellationToken,
+    ) -> CoreResult<SyncSummary> {
+        let session = self
+            .establish_coral_session_with_cancellation(
+                session_token,
+                proxy_url.clone(),
+                cancellation,
+            )
+            .await?;
+        self.sync_nso_with_cancellation(session, proxy_url, cancellation)
             .await
     }
 
@@ -233,9 +287,11 @@ impl CoreApi {
         cancellation.check()?;
         let transport = self.transport(proxy_url)?;
         let attestation = NxapiAttestationClient::new(transport.clone(), NxapiConfig::default());
-        let download_transport = transport
-            .clone()
-            .with_nso_downloads(&attestation.nso_version().await?);
+        let nso_version = tokio::select! {
+            _ = cancellation.cancelled() => return Err(CoreError::Cancelled),
+            result = attestation.nso_version() => result?,
+        };
+        let download_transport = transport.clone().with_nso_downloads(&nso_version);
         let provider = CoralAlbumProvider::new(transport.clone(), attestation, session);
         let provider_name = provider.provider_name().to_owned();
         let repository = MediaRepository::new(self.media_root()?, Arc::clone(&self.database));
@@ -455,7 +511,7 @@ impl CoreApi {
     }
 
     pub async fn import_local_files(&self, paths: Vec<String>) -> CoreResult<ImportSummary> {
-        self.import_local_paths(paths, SourceType::Folder, None, None)
+        self.import_local_paths(paths, SourceType::Folder, None, None, None)
             .await
     }
 
@@ -475,8 +531,74 @@ impl CoreApi {
             SourceType::Folder,
             Some("custom-import"),
             Some(sanitize_game_folder(game_name)),
+            None,
         )
         .await
+    }
+
+    pub async fn import_custom_files_with_progress(
+        &self,
+        paths: Vec<String>,
+        game_name: String,
+        operation_id: String,
+    ) -> CoreResult<ImportSummary> {
+        let operation_id = operation_id.trim().to_owned();
+        if operation_id.is_empty() {
+            return Err(CoreError::InvalidConfig(
+                "operation ID must not be empty".into(),
+            ));
+        }
+        let game_name = game_name.trim();
+        if game_name.is_empty() {
+            return Err(CoreError::InvalidConfig(
+                "a game tag is required for custom import".into(),
+            ));
+        }
+        self.store_import_progress(OperationProgress {
+            operation_id: operation_id.clone(),
+            kind: "custom_import".into(),
+            phase: "discovering".into(),
+            status: "running".into(),
+            total_items: None,
+            processed_items: 0,
+            processed_bytes: None,
+            total_bytes: None,
+        })?;
+        let result = self
+            .import_local_paths(
+                paths,
+                SourceType::Folder,
+                Some("custom-import"),
+                Some(sanitize_game_folder(game_name)),
+                Some(&operation_id),
+            )
+            .await;
+        if result.is_err() {
+            self.update_import_progress(&operation_id, |progress| {
+                progress.phase = "finished".into();
+                progress.status = "failed".into();
+            })?;
+        }
+        result
+    }
+
+    pub fn current_import_progress(
+        &self,
+        operation_id: &str,
+    ) -> CoreResult<Option<OperationProgress>> {
+        let operation_id = operation_id.trim();
+        if operation_id.is_empty() {
+            return Err(CoreError::InvalidConfig(
+                "operation ID must not be empty".into(),
+            ));
+        }
+        Ok(self
+            .import_progress
+            .lock()
+            .map_err(|_| CoreError::Provider("import progress mutex poisoned".into()))?
+            .operations
+            .get(operation_id)
+            .cloned())
     }
 
     pub async fn import_mtp_files(
@@ -490,7 +612,7 @@ impl CoreApi {
                 "unsupported Nintendo media device".into(),
             ));
         }
-        self.import_local_paths(paths, SourceType::Mtp, Some(device_name), None)
+        self.import_local_paths(paths, SourceType::Mtp, Some(device_name), None, None)
             .await
     }
 
@@ -735,6 +857,7 @@ impl CoreApi {
         source_type: SourceType,
         provider: Option<&str>,
         game_name_override: Option<String>,
+        operation_id: Option<&str>,
     ) -> CoreResult<ImportSummary> {
         let repository = MediaRepository::new(self.media_root()?, Arc::clone(&self.database));
         let mut files = BTreeSet::new();
@@ -763,7 +886,26 @@ impl CoreApi {
             failed: 0,
             errors: Vec::new(),
         };
+        let total_bytes = files.iter().fold(0_u64, |total, path| {
+            total.saturating_add(
+                std::fs::metadata(path)
+                    .map(|value| value.len())
+                    .unwrap_or(0),
+            )
+        });
+        if let Some(operation_id) = operation_id {
+            self.update_import_progress(operation_id, |progress| {
+                progress.phase = "importing".into();
+                progress.total_items = Some(summary.total_found);
+                progress.processed_bytes = Some(0);
+                progress.total_bytes = Some(total_bytes);
+            })?;
+        }
+        let mut processed_bytes = 0_u64;
         for (index, path) in files.into_iter().enumerate() {
+            let file_size = std::fs::metadata(&path)
+                .map(|value| value.len())
+                .unwrap_or(0);
             let kind = media_kind_from_path(&path).expect("filtered media path");
             let captured_at = nintendo_capture_time(&path).or_else(|| file_creation_time(&path));
             let game_name = game_name_override.clone().unwrap_or_else(|| {
@@ -828,18 +970,94 @@ impl CoreApi {
                     });
                 }
             }
+            processed_bytes = processed_bytes.saturating_add(file_size);
+            if let Some(operation_id) = operation_id {
+                self.update_import_progress(operation_id, |progress| {
+                    progress.processed_items = index + 1;
+                    progress.processed_bytes = Some(processed_bytes);
+                })?;
+            }
+        }
+        if let Some(operation_id) = operation_id {
+            self.update_import_progress(operation_id, |progress| {
+                progress.phase = "finished".into();
+                progress.status = if summary.failed == 0 {
+                    "completed".into()
+                } else {
+                    "completed_with_errors".into()
+                };
+            })?;
         }
         Ok(summary)
     }
 
+    fn store_import_progress(&self, progress: OperationProgress) -> CoreResult<()> {
+        let mut store = self
+            .import_progress
+            .lock()
+            .map_err(|_| CoreError::Provider("import progress mutex poisoned".into()))?;
+        store
+            .terminal_order
+            .retain(|operation_id| operation_id != &progress.operation_id);
+        store
+            .operations
+            .insert(progress.operation_id.clone(), progress);
+        Ok(())
+    }
+
+    fn update_import_progress(
+        &self,
+        operation_id: &str,
+        update: impl FnOnce(&mut OperationProgress),
+    ) -> CoreResult<()> {
+        let mut store = self
+            .import_progress
+            .lock()
+            .map_err(|_| CoreError::Provider("import progress mutex poisoned".into()))?;
+        let was_terminal = store
+            .operations
+            .get(operation_id)
+            .is_some_and(import_progress_is_terminal);
+        if let Some(progress) = store.operations.get_mut(operation_id) {
+            update(progress);
+        }
+        let is_terminal = store
+            .operations
+            .get(operation_id)
+            .is_some_and(import_progress_is_terminal);
+        if is_terminal && !was_terminal {
+            store.terminal_order.push_back(operation_id.to_owned());
+        } else if !is_terminal && was_terminal {
+            store
+                .terminal_order
+                .retain(|candidate| candidate != operation_id);
+        }
+        while store.terminal_order.len() > MAX_TERMINAL_IMPORT_PROGRESS {
+            if let Some(expired) = store.terminal_order.pop_front() {
+                if expired != operation_id {
+                    store.operations.remove(&expired);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn transport(&self, explicit_proxy: Option<String>) -> CoreResult<HttpTransport> {
+        let proxy_url = self.resolve_proxy_url(explicit_proxy)?;
+        HttpTransport::new(TransportConfig {
+            proxy_url,
+            ..TransportConfig::default()
+        })
+    }
+
+    fn resolve_proxy_url(&self, explicit_proxy: Option<String>) -> CoreResult<Option<String>> {
+        if self.disable_app_proxy.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
         let settings_proxy = self
             .load_settings()?
             .and_then(|settings| settings.proxy_url);
-        HttpTransport::new(TransportConfig {
-            proxy_url: explicit_proxy.or(settings_proxy),
-            ..TransportConfig::default()
-        })
+        Ok(explicit_proxy.or(settings_proxy))
     }
 
     fn media_root(&self) -> CoreResult<PathBuf> {
@@ -891,6 +1109,13 @@ impl CoreApi {
         std::fs::remove_file(canonical)?;
         Ok(())
     }
+}
+
+fn import_progress_is_terminal(progress: &OperationProgress) -> bool {
+    matches!(
+        progress.status.as_str(),
+        "completed" | "completed_with_errors" | "failed"
+    )
 }
 
 fn validate_settings(settings: &AppSettings) -> CoreResult<()> {
@@ -1286,6 +1511,120 @@ mod tests {
 
         assert_eq!(settings.sync_policy.active_interval_minutes, 30);
         assert_eq!(settings.sync_policy.sleep_after_hours, 6);
+    }
+
+    #[test]
+    fn runtime_proxy_policy_can_disable_saved_and_explicit_app_proxy() {
+        let library = tempdir().unwrap();
+        let api = CoreApi::open(library.path()).unwrap();
+        let settings = AppSettings {
+            proxy_url: Some("http://127.0.0.1:8080".into()),
+            library_path: library.path().to_string_lossy().into_owned(),
+            theme: "ocean".into(),
+            language: "zh".into(),
+            gallery_columns: 4,
+            gallery_rows: 3,
+            show_note_preview: true,
+            show_game_tag: true,
+            compact_tag_display: true,
+            auto_play_video: false,
+            auto_sync_on_launch: false,
+            close_behavior: "ask".into(),
+            custom_font_paths: Vec::new(),
+            sync_policy: SyncPolicy::default(),
+        };
+        api.save_settings(&settings).unwrap();
+
+        assert_eq!(
+            api.resolve_proxy_url(None).unwrap().as_deref(),
+            Some("http://127.0.0.1:8080")
+        );
+        api.set_runtime_proxy_policy(true);
+        assert_eq!(api.resolve_proxy_url(None).unwrap(), None);
+        assert_eq!(
+            api.resolve_proxy_url(Some("http://127.0.0.1:9090".into()))
+                .unwrap(),
+            None
+        );
+        api.set_runtime_proxy_policy(false);
+        assert_eq!(
+            api.resolve_proxy_url(Some("http://127.0.0.1:9090".into()))
+                .unwrap()
+                .as_deref(),
+            Some("http://127.0.0.1:9090")
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_import_reports_path_free_operation_progress() {
+        let library = tempdir().unwrap();
+        let api = CoreApi::open(library.path()).unwrap();
+        let source = library.path().join("capture.jpg");
+        tokio::fs::write(&source, b"image-bytes").await.unwrap();
+
+        let summary = api
+            .import_custom_files_with_progress(
+                vec![source.to_string_lossy().into_owned()],
+                "Game".into(),
+                "operation-1".into(),
+            )
+            .await
+            .unwrap();
+        let progress = api.current_import_progress("operation-1").unwrap().unwrap();
+
+        assert_eq!(summary.imported, 1);
+        assert_eq!(progress.operation_id, "operation-1");
+        assert_eq!(progress.kind, "custom_import");
+        assert_eq!(progress.phase, "finished");
+        assert_eq!(progress.status, "completed");
+        assert_eq!(progress.total_items, Some(1));
+        assert_eq!(progress.processed_items, 1);
+        assert_eq!(progress.total_bytes, Some(11));
+        assert_eq!(progress.processed_bytes, Some(11));
+        let encoded = serde_json::to_string(&progress).unwrap();
+        assert!(!encoded.contains("capture.jpg"));
+        assert!(!encoded.contains(&library.path().to_string_lossy().to_string()));
+    }
+
+    #[tokio::test]
+    async fn import_progress_keeps_active_and_latest_thirty_two_terminal_operations() {
+        let library = tempdir().unwrap();
+        let api = CoreApi::open(library.path()).unwrap();
+        api.store_import_progress(crate::models::OperationProgress {
+            operation_id: "active-operation".into(),
+            kind: "custom_import".into(),
+            phase: "importing".into(),
+            status: "running".into(),
+            total_items: Some(1),
+            processed_items: 0,
+            processed_bytes: Some(0),
+            total_bytes: Some(1),
+        })
+        .unwrap();
+
+        for index in 0..33 {
+            api.import_custom_files_with_progress(
+                Vec::new(),
+                "Game".into(),
+                format!("terminal-{index:02}"),
+            )
+            .await
+            .unwrap();
+        }
+
+        assert!(api
+            .current_import_progress("active-operation")
+            .unwrap()
+            .is_some());
+        assert_eq!(api.current_import_progress("terminal-00").unwrap(), None);
+        assert!(api
+            .current_import_progress("terminal-01")
+            .unwrap()
+            .is_some());
+        assert!(api
+            .current_import_progress("terminal-32")
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]
@@ -1816,5 +2155,63 @@ mod tests {
         let restored = reopened.sync_account_history("account-a").unwrap();
         assert_eq!(restored.latest_attempt.as_ref().unwrap().total_found, 12);
         assert_eq!(restored.latest_attempt.unwrap().failed, 2);
+    }
+
+    #[test]
+    fn persists_rate_limit_and_authentication_pause_per_account() {
+        let library = tempdir().unwrap();
+        let api = CoreApi::open(library.path()).unwrap();
+        api.save_settings(&AppSettings {
+            proxy_url: None,
+            library_path: library.path().to_string_lossy().into_owned(),
+            theme: "ocean".into(),
+            language: "zh".into(),
+            gallery_columns: 4,
+            gallery_rows: 3,
+            show_note_preview: true,
+            show_game_tag: true,
+            compact_tag_display: true,
+            auto_play_video: false,
+            auto_sync_on_launch: false,
+            close_behavior: "ask".into(),
+            custom_font_paths: Vec::new(),
+            sync_policy: SyncPolicy {
+                enabled: true,
+                active_interval_minutes: 30,
+                sleep_after_hours: 24,
+            },
+        })
+        .unwrap();
+
+        let limited = api
+            .record_sync_attempt("account-a", "rate_limited", 0, 0, 0, 0)
+            .unwrap();
+        api.record_sync_attempt("account-b", "authentication_failure", 0, 0, 0, 0)
+            .unwrap();
+
+        assert_eq!(
+            api.sync_schedule_status("account-a").unwrap().next_sync_at,
+            limited
+                .latest_attempt
+                .as_ref()
+                .map(|attempt| attempt.attempted_at + chrono::Duration::minutes(1))
+        );
+        assert_eq!(
+            api.sync_schedule_status("account-b").unwrap().next_sync_at,
+            None
+        );
+
+        api.record_sync_attempt("account-b", "success", 0, 0, 0, 0)
+            .unwrap();
+        assert!(api
+            .sync_schedule_status("account-b")
+            .unwrap()
+            .next_sync_at
+            .is_some());
+        assert!(api
+            .sync_schedule_status("account-a")
+            .unwrap()
+            .next_sync_at
+            .is_some());
     }
 }

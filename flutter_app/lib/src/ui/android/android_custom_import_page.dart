@@ -1,6 +1,10 @@
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 
+import '../../backend/app_backend.dart';
 import '../../l10n/app_localizations.dart';
 import '../../state/transfer_controller.dart';
 import 'android_back_guard.dart';
@@ -40,6 +44,13 @@ class _AndroidCustomImportPageState extends State<AndroidCustomImportPage> {
       }
     } catch (error) {
       if (mounted) androidMessage(context, error);
+    }
+  }
+
+  Future<void> importSelected() async {
+    final success = await widget.controller.importSelected();
+    if (!success && mounted && widget.controller.error != null) {
+      androidMessage(context, widget.controller.error!);
     }
   }
 
@@ -86,17 +97,15 @@ class _AndroidCustomImportPageState extends State<AndroidCustomImportPage> {
               for (final path in state.paths)
                 ListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: SelectableText(path),
+                  leading: _SelectedMediaPreview(path: path),
+                  title: Text(
+                    p.basename(path),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                   trailing: IconButton(
                     tooltip: context.l10n.select(zh: '移除', en: 'Remove'),
-                    onPressed: state.busy
-                        ? null
-                        : () {
-                            state.paths = state.paths
-                                .where((item) => item != path)
-                                .toList();
-                            state.publish();
-                          },
+                    onPressed: state.busy ? null : () => state.removePath(path),
                     icon: const Icon(Icons.remove_circle_outline),
                   ),
                 ),
@@ -134,8 +143,13 @@ class _AndroidCustomImportPageState extends State<AndroidCustomImportPage> {
                         state.paths.isEmpty ||
                         game.text.trim().isEmpty
                     ? null
-                    : state.importSelected,
-                icon: const Icon(Icons.download),
+                    : importSelected,
+                icon: state.busy
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.download),
                 label: Text(
                   context.l10n.select(
                     zh: state.busy ? '正在导入…' : '开始导入',
@@ -143,6 +157,10 @@ class _AndroidCustomImportPageState extends State<AndroidCustomImportPage> {
                   ),
                 ),
               ),
+              if (state.importProgress case final progress?) ...[
+                Text(_progressLabel(context, progress)),
+                LinearProgressIndicator(value: progress.value),
+              ],
               if (state.importSummary case final result?)
                 Text(
                   context.l10n.select(
@@ -150,11 +168,56 @@ class _AndroidCustomImportPageState extends State<AndroidCustomImportPage> {
                     en: 'Imported ${result.imported} · Duplicates ${result.duplicates} · Failed ${result.failed}',
                   ),
                 ),
-              if (state.error != null) SelectableText(state.error.toString()),
             ],
           ),
         ),
       );
     },
   );
+}
+
+String _progressLabel(BuildContext context, OperationProgressValue progress) {
+  if (progress.phase == 'discovering') {
+    return context.l10n.select(zh: '正在扫描可导入媒体…', en: 'Scanning for media…');
+  }
+  if (progress.total case final int total when total > 0) {
+    return context.l10n.select(
+      zh: '正在导入 ${progress.processed} / $total',
+      en: 'Importing ${progress.processed} / $total',
+    );
+  }
+  return context.l10n.select(zh: '正在导入…', en: 'Importing…');
+}
+
+class _SelectedMediaPreview extends StatelessWidget {
+  const _SelectedMediaPreview({required this.path});
+  final String path;
+
+  @override
+  Widget build(BuildContext context) {
+    final extension = p.extension(path).toLowerCase();
+    if (const {'.jpg', '.jpeg', '.png', '.webp'}.contains(extension)) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(6),
+        child: Image.file(
+          File(path),
+          width: 48,
+          height: 48,
+          fit: BoxFit.cover,
+          errorBuilder: (_, _, _) => const SizedBox.square(
+            dimension: 48,
+            child: Icon(Icons.image_outlined),
+          ),
+        ),
+      );
+    }
+    return SizedBox.square(
+      dimension: 48,
+      child: Icon(
+        const {'.mp4', '.mov'}.contains(extension)
+            ? Icons.movie_outlined
+            : Icons.folder_outlined,
+      ),
+    );
+  }
 }

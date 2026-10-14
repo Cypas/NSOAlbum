@@ -14,7 +14,7 @@ int androidGalleryColumns({
   required TextScaler textScaler,
   required double spacing,
 }) {
-  final minimum = 180 * math.max(1, textScaler.scale(14) / 14);
+  final minimum = 144 * math.max(1, textScaler.scale(14) / 14);
   final maximum = ((width + spacing) / (minimum + spacing)).floor();
   return math.min(preferredColumns.clamp(1, 7), math.max(1, maximum));
 }

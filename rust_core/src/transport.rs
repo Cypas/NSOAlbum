@@ -1,13 +1,17 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use reqwest::{Client, Method, Proxy, Response};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 use url::Url;
 
 use crate::error::{CoreError, CoreResult};
+use crate::sync::CancellationToken;
 
 pub const DEFAULT_MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 const DEFAULT_USER_AGENT: &str =
@@ -74,6 +78,129 @@ pub struct HttpTransport {
     client: Client,
     config: TransportConfig,
     download_user_agent: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct DownloadedMedia {
+    pub path: PathBuf,
+    pub sha256: String,
+    pub size: u64,
+}
+
+impl Drop for DownloadedMedia {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+struct StreamingDownloadWriter {
+    file: Option<tokio::fs::File>,
+    path: PathBuf,
+    expected_size: Option<u64>,
+    limit: u64,
+    size: u64,
+    hasher: Sha256,
+    cancellation: CancellationToken,
+    completed: bool,
+}
+
+impl StreamingDownloadWriter {
+    async fn create(
+        temporary_root: &Path,
+        expected_size: Option<u64>,
+        limit: u64,
+        cancellation: CancellationToken,
+    ) -> CoreResult<Self> {
+        if let Some(expected) = expected_size {
+            validate_size(expected, limit)?;
+        }
+        tokio::fs::create_dir_all(temporary_root).await?;
+        let path = temporary_root.join(format!("{}.part", uuid::Uuid::new_v4()));
+        let file = tokio::fs::File::create(&path).await?;
+        Ok(Self {
+            file: Some(file),
+            path,
+            expected_size,
+            limit,
+            size: 0,
+            hasher: Sha256::new(),
+            cancellation,
+            completed: false,
+        })
+    }
+
+    async fn write_chunk(&mut self, bytes: &[u8]) -> CoreResult<()> {
+        if let Err(error) = self.cancellation.check() {
+            self.cleanup().await;
+            return Err(error);
+        }
+        let next_size = self.size.saturating_add(bytes.len() as u64);
+        if let Err(error) = validate_size(next_size, self.limit) {
+            self.cleanup().await;
+            return Err(error);
+        }
+        let write = self
+            .file
+            .as_mut()
+            .expect("streaming writer is active")
+            .write_all(bytes);
+        tokio::select! {
+            _ = self.cancellation.cancelled() => {
+                self.cleanup().await;
+                Err(CoreError::Cancelled)
+            }
+            result = write => {
+                if let Err(error) = result {
+                    self.cleanup().await;
+                    return Err(error.into());
+                }
+                self.size = next_size;
+                self.hasher.update(bytes);
+                Ok(())
+            }
+        }
+    }
+
+    async fn finish(mut self) -> CoreResult<DownloadedMedia> {
+        if let Err(error) = self.cancellation.check() {
+            self.cleanup().await;
+            return Err(error);
+        }
+        if let Some(expected) = self.expected_size {
+            if expected != self.size {
+                let actual = self.size;
+                self.cleanup().await;
+                return Err(CoreError::DownloadLengthMismatch { expected, actual });
+            }
+        }
+        if let Some(mut file) = self.file.take() {
+            if let Err(error) = file.flush().await {
+                self.cleanup().await;
+                return Err(error.into());
+            }
+        }
+        self.completed = true;
+        Ok(DownloadedMedia {
+            path: self.path.clone(),
+            sha256: hex::encode(self.hasher.clone().finalize()),
+            size: self.size,
+        })
+    }
+
+    async fn cleanup(&mut self) {
+        self.file.take();
+        let _ = tokio::fs::remove_file(&self.path).await;
+        self.completed = true;
+    }
+}
+
+impl Drop for StreamingDownloadWriter {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.file.take();
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 impl HttpTransport {
@@ -227,6 +354,47 @@ impl HttpTransport {
             .await
     }
 
+    pub async fn download_media_to_file(
+        &self,
+        url: &str,
+        expected_size: Option<u64>,
+        temporary_root: &Path,
+        cancellation: &CancellationToken,
+    ) -> CoreResult<DownloadedMedia> {
+        let request = self.public_download_request(url)?;
+        let mut response = tokio::select! {
+            _ = cancellation.cancelled() => return Err(CoreError::Cancelled),
+            result = request.send() => result?,
+        };
+        if response.status().as_u16() == 429 {
+            return Err(CoreError::RateLimited {
+                retry_after_seconds: 60,
+            });
+        }
+        response = response.error_for_status()?;
+        let response_length = response.content_length();
+        if let Some(length) = response_length {
+            validate_size(length, self.config.max_download_bytes)?;
+        }
+        let mut writer = StreamingDownloadWriter::create(
+            temporary_root,
+            expected_size.or(response_length),
+            self.config.max_download_bytes,
+            cancellation.clone(),
+        )
+        .await?;
+        while let Some(chunk) = tokio::select! {
+            _ = cancellation.cancelled() => {
+                writer.cleanup().await;
+                return Err(CoreError::Cancelled);
+            }
+            result = response.chunk() => result?,
+        } {
+            writer.write_chunk(&chunk).await?;
+        }
+        writer.finish().await
+    }
+
     pub async fn download_avatar(&self, url: &str) -> CoreResult<Vec<u8>> {
         self.download_public_bytes(url, None, MAX_AVATAR_BYTES)
             .await
@@ -348,6 +516,7 @@ pub(crate) mod tests {
     use std::net::TcpListener;
 
     use super::*;
+    use crate::sync::CancellationToken;
 
     pub(crate) fn capture_request(body: &'static str) -> (String, std::thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -412,6 +581,102 @@ pub(crate) mod tests {
             String::from_utf8(request).unwrap()
         });
         (url, server)
+    }
+
+    #[tokio::test]
+    async fn streaming_writer_hashes_chunks_without_buffering_the_whole_media() {
+        let directory = tempfile::tempdir().unwrap();
+        let token = CancellationToken::default();
+        let mut writer = StreamingDownloadWriter::create(directory.path(), Some(6), 8, token)
+            .await
+            .unwrap();
+
+        writer.write_chunk(b"abc").await.unwrap();
+        writer.write_chunk(b"def").await.unwrap();
+        let download = writer.finish().await.unwrap();
+
+        assert_eq!(download.size, 6);
+        assert_eq!(
+            download.sha256,
+            "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721"
+        );
+        assert_eq!(tokio::fs::read(&download.path).await.unwrap(), b"abcdef");
+    }
+
+    #[tokio::test]
+    async fn streaming_writer_removes_part_on_limit_error_or_cancellation() {
+        let directory = tempfile::tempdir().unwrap();
+        let token = CancellationToken::default();
+        let mut too_large =
+            StreamingDownloadWriter::create(directory.path(), None, 4, token.clone())
+                .await
+                .unwrap();
+        let oversized_path = too_large.path.clone();
+
+        assert!(matches!(
+            too_large.write_chunk(b"12345").await,
+            Err(CoreError::DownloadTooLarge {
+                actual: 5,
+                limit: 4
+            })
+        ));
+        assert!(!oversized_path.exists());
+
+        let mut cancelled =
+            StreamingDownloadWriter::create(directory.path(), None, 8, token.clone())
+                .await
+                .unwrap();
+        let cancelled_path = cancelled.path.clone();
+        token.cancel();
+        assert!(matches!(
+            cancelled.write_chunk(b"1").await,
+            Err(CoreError::Cancelled)
+        ));
+        assert!(!cancelled_path.exists());
+    }
+
+    #[tokio::test]
+    async fn streaming_writer_rejects_length_mismatch_and_removes_part() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut writer = StreamingDownloadWriter::create(
+            directory.path(),
+            Some(5),
+            8,
+            CancellationToken::default(),
+        )
+        .await
+        .unwrap();
+        let path = writer.path.clone();
+        writer.write_chunk(b"1234").await.unwrap();
+
+        assert!(matches!(
+            writer.finish().await,
+            Err(CoreError::DownloadLengthMismatch {
+                expected: 5,
+                actual: 4
+            })
+        ));
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn completed_part_is_removed_when_download_result_is_dropped() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut writer = StreamingDownloadWriter::create(
+            directory.path(),
+            Some(4),
+            8,
+            CancellationToken::default(),
+        )
+        .await
+        .unwrap();
+        writer.write_chunk(b"data").await.unwrap();
+        let download = writer.finish().await.unwrap();
+        let path = download.path.clone();
+
+        drop(download);
+
+        assert!(!path.exists());
     }
 
     #[tokio::test]

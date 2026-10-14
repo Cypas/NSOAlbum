@@ -565,10 +565,25 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                             },
                             onSubmitted: state.searchFor,
                           ),
-                          const SizedBox(height: 12),
-                          Wrap(
-                            spacing: 8,
-                            children: [
+                          const SizedBox(height: 8),
+                          SegmentedButton<GalleryKindFilter>(
+                            key: const Key('android-kind-filter'),
+                            showSelectedIcon: false,
+                            style: ButtonStyle(
+                              visualDensity: VisualDensity.compact,
+                              minimumSize: const WidgetStatePropertyAll(
+                                Size(0, 32),
+                              ),
+                              padding: const WidgetStatePropertyAll(
+                                EdgeInsets.symmetric(horizontal: 12),
+                              ),
+                            ),
+                            selected: {state.kind},
+                            onSelectionChanged: (values) {
+                              state.kind = values.single;
+                              state.reload();
+                            },
+                            segments: [
                               for (final entry in {
                                 GalleryKindFilter.all: context.l10n.select(
                                   zh: '全部',
@@ -583,13 +598,9 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                                   en: 'Videos',
                                 ),
                               }.entries)
-                                ChoiceChip(
+                                ButtonSegment(
+                                  value: entry.key,
                                   label: Text(entry.value),
-                                  selected: state.kind == entry.key,
-                                  onSelected: (_) {
-                                    state.kind = entry.key;
-                                    state.reload();
-                                  },
                                 ),
                             ],
                           ),
@@ -604,7 +615,7 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                             ),
                           if (state.loading) const LinearProgressIndicator(),
                           if (state.error != null)
-                            SelectableText(state.error.toString()),
+                            Text(androidReadableError(context, state.error!)),
                           if (!state.loading && items.isEmpty)
                             Padding(
                               padding: const EdgeInsets.all(24),

@@ -11,7 +11,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 import 'settings.dart';
 
-// These functions are ignored because they are not marked as `pub`: `core`, `error_text`
+// These functions are ignored because they are not marked as `pub`: `clear_current_sync`, `core`, `error_text`, `register_current_sync`
 
 Future<void> initCore({required String libraryRoot}) =>
     RustLib.instance.api.crateBridgeInitCore(libraryRoot: libraryRoot);
@@ -27,6 +27,11 @@ Future<void> saveSettings({required AppSettings settings}) =>
 
 Future<void> saveSyncPolicy({required SyncPolicy policy}) =>
     RustLib.instance.api.crateBridgeSaveSyncPolicy(policy: policy);
+
+Future<void> setRuntimeProxyPolicy({required bool disableAppProxy}) => RustLib
+    .instance
+    .api
+    .crateBridgeSetRuntimeProxyPolicy(disableAppProxy: disableAppProxy);
 
 Future<SyncScheduleStatus> syncScheduleStatus({required String accountId}) =>
     RustLib.instance.api.crateBridgeSyncScheduleStatus(accountId: accountId);
@@ -88,6 +93,14 @@ Future<SyncSummary> syncNso({
   String? proxyUrl,
 }) => RustLib.instance.api.crateBridgeSyncNso(
   session: session,
+  proxyUrl: proxyUrl,
+);
+
+Future<SyncSummary> syncNsoFromSessionToken({
+  required String sessionToken,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeSyncNsoFromSessionToken(
+  sessionToken: sessionToken,
   proxyUrl: proxyUrl,
 );
 
@@ -161,6 +174,22 @@ Future<ImportSummary> importCustomFiles({
 }) => RustLib.instance.api.crateBridgeImportCustomFiles(
   paths: paths,
   gameName: gameName,
+);
+
+Future<ImportSummary> importCustomFilesWithProgress({
+  required List<String> paths,
+  required String gameName,
+  required String operationId,
+}) => RustLib.instance.api.crateBridgeImportCustomFilesWithProgress(
+  paths: paths,
+  gameName: gameName,
+  operationId: operationId,
+);
+
+Future<OperationProgress?> currentImportProgress({
+  required String operationId,
+}) => RustLib.instance.api.crateBridgeCurrentImportProgress(
+  operationId: operationId,
 );
 
 Future<ImportSummary> importMtpFiles({

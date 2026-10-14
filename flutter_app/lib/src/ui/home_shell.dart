@@ -1530,23 +1530,22 @@ class _LibraryPageState extends State<LibraryPage> {
     late final List<MediaAsset> items;
     try {
       items = await LibraryController.query(
-            widget.backend,
-            kind: kind,
-            favoriteOnly: favoritesOnly,
-            albumId: widget.albumId,
-            newestFirst: newestFirst,
-            gameNames: selectedGameTags.toList(growable: false),
-            capturedFrom: capturedRange == null
-                ? null
-                : DateUtils.dateOnly(capturedRange!.start).toUtc(),
-            capturedUntil: capturedRange == null
-                ? null
-                : DateUtils.dateOnly(capturedRange!.end)
-                      .add(const Duration(days: 1))
-                      .toUtc(),
-            limit: 500,
-          )
-          .timeout(const Duration(seconds: 25));
+        widget.backend,
+        kind: kind,
+        favoriteOnly: favoritesOnly,
+        albumId: widget.albumId,
+        newestFirst: newestFirst,
+        gameNames: selectedGameTags.toList(growable: false),
+        capturedFrom: capturedRange == null
+            ? null
+            : DateUtils.dateOnly(capturedRange!.start).toUtc(),
+        capturedUntil: capturedRange == null
+            ? null
+            : DateUtils.dateOnly(capturedRange!.end)
+                  .add(const Duration(days: 1))
+                  .toUtc(),
+        limit: 500,
+      ).timeout(const Duration(seconds: 25));
     } catch (error, stackTrace) {
       if (!startupGalleryQueryLogged) {
         startupGalleryQueryLogged = true;
@@ -4712,7 +4711,10 @@ class _TransferPageState extends State<TransferPage>
 
   void _handleSyncStateChanged() {
     final next = widget.sync.state;
-    final finished = next == SyncState.completed || next == SyncState.failed;
+    final finished =
+        next == SyncState.completed ||
+        next == SyncState.failed ||
+        next == SyncState.cancelled;
     final wasRunning =
         _lastSyncState == SyncState.running ||
         _lastSyncState == SyncState.cancelling;
@@ -5738,7 +5740,9 @@ class _TransferPageState extends State<TransferPage>
     });
     try {
       await completeNintendoAccountLogin(
-        backend: widget.backend, settings: widget.settings, callback: value,
+        backend: widget.backend,
+        settings: widget.settings,
+        callback: value,
       );
       await _loadAccountState();
       if (!mounted) return;
@@ -6659,6 +6663,10 @@ String _syncText(BuildContext context, SyncController controller) {
     SyncState.completed => context.l10n.select(zh: '同步完成', en: 'Sync complete'),
     SyncState.failed => context.l10n.select(zh: '同步失败', en: 'Sync failed'),
     SyncState.cancelling => context.l10n.select(zh: '正在取消…', en: 'Cancelling…'),
+    SyncState.cancelled => context.l10n.select(
+      zh: '同步已取消',
+      en: 'Sync cancelled',
+    ),
   };
 }
 

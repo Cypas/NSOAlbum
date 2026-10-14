@@ -20,20 +20,30 @@ class LibraryController extends ChangeNotifier {
   bool loading = false;
   bool disposed = false;
   int revision = 0;
+  List<MediaAsset>? _visibleSource;
+  String? _visibleSearch;
+  List<MediaAsset> _visibleCache = [];
 
-  List<MediaAsset> get visible => items
-      .where(
-        (item) => normalizedTextContains(
-          [
-            item.originalName,
-            item.gameName,
-            item.note ?? '',
-            ...item.tags,
-          ].join(' '),
-          search,
-        ),
-      )
-      .toList(growable: false);
+  List<MediaAsset> get visible {
+    if (identical(_visibleSource, items) && _visibleSearch == search) {
+      return _visibleCache;
+    }
+    _visibleSource = items;
+    _visibleSearch = search;
+    return _visibleCache = items
+        .where(
+          (item) => normalizedTextContains(
+            [
+              item.originalName,
+              item.gameName,
+              item.note ?? '',
+              ...item.tags,
+            ].join(' '),
+            search,
+          ),
+        )
+        .toList(growable: false);
+  }
 
   Future<void> reload() async {
     if (disposed) return;

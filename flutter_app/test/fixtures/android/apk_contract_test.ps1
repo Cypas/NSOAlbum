@@ -52,6 +52,8 @@ try {
 package: name='io.github.cypas.nsoalbum' versionCode='47' versionName='0.2.14'
 sdkVersion:'24'
 uses-permission: name='android.permission.INTERNET'
+uses-permission: name='android.permission.POST_NOTIFICATIONS'
+uses-permission: name='android.permission.REQUEST_INSTALL_PACKAGES'
 launchable-activity: name='io.github.cypas.nsoalbum.MainActivity' label='NSOAlbum' icon=''
 native-code: 'arm64-v8a'
 "@
@@ -64,9 +66,42 @@ native-code: 'arm64-v8a'
     Assert-Rejected { Assert-AndroidBadging ($badging.Replace('io.github.cypas.nsoalbum', 'io.squidalbum.squid_album')) '0.2.14' '47' } 'old identity'
     Assert-Rejected { Assert-AndroidBadging ($badging.Replace('MainActivity', 'MissingActivity')) '0.2.14' '47' } 'wrong launcher'
     Assert-Rejected { Assert-AndroidBadging ($badging.Replace("uses-permission: name='android.permission.INTERNET'", '')) '0.2.14' '47' } 'missing INTERNET'
+    Assert-Rejected { Assert-AndroidBadging ($badging.Replace("uses-permission: name='android.permission.POST_NOTIFICATIONS'", '')) '0.2.14' '47' } 'missing update notification permission'
+    Assert-Rejected { Assert-AndroidBadging ($badging.Replace("uses-permission: name='android.permission.REQUEST_INSTALL_PACKAGES'", '')) '0.2.14' '47' } 'missing update installation permission'
     Assert-Rejected { Assert-AndroidBadging "$badging`napplication-debuggable" '0.2.14' '47' } 'debuggable APK'
     Assert-Rejected { Assert-AndroidBadging "$badging`nuses-permission: name='android.permission.MANAGE_EXTERNAL_STORAGE'" '0.2.14' '47' } 'all-files permission'
     Assert-Rejected { Assert-AndroidBadging ($badging.Replace("native-code: 'arm64-v8a'", "native-code: 'arm64-v8a' 'x86'")) '0.2.14' '47' } 'multiple packaged ABIs'
+    $digest = 'ab' * 32
+    $signature = "Verified using v2 scheme (APK Signature Scheme v2): true`nSigner #1 certificate DN: CN=NSOAlbum Fixture`nSigner #1 certificate SHA-256 digest: $digest"
+    $actualDigest = Assert-AndroidApkSignature -Signature $signature -SigningMode Release -ExpectedCertificateSha256 $digest
+    if ($actualDigest -cne $digest) { throw 'Signer fingerprint differs.' }
+    $script:caseCount++
+    Assert-Rejected { Assert-AndroidApkSignature ($signature.Replace(': true', ': false')) Test } 'v2 signature missing'
+    Assert-Rejected { Assert-AndroidApkSignature $signature Release ('cd' * 32) } 'certificate mismatch'
+    Assert-Rejected { Assert-AndroidApkSignature $signature Release } 'release verification without expected certificate'
+    Assert-Rejected { Assert-AndroidApkSignature ($signature.Replace('NSOAlbum Fixture', 'Android Debug')) Release $digest } 'debug signing certificate'
+    Assert-Rejected { Assert-AndroidApkSignature "$signature`nSigner #2 certificate SHA-256 digest: $digest" Release $digest } 'multiple signers'
+    if ((Get-AndroidSigningMode -Requested $false -EventName pull_request -WorkflowRef refs/heads/dev -Repository Cypas/NSOAlbum) -ne 'Test') {
+        throw 'PR verification should use Test signing.'
+    }
+    $script:caseCount++
+    foreach ($scenario in @(
+        @('push', 'refs/heads/main'),
+        @('push', 'refs/tags/v0.2.14'),
+        @('workflow_dispatch', 'refs/heads/dev'),
+        @('workflow_dispatch', 'refs/heads/main')
+    )) {
+        if ((Get-AndroidSigningMode $true $scenario[0] $scenario[1] 'Cypas/NSOAlbum') -ne 'Release') {
+            throw 'Trusted signing request was rejected.'
+        }
+        $script:caseCount++
+    }
+    Assert-Rejected { Get-AndroidSigningMode $true pull_request refs/heads/dev Cypas/NSOAlbum } 'PR cannot request release signing'
+    Assert-Rejected { Get-AndroidSigningMode $true pull_request_target refs/heads/main Cypas/NSOAlbum } 'PR target cannot request signing'
+    Assert-Rejected { Get-AndroidSigningMode $true workflow_dispatch refs/heads/untrusted Cypas/NSOAlbum } 'untrusted workflow definition'
+    Assert-Rejected { Get-AndroidSigningMode $true push refs/heads/dev Cypas/NSOAlbum } 'dev push remains lightweight'
+    Assert-Rejected { Get-AndroidSigningMode $true push refs/tags/test Cypas/NSOAlbum } 'unstable tag'
+    Assert-Rejected { Get-AndroidSigningMode $true push refs/heads/main Other/NSOAlbum } 'other repository'
     Write-Host "Android APK contract tests passed ($script:caseCount cases)."
 } finally {
     # Only remove this test's explicitly created, unique temporary directory.

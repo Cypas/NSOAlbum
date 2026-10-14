@@ -10,10 +10,10 @@
 | --- | --- | --- | --- |
 | push 到 `dev` | Dev validation：Ubuntu Rust fmt/Clippy/单测、Dart 分析、完整 Flutter 测试、Git 历史敏感扫描 | 不构建安装包 | 否 |
 | 新建/更新目标为 `main` 的 PR | Validate：Ubuntu/历史扫描及 Windows x64、macOS arm64/x64 各自完整测试、构建、签名和原生媒体验收；Android ARM64 测试构建/包体检查；Required validation 汇总 | Windows 运行目录、两种 DMG、Android CI 测试 APK；不编译 Inno | 否 |
-| PR 合入后 push 到 `main` | 同一 Validate 完整门禁，并自动编译 Windows Inno 安装器 | 运行目录、安装器、两种 DMG、Android CI 测试 APK，保留 7 天 | 否 |
+| PR 合入后 push 到 `main` | 同一 Validate 完整门禁，并自动编译 Windows Inno 安装器；Android 通过后使用正式密钥签名 | 运行目录、安装器、两种 DMG、Android 测试/正式签名 APK，保留 7 天 | 否 |
 | 手动 Dev validation | 对所选 ref 运行 Ubuntu 基础检查及历史扫描 | 不构建安装包 | 否 |
-| 手动 Validate | 固定所选 ref 的提交，运行完整门禁；`package_installer=true` 时额外编译 Inno | 运行目录、两种 DMG、Android CI 测试 APK；开启时含安装器 | 否 |
-| 手动 Android ARM64 validation | 固定所选 ref 的提交，只运行 Android 构建/测试和静态包体检查，不代替完整 Validate | Android CI 测试 APK，保留 7 天 | 否 |
+| 手动 Validate | 固定所选 ref 的提交，运行完整门禁；可信 main/dev 工作流的 `package_installer=true` 时额外编译 Inno 和签名 Android APK | 运行目录、两种 DMG、Android CI 测试 APK；开启时含安装器及正式签名 APK | 否 |
+| 手动 Android ARM64 validation | 固定所选 ref 的提交，只运行 Android 构建/测试和静态包体检查；`sign_release=true` 时要求可信工作流/目标历史并正式签名，不代替完整 Validate | Android CI 测试 APK；开启时含正式签名 APK，保留 7 天 | 否 |
 | push `v*` tag 或手动 Release | 稳定 tag/版本/main 祖先检查及完整门禁，含 Android 测试构建/包体检查 | 正式资产仍为安装器、两种 DMG、SHA256SUMS.txt；Android APK 只在 Actions artifacts | 全部成功后发布 |
 | 其他分支 push / 目标不是 `main` 的 PR | 当前没有自动触发；可手动指定 ref 验证 | 无自动产物 | 否 |
 
@@ -41,6 +41,7 @@ NDK 28.2.13676358，只安装 Rust `aarch64-linux-android`，APK 构建显式指
 Dart 分析和完整 Flutter 测试。完整测试在 APK 构建后启用
 `NSO_VERIFY_ANDROID_BUILD=1`，执行真实 Gradle ABI 配置、编译的应用入口、
 品牌资源、Release 网络权限及最终 APK 权限检查；其他平台测试保留明确 skip。
+原生 JVM 更新规则回归检查官方资产地址、包身份、签名、受限复制/哈希及后台任务生命周期。
 测试统计来自本次日志，报告 artifact 为 `validation-android-arm64`。
 
 验收 job 只下载同次 run、同提交的中间 artifact，不重新构建。使用现有
@@ -54,13 +55,67 @@ AArch64；Rust Core、Flutter AOT/引擎、libmpv 和 FFmpeg 必须存在。
 `NSOAlbum-Android-arm64-CI-Test.apk`，artifact 为 `android-arm64-ci-test`。
 它不是正式签名发布包，不能作为稳定升级渠道；不匹配 Release 的
 `native-*` 下载范围，也不进入正式 Release 资产。
-正式密钥和 ARM64 运行节点尚未确认，本阶段不自动配置自托管 runner、
+ARM64 运行节点尚未确认，本阶段不自动配置自托管 runner、
 不新增 x86/其他 ABI，也没有安装、启动或真实媒体 smoke。
 静态包体检查通过不等于 Android 真机或后台调度验收通过。
+
+### 正式密钥签名
+
+仓库配置 `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、
+`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD` 四个 Actions Secrets。
+工作流显式逐级传递它们，PR 不接收正式密钥，构建和测试 job 不还原密钥。
+main 自动打包、可信 main/dev 手动完整打包、稳定标签完整流程会请求签名；
+单独 Android 手动入口默认不签名，需要显式打开 `sign_release`。
+签名目标提交必须位于 main/dev 历史中，不能用可信工作流给任意未审核 ref 签名。
+
+签名 job 在 build/verify 均通过后，再次核对同次 artifact 的提交、版本、
+构建号与全部 SHA-256。`sign_android_apk.ps1` 仅将私钥还原到 runner 的独立
+临时目录，密码通过环境变量传给官方 keytool/apksigner，不写入命令行、
+key.properties、Gradle 缓存或 artifact。结束时清理私钥；失败删除输出 APK，
+缺失 Secret/错误密码/证书不匹配时不回退测试签名。
+
+签名后重新核对 APK 的版本、架构、权限和 v2 签名，签名证书 SHA-256
+必须等于配置密钥导出的证书，并拒绝 Android Debug 证书。
+正式密钥签名后的 APK 命名为 `NSOAlbum-Android-arm64-<SemVer>.apk`，
+与摘要上传 `android-arm64-signed` artifact；公开证书指纹与检查结果上传
+`signing-android-arm64`。下载前仍需确认本次完整工作流成功。
+签名产物仍不匹配 `native-*`，不自动进入正式 Release 资产；尚未运行
+Android 设备 smoke，不能把“正式密钥签名”表述为“正式发布验收完成”。
+
+每次 Android 构建使用临时生成的测试密钥执行真实签名回归，包括正常签名、
+输入文件保持不变、错误密码、缺失 Secret、非法 Base64、拒绝覆盖和清理。
+该回归不使用配置的正式密钥，不影响用户安装或数据。
 
 任一 Android 构建/测试/包体检查失败、取消或跳过均使完整验证失败；
 现有桌面原生运行及发布门禁保持不变。单独手动 Android 检查不能代替
 `Required validation`。dev push 仍只有快速 Ubuntu 检查和历史扫描。
+请求正式签名时，签名失败/取消/跳过同样使完整验证失败；未请求签名的
+普通验证明确允许独立签名 job 不执行，不跳过任何构建或验收 job。
+
+### Android 应用更新
+
+Android 正式模式启动时按本地自然日自动检查稳定版本；发现新版后确认，
+选择下载才交给系统 DownloadManager。正在下载的通知由系统显示，后台任务
+不阻止页面导航；下载完成并验证后显示点击安装通知和应用内安装按钮。
+通知被拒绝仍可使用应用内状态与安装入口。
+
+仅接受官方仓库稳定 APK 的固定名称/URL、官方 SHA-256 和受限大小。
+下载完成后复制到应用私有更新目录并核对包名、版本、递增构建号及当前安装
+签名；完成广播仅调度 JobScheduler，耗时校验由可取消/重试的后台 job 执行，
+不在广播时限内复制整个 APK。通知和应用内按钮都再次校验后调用系统安装器。未知来源安装权限由
+系统设置确认，不静默安装、卸载、退出或清除数据；Debug 同包名测试应用
+与正式签名不兼容时拒绝安装，不自动清理测试库。
+更新功能需要 POST_NOTIFICATIONS 和 REQUEST_INSTALL_PACKAGES，
+不允许 MANAGE_EXTERNAL_STORAGE 或 FOREGROUND_SERVICE。
+
+官方元数据大小须大于零且不超过 512 MiB，前台查询到超限下载会取消，
+完成复制也实行大小上限；应用进程不在时，DownloadManager 的网络下载
+不能保证实时硬上限，超限文件会在恢复/完成校验时拒绝，不交给安装器。
+
+目前稳定 Release 尚未包含 Android APK，客户端显示缺包状态、不下载 CI
+测试 artifact。正式签名 artifact 通过设备验收并作为同版本正式资产提供后，
+才能实际执行跨版本更新；不以 widget/包体检查替代真机通知点击、进程终止
+恢复、未知来源权限及系统安装验收。
 
 ## 本地基础验证
 

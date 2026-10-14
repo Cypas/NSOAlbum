@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:squid_album/src/backend/app_backend.dart';
 import 'package:squid_album/src/rust/models.dart';
 import 'package:squid_album/src/state/library_controller.dart';
 import 'package:squid_album/src/state/media_edit_controller.dart';
@@ -39,6 +40,7 @@ void main() {
       final settings = SettingsController(backend);
       final sync = SyncController(backend);
       final transfer = TransferController(backend, settings, sync);
+      await transfer.beginLogin();
       final login = transfer.completeLogin('test-callback');
       await Future<void>.delayed(const Duration(milliseconds: 10));
       try {
@@ -75,6 +77,56 @@ void main() {
     transfer.dispose();
     sync.dispose();
     settings.dispose();
+  });
+
+  test('custom import reports only its latched operation progress', () async {
+    final backend = _ProgressImportBackend();
+    final settings = SettingsController(backend);
+    final sync = SyncController(backend);
+    final transfer = TransferController(backend, settings, sync)
+      ..addPaths(['one.png'])
+      ..gameName = 'Game';
+    final pending = transfer.importSelected();
+    await Future<void>.delayed(Duration.zero);
+    expect(transfer.importProgress?.phase, 'discovering');
+
+    backend.progress.add(
+      const OperationProgressValue(
+        operationId: 'video',
+        kind: 'video_trim',
+        phase: 'encoding',
+        processed: 5,
+        total: 10,
+      ),
+    );
+    backend.progress.add(
+      const OperationProgressValue(
+        operationId: 'import-1',
+        kind: 'custom_import',
+        phase: 'importing',
+        processed: 2,
+        total: 4,
+      ),
+    );
+    backend.progress.add(
+      const OperationProgressValue(
+        operationId: 'import-2',
+        kind: 'custom_import',
+        phase: 'importing',
+        processed: 99,
+        total: 99,
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(transfer.importProgress?.operationId, 'import-1');
+    expect(transfer.importProgress?.processed, 2);
+    backend.finish.complete();
+    expect(await pending, isTrue);
+    transfer.dispose();
+    sync.dispose();
+    settings.dispose();
+    await backend.progress.close();
   });
 
   test('preview cleanup is single-owner and idempotent', () async {
@@ -134,4 +186,29 @@ class _CleanupBackend extends FakeBackend {
   final discarded = <String>[];
   @override
   Future<void> discardTemporaryMedia(String path) async => discarded.add(path);
+}
+
+class _ProgressImportBackend extends FakeBackend
+    implements OperationProgressBackend {
+  _ProgressImportBackend() : super(mediaItems: []);
+  final progress = StreamController<OperationProgressValue>.broadcast();
+  final finish = Completer<void>();
+
+  @override
+  Stream<OperationProgressValue> get operationProgress => progress.stream;
+
+  @override
+  Future<ImportSummary> importCustomFiles(
+    List<String> paths,
+    String gameName,
+  ) async {
+    await finish.future;
+    return ImportSummary(
+      totalFound: BigInt.one,
+      imported: BigInt.one,
+      duplicates: BigInt.zero,
+      failed: BigInt.zero,
+      errors: const [],
+    );
+  }
 }

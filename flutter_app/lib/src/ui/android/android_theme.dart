@@ -15,9 +15,9 @@ ThemeData androidTheme(String name) {
   );
   return base.copyWith(
     textTheme: base.textTheme.copyWith(
-      headlineMedium: base.textTheme.headlineMedium?.copyWith(fontSize: 20),
-      titleLarge: base.textTheme.titleLarge?.copyWith(fontSize: 20),
-      titleMedium: base.textTheme.titleMedium?.copyWith(fontSize: 16),
+      headlineMedium: base.textTheme.headlineMedium?.copyWith(fontSize: 24),
+      titleLarge: base.textTheme.titleLarge?.copyWith(fontSize: 24),
+      titleMedium: base.textTheme.titleMedium?.copyWith(fontSize: 20),
       bodyLarge: base.textTheme.bodyLarge?.copyWith(fontSize: 16),
       bodyMedium: base.textTheme.bodyMedium?.copyWith(fontSize: 14),
       bodySmall: base.textTheme.bodySmall?.copyWith(fontSize: 12),

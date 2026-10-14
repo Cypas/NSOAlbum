@@ -56,12 +56,58 @@ function Assert-AndroidBadging {
             $Badging -match '(?m)^application-debuggable') {
         throw 'APK must have the expected launcher, minSdk 24, ARM64 only, and non-debuggable Release code.'
     }
-    if ($Badging -notmatch "(?m)^uses-permission: name='android\.permission\.INTERNET'") {
-        throw 'Final Release APK is missing INTERNET.'
+    foreach ($required in @('INTERNET', 'POST_NOTIFICATIONS', 'REQUEST_INSTALL_PACKAGES')) {
+        if ($Badging -notmatch "(?m)^uses-permission: name='android\.permission\.$required'") {
+            throw "Final Release APK is missing $required."
+        }
     }
-    foreach ($denied in @('MANAGE_EXTERNAL_STORAGE', 'POST_NOTIFICATIONS', 'FOREGROUND_SERVICE')) {
+    foreach ($denied in @('MANAGE_EXTERNAL_STORAGE', 'FOREGROUND_SERVICE')) {
         if ($Badging -match "uses-permission[^\r\n]*name='android\.permission\.$denied'") {
             throw "Final Release APK must not request $denied."
         }
     }
+}
+
+function Assert-AndroidApkSignature {
+    param(
+        [Parameter(Mandatory)][string]$Signature,
+        [ValidateSet('Test', 'Release')][string]$SigningMode = 'Test',
+        [string]$ExpectedCertificateSha256
+    )
+
+    if ($Signature -notmatch 'Verified using v2 scheme[^\r\n]*:\s*true') {
+        throw 'APK v2 signature verification is required.'
+    }
+    $signers = [regex]::Matches($Signature,
+        '(?m)^Signer #\d+ certificate SHA-256 digest:\s*([0-9a-fA-F]{64})\s*$')
+    if ($signers.Count -ne 1) { throw 'APK must have exactly one signing certificate.' }
+    $digest = $signers[0].Groups[1].Value.ToLowerInvariant()
+    if ($SigningMode -eq 'Release') {
+        if ($ExpectedCertificateSha256 -notmatch '^[0-9a-fA-F]{64}$' -or
+                $digest -cne $ExpectedCertificateSha256.ToLowerInvariant()) {
+            throw 'APK signer differs from the configured release key.'
+        }
+        if ($Signature -match '(?im)^Signer #\d+ certificate DN:.*CN\s*=\s*Android Debug(?:,|$)') {
+            throw 'Android Debug certificate cannot be used for release signing.'
+        }
+    }
+    return $digest
+}
+
+function Get-AndroidSigningMode {
+    param(
+        [Parameter(Mandatory)][bool]$Requested,
+        [Parameter(Mandatory)][string]$EventName,
+        [Parameter(Mandatory)][string]$WorkflowRef,
+        [Parameter(Mandatory)][string]$Repository
+    )
+    if (-not $Requested) { return 'Test' }
+    $stableTag = $WorkflowRef -match '^refs/tags/v\d+\.\d+\.\d+$'
+    $trusted = $Repository -ceq 'Cypas/NSOAlbum' -and (
+        ($EventName -eq 'push' -and ($WorkflowRef -eq 'refs/heads/main' -or $stableTag)) -or
+        ($EventName -eq 'workflow_dispatch' -and
+            ($WorkflowRef -in @('refs/heads/main', 'refs/heads/dev') -or $stableTag))
+    )
+    if (-not $trusted) { throw 'Release signing is restricted to trusted main/dev workflows and stable tags, never PRs.' }
+    return 'Release'
 }

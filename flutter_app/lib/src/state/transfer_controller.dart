@@ -51,9 +51,13 @@ class TransferController extends ChangeNotifier {
   List<String> paths = [];
   String gameName = '';
   ImportSummary? importSummary;
+  OperationProgressValue? importProgress;
   Object? error;
   bool busy = false;
+  bool loginStarted = false;
+  bool loginInProgress = false;
   bool disposed = false;
+  StreamSubscription<OperationProgressValue>? _importProgressSubscription;
 
   void publish() {
     if (!disposed) notifyListeners();
@@ -112,21 +116,55 @@ class TransferController extends ChangeNotifier {
     await onAccountChanged?.call();
   });
 
-  Future<bool> completeLogin(String callback) => perform(() async {
-    await completeNintendoAccountLogin(
-      backend: backend,
-      settings: settings,
-      callback: callback,
-    );
-    await refresh();
-    await onAccountChanged?.call();
-    if (!disposed) unawaited(sync.run());
+  Future<bool> beginLogin() => perform(() async {
+    await backend.beginNintendoLogin();
+    loginStarted = true;
   });
+
+  Future<bool> completeLogin(String callback) =>
+      perform(() async {
+        if (!loginStarted) {
+          throw StateError('pending sign-in page has not been opened');
+        }
+        loginInProgress = true;
+        publish();
+        final previousIds = (await backend.listNintendoAccounts())
+            .map((account) => account.accountId)
+            .toSet();
+        await completeNintendoAccountLogin(
+          backend: backend,
+          settings: settings,
+          callback: callback,
+        );
+        await refresh();
+        await onAccountChanged?.call();
+        final newIds = accounts
+            .map((account) => account.accountId)
+            .where((id) => !previousIds.contains(id))
+            .toList();
+        final authenticatedAccountId = newIds.firstOrNull ?? selectedAccountId;
+        loginStarted = false;
+        if (!disposed && authenticatedAccountId != null) {
+          unawaited(sync.enqueueAuthenticatedAccount(authenticatedAccountId));
+        }
+      }).whenComplete(() {
+        loginInProgress = false;
+        publish();
+      });
 
   void addPaths(Iterable<String> selected) {
     if (busy || disposed) return;
     paths = {...paths, ...selected}.toList();
     importSummary = null;
+    importProgress = null;
+    publish();
+  }
+
+  void removePath(String path) {
+    if (busy || disposed) return;
+    paths = paths.where((item) => item != path).toList();
+    importSummary = null;
+    importProgress = null;
     publish();
   }
 
@@ -134,17 +172,42 @@ class TransferController extends ChangeNotifier {
     if (paths.isEmpty || gameName.trim().isEmpty) {
       throw StateError('Select media and a game tag before importing.');
     }
-    importSummary = await backend.importCustomFiles(
-      List.of(paths),
-      gameName.trim(),
+    importProgress = const OperationProgressValue(
+      operationId: '',
+      kind: 'custom_import',
+      phase: 'discovering',
     );
-    onImported?.call();
-    await refresh();
+    String? operationId;
+    if (backend case final OperationProgressBackend progressBackend) {
+      await _importProgressSubscription?.cancel();
+      _importProgressSubscription = progressBackend.operationProgress.listen((
+        value,
+      ) {
+        if (value.kind != 'custom_import') return;
+        operationId ??= value.operationId;
+        if (operationId != value.operationId) return;
+        importProgress = value;
+        publish();
+      });
+    }
+    try {
+      importSummary = await backend.importCustomFiles(
+        List.of(paths),
+        gameName.trim(),
+      );
+      onImported?.call();
+      await refresh();
+    } finally {
+      await _importProgressSubscription?.cancel();
+      _importProgressSubscription = null;
+    }
   });
 
   @override
   void dispose() {
     disposed = true;
+    unawaited(_importProgressSubscription?.cancel());
+    _importProgressSubscription = null;
     super.dispose();
   }
 }

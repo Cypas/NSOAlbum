@@ -134,32 +134,6 @@ class _AndroidNintendoSyncPageState extends State<AndroidNintendoSyncPage> {
                   ),
                 ),
               if (state.accounts.isNotEmpty) ...[
-                FilledButton.icon(
-                  onPressed: state.busy
-                      ? null
-                      : (syncing ? state.sync.cancel : state.sync.run),
-                  icon: Icon(syncing ? Icons.stop : Icons.sync),
-                  label: Text(
-                    context.l10n.select(
-                      zh: syncing ? '取消同步' : '立即同步',
-                      en: syncing ? 'Cancel sync' : 'Sync now',
-                    ),
-                  ),
-                ),
-                if (state.sync.progress case final progress?)
-                  Text(
-                    context.l10n.select(
-                      zh: '已处理 ${progress.processedItems} / ${progress.totalItems} · 已同步 ${progress.synchronizedItems} · 失败 ${progress.failedItems}',
-                      en: 'Processed ${progress.processedItems} / ${progress.totalItems} · Synchronized ${progress.synchronizedItems} · Failed ${progress.failedItems}',
-                    ),
-                  ),
-                if (state.sync.summary case final result?)
-                  Text(
-                    context.l10n.select(
-                      zh: '发现 ${result.totalFound} · 下载 ${result.downloaded} · 重复 ${result.duplicates} · 失败 ${result.failed}',
-                      en: 'Found ${result.totalFound} · Downloaded ${result.downloaded} · Duplicates ${result.duplicates} · Failed ${result.failed}',
-                    ),
-                  ),
                 TextButton.icon(
                   onPressed: state.busy
                       ? null
@@ -182,7 +156,13 @@ class _AndroidNintendoSyncPageState extends State<AndroidNintendoSyncPage> {
                 OutlinedButton.icon(
                   onPressed: state.busy
                       ? null
-                      : () => state.perform(state.backend.beginNintendoLogin),
+                      : () async {
+                          final success = await state.beginLogin();
+                          if (!context.mounted) return;
+                          if (!success && state.error != null) {
+                            androidMessage(context, state.error!);
+                          }
+                        },
                   icon: const Icon(Icons.open_in_browser),
                   label: Text(
                     context.l10n.select(zh: '打开登录页面', en: 'Open sign-in page'),
@@ -205,16 +185,47 @@ class _AndroidNintendoSyncPageState extends State<AndroidNintendoSyncPage> {
                       ? null
                       : () async {
                           if (callback.text.trim().isEmpty) return;
+                          if (!state.loginStarted) {
+                            androidMessage(
+                              context,
+                              context.l10n.select(
+                                zh: '请先打开登录页面后再输入回调地址。',
+                                en: 'Open the sign-in page before entering the callback URL.',
+                              ),
+                              isError: true,
+                            );
+                            return;
+                          }
                           final success = await state.completeLogin(
                             callback.text.trim(),
                           );
-                          if (success && mounted) {
+                          if (!context.mounted) return;
+                          if (success) {
                             callback.clear();
                             setState(() => adding = false);
+                          } else if (state.error != null) {
+                            androidMessage(context, state.error!);
                           }
                         },
-                  child: Text(
-                    context.l10n.select(zh: '完成登录', en: 'Complete sign-in'),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (state.loginInProgress) ...[
+                        const SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      Text(
+                        context.l10n.select(
+                          zh: state.loginInProgress ? '登录中，请稍后' : '完成登录',
+                          en: state.loginInProgress
+                              ? 'Signing in, please wait'
+                              : 'Complete sign-in',
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
@@ -298,9 +309,6 @@ class _AndroidNintendoSyncPageState extends State<AndroidNintendoSyncPage> {
                   en: 'Checks every 24 hours while asleep; new media restores active checks.',
                 ),
               ),
-              if (state.error != null) SelectableText(state.error.toString()),
-              if (state.sync.error != null)
-                SelectableText(state.sync.error.toString()),
             ],
           ),
         ),

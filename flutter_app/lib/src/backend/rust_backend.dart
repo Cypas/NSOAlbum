@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui';
 
 import 'package:ffmpeg_kit_flutter_new_video/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new_video/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_video/return_code.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path_provider_windows/path_provider_windows.dart';
@@ -19,6 +22,9 @@ import 'app_logger.dart';
 import 'storage_paths.dart';
 import '../fonts/custom_font_store.dart';
 import 'rust_initialization.dart';
+import 'video_operation_progress.dart';
+import 'mobile_storage_policy.dart';
+import 'sync_failure_status.dart';
 
 const _windowsPicturesKnownFolderId = '{33E28130-4E1E-4676-835A-98395C3BC3BB}';
 
@@ -26,7 +32,13 @@ String interfaceLanguageForLocale(Locale locale) =>
     locale.languageCode.toLowerCase() == 'zh' ? 'zh' : 'en';
 
 class RustBackend
-    implements AppBackend, SyncScheduleBackend, SyncHistoryBackend {
+    implements
+        AppBackend,
+        SyncScheduleBackend,
+        SyncHistoryBackend,
+        AccountSyncBackend,
+        OperationProgressBackend,
+        MobileStorageBackend {
   RustBackend._(this._storage, this._logger, this._libraryRoot, this._isolated);
 
   static const _sessionTokenKey = 'nintendo.session_token';
@@ -41,6 +53,41 @@ class RustBackend
   LoginChallenge? _pendingLogin;
   final Map<String, CoralSession> _coralSessions = {};
   AppSettings? _settings;
+  int _syncCancellationEpoch = 0;
+  final _operations = StreamController<OperationProgressValue>.broadcast();
+  @override
+  Stream<OperationProgressValue> get operationProgress => _operations.stream;
+  @override
+  Future<List<MobileStorageLocation>> mobileStorageLocations() async {
+    if (!Platform.isAndroid) return const [];
+    final values = await const MethodChannel('io.github.cypas.nsoalbum/storage')
+        .invokeListMethod<Object?>('locations');
+    return [
+      for (final item in values ?? const [])
+        if (item is Map)
+          MobileStorageLocation(
+            id: item['id'] as String,
+            path: item['path'] as String,
+            removable: item['removable'] as bool,
+          ),
+    ];
+  }
+
+  Future<void> _ensureMobileStorageAvailable() async {
+    if (!Platform.isAndroid) return;
+    // Existing private legacy media paths remain valid. Removable locations
+    // must still be mounted; never substitute another media root.
+    final locations = await mobileStorageLocations();
+    if (!mobileStorageIsAvailable(
+      libraryPath: settings.libraryPath,
+      applicationRoot: _libraryRoot,
+      locations: locations,
+    )) {
+      throw StateError('Selected storage is unavailable');
+    }
+  }
+
+  String? get _networkProxy => Platform.isAndroid ? null : settings.proxyUrl;
 
   static Future<RustBackend> open({
     FlutterSecureStorage? storage,
@@ -58,6 +105,7 @@ class RustBackend
           (await getApplicationSupportDirectory()).path,
         );
     await rust_api.initCore(libraryRoot: libraryRoot);
+    await rust_api.setRuntimeProxyPolicy(disableAppProxy: Platform.isAndroid);
     final appLogger = logger ?? AppLogger('$libraryRoot/logs/squid_album.log');
     await appLogger.ensureExists();
     final backend = RustBackend._(
@@ -149,7 +197,7 @@ class RustBackend
           : await resolveDefaultLibraryPath(_libraryRoot),
       theme: 'ocean',
       language: interfaceLanguageForLocale(PlatformDispatcher.instance.locale),
-      galleryColumns: 4,
+      galleryColumns: Platform.isAndroid ? 2 : 4,
       galleryRows: 3,
       showNotePreview: true,
       showGameTag: true,
@@ -255,22 +303,86 @@ class RustBackend
       rust_api.removeMediaFromAlbum(albumId: albumId, mediaId: mediaId);
 
   @override
-  Future<LibraryRelocationResult> relocateMediaLibrary(AppSettings settings) =>
-      rust_api.relocateMediaLibrary(settings: settings);
+  Future<LibraryRelocationResult> relocateMediaLibrary(
+    AppSettings settings,
+  ) async {
+    await _ensureMobileStorageAvailable();
+    final result = await rust_api.relocateMediaLibrary(settings: settings);
+    _settings = settings;
+    return result;
+  }
 
   @override
-  Future<ImportSummary> importLocalFiles(List<String> paths) =>
-      rust_api.importLocalFiles(paths: paths);
+  Future<ImportSummary> importLocalFiles(List<String> paths) async {
+    await _ensureMobileStorageAvailable();
+    return rust_api.importLocalFiles(paths: paths);
+  }
 
   @override
   Future<ImportSummary> importCustomFiles(
     List<String> paths,
     String gameName,
-  ) => rust_api.importCustomFiles(paths: paths, gameName: gameName);
+  ) async {
+    await _ensureMobileStorageAvailable();
+    final id = 'import-${DateTime.now().microsecondsSinceEpoch}';
+    var reading = false;
+    Future<void> refresh() async {
+      if (reading) return;
+      reading = true;
+      try {
+        final progress = await rust_api.currentImportProgress(operationId: id);
+        if (progress != null) {
+          _operations.add(
+            OperationProgressValue(
+              operationId: id,
+              kind: progress.kind,
+              phase: progress.phase,
+              status: progress.status,
+              processed: progress.processedItems.toInt(),
+              total: progress.totalItems?.toInt(),
+              processedBytes: progress.processedBytes?.toInt(),
+              totalBytes: progress.totalBytes?.toInt(),
+            ),
+          );
+        }
+      } catch (_) {
+        // Progress polling must not interrupt the actual import.
+      } finally {
+        reading = false;
+      }
+    }
+
+    _operations.add(
+      OperationProgressValue(
+        operationId: id,
+        kind: 'custom_import',
+        phase: 'discovering',
+      ),
+    );
+    final timer = Timer.periodic(
+      const Duration(milliseconds: 200),
+      (_) => unawaited(refresh()),
+    );
+    try {
+      return await rust_api.importCustomFilesWithProgress(
+        paths: paths,
+        gameName: gameName,
+        operationId: id,
+      );
+    } finally {
+      timer.cancel();
+      await refresh();
+    }
+  }
 
   @override
-  Future<ImportSummary> importMtpFiles(List<String> paths, String deviceName) =>
-      rust_api.importMtpFiles(paths: paths, deviceName: deviceName);
+  Future<ImportSummary> importMtpFiles(
+    List<String> paths,
+    String deviceName,
+  ) async {
+    await _ensureMobileStorageAvailable();
+    return rust_api.importMtpFiles(paths: paths, deviceName: deviceName);
+  }
 
   @override
   Future<MediaExportSummary> exportMedia(
@@ -296,6 +408,13 @@ class RustBackend
         end - start < const Duration(milliseconds: 300)) {
       throw ArgumentError('Invalid video trim range');
     }
+    await _ensureMobileStorageAvailable();
+    final operation = VideoOperationProgress(
+      operationId: 'trim-${DateTime.now().microsecondsSinceEpoch}',
+      kind: 'video_trim',
+      duration: end - start,
+    );
+    _operations.add(operation.encode(0));
     final output = await _newVideoProcessingPath('trim', 'mp4');
     try {
       await _runFfmpeg([
@@ -324,12 +443,18 @@ class RustBackend
         '-movflags',
         '+faststart',
         output,
-      ]);
-      return await rust_api.commitVideoEdit(
+      ], operation);
+      _operations.add(operation.ingesting());
+      final result = await rust_api.commitVideoEdit(
         mediaId: source.id,
         processedPath: output,
         overwrite: overwrite,
       );
+      _operations.add(operation.complete());
+      return result;
+    } catch (_) {
+      _operations.add(operation.failed());
+      rethrow;
     } finally {
       await discardTemporaryMedia(output);
     }
@@ -340,11 +465,14 @@ class RustBackend
     MediaAsset source,
     Uint8List bytes,
     String extension,
-  ) => rust_api.saveVideoFrame(
-    mediaId: source.id,
-    bytes: bytes,
-    extension_: extension,
-  );
+  ) async {
+    await _ensureMobileStorageAvailable();
+    return rust_api.saveVideoFrame(
+      mediaId: source.id,
+      bytes: bytes,
+      extension_: extension,
+    );
+  }
 
   @override
   Future<String> createMergedVideoPreview(List<MediaAsset> videos) async {
@@ -354,6 +482,32 @@ class RustBackend
     if (sources.length < 2) {
       throw ArgumentError('At least two videos are required');
     }
+    await _ensureMobileStorageAvailable();
+    Duration? expected;
+    var milliseconds = 0;
+    var known = true;
+    for (final source in sources) {
+      double? seconds;
+      try {
+        final info = await FFprobeKit.getMediaInformation(source.storagePath);
+        seconds = double.tryParse(
+          info.getMediaInformation()?.getDuration() ?? '',
+        );
+      } catch (_) {
+        // Metadata is optional; encoding can report an indeterminate stage.
+      }
+      if (seconds == null || !seconds.isFinite || seconds <= 0) {
+        known = false;
+      } else {
+        milliseconds += (seconds * 1000).round();
+      }
+    }
+    if (known) expected = Duration(milliseconds: milliseconds);
+    final operation = VideoOperationProgress(
+      operationId: 'merge-preview-${DateTime.now().microsecondsSinceEpoch}',
+      kind: 'video_merge_preview',
+      duration: expected,
+    );
     final output = await _newVideoProcessingPath('merge', 'mp4');
     final arguments = <String>['-hide_banner', '-loglevel', 'error', '-y'];
     for (final source in sources) {
@@ -391,9 +545,11 @@ class RustBackend
       output,
     ]);
     try {
-      await _runFfmpeg(arguments);
+      await _runFfmpeg(arguments, operation);
+      _operations.add(operation.complete());
       return output;
     } catch (_) {
+      _operations.add(operation.failed());
       await discardTemporaryMedia(output);
       rethrow;
     }
@@ -404,15 +560,26 @@ class RustBackend
     List<MediaAsset> videos, {
     String? preparedPath,
   }) async {
+    await _ensureMobileStorageAvailable();
     final sources = videos
         .where((item) => item.kind == MediaKind.video)
         .toList();
     final output = preparedPath ?? await createMergedVideoPreview(sources);
+    final operation = VideoOperationProgress(
+      operationId: 'merge-save-${DateTime.now().microsecondsSinceEpoch}',
+      kind: 'video_merge',
+    );
     try {
-      return await rust_api.commitMergedVideo(
+      _operations.add(operation.ingesting());
+      final result = await rust_api.commitMergedVideo(
         mediaIds: Int64List.fromList(sources.map((item) => item.id).toList()),
         processedPath: output,
       );
+      _operations.add(operation.complete());
+      return result;
+    } catch (_) {
+      _operations.add(operation.failed());
+      rethrow;
     } finally {
       await discardTemporaryMedia(output);
     }
@@ -450,8 +617,25 @@ class RustBackend
         : '${(await getTemporaryDirectory()).path}${Platform.pathSeparator}squid_album_video_processing',
   );
 
-  Future<void> _runFfmpeg(List<String> arguments) async {
-    final session = await FFmpegKit.executeWithArguments(arguments);
+  Future<void> _runFfmpeg(
+    List<String> arguments,
+    VideoOperationProgress operation,
+  ) async {
+    final completion = Completer<void>();
+    var running = true;
+    _operations.add(operation.encode(0));
+    final session = await FFmpegKit.executeWithArgumentsAsync(
+      arguments,
+      (_) {
+        running = false;
+        if (!completion.isCompleted) completion.complete();
+      },
+      null,
+      (statistics) {
+        if (running) _operations.add(operation.encode(statistics.getTime()));
+      },
+    );
+    await completion.future;
     final returnCode = await session.getReturnCode();
     if (ReturnCode.isSuccess(returnCode)) return;
     final output = (await session.getOutput())?.trim();
@@ -522,9 +706,9 @@ class RustBackend
   Future<LoginChallenge> _beginNintendoLogin({bool openBrowser = true}) async {
     _requireAccountAccess();
     final challenge = await rust_api.createNintendoLoginChallenge(
-      proxyUrl: settings.proxyUrl,
+      proxyUrl: _networkProxy,
     );
-    _pendingLogin = challenge;
+    _pendingLogin = null;
     if (openBrowser) {
       final opened = await launchUrl(
         Uri.parse(challenge.authorizationUrl),
@@ -538,6 +722,7 @@ class RustBackend
         );
       }
     }
+    _pendingLogin = challenge;
     return challenge;
   }
 
@@ -559,11 +744,11 @@ class RustBackend
       callbackUrl: callbackUrl,
       expectedState: pending.state,
       verifier: pending.verifier,
-      proxyUrl: settings.proxyUrl,
+      proxyUrl: _networkProxy,
     );
     final session = await rust_api.establishCoralSession(
       sessionToken: sessionToken,
-      proxyUrl: settings.proxyUrl,
+      proxyUrl: _networkProxy,
     );
     final accountId = _accountId(session);
     final tokens = await _readAccountTokens();
@@ -685,7 +870,7 @@ class RustBackend
     }
     final session = await rust_api.establishCoralSession(
       sessionToken: sessionToken,
-      proxyUrl: settings.proxyUrl,
+      proxyUrl: _networkProxy,
     );
     _coralSessions[accountId] = session;
     return session;
@@ -710,7 +895,7 @@ class RustBackend
     if (legacy == null || legacy.isEmpty) return tokens;
     final session = await rust_api.establishCoralSession(
       sessionToken: legacy,
-      proxyUrl: settings.proxyUrl,
+      proxyUrl: _networkProxy,
     );
     final accountId = _accountId(session);
     tokens[accountId] = legacy;
@@ -815,6 +1000,7 @@ class RustBackend
             : '请先登录 Nintendo Account',
       );
     }
+    if (Platform.isAndroid) return syncNintendoAccount(accountId);
     final SyncSummary summary;
     try {
       final session = await _validCoralSessionFor(
@@ -825,7 +1011,7 @@ class RustBackend
       await _cacheProfile(accountId, session);
       summary = await rust_api.syncNso(
         session: session,
-        proxyUrl: settings.proxyUrl,
+        proxyUrl: _networkProxy,
       );
     } catch (error) {
       final message = error.toString().toLowerCase();
@@ -870,10 +1056,83 @@ class RustBackend
   }
 
   @override
+  Future<SyncSummary> syncNintendoAccount(String accountId) async {
+    _requireAccountAccess();
+    final epoch = _syncCancellationEpoch;
+    void checkCancelled() {
+      if (epoch != _syncCancellationEpoch) throw StateError('task cancelled');
+    }
+    try {
+      await _ensureMobileStorageAvailable();
+      checkCancelled();
+      final tokens = await _readAccountTokens();
+      checkCancelled();
+      final token = tokens[accountId];
+      if (token == null) throw StateError('Nintendo account requires sign-in');
+      // Rust registers cancellation before any authentication/network work.
+      final summary = await rust_api.syncNsoFromSessionToken(
+        sessionToken: token,
+        proxyUrl: _networkProxy,
+      );
+      try {
+        await rust_api.recordSyncAttempt(
+          accountId: accountId,
+          status: summary.failed == BigInt.zero ? 'success' : 'partial_failure',
+          totalFound: summary.totalFound,
+          downloaded: summary.downloaded,
+          duplicates: summary.duplicates + summary.skippedRemote,
+          failed: summary.failed,
+        );
+      } catch (historyError, stackTrace) {
+        await logError(
+          'Failed to persist account sync result',
+          historyError,
+          stackTrace,
+        );
+      }
+      return summary;
+    } catch (error, stackTrace) {
+      try {
+        await rust_api.recordSyncAttempt(
+          accountId: accountId,
+          status: syncFailureStatus(error),
+          totalFound: BigInt.zero,
+          downloaded: BigInt.zero,
+          duplicates: BigInt.zero,
+          failed: BigInt.zero,
+        );
+      } catch (historyError) {
+        await logError(
+          'Failed to persist account sync result',
+          historyError,
+          stackTrace,
+        );
+      }
+      rethrow;
+    }
+  }
+
+  @override
+  Future<SyncScheduleStatus?> loadAccountSyncSchedule(String accountId) =>
+      rust_api.syncScheduleStatus(accountId: accountId);
+
+  @override
+  Future<SyncScheduleStatus?> recordAccountSyncOutcome(
+    String accountId, {
+    required bool foundNewMedia,
+  }) => rust_api.recordSyncOutcome(
+    accountId: accountId,
+    foundNewMedia: foundNewMedia,
+  );
+
+  @override
   Future<SyncProgress?> currentSyncProgress() => rust_api.currentSyncProgress();
 
   @override
-  Future<bool> cancelSync() => rust_api.cancelCurrentSync();
+  Future<bool> cancelSync() {
+    _syncCancellationEpoch++;
+    return rust_api.cancelCurrentSync();
+  }
 
   @override
   Future<SyncScheduleStatus?> loadSyncScheduleStatus() async {

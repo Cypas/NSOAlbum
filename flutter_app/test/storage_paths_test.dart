@@ -4,6 +4,38 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/src/backend/storage_paths.dart';
 
 void main() {
+  test(
+    'an existing saved preference is enough to preserve a legacy installation',
+    () {
+      expect(
+        libraryProbeContainsInstallation(
+          databaseReadable: true,
+          mediaCount: BigInt.zero,
+          accountCount: BigInt.zero,
+          settingsCount: BigInt.one,
+        ),
+        isTrue,
+      );
+      expect(
+        libraryProbeContainsInstallation(
+          databaseReadable: true,
+          mediaCount: BigInt.zero,
+          accountCount: BigInt.zero,
+          settingsCount: BigInt.zero,
+        ),
+        isFalse,
+      );
+      expect(
+        libraryProbeContainsInstallation(
+          databaseReadable: false,
+          mediaCount: BigInt.one,
+          accountCount: BigInt.zero,
+          settingsCount: BigInt.one,
+        ),
+        isFalse,
+      );
+    },
+  );
   test('new application root wins over legacy roots', () async {
     final support = await Directory.systemTemp.createTemp('nsoalbum-paths-');
     addTearDown(() => support.delete(recursive: true));
@@ -38,11 +70,21 @@ void main() {
 
     expect(
       await resolveApplicationRoot(support.path),
-      endsWith(
-        '$currentApplicationRootName${Platform.pathSeparator}$libraryDirectoryName',
+      equals(
+        '${support.path}${Platform.pathSeparator}$currentApplicationRootName',
       ),
     );
   });
+
+  test(
+    'fresh root already named NSOAlbum does not gain a nested directory',
+    () async {
+      final support = await Directory.systemTemp.createTemp('nsoalbum-paths-');
+      addTearDown(() => support.delete(recursive: true));
+      final root = '${support.path}${Platform.pathSeparator}NSOAlbum';
+      expect(await resolveApplicationRoot(root), root);
+    },
+  );
 
   test('legacy root is selected when it contains a library database', () async {
     final support = await Directory.systemTemp.createTemp('nsoalbum-paths-');

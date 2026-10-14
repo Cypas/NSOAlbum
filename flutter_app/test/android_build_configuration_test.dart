@@ -13,7 +13,32 @@ void main() {
       'NSO_VERIFY_ANDROID_BUILD=1';
 
   test(
-    'final Release APK includes INTERNET without requesting broad storage or background privileges',
+    'Android updater validates official metadata signatures and bounded files',
+    () async {
+      final result = await Process.run(
+        p.absolute('android', Platform.isWindows ? 'gradlew.bat' : 'gradlew'),
+        [
+          '-Ptarget-platform=android-arm64',
+          '--init-script',
+          p.absolute('test/fixtures/android/verify_arm64.gradle'),
+          'verifyAndroidUpdatePolicy',
+          '--console=plain',
+        ],
+        workingDirectory: p.absolute('android'),
+        runInShell: Platform.isWindows,
+      );
+      expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+      expect(
+        result.stdout,
+        contains('Android update policy and bounded file verification:'),
+      );
+    },
+    skip: enabled ? false : skipReason,
+    timeout: const Timeout(Duration(minutes: 10)),
+  );
+
+  test(
+    'final Release APK includes INTERNET without broad storage or foreground service privileges',
     () async {
       final wrapper = p.absolute(
         'android',

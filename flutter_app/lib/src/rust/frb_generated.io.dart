@@ -59,6 +59,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
 
   @protected
+  OperationProgress dco_decode_box_autoadd_operation_progress(dynamic raw);
+
+  @protected
   SyncAttemptSummary dco_decode_box_autoadd_sync_attempt_summary(dynamic raw);
 
   @protected
@@ -69,6 +72,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int dco_decode_box_autoadd_u_32(dynamic raw);
+
+  @protected
+  BigInt dco_decode_box_autoadd_u_64(dynamic raw);
+
+  @protected
+  BigInt dco_decode_box_autoadd_usize(dynamic raw);
 
   @protected
   CoralSession dco_decode_coral_session(dynamic raw);
@@ -163,6 +172,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MediaKind dco_decode_media_kind(dynamic raw);
 
   @protected
+  OperationProgress dco_decode_operation_progress(dynamic raw);
+
+  @protected
   String? dco_decode_opt_String(dynamic raw);
 
   @protected
@@ -175,6 +187,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
 
   @protected
+  OperationProgress? dco_decode_opt_box_autoadd_operation_progress(dynamic raw);
+
+  @protected
   SyncAttemptSummary? dco_decode_opt_box_autoadd_sync_attempt_summary(
     dynamic raw,
   );
@@ -184,6 +199,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
+
+  @protected
+  BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw);
+
+  @protected
+  BigInt? dco_decode_opt_box_autoadd_usize(dynamic raw);
 
   @protected
   Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
@@ -265,6 +286,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
+  OperationProgress sse_decode_box_autoadd_operation_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SyncAttemptSummary sse_decode_box_autoadd_sync_attempt_summary(
     SseDeserializer deserializer,
   );
@@ -279,6 +305,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
+
+  @protected
+  BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
+
+  @protected
+  BigInt sse_decode_box_autoadd_usize(SseDeserializer deserializer);
 
   @protected
   CoralSession sse_decode_coral_session(SseDeserializer deserializer);
@@ -397,6 +429,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MediaKind sse_decode_media_kind(SseDeserializer deserializer);
 
   @protected
+  OperationProgress sse_decode_operation_progress(SseDeserializer deserializer);
+
+  @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
 
   @protected
@@ -411,6 +446,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
+  OperationProgress? sse_decode_opt_box_autoadd_operation_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SyncAttemptSummary? sse_decode_opt_box_autoadd_sync_attempt_summary(
     SseDeserializer deserializer,
   );
@@ -422,6 +462,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
+
+  @protected
+  BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer);
+
+  @protected
+  BigInt? sse_decode_opt_box_autoadd_usize(SseDeserializer deserializer);
 
   @protected
   Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer);
@@ -518,6 +564,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_operation_progress(
+    OperationProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_sync_attempt_summary(
     SyncAttemptSummary self,
     SseSerializer serializer,
@@ -537,6 +589,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_usize(BigInt self, SseSerializer serializer);
 
   @protected
   void sse_encode_coral_session(CoralSession self, SseSerializer serializer);
@@ -692,6 +750,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_media_kind(MediaKind self, SseSerializer serializer);
 
   @protected
+  void sse_encode_operation_progress(
+    OperationProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
 
   @protected
@@ -713,6 +777,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_operation_progress(
+    OperationProgress? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_sync_attempt_summary(
     SyncAttemptSummary? self,
     SseSerializer serializer,
@@ -726,6 +796,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_usize(BigInt? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_list_prim_u_8_strict(

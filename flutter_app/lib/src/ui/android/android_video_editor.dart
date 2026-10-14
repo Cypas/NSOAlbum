@@ -11,6 +11,8 @@ import '../../state/media_edit_controller.dart';
 import '../video_runtime.dart';
 import 'android_back_guard.dart';
 import 'android_page_frame.dart';
+import 'android_media_card.dart' show androidDuration;
+import 'android_operation_progress.dart';
 
 class AndroidVideoEditor extends StatefulWidget {
   const AndroidVideoEditor({
@@ -113,6 +115,7 @@ class _AndroidVideoEditorState extends State<AndroidVideoEditor> {
       if (mounted) Navigator.pop(context, result);
     } catch (exception) {
       if (mounted) {
+        androidMessage(context, exception);
         setState(() {
           busy = false;
           error = exception;
@@ -168,8 +171,8 @@ class _AndroidVideoEditorState extends State<AndroidVideoEditor> {
             max: duration > 0 ? duration : 1,
             values: RangeValues(start, end),
             labels: RangeLabels(
-              '${(start / 1000).toStringAsFixed(1)}s',
-              '${(end / 1000).toStringAsFixed(1)}s',
+              _trimTimestamp(Duration(milliseconds: start.round())),
+              _trimTimestamp(Duration(milliseconds: end.round())),
             ),
             onChanged: busy || duration == 0
                 ? null
@@ -186,6 +189,10 @@ class _AndroidVideoEditorState extends State<AndroidVideoEditor> {
               if (autoPlay) await player.play();
             },
           ),
+          AndroidTrimTimestamps(
+            start: Duration(milliseconds: start.round()),
+            end: Duration(milliseconds: end.round()),
+          ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: Text(
@@ -199,9 +206,21 @@ class _AndroidVideoEditorState extends State<AndroidVideoEditor> {
                 ? null
                 : (value) => setState(() => autoPlay = value),
           ),
-          FilledButton(
+          if (busy)
+            ValueListenableBuilder(
+              valueListenable: editor.progress,
+              builder: (context, progress, _) =>
+                  AndroidOperationProgress(progress: progress),
+            ),
+          FilledButton.icon(
             onPressed: busy || end - start < 300 ? null : () => save(false),
-            child: Text(
+            icon: busy
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save_outlined),
+            label: Text(
               context.l10n.select(zh: '另存为新视频', en: 'Save as new video'),
             ),
           ),
@@ -211,9 +230,42 @@ class _AndroidVideoEditorState extends State<AndroidVideoEditor> {
               context.l10n.select(zh: '覆盖原视频', en: 'Overwrite original'),
             ),
           ),
-          if (error != null) SelectableText(error.toString()),
+          if (error != null) Text(androidReadableError(context, error!)),
         ],
       ),
     ),
+  );
+}
+
+String _trimTimestamp(Duration value) =>
+    '${androidDuration(value)}.${value.inMilliseconds.remainder(1000).toString().padLeft(3, '0')}';
+
+class AndroidTrimTimestamps extends StatelessWidget {
+  const AndroidTrimTimestamps({
+    super.key,
+    required this.start,
+    required this.end,
+  });
+  final Duration start;
+  final Duration end;
+  @override
+  Widget build(BuildContext context) => Wrap(
+    spacing: 16,
+    runSpacing: 4,
+    alignment: WrapAlignment.spaceBetween,
+    children: [
+      Text(
+        context.l10n.select(
+          zh: '开始 ${_trimTimestamp(start)}',
+          en: 'Start ${_trimTimestamp(start)}',
+        ),
+      ),
+      Text(
+        context.l10n.select(
+          zh: '结束 ${_trimTimestamp(end)}',
+          en: 'End ${_trimTimestamp(end)}',
+        ),
+      ),
+    ],
   );
 }

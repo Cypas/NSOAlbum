@@ -329,7 +329,7 @@ class _AndroidAlbumEditorState extends State<AndroidAlbumEditor> {
             icon: const Icon(Icons.save_outlined),
             label: Text(context.l10n.select(zh: '保存', en: 'Save')),
           ),
-          if (error != null) SelectableText(error.toString()),
+          if (error != null) Text(androidReadableError(context, error!)),
         ],
       ),
     ),

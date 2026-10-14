@@ -50,10 +50,12 @@ class StartupDiagnostics {
         support.path,
         isValidLibraryRoot: (path) async {
           final probe = await rust_api.probeLibraryRoot(libraryRoot: path);
-          return probe.databaseReadable &&
-              (probe.mediaCount > BigInt.zero ||
-                  probe.accountCount > BigInt.zero ||
-                  probe.settingsCount > BigInt.one);
+          return libraryProbeContainsInstallation(
+            databaseReadable: probe.databaseReadable,
+            mediaCount: probe.mediaCount,
+            accountCount: probe.accountCount,
+            settingsCount: probe.settingsCount,
+          );
         },
       );
     } catch (_) {

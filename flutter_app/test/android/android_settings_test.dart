@@ -3,10 +3,83 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/main.dart';
 import 'package:squid_album/src/ui/platform_ui.dart';
 import 'package:squid_album/src/ui/android/android_settings_page.dart';
+import 'package:squid_album/src/rust/models.dart';
 
 import '../home_shell_test.dart' show FakeBackend;
 
 void main() {
+  testWidgets('one media per row is saved and used in library and albums', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(360, 800);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final backend = FakeBackend(
+      mediaItems: [
+        for (final id in [1, 2])
+          MediaAsset(
+            id: id,
+            sha256: 'single-column-$id',
+            originalName: 'test$id.png',
+            storagePath: 'missing.png',
+            kind: MediaKind.image,
+            importedAt: DateTime(2026, 10, 14),
+            gameName: 'Game',
+            favorite: false,
+            tags: const [],
+          ),
+      ],
+      albumItems: [
+        for (final id in [1, 2])
+          AlbumSummary(
+            id: id,
+            name: 'Album $id',
+            description: '',
+            albumType: 'manual',
+            pinned: false,
+            mediaCount: BigInt.zero,
+          ),
+      ],
+    );
+    await tester.pumpWidget(
+      SquidAlbumApp(backend: backend, uiPlatform: AppUiPlatform.android),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(NavigationDestination).at(3));
+    await tester.pumpAndSettle();
+    final slider = find.byType(Slider);
+    await tester.ensureVisible(slider);
+    await tester.pumpAndSettle();
+    final rect = tester.getRect(slider);
+    await tester.tapAt(Offset(rect.left + 1, rect.center.dy));
+    await tester.pumpAndSettle();
+    expect(backend.settings.galleryColumns, 1);
+    expect(tester.widget<Slider>(slider).value, 1);
+    await tester.tap(find.byType(NavigationDestination).at(0));
+    await tester.pumpAndSettle();
+    final first = tester.getTopLeft(
+      find.byKey(const ValueKey('android-media-1')),
+    );
+    final second = tester.getTopLeft(
+      find.byKey(const ValueKey('android-media-2')),
+    );
+    expect(first.dx, second.dx);
+    expect(first.dy, isNot(second.dy));
+    await tester.tap(find.byType(NavigationDestination).at(1));
+    await tester.pumpAndSettle();
+    final grid = tester.widget<SliverGrid>(find.byType(SliverGrid));
+    expect(
+      (grid.gridDelegate as SliverGridDelegateWithFixedCrossAxisCount)
+          .crossAxisCount,
+      1,
+    );
+    await tester.tap(find.byType(NavigationDestination).at(3));
+    await tester.pumpAndSettle();
+    expect(tester.widget<Slider>(find.byType(Slider)).value, 1);
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant({TargetPlatform.android}));
+
   testWidgets('Android retains author information and tag creation', (
     tester,
   ) async {

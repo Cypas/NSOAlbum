@@ -15,6 +15,15 @@ on:
         description: Stable tag checked by the release version gate
         type: string
         default: ""
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        required: false
+      ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
 
 permissions:
   contents: read
@@ -141,6 +150,12 @@ jobs:
     with:
       ref: ${{ inputs.ref }}
       release_tag: ${{ inputs.release_tag }}
+      sign_release: ${{ inputs.release }}
+    secrets:
+      ANDROID_KEYSTORE_BASE64: ${{ inputs.release && github.event_name != 'pull_request' && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ inputs.release && github.event_name != 'pull_request' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+      ANDROID_KEY_ALIAS: ${{ inputs.release && github.event_name != 'pull_request' && secrets.ANDROID_KEY_ALIAS || '' }}
+      ANDROID_KEY_PASSWORD: ${{ inputs.release && github.event_name != 'pull_request' && secrets.ANDROID_KEY_PASSWORD || '' }}
 
   complete:
     name: Require all platforms and shared checks

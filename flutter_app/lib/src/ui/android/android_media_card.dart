@@ -6,6 +6,7 @@ import '../../l10n/app_localizations.dart';
 import '../../rust/models.dart';
 import '../../rust/settings.dart';
 import '../video_thumbnail.dart';
+import 'android_tag.dart';
 
 class AndroidMediaThumbnail extends StatefulWidget {
   const AndroidMediaThumbnail({super.key, required this.asset});
@@ -50,15 +51,50 @@ class _AndroidMediaThumbnailState extends State<AndroidMediaThumbnail> {
       return Image.file(
         File(widget.asset.storagePath),
         fit: BoxFit.cover,
-        cacheWidth: 600,
+        cacheWidth:
+            (MediaQuery.sizeOf(context).width *
+                    MediaQuery.devicePixelRatioOf(context) /
+                    2)
+                .round()
+                .clamp(160, 720),
         errorBuilder: (_, _, _) => placeholder,
       );
     }
     return FutureBuilder<VideoThumbnailData>(
       future: thumbnail,
-      builder: (_, snapshot) => snapshot.data?.bytes == null
-          ? placeholder
-          : Image.memory(snapshot.data!.bytes!, fit: BoxFit.cover),
+      builder: (_, snapshot) => Stack(
+        fit: StackFit.expand,
+        children: [
+          snapshot.data?.bytes == null
+              ? placeholder
+              : Image.memory(
+                  snapshot.data!.bytes!,
+                  fit: BoxFit.cover,
+                  cacheWidth: 360,
+                ),
+          if ((snapshot.data?.duration ?? Duration.zero) > Duration.zero)
+            Positioned(
+              right: 5,
+              bottom: 5,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: .75),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 1,
+                  ),
+                  child: Text(
+                    '▶ ${androidDuration(snapshot.data!.duration)}',
+                    style: const TextStyle(color: Colors.white, fontSize: 10),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -102,6 +138,12 @@ class AndroidMediaCard extends StatelessWidget {
                   top: 0,
                   right: 0,
                   child: IconButton.filledTonal(
+                    style: selecting
+                        ? null
+                        : IconButton.styleFrom(
+                            minimumSize: const Size(26, 26),
+                            padding: const EdgeInsets.all(4),
+                          ),
                     tooltip: context.l10n.select(
                       zh: selecting ? '选择媒体' : '收藏',
                       en: selecting ? 'Select media' : 'Favorite',
@@ -115,6 +157,8 @@ class AndroidMediaCard extends StatelessWidget {
                           : (asset.favorite
                                 ? Icons.favorite
                                 : Icons.favorite_border),
+                      size: selecting ? null : 16,
+                      color: !selecting && asset.favorite ? Colors.red : null,
                     ),
                   ),
                 ),
@@ -123,53 +167,14 @@ class AndroidMediaCard extends StatelessWidget {
           ),
           Padding(
             padding: const EdgeInsets.all(8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Wrap(
+              spacing: 4,
+              runSpacing: 4,
               children: [
-                Text(
-                  asset.originalName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                if (settings.compactTagDisplay)
-                  Text(
-                    [
-                      if (settings.showGameTag) asset.gameName,
-                      if (asset.tags.isNotEmpty)
-                        context.l10n.select(
-                          zh: '${asset.tags.length} 个标签',
-                          en: '${asset.tags.length} tags',
-                        ),
-                    ].where((text) => text.isNotEmpty).join(' · '),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  )
-                else ...[
-                  if (settings.showGameTag)
-                    Text(
-                      asset.gameName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  if (asset.tags.isNotEmpty)
-                    Text(
-                      context.l10n.select(
-                        zh: '${asset.tags.length} 个标签',
-                        en: '${asset.tags.length} tags',
-                      ),
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                ],
-                if (settings.showNotePreview &&
-                    (asset.note?.isNotEmpty ?? false))
-                  Text(
-                    asset.note!.characters.take(15).toString(),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
+                if (settings.showGameTag && asset.gameName.isNotEmpty)
+                  AndroidTag(label: asset.gameName, game: true, compact: true),
+                for (final tag in asset.tags)
+                  AndroidTag(label: tag, compact: true),
               ],
             ),
           ),
@@ -177,4 +182,11 @@ class AndroidMediaCard extends StatelessWidget {
       ),
     ),
   );
+}
+
+String androidDuration(Duration value) {
+  final hours = value.inHours;
+  final minutes = value.inMinutes.remainder(60).toString().padLeft(2, '0');
+  final seconds = value.inSeconds.remainder(60).toString().padLeft(2, '0');
+  return hours > 0 ? '$hours:$minutes:$seconds' : '${value.inMinutes}:$seconds';
 }

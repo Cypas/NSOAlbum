@@ -160,7 +160,9 @@ class _AndroidTagManagementPageState extends State<AndroidTagManagementPage> {
         future: tags,
         builder: (context, snapshot) {
           if (snapshot.hasError) {
-            return Center(child: SelectableText(snapshot.error.toString()));
+            return Center(
+              child: Text(androidReadableError(context, snapshot.error!)),
+            );
           }
           final values = snapshot.data;
           if (values == null) {
@@ -214,7 +216,7 @@ class _AndroidTagManagementPageState extends State<AndroidTagManagementPage> {
                 future: games,
                 builder: (context, snapshot) {
                   if (snapshot.hasError) {
-                    return SelectableText(snapshot.error.toString());
+                    return Text(androidReadableError(context, snapshot.error!));
                   }
                   return Column(
                     children: [

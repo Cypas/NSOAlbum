@@ -17,10 +17,12 @@ gradle.projectsEvaluated {
                     commandLine(aapt.absolutePath, "dump", "badging", apk.absolutePath)
                 }
                 def badging = new String(dump.standardOutput.asBytes.get(), java.nio.charset.StandardCharsets.UTF_8)
-                if (!badging.contains("uses-permission: name='android.permission.INTERNET'")) {
-                    throw new GradleException("Final Release APK is missing INTERNET")
+                for (def required in ["INTERNET", "POST_NOTIFICATIONS", "REQUEST_INSTALL_PACKAGES"]) {
+                    if (!badging.contains("uses-permission: name='android.permission.${required}'")) {
+                        throw new GradleException("Final Release APK is missing ${required}")
+                    }
                 }
-                for (def denied in ["MANAGE_EXTERNAL_STORAGE", "POST_NOTIFICATIONS", "FOREGROUND_SERVICE"]) {
+                for (def denied in ["MANAGE_EXTERNAL_STORAGE", "FOREGROUND_SERVICE"]) {
                     if (badging.contains("uses-permission: name='android.permission.${denied}'")) {
                         throw new GradleException("Final Release APK must not request ${denied}")
                     }
@@ -28,6 +30,42 @@ gradle.projectsEvaluated {
                 println("Verified final Release APK network and limited permissions")
             }
         }
+    }
+    root.tasks.register("verifyAndroidUpdatePolicy", JavaExec) {
+        def app = root.project(":app")
+        def production = app.tasks.getByName("compileDebugKotlin")
+        def regression = app.tasks.getByName("compileDebugUnitTestKotlin")
+        dependsOn(production, regression, "verifyAndroidUpdateJobLifecycle")
+        mainClass.set("io.github.cypas.nsoalbum.AndroidUpdatePolicyTest")
+        classpath = root.files(production.outputs.files, regression.outputs.files,
+            app.configurations.getByName("kotlinCompilerClasspath").resolve())
+    }
+    def jobLifecycleOutput = root.layout.buildDirectory.dir("update-job-lifecycle-test")
+    def jobLifecycleCompiler = root.tasks.register("compileAndroidUpdateJobLifecycle", JavaExec) {
+        def app = root.project(":app")
+        def compiler = app.configurations.getByName("kotlinCompilerClasspath")
+        def service = app.file("src/main/kotlin/io/github/cypas/nsoalbum/AndroidUpdateJobService.kt")
+        def fixtures = root.fileTree("../test/fixtures/android/update_job_lifecycle") {
+            include("*.kt")
+        }
+        inputs.file(service)
+        inputs.files(fixtures)
+        outputs.dir(jobLifecycleOutput)
+        mainClass.set("org.jetbrains.kotlin.cli.jvm.K2JVMCompiler")
+        classpath = compiler
+        doFirst {
+            jobLifecycleOutput.get().asFile.mkdirs()
+            args = ["-no-stdlib", "-no-reflect", "-classpath", compiler.asPath,
+                "-d", jobLifecycleOutput.get().asFile.absolutePath, service.absolutePath] +
+                fixtures.files.collect { it.absolutePath }.sort()
+        }
+    }
+    root.tasks.register("verifyAndroidUpdateJobLifecycle", JavaExec) {
+        def app = root.project(":app")
+        dependsOn(jobLifecycleCompiler)
+        mainClass.set("io.github.cypas.nsoalbum.AndroidUpdateJobServiceLifecycleTest")
+        classpath = root.files(jobLifecycleOutput,
+            app.configurations.getByName("kotlinCompilerClasspath").resolve())
     }
     root.tasks.register("verifyAndroidReleaseNetworkPermission") {
         def app = root.project(":app")

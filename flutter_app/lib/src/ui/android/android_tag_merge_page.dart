@@ -138,7 +138,7 @@ class _AndroidTagMergePageState extends State<AndroidTagMergePage> {
             icon: const Icon(Icons.merge),
             label: Text(context.l10n.select(zh: '合并', en: 'Merge')),
           ),
-          if (error != null) SelectableText(error.toString()),
+          if (error != null) Text(androidReadableError(context, error!)),
         ],
       ),
     ),

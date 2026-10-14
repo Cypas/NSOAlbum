@@ -12,6 +12,7 @@ import 'android_media_card.dart';
 import 'android_media_viewer.dart';
 import 'android_page_frame.dart';
 import 'android_video_surface.dart';
+import 'android_operation_progress.dart';
 
 class AndroidVideoMergePage extends StatefulWidget {
   const AndroidVideoMergePage({
@@ -61,6 +62,7 @@ class _AndroidVideoMergePageState extends State<AndroidVideoMergePage> {
       preview = GlobalKey();
     } catch (exception) {
       error = exception;
+      if (mounted) androidMessage(context, exception);
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -77,6 +79,7 @@ class _AndroidVideoMergePageState extends State<AndroidVideoMergePage> {
       if (mounted) Navigator.pop(context, result);
     } catch (exception) {
       if (mounted) {
+        androidMessage(context, exception);
         setState(() {
           busy = false;
           error = exception;
@@ -194,19 +197,35 @@ class _AndroidVideoMergePageState extends State<AndroidVideoMergePage> {
           ),
           OutlinedButton.icon(
             onPressed: busy ? null : createPreview,
-            icon: const Icon(Icons.play_arrow),
+            icon: busy
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.play_arrow),
             label: Text(
               context.l10n.select(zh: '预览合并结果', en: 'Preview merged video'),
             ),
           ),
           FilledButton.icon(
             onPressed: busy ? null : save,
-            icon: const Icon(Icons.save_outlined),
+            icon: busy
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save_outlined),
             label: Text(
               context.l10n.select(zh: '保存合并视频', en: 'Save merged video'),
             ),
           ),
-          if (error != null) SelectableText(error.toString()),
+          if (busy)
+            ValueListenableBuilder(
+              valueListenable: editor.progress,
+              builder: (context, progress, _) =>
+                  AndroidOperationProgress(progress: progress),
+            ),
+          if (error != null) Text(androidReadableError(context, error!)),
         ],
       ),
     ),

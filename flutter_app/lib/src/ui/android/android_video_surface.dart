@@ -5,6 +5,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../video_runtime.dart';
+import 'android_page_frame.dart';
 
 class AndroidVideoSurface extends StatefulWidget {
   const AndroidVideoSurface({
@@ -70,6 +71,6 @@ class AndroidVideoSurfaceState extends State<AndroidVideoSurface> {
 
   @override
   Widget build(BuildContext context) => error != null
-      ? Center(child: SelectableText(error.toString()))
+      ? Center(child: Text(androidReadableError(context, error!)))
       : Video(controller: controller);
 }

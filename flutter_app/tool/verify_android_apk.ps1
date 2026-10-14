@@ -3,7 +3,9 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
     [Parameter(Mandatory)][ValidatePattern('^\d+$')][string]$BuildNumber,
     [Parameter(Mandatory)][string]$BuildToolsDirectory,
-    [Parameter(Mandatory)][string]$ReportsDirectory
+    [Parameter(Mandatory)][string]$ReportsDirectory,
+    [ValidateSet('Test', 'Release')][string]$SigningMode = 'Test',
+    [string]$ExpectedCertificateSha256
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,25 +22,25 @@ try {
     Assert-AndroidBadging -Badging $badging -Version $Version -BuildNumber $BuildNumber
     $libraries = @(Read-AndroidNativeLibraries -Apk $apkPath)
     $signature = (& $signer verify --verbose --print-certs $apkPath | Out-String)
-    if ($LASTEXITCODE -ne 0 -or $signature -notmatch 'Verified using v2 scheme[^\r\n]*:\s*true') {
-        throw 'Final APK signature verification failed or v2 signature is missing.'
-    }
+    if ($LASTEXITCODE -ne 0) { throw 'Final APK signature verification failed.' }
+    $certificate = Assert-AndroidApkSignature -Signature $signature -SigningMode $SigningMode -ExpectedCertificateSha256 $ExpectedCertificateSha256
     New-Item -ItemType Directory -Path $ReportsDirectory -Force | Out-Null
     $report = [ordered]@{
         schema = 1
         status = 'passed'
         scope = 'static-apk-verification-not-device-smoke'
-        signing = 'ci-test-only-not-for-distribution'
+        signing = if ($SigningMode -eq 'Release') { 'release-key-signed-no-device-smoke' } else { 'ci-test-only-not-for-distribution' }
         application_id = 'io.github.cypas.nsoalbum'
         version = $Version
         build = $BuildNumber
         sha256 = (Get-FileHash -LiteralPath $apkPath -Algorithm SHA256).Hash.ToLowerInvariant()
         native_libraries = $libraries
         signature_v2 = $true
+        certificate_sha256 = $certificate
     }
     [IO.File]::WriteAllText((Join-Path ([IO.Path]::GetFullPath($ReportsDirectory)) 'apk-verification.json'),
         ($report | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
-    Write-Host "Android test APK verified: $Version+$BuildNumber; $($libraries.Count) AArch64 libraries. No device smoke performed."
+    Write-Host "Android $SigningMode APK verified: $Version+$BuildNumber; $($libraries.Count) AArch64 libraries. No device smoke performed."
 } finally {
     [Console]::OutputEncoding = $previousEncoding
 }

@@ -8,8 +8,10 @@ import '../../l10n/app_localizations.dart';
 import '../../release_update.dart';
 import '../../state/settings_controller.dart';
 import '../../state/settings_copy.dart';
+import '../../state/android_update_controller.dart';
 import 'android_page_frame.dart';
 import 'android_tag_management_page.dart';
+import 'android_update_controls.dart';
 
 class AndroidSettingsPage extends StatefulWidget {
   const AndroidSettingsPage({
@@ -19,26 +21,139 @@ class AndroidSettingsPage extends StatefulWidget {
     this.onCheckForUpdates,
     this.latestReleaseVersion,
     this.updateStatus,
+    this.updateController,
   });
   final SettingsController controller;
   final AppBackend backend;
   final Future<void> Function()? onCheckForUpdates;
   final String? latestReleaseVersion;
   final UpdateStatusKind? updateStatus;
+  final AndroidUpdateController? updateController;
   @override
   State<AndroidSettingsPage> createState() => _AndroidSettingsPageState();
 }
 
 class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
-  late final proxy = TextEditingController(
-    text: widget.controller.value.proxyUrl,
-  );
   final version = loadApplicationVersion();
   bool checkingUpdates = false;
-  @override
-  void dispose() {
-    proxy.dispose();
-    super.dispose();
+  bool choosingStorage = false;
+  bool movingStorage = false;
+
+  Future<void> chooseStorage() async {
+    if (widget.backend is! MobileStorageBackend || choosingStorage) return;
+    setState(() => choosingStorage = true);
+    try {
+      final locations = await (widget.backend as MobileStorageBackend)
+          .mobileStorageLocations();
+      if (!mounted) return;
+      final selected = await showModalBottomSheet<MobileStorageLocation>(
+        context: context,
+        builder: (context) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final location in locations)
+                ListTile(
+                  leading: Icon(
+                    location.removable ? Icons.sd_storage : Icons.phone_android,
+                  ),
+                  title: Text(
+                    context.l10n.select(
+                      zh: location.removable ? 'SD 卡' : '内部存储',
+                      en: location.removable ? 'SD card' : 'Internal storage',
+                    ),
+                  ),
+                  subtitle: Text(
+                    context.l10n.select(
+                      zh: '应用专用目录',
+                      en: 'App-specific directory',
+                    ),
+                  ),
+                  onTap: () => Navigator.pop(context, location),
+                ),
+              if (!locations.any((location) => location.removable))
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    context.l10n.select(
+                      zh: '没有可用的 SD 卡。',
+                      en: 'No SD card is available.',
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+      if (selected == null ||
+          !mounted ||
+          selected.path == widget.controller.value.libraryPath) {
+        return;
+      }
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(
+            context.l10n.select(zh: '更改图库位置？', en: 'Change library location?'),
+          ),
+          content: Text(
+            context.l10n.select(
+              zh: '将复制并校验媒体后切换图库。请保持存储设备连接；失败时仍使用原图库。',
+              en: 'Media will be copied and verified before switching. Keep storage connected; a failure leaves the original library active.',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
+            ),
+            FilledButton(
+              key: const Key('android-confirm-storage'),
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(context.l10n.select(zh: '继续', en: 'Continue')),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+      setState(() => movingStorage = true);
+      // Re-enumerate after confirmation: an external card may have been removed.
+      final available = await (widget.backend as MobileStorageBackend)
+          .mobileStorageLocations();
+      if (!available.any(
+        (item) => item.id == selected.id && item.path == selected.path,
+      )) {
+        if (mounted) {
+          androidMessage(
+            context,
+            context.l10n.select(
+              zh: '所选存储不可用，请重新连接后再试。',
+              en: 'Selected storage is unavailable. Reconnect it and try again.',
+            ),
+            isError: true,
+          );
+        }
+        return;
+      }
+      await widget.controller.relocateMediaLibrary(
+        copyAppSettings(widget.controller.value, libraryPath: selected.path),
+      );
+      if (mounted) {
+        androidMessage(
+          context,
+          context.l10n.select(zh: '图库位置已更新。', en: 'Library location updated.'),
+        );
+      }
+    } catch (error) {
+      if (mounted) androidMessage(context, error);
+    } finally {
+      if (mounted) {
+        setState(() {
+          choosingStorage = false;
+          movingStorage = false;
+        });
+      }
+    }
   }
 
   Future<void> checkForUpdates() async {
@@ -85,6 +200,8 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
         return AndroidPageList(
           children: [
             DropdownButtonFormField<String>(
+              isExpanded: true,
+              itemHeight: null,
               initialValue: value.language,
               decoration: InputDecoration(
                 labelText: context.l10n.select(
@@ -139,6 +256,27 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
                   ),
               ],
             ),
+            if (widget.backend is MobileStorageBackend)
+              OutlinedButton.icon(
+                key: const Key('android-storage-location'),
+                onPressed: choosingStorage || controller.saving
+                    ? null
+                    : chooseStorage,
+                icon: movingStorage
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.folder_outlined),
+                label: Text(
+                  context.l10n.select(
+                    zh: movingStorage ? '正在处理，请稍后' : '选择图库位置',
+                    en: movingStorage
+                        ? 'Processing, please wait'
+                        : 'Choose library location',
+                  ),
+                ),
+              ),
             Text(
               context.l10n.select(
                 zh: '每行最多 ${value.galleryColumns} 个媒体',
@@ -146,10 +284,10 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
               ),
             ),
             Slider(
-              value: value.galleryColumns.clamp(2, 7).toDouble(),
-              min: 2,
+              value: value.galleryColumns.clamp(1, 7).toDouble(),
+              min: 1,
               max: 7,
-              divisions: 5,
+              divisions: 6,
               onChanged: controller.saving
                   ? null
                   : (next) => save(
@@ -194,24 +332,6 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
                     ? null
                     : (next) => save(controller.save(item.$3(next))),
               ),
-            TextField(
-              controller: proxy,
-              decoration: InputDecoration(
-                labelText: context.l10n.select(zh: '网络代理', en: 'Network proxy'),
-              ),
-              autocorrect: false,
-              enableSuggestions: false,
-            ),
-            FilledButton(
-              onPressed: controller.saving
-                  ? null
-                  : () => save(
-                      controller.save(
-                        copyAppSettings(value, proxyUrl: proxy.text.trim()),
-                      ),
-                    ),
-              child: Text(context.l10n.select(zh: '保存代理', en: 'Save proxy')),
-            ),
             Card(
               child: ListTile(
                 key: const Key('android-manage-tags'),
@@ -309,7 +429,12 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
                         ),
                       ),
                     ),
-                    if (widget.updateStatus case final status?) ...[
+                    if (widget.updateController case final updater?)
+                      AndroidUpdateControls(
+                        controller: updater,
+                        onDownload: widget.onCheckForUpdates,
+                      )
+                    else if (widget.updateStatus case final status?) ...[
                       const SizedBox(height: 4),
                       Text(switch (status) {
                         UpdateStatusKind.latest => context.l10n.select(

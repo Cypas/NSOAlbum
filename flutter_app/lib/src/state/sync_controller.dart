@@ -3,92 +3,230 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../backend/app_backend.dart';
+import '../backend/sync_failure_status.dart';
 import '../rust/models.dart';
 import '../rust/settings.dart';
 
-enum SyncState { idle, running, completed, failed, cancelling }
+enum SyncState { idle, running, completed, failed, cancelling, cancelled }
 
-Duration? automaticSyncRetryDelayForError(Object error) {
-  final message = error.toString().toLowerCase();
-  if (message.contains('rate limited')) {
-    return const Duration(minutes: 1);
-  }
-  return null;
-}
+Duration? automaticSyncRetryDelayForError(Object error) =>
+    syncFailureStatus(error) == 'rate_limited'
+    ? const Duration(minutes: 1)
+    : null;
 
 class SyncController extends ChangeNotifier {
-  SyncController(this._backend);
+  SyncController(this._backend, {this.allAccounts = false});
 
   final AppBackend _backend;
+  final bool allAccounts;
   SyncState state = SyncState.idle;
   SyncSummary? summary;
   SyncProgress? progress;
   Object? error;
   SyncScheduleStatus? scheduleStatus;
   Duration? automaticRetryDelay;
+  String? currentAccountId;
+  int completedAccounts = 0;
+  int totalAccounts = 0;
+  final Map<String, SyncSummary> accountResults = {};
+  final Map<String, Object> accountErrors = {};
+  final Map<String, SyncScheduleStatus?> accountSchedules = {};
+  final Set<String> authPausedAccountIds = {};
+  final Set<String> _pendingAuthenticatedAccountIds = {};
+  final Set<String> _authenticationOverrides = {};
+  bool automaticRun = false;
+  bool suppressAutomaticRelaunch = false;
+  bool _cancelRequested = false;
   bool _polling = false;
   bool _progressRequestPending = false;
   bool _disposed = false;
   Timer? _progressTimer;
+  Timer? _cancellationTimer;
+  bool _cancellationRequestPending = false;
+  bool _drainingAuthenticatedAccounts = false;
 
-  Future<void> run() async {
-    if (state == SyncState.running || state == SyncState.cancelling) return;
+  bool get running =>
+      state == SyncState.running || state == SyncState.cancelling;
+  bool get hasPendingAuthenticatedAccounts =>
+      _pendingAuthenticatedAccountIds.isNotEmpty;
+
+  Future<void> run({bool automatic = false, List<String>? accountIds}) async {
+    if (running || _disposed) return;
+    automaticRun = automatic;
+    suppressAutomaticRelaunch = false;
+    _cancelRequested = false;
     automaticRetryDelay = null;
     state = SyncState.running;
     summary = null;
     progress = null;
     error = null;
-    notifyListeners();
-    _polling = true;
-    unawaited(_refreshProgress());
-    _progressTimer = Timer.periodic(
-      const Duration(milliseconds: 300),
-      (_) => unawaited(_refreshProgress()),
-    );
+    currentAccountId = null;
+    completedAccounts = 0;
+    totalAccounts = 0;
+    _notify();
+    _startPolling();
     try {
-      final result = await _backend.syncNintendoAlbum();
-      summary = result;
-      if (_backend case final SyncScheduleBackend backend) {
+      if (allAccounts && _backend is AccountSyncBackend) {
+        await _runAccountQueue(automatic: automatic, accountIds: accountIds);
+      } else {
+        await _runLegacySync();
+      }
+    } catch (exception, stackTrace) {
+      if (_cancelRequested || syncFailureStatus(exception) == 'cancelled') {
+        state = SyncState.cancelled;
+      } else {
+        error = exception;
+        automaticRetryDelay = automaticSyncRetryDelayForError(exception);
+        state = SyncState.failed;
+        await _backend.logError(
+          'Nintendo album synchronization failed',
+          exception,
+          stackTrace,
+        );
+      }
+    } finally {
+      _stopPolling();
+      _stopCancellationDelivery();
+      currentAccountId = null;
+      automaticRun = false;
+      if (_cancelRequested && state != SyncState.cancelled) {
+        state = SyncState.cancelled;
+      }
+      if (state == SyncState.cancelled) {
+        _authenticationOverrides.removeAll(_pendingAuthenticatedAccountIds);
+        _pendingAuthenticatedAccountIds.clear();
+      }
+      _notify();
+    }
+    if (!_disposed && state != SyncState.cancelled) {
+      await _drainAuthenticatedAccounts();
+    }
+  }
+
+  Future<void> _runLegacySync() async {
+    final result = await _backend.syncNintendoAlbum();
+    if (_cancelRequested) return;
+    summary = result;
+    if (_backend case final SyncScheduleBackend backend) {
+      try {
+        scheduleStatus = await backend.recordSyncOutcome(
+          foundNewMedia: result.downloaded > BigInt.zero,
+        );
+      } catch (exception, stackTrace) {
+        await _backend.logError(
+          'Failed to persist Nintendo sync schedule state',
+          exception,
+          stackTrace,
+        );
+      }
+    }
+    progress = _completedProgress(result);
+    state = SyncState.completed;
+  }
+
+  Future<void> _runAccountQueue({
+    required bool automatic,
+    required List<String>? accountIds,
+  }) async {
+    final backend = _backend as AccountSyncBackend;
+    final profiles = await _backend.listNintendoAccounts();
+    if (_cancelRequested) return;
+    final available = profiles.map((profile) => profile.accountId).toSet();
+    var queue = accountIds == null
+        ? profiles.map((profile) => profile.accountId).toList()
+        : accountIds.where(available.contains).toSet().toList();
+    await refreshAccountScheduleStatuses(accountIds: queue);
+    queue = queue
+        .where(
+          (id) =>
+              !authPausedAccountIds.contains(id) ||
+              _authenticationOverrides.contains(id),
+        )
+        .toList();
+    if (automatic) {
+      final now = DateTime.now().toUtc();
+      queue = queue.where((id) {
+        if (authPausedAccountIds.contains(id)) return false;
+        final due = accountSchedules[id]?.nextSyncAt?.toUtc();
+        return due != null && !due.isAfter(now);
+      }).toList();
+    }
+    totalAccounts = queue.length;
+    _notify();
+    for (final accountId in queue) {
+      if (_cancelRequested) break;
+      accountResults.remove(accountId);
+      accountErrors.remove(accountId);
+      _authenticationOverrides.remove(accountId);
+      currentAccountId = accountId;
+      progress = null;
+      _notify();
+      try {
+        final result = await backend.syncNintendoAccount(accountId);
+        if (_cancelRequested) break;
+        accountResults[accountId] = result;
+        accountErrors.remove(accountId);
+        authPausedAccountIds.remove(accountId);
+        summary = result;
+        progress = _completedProgress(result);
         try {
-          scheduleStatus = await backend.recordSyncOutcome(
+          accountSchedules[accountId] = await backend.recordAccountSyncOutcome(
+            accountId,
             foundNewMedia: result.downloaded > BigInt.zero,
           );
         } catch (exception, stackTrace) {
           await _backend.logError(
-            'Failed to persist Nintendo sync schedule state',
+            'Failed to persist Nintendo account sync schedule state',
             exception,
             stackTrace,
           );
         }
+        completedAccounts += 1;
+      } catch (exception, stackTrace) {
+        if (_cancelRequested || syncFailureStatus(exception) == 'cancelled') {
+          _cancelRequested = true;
+          break;
+        }
+        accountErrors[accountId] = exception;
+        error ??= exception;
+        final failure = syncFailureStatus(exception);
+        if (failure == 'authentication_failure') {
+          authPausedAccountIds.add(accountId);
+        } else if (failure == 'rate_limited') {
+          automaticRetryDelay = const Duration(minutes: 1);
+        }
+        try {
+          accountSchedules[accountId] = await backend.loadAccountSyncSchedule(
+            accountId,
+          );
+        } catch (_) {
+          // The account error remains the useful result for this queue item.
+        }
+        completedAccounts += 1;
+        await _backend.logError(
+          'Nintendo account synchronization failed',
+          exception,
+          stackTrace,
+        );
       }
-      final synchronized =
-          result.downloaded + result.duplicates + result.skippedRemote;
-      progress = SyncProgress(
-        jobId: result.jobId,
-        status: result.failed == BigInt.zero
-            ? 'completed'
-            : 'completed_with_errors',
-        totalItems: result.totalFound,
-        processedItems: synchronized + result.failed,
-        synchronizedItems: synchronized,
-        failedItems: result.failed,
-      );
-      state = SyncState.completed;
-    } catch (exception, stackTrace) {
-      error = exception;
-      automaticRetryDelay = automaticSyncRetryDelayForError(exception);
-      state = SyncState.failed;
-      await _backend.logError(
-        'Nintendo album synchronization failed',
-        exception,
-        stackTrace,
-      );
-    } finally {
-      _polling = false;
-      _progressTimer?.cancel();
-      _progressTimer = null;
+      _notify();
     }
-    if (!_disposed) notifyListeners();
+    state = _cancelRequested ? SyncState.cancelled : SyncState.completed;
+  }
+
+  SyncProgress _completedProgress(SyncSummary result) {
+    final synchronized =
+        result.downloaded + result.duplicates + result.skippedRemote;
+    return SyncProgress(
+      jobId: result.jobId,
+      status: result.failed == BigInt.zero
+          ? 'completed'
+          : 'completed_with_errors',
+      totalItems: result.totalFound,
+      processedItems: synchronized + result.failed,
+      synchronizedItems: synchronized,
+      failedItems: result.failed,
+    );
   }
 
   Future<SyncScheduleStatus?> refreshScheduleStatus() async {
@@ -100,7 +238,7 @@ class SyncController extends ChangeNotifier {
     }
     try {
       scheduleStatus = await backend.loadSyncScheduleStatus();
-      if (!_disposed) notifyListeners();
+      _notify();
       return scheduleStatus;
     } catch (exception, stackTrace) {
       await _backend.logError(
@@ -112,6 +250,110 @@ class SyncController extends ChangeNotifier {
     }
   }
 
+  Future<Map<String, SyncScheduleStatus?>> refreshAccountScheduleStatuses({
+    List<String>? accountIds,
+  }) async {
+    if (!allAccounts || _backend is! AccountSyncBackend) {
+      return accountSchedules;
+    }
+    final backend = _backend as AccountSyncBackend;
+    final ids =
+        accountIds ??
+        (await _backend.listNintendoAccounts())
+            .map((profile) => profile.accountId)
+            .toList();
+    for (final id in ids) {
+      try {
+        accountSchedules[id] = await backend.loadAccountSyncSchedule(id);
+        if (_backend case final SyncHistoryBackend histories) {
+          final history = await histories.loadSyncAccountHistory(id);
+          final status = history.latestAttempt?.status;
+          if (status == 'authentication_failure' &&
+              !_authenticationOverrides.contains(id)) {
+            authPausedAccountIds.add(id);
+          } else if (status != null) {
+            authPausedAccountIds.remove(id);
+          }
+        }
+      } catch (exception, stackTrace) {
+        await _backend.logError(
+          'Failed to load Nintendo account sync schedule state',
+          exception,
+          stackTrace,
+        );
+      }
+    }
+    _notify();
+    return accountSchedules;
+  }
+
+  Future<List<String>> dueAccountIds({DateTime? now}) async {
+    if (!allAccounts || _backend is! AccountSyncBackend) return const [];
+    final profiles = await _backend.listNintendoAccounts();
+    final ids = profiles.map((profile) => profile.accountId).toList();
+    await refreshAccountScheduleStatuses(accountIds: ids);
+    final instant = (now ?? DateTime.now()).toUtc();
+    return ids.where((id) {
+      if (authPausedAccountIds.contains(id)) return false;
+      final due = accountSchedules[id]?.nextSyncAt?.toUtc();
+      return due != null && !due.isAfter(instant);
+    }).toList();
+  }
+
+  DateTime? get nextAccountSyncAt {
+    DateTime? earliest;
+    for (final entry in accountSchedules.entries) {
+      if (authPausedAccountIds.contains(entry.key)) continue;
+      final due = entry.value?.nextSyncAt?.toUtc();
+      if (due != null && (earliest == null || due.isBefore(earliest))) {
+        earliest = due;
+      }
+    }
+    return earliest;
+  }
+
+  Future<void> enqueueAuthenticatedAccount(String accountId) async {
+    if (_disposed || accountId.isEmpty) return;
+    _authenticationOverrides.add(accountId);
+    _pendingAuthenticatedAccountIds.add(accountId);
+    authPausedAccountIds.remove(accountId);
+    _notify();
+    if (!running) await _drainAuthenticatedAccounts();
+  }
+
+  Future<void> _drainAuthenticatedAccounts() async {
+    if (_drainingAuthenticatedAccounts || running || _disposed) return;
+    _drainingAuthenticatedAccounts = true;
+    try {
+      while (_pendingAuthenticatedAccountIds.isNotEmpty && !_disposed) {
+        final ids = _pendingAuthenticatedAccountIds.toList();
+        _pendingAuthenticatedAccountIds.removeAll(ids);
+        await run(accountIds: ids);
+        if (state == SyncState.cancelled) {
+          _pendingAuthenticatedAccountIds.clear();
+          break;
+        }
+      }
+    } finally {
+      _drainingAuthenticatedAccounts = false;
+    }
+  }
+
+  void _startPolling() {
+    _polling = true;
+    unawaited(_refreshProgress());
+    _progressTimer = Timer.periodic(
+      const Duration(milliseconds: 300),
+      (_) => unawaited(_refreshProgress()),
+    );
+  }
+
+  void _stopPolling() {
+    _polling = false;
+    _progressTimer?.cancel();
+    _progressTimer = null;
+  }
+
   Future<void> _refreshProgress() async {
     if (!_polling || _progressRequestPending) return;
     _progressRequestPending = true;
@@ -119,7 +361,7 @@ class SyncController extends ChangeNotifier {
       final next = await _backend.currentSyncProgress();
       if (_polling && next != null && next != progress) {
         progress = next;
-        if (!_disposed) notifyListeners();
+        _notify();
       }
     } catch (_) {
       // Progress reporting must never make the actual sync fail.
@@ -128,19 +370,63 @@ class SyncController extends ChangeNotifier {
     }
   }
 
-  Future<void> cancel() async {
-    if (state != SyncState.running) return;
+  Future<void> cancel({bool suppressAutomaticRelaunch = true}) async {
+    if (!running) return;
+    _cancelRequested = true;
+    _authenticationOverrides.removeAll(_pendingAuthenticatedAccountIds);
+    _pendingAuthenticatedAccountIds.clear();
+    this.suppressAutomaticRelaunch = suppressAutomaticRelaunch;
     state = SyncState.cancelling;
-    notifyListeners();
-    await _backend.cancelSync();
+    _notify();
+    final delivered = await _requestCancellation();
+    if (!delivered && running) {
+      _cancellationTimer ??= Timer.periodic(
+        const Duration(milliseconds: 300),
+        (_) => unawaited(_retryCancellation()),
+      );
+    }
+  }
+
+  Future<bool> _requestCancellation() async {
+    if (_cancellationRequestPending) return false;
+    _cancellationRequestPending = true;
+    try {
+      return await _backend.cancelSync();
+    } catch (_) {
+      return false;
+    } finally {
+      _cancellationRequestPending = false;
+    }
+  }
+
+  Future<void> _retryCancellation() async {
+    if (!running || _disposed) {
+      _stopCancellationDelivery();
+      return;
+    }
+    if (await _requestCancellation()) _stopCancellationDelivery();
+  }
+
+  void _stopCancellationDelivery() {
+    _cancellationTimer?.cancel();
+    _cancellationTimer = null;
+  }
+
+  bool consumeAutomaticRelaunchSuppression() {
+    final value = suppressAutomaticRelaunch;
+    suppressAutomaticRelaunch = false;
+    return value;
+  }
+
+  void _notify() {
+    if (!_disposed) notifyListeners();
   }
 
   @override
   void dispose() {
     _disposed = true;
-    _polling = false;
-    _progressTimer?.cancel();
-    _progressTimer = null;
+    _stopPolling();
+    _stopCancellationDelivery();
     super.dispose();
   }
 }

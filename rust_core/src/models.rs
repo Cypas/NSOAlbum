@@ -168,6 +168,18 @@ pub struct ImportItemError {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationProgress {
+    pub operation_id: String,
+    pub kind: String,
+    pub phase: String,
+    pub status: String,
+    pub total_items: Option<usize>,
+    pub processed_items: usize,
+    pub processed_bytes: Option<u64>,
+    pub total_bytes: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaExportSummary {
     pub total: usize,

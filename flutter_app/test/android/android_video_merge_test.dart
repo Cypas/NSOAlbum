@@ -55,7 +55,8 @@ void main() {
       expect(find.byType(AndroidVideoMergePage), findsOneWidget);
       backend.gate.completeError(StateError('synthetic merge failure'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('synthetic merge failure'), findsOneWidget);
+      expect(find.textContaining('synthetic merge failure'), findsNothing);
+      expect(find.byKey(const Key('android-notice-bubble')), findsOneWidget);
       expect(find.byType(AndroidVideoMergePage), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());

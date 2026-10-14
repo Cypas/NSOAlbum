@@ -76,6 +76,11 @@ jobs:
       ref: ${{ needs.validate.outputs.sha }}
       release: true
       release_tag: ${{ needs.validate.outputs.tag }}
+    secrets:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
   publish:
     name: Publish only after every platform gate succeeds

@@ -8,14 +8,13 @@ import 'src/ui/android/android_theme.dart';
 
 import 'dart:ui';
 
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show kDebugMode, kReleaseMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'src/app_branding.dart';
-import 'src/app_version.dart';
 import 'src/backend/app_backend.dart';
 import 'src/backend/rust_backend.dart';
 import 'src/l10n/app_localizations.dart';
@@ -23,12 +22,14 @@ import 'src/platform/windows_ime_context.dart';
 import 'src/platform/application_restart.dart';
 import 'src/rust/settings.dart';
 import 'src/state/automatic_sync_coordinator.dart';
+import 'src/state/android_update_controller.dart';
 import 'src/state/settings_controller.dart';
 import 'src/state/sync_controller.dart';
 import 'src/startup/startup_diagnostics.dart';
 import 'src/startup/startup_options.dart';
 import 'src/ui/ci_smoke_page.dart';
 import 'src/ui/home_shell.dart';
+import 'src/ui/android/android_update_dialog.dart';
 import 'src/release_update.dart';
 import 'src/ui/font_families.dart';
 import 'src/ui/video_runtime.dart';
@@ -340,7 +341,7 @@ class _DesktopTitleBarState extends State<DesktopTitleBar> with WindowListener {
 }
 
 class _SquidAlbumAppState extends State<SquidAlbumApp>
-    with WindowListener, TrayListener {
+    with WindowListener, TrayListener, WidgetsBindingObserver {
   final navigatorKey = GlobalKey<NavigatorState>();
   SettingsController? settings;
   SyncController? sync;
@@ -351,6 +352,7 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
   String? latestReleaseVersion;
   UpdateStatusKind? updateStatus;
   Object? updateStatusError;
+  AndroidUpdateController? androidUpdates;
 
   bool get supportsDesktopLifecycle =>
       widget.backend is RustBackend &&
@@ -360,12 +362,29 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     final backend = widget.backend;
     if (backend != null) {
       selectAppFontLanguage(backend.settings.language);
       settings = SettingsController(backend)..addListener(_settingsChanged);
-      sync = SyncController(backend);
+      sync = SyncController(
+        backend,
+        allAccounts:
+            (widget.uiPlatform ?? resolveAppUiPlatform()) ==
+            AppUiPlatform.android,
+      );
       automaticSync = AutomaticSyncCoordinator(backend, settings!, sync!);
+      if (androidUpdateStartupEnabled(
+        isAndroid: Platform.isAndroid,
+        releaseMode: kReleaseMode,
+        isTest: Platform.environment.containsKey('FLUTTER_TEST'),
+        ciSmoke: widget.startupOptions.ciSmoke,
+        safeMode: widget.startupOptions.safeMode,
+      )) {
+        androidUpdates = AndroidUpdateController(
+          applicationRoot: widget.diagnostics?.applicationRoot,
+        );
+      }
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (supportsDesktopLifecycle) {
           unawaited(
@@ -390,6 +409,9 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
             !widget.startupOptions.ciSmoke &&
             !widget.startupOptions.safeMode) {
           unawaited(_checkForUpdates(automatic: true));
+        }
+        if (androidUpdates != null) {
+          unawaited(_restoreAndroidUpdatesAndCheck());
         }
         if (!widget.startupOptions.ciSmoke &&
             !Platform.environment.containsKey('FLUTTER_TEST') &&
@@ -429,6 +451,8 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    androidUpdates?.dispose();
     settings?.removeListener(_settingsChanged);
     if (desktopLifecycleReady) {
       windowManager.removeListener(this);
@@ -439,6 +463,16 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
     sync?.dispose();
     settings?.dispose();
     super.dispose();
+  }
+
+  Future<void> _restoreAndroidUpdatesAndCheck() async {
+    await androidUpdates?.restore();
+    if (mounted) await _checkForUpdates(automatic: true);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    androidUpdates?.setForeground(state == AppLifecycleState.resumed);
   }
 
   Future<void> _initializeDesktopLifecycle() async {
@@ -515,35 +549,14 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
     final backend = widget.backend;
     if (context == null || backend == null) return;
     if (Platform.isAndroid) {
-      final service = ReleaseUpdateService(
-        applicationRoot: widget.diagnostics?.applicationRoot,
-        customProxyUrl: backend.settings.proxyUrl,
+      await androidUpdates?.check(
+        automatic: automatic,
+        language: settings?.value.language ?? 'en',
+        confirm: (release) {
+          if (!mounted) return Future.value(null);
+          return showAndroidReleaseUpdateDialog(context, release: release);
+        },
       );
-      try {
-        final currentVersion = await loadApplicationVersion();
-        final info = await service.checkLatestRelease(currentVersion);
-        if (!mounted) return;
-        setState(() {
-          latestReleaseVersion = info?.version;
-          updateStatus = info == null
-              ? UpdateStatusKind.latest
-              : UpdateStatusKind.available;
-          updateStatusError = null;
-        });
-      } catch (error, stackTrace) {
-        await backend.logError(
-          'Failed to check Android application update',
-          error,
-          stackTrace,
-        );
-        if (!mounted) return;
-        setState(() {
-          updateStatus = UpdateStatusKind.failed;
-          updateStatusError = error;
-        });
-      } finally {
-        await service.close();
-      }
       return;
     }
     await showLatestReleaseUpdate(
@@ -752,11 +765,14 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
                     widget.startupOptions.disableAutomaticSync
                     ? null
                     : automaticSync?.accountChanged,
-                onCheckForUpdates: widget.startupOptions.ciSmoke
+                onCheckForUpdates:
+                    widget.startupOptions.ciSmoke ||
+                        (Platform.isAndroid && androidUpdates == null)
                     ? null
                     : () => _checkForUpdates(automatic: false),
                 latestReleaseVersion: latestReleaseVersion,
                 updateStatus: updateStatus,
+                updateController: androidUpdates,
               )
             : DesktopWindowFrame(
                 title: controller.value.language == 'en'

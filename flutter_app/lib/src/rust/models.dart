@@ -465,6 +465,53 @@ class MediaExportSummary {
 
 enum MediaKind { image, video }
 
+class OperationProgress {
+  final String operationId;
+  final String kind;
+  final String phase;
+  final String status;
+  final BigInt? totalItems;
+  final BigInt processedItems;
+  final BigInt? processedBytes;
+  final BigInt? totalBytes;
+
+  const OperationProgress({
+    required this.operationId,
+    required this.kind,
+    required this.phase,
+    required this.status,
+    this.totalItems,
+    required this.processedItems,
+    this.processedBytes,
+    this.totalBytes,
+  });
+
+  @override
+  int get hashCode =>
+      operationId.hashCode ^
+      kind.hashCode ^
+      phase.hashCode ^
+      status.hashCode ^
+      totalItems.hashCode ^
+      processedItems.hashCode ^
+      processedBytes.hashCode ^
+      totalBytes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OperationProgress &&
+          runtimeType == other.runtimeType &&
+          operationId == other.operationId &&
+          kind == other.kind &&
+          phase == other.phase &&
+          status == other.status &&
+          totalItems == other.totalItems &&
+          processedItems == other.processedItems &&
+          processedBytes == other.processedBytes &&
+          totalBytes == other.totalBytes;
+}
+
 class SyncItemError {
   final String? remoteId;
   final String message;

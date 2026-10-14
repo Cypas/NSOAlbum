@@ -7,8 +7,14 @@ manifest/resources to verify the application ID, launchable activity, localized
 application names, and launcher icon. The default name is `NSOAlbum`; Chinese,
 including Taiwan and Hong Kong locales, uses `鱿型相册` unchanged.
 It also assembles the Release APK and reads its packaged manifest to require
-`INTERNET` while rejecting all-files storage, notification, and foreground-service
-permissions. This is a local test-signing build, not a distribution or device
+`INTERNET`, `POST_NOTIFICATIONS` and `REQUEST_INSTALL_PACKAGES` for updates, while
+rejecting all-files storage and foreground-service permissions. The update policy
+JVM harness validates official URLs, package identity, signatures and bounded
+copy/hash behavior. It also runs the actual update JobService in an isolated JVM
+lifecycle harness, covering stale stops, worker-to-main completion dispatch,
+delayed old completions, duplicate completion and cancellation. The small Android
+and verification-boundary fixtures are compiled only for this harness and never
+included in the application. This is a local test-signing build, not a distribution or device
 acceptance test.
 
 Prerequisites:

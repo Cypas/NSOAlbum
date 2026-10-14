@@ -11,12 +11,29 @@ on:
         description: Optional stable tag checked against source versions
         type: string
         default: ""
+      sign_release:
+        description: Sign the verified APK with the configured release key on trusted workflows
+        type: boolean
+        default: false
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        required: false
+      ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
   workflow_dispatch:
     inputs:
       ref:
         description: Optional exact commit or branch to validate (no Release publication)
         required: false
         type: string
+      sign_release:
+        description: Sign after verification (trusted main/dev only; no Release publication)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,10 +50,12 @@ jobs:
       sha: ${{ steps.commit.outputs.sha }}
       version: ${{ steps.version.outputs.version }}
       build: ${{ steps.version.outputs.build }}
+      signing: ${{ steps.policy.outputs.signing }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
       - id: commit
         shell: bash
         env:
@@ -50,6 +69,34 @@ jobs:
             test "$sha" = "$REQUESTED_REF"
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Enforce signing trust boundary before any secret is used
+        id: policy
+        shell: pwsh
+        env:
+          SIGN_REQUESTED: ${{ inputs.sign_release }}
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if ($env:SIGN_REQUESTED -eq 'true') {
+            if ($env:REPOSITORY -ne 'Cypas/NSOAlbum' -or
+                $env:EVENT_NAME -notin @('push', 'workflow_dispatch') -or
+                ($env:WORKFLOW_REF -notin @('refs/heads/main', 'refs/heads/dev') -and
+                 $env:WORKFLOW_REF -notmatch '^refs/tags/v\d+\.\d+\.\d+$')) {
+              throw 'Release signing must originate from a trusted workflow, never a PR.'
+            }
+            $trusted = $false
+            foreach ($branch in @('main', 'dev')) {
+              git merge-base --is-ancestor HEAD "refs/remotes/origin/$branch"
+              if ($LASTEXITCODE -eq 0) { $trusted = $true }
+            }
+            if (-not $trusted) { throw 'Release signing target must be a commit in trusted main/dev history.' }
+          }
+          # Only execute target-commit policy code after verifying signing ancestry.
+          . ./flutter_app/tool/android_apk_contract.ps1
+          $mode = Get-AndroidSigningMode -Requested ($env:SIGN_REQUESTED -eq 'true') -EventName $env:EVENT_NAME -WorkflowRef $env:WORKFLOW_REF -Repository $env:REPOSITORY
+          "signing=$mode" >> $env:GITHUB_OUTPUT
+          exit 0
       - name: Validate source versions
         id: version
         shell: pwsh
@@ -143,6 +190,14 @@ jobs:
         run: |
           set -euo pipefail
           flutter test --machine --no-pub > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests-stderr.log"
+      - name: Exercise signing with a disposable fixture key, never production Secrets
+        shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ needs.resolve.outputs.version }}
+          PACKAGE_BUILD: ${{ needs.resolve.outputs.build }}
+        run: |
+          $tools = Join-Path $env:ANDROID_HOME "build-tools/$env:ANDROID_BUILD_TOOLS"
+          ./flutter_app/test/fixtures/android/signing_test.ps1 -Apk flutter_app/build/app/outputs/flutter-apk/app-release.apk -BuildToolsDirectory $tools -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD
       - name: Verify and summarize actual test totals
         if: always()
         shell: pwsh
@@ -238,6 +293,78 @@ jobs:
           compression-level: 0
           if-no-files-found: error
 
+  sign:
+    name: Sign verified APK with the release key (not device smoke)
+    if: inputs.sign_release && needs.resolve.outputs.signing == 'Release' && github.repository == 'Cypas/NSOAlbum' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' || startsWith(github.ref, 'refs/tags/v'))
+    needs:
+      - resolve
+      - build
+      - verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install pinned signing and inspection tools
+        run: sdkmanager "build-tools;$ANDROID_BUILD_TOOLS"
+      - uses: actions/download-artifact@v4
+        with:
+          name: built-android-arm64-${{ needs.resolve.outputs.sha }}
+          path: dist/ci-transfer
+      - name: Reverify the exact same-run input without rebuilding
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+          PACKAGE_VERSION: ${{ needs.resolve.outputs.version }}
+          PACKAGE_BUILD: ${{ needs.resolve.outputs.build }}
+        run: |
+          if ((git rev-parse HEAD) -ne $env:EXPECTED_SHA) { throw 'Signing source commit differs.' }
+          $directory = 'dist/ci-sign-input/android-arm64'
+          if (Test-Path -LiteralPath $directory) { throw 'Signing input directory must be new.' }
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          tar -xpf dist/ci-transfer/android-arm64.tar -C $directory
+          if ($LASTEXITCODE -ne 0) { throw 'Extracting signing input failed.' }
+          ./flutter_app/tool/ci_bundle.ps1 -Mode Verify -Directory $directory -Commit $env:EXPECTED_SHA -Platform android-arm64 -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD
+      - name: Sign, verify release certificate, and clean private temporary material
+        shell: pwsh
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          PACKAGE_VERSION: ${{ needs.resolve.outputs.version }}
+          PACKAGE_BUILD: ${{ needs.resolve.outputs.build }}
+        run: |
+          $tools = Join-Path $env:ANDROID_HOME "build-tools/$env:ANDROID_BUILD_TOOLS"
+          $output = "dist/android-signed/NSOAlbum-Android-arm64-$env:PACKAGE_VERSION.apk"
+          ./flutter_app/tool/sign_android_apk.ps1 -Apk dist/ci-sign-input/android-arm64/NSOAlbum-Android-arm64-CI-Test.apk -OutputApk $output -BuildToolsDirectory $tools -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD -ReportsDirectory android-signing-reports -TemporaryRoot $env:RUNNER_TEMP
+          $hash = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $output) 'SHA256SUMS.txt'), "$hash  $(Split-Path -Leaf $output)`n", [Text.UTF8Encoding]::new($false))
+      - name: Upload public signing verification only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: signing-android-arm64
+          path: android-signing-reports/apk-verification.json
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Upload release-key-signed APK as an artifact only
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-arm64-signed
+          path: |
+            dist/android-signed/*.apk
+            dist/android-signed/SHA256SUMS.txt
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+
   complete:
     name: Require Android build and static verification
     if: always()
@@ -245,6 +372,7 @@ jobs:
       - resolve
       - build
       - verify
+      - sign
     runs-on: ubuntu-latest
     steps:
       - name: Reject failed, cancelled or skipped Android gates
@@ -252,8 +380,16 @@ jobs:
           RESOLVE_RESULT: ${{ needs.resolve.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           VERIFY_RESULT: ${{ needs.verify.result }}
+          SIGN_RESULT: ${{ needs.sign.result }}
+          SIGNING_MODE: ${{ needs.resolve.outputs.signing }}
         run: |
           set -euo pipefail
           test "$RESOLVE_RESULT" = success
           test "$BUILD_RESULT" = success
           test "$VERIFY_RESULT" = success
+          if [[ "$SIGNING_MODE" == Release ]]; then
+            test "$SIGN_RESULT" = success
+          else
+            test "$SIGNING_MODE" = Test
+            test "$SIGN_RESULT" = skipped
+          fi

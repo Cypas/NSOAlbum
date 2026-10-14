@@ -14,7 +14,7 @@ on:
         required: false
         type: string
       package_installer:
-        description: Build test installer and DMGs as artifacts only (no tag or Release)
+        description: Build installer, DMGs and release-signed Android APK as artifacts only (no tag or Release)
         required: false
         type: boolean
         default: false
@@ -42,6 +42,11 @@ jobs:
     with:
       ref: ${{ needs.resolve.outputs.sha }}
       release: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.package_installer == true) }}
+    secrets:
+      ANDROID_KEYSTORE_BASE64: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+      ANDROID_KEY_ALIAS: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') && secrets.ANDROID_KEY_ALIAS || '' }}
+      ANDROID_KEY_PASSWORD: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') && secrets.ANDROID_KEY_PASSWORD || '' }}
   validation:
     name: Required validation
     if: always()

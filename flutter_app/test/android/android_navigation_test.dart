@@ -100,36 +100,39 @@ void main() {
     expect(find.byKey(const Key('android-select-media')), findsOneWidget);
   }, variant: TargetPlatformVariant({TargetPlatform.android}));
 
-  testWidgets('destination switching cannot bypass an unsaved edit', (
-    tester,
-  ) async {
-    tester.view.devicePixelRatio = 1;
-    tester.view.physicalSize = const Size(412, 860);
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(
-      SquidAlbumApp(
-        backend: FakeBackend(mediaItems: [fixture()]),
-        uiPlatform: AppUiPlatform.android,
-      ),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('android-media-1')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('编辑标签与备注'));
-    await tester.pumpAndSettle();
-    await tester.enterText(
-      find.byKey(const Key('android-metadata-note')),
-      'draft',
-    );
-    FocusManager.instance.primaryFocus?.unfocus();
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('设置').last);
-    await tester.pumpAndSettle();
-    expect(find.text('放弃未保存的修改？'), findsOneWidget);
-    await tester.tap(find.text('继续编辑'));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('android-metadata-note')), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  }, variant: TargetPlatformVariant({TargetPlatform.android}));
+  testWidgets(
+    'secondary pages hide destinations and back protects an unsaved edit',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(412, 860);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        SquidAlbumApp(
+          backend: FakeBackend(mediaItems: [fixture()]),
+          uiPlatform: AppUiPlatform.android,
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('android-media-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('编辑标签与备注'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const Key('android-metadata-note')),
+        'draft',
+      );
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+      expect(find.byType(NavigationBar), findsNothing);
+      await tester.tap(find.byKey(const Key('android-page-back')));
+      await tester.pumpAndSettle();
+      expect(find.text('放弃未保存的修改？'), findsOneWidget);
+      await tester.tap(find.text('继续编辑'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('android-metadata-note')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant({TargetPlatform.android}),
+  );
 }

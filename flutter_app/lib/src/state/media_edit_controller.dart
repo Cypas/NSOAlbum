@@ -1,4 +1,6 @@
-import 'dart:typed_data';
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 
 import '../backend/app_backend.dart';
 import '../rust/models.dart';
@@ -12,14 +14,26 @@ class MediaEditController {
   bool disposed = false;
   Future<void>? _cleanup;
   Future<void>? _disposal;
+  final progress = ValueNotifier<OperationProgressValue?>(null);
+  StreamSubscription<OperationProgressValue>? _progressSubscription;
 
   Future<T> execute<T>(Future<T> Function() action) async {
     if (busy || disposed) throw StateError('Media operation is unavailable.');
     busy = true;
+    progress.value = null;
+    if (backend case final OperationProgressBackend reporting) {
+      _progressSubscription = reporting.operationProgress.listen((update) {
+        if (!disposed && busy && update.kind.startsWith('video_')) {
+          progress.value = update;
+        }
+      });
+    }
     try {
       return await action();
     } finally {
       busy = false;
+      await _progressSubscription?.cancel();
+      _progressSubscription = null;
     }
   }
 
@@ -65,7 +79,13 @@ class MediaEditController {
   }
 
   Future<void> dispose() {
+    if (disposed) return _disposal ?? Future.value();
     disposed = true;
-    return _disposal ??= discardPreview();
+    progress.dispose();
+    return _disposal ??= () async {
+      await _progressSubscription?.cancel();
+      _progressSubscription = null;
+      await discardPreview();
+    }();
   }
 }

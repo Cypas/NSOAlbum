@@ -169,3 +169,58 @@ abstract interface class SyncScheduleBackend {
 abstract interface class SyncHistoryBackend {
   Future<SyncRuntimeState> loadSyncAccountHistory(String accountId);
 }
+
+/// Optional capabilities keep desktop and test backends source-compatible.
+abstract interface class AccountSyncBackend {
+  Future<SyncSummary> syncNintendoAccount(String accountId);
+  Future<SyncScheduleStatus?> loadAccountSyncSchedule(String accountId);
+  Future<SyncScheduleStatus?> recordAccountSyncOutcome(
+    String accountId, {
+    required bool foundNewMedia,
+  });
+}
+
+class OperationProgressValue {
+  const OperationProgressValue({
+    required this.operationId,
+    required this.kind,
+    required this.phase,
+    this.status = 'running',
+    this.processed = 0,
+    this.total,
+    this.processedBytes,
+    this.totalBytes,
+    this.fraction,
+  });
+  final String operationId;
+  final String kind;
+  final String phase;
+  final String status;
+  final int processed;
+  final int? total;
+  final int? processedBytes;
+  final int? totalBytes;
+  final double? fraction;
+  double? get value =>
+      fraction?.clamp(0, 1) ??
+      (total != null && total! > 0 ? (processed / total!).clamp(0, 1) : null);
+}
+
+abstract interface class OperationProgressBackend {
+  Stream<OperationProgressValue> get operationProgress;
+}
+
+class MobileStorageLocation {
+  const MobileStorageLocation({
+    required this.id,
+    required this.path,
+    required this.removable,
+  });
+  final String id;
+  final String path;
+  final bool removable;
+}
+
+abstract interface class MobileStorageBackend {
+  Future<List<MobileStorageLocation>> mobileStorageLocations();
+}

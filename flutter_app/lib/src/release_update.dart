@@ -123,6 +123,7 @@ class LatestReleaseInfo {
     required this.installer,
     this.body,
     this.macosArchitectures = const [],
+    this.androidPackage,
   });
 
   final String version;
@@ -132,6 +133,21 @@ class LatestReleaseInfo {
 
   /// Availability only. Manual DMG downloads are not verified by this client.
   final List<String> macosArchitectures;
+  final AndroidReleasePackage? androidPackage;
+}
+
+class AndroidReleasePackage {
+  const AndroidReleasePackage({
+    required this.version,
+    required this.url,
+    required this.sha256,
+    required this.size,
+  });
+
+  final String version;
+  final Uri url;
+  final String sha256;
+  final int size;
 }
 
 int compareStableVersions(String left, String right) {
@@ -194,12 +210,48 @@ LatestReleaseInfo? latestReleaseInfoFromGithubJson(
     tag: tag,
     installer: StableRelease.fromGithubJson(json),
     body: json['body'] is String ? json['body'] as String : null,
+    androidPackage: _androidReleasePackage(json['assets'], tag, version),
     macosArchitectures: List.unmodifiable([
       for (final architecture in ['arm64', 'x64'])
         if (_hasMacosDmg(json['assets'], tag, version, architecture))
           architecture,
     ]),
   );
+}
+
+AndroidReleasePackage? _androidReleasePackage(
+  Object? assets,
+  String tag,
+  String version,
+) {
+  if (assets is! List) return null;
+  final name = 'NSOAlbum-Android-arm64-$version.apk';
+  final officialUrl =
+      'https://github.com/Cypas/NSOAlbum/releases/download/$tag/$name';
+  for (final asset in assets) {
+    if (asset is! Map<String, dynamic> ||
+        asset['name'] != name ||
+        asset['browser_download_url'] != officialUrl) {
+      continue;
+    }
+    final digest = asset['digest'];
+    final size = asset['size'];
+    if (digest is! String ||
+        size is! int ||
+        size <= 0 ||
+        size > _maxInstallerBytes) {
+      continue;
+    }
+    final match = RegExp(r'^sha256:([0-9a-fA-F]{64})$').firstMatch(digest);
+    if (match == null) continue;
+    return AndroidReleasePackage(
+      version: version,
+      url: Uri.parse(officialUrl),
+      sha256: match.group(1)!.toLowerCase(),
+      size: size,
+    );
+  }
+  return null;
 }
 
 bool _hasMacosDmg(

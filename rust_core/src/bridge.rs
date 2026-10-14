@@ -7,7 +7,7 @@ use crate::api::CoreApi;
 use crate::models::{
     AlbumRule, AlbumSummary, GalleryQuery, GameTagAliasSummary, GameTagSummary, ImportSummary,
     LibraryRelocationResult, LibraryRootProbe, LoginChallenge, MediaAsset, MediaDeletionResult,
-    MediaExportSummary, SyncProgress, SyncSummary, TagUsageSummary,
+    MediaExportSummary, OperationProgress, SyncProgress, SyncSummary, TagUsageSummary,
 };
 use crate::nso::CoralSession;
 use crate::settings::{AppSettings, SyncPolicy, SyncRuntimeState, SyncScheduleStatus};
@@ -38,6 +38,11 @@ pub fn save_settings(settings: AppSettings) -> Result<(), String> {
 
 pub fn save_sync_policy(policy: SyncPolicy) -> Result<(), String> {
     core()?.save_sync_policy(&policy).map_err(error_text)
+}
+
+pub fn set_runtime_proxy_policy(disable_app_proxy: bool) -> Result<(), String> {
+    core()?.set_runtime_proxy_policy(disable_app_proxy);
+    Ok(())
 }
 
 pub fn sync_schedule_status(account_id: String) -> Result<SyncScheduleStatus, String> {
@@ -115,23 +120,29 @@ pub async fn sync_nso(
     session: CoralSession,
     proxy_url: Option<String>,
 ) -> Result<SyncSummary, String> {
+    let api = core()?;
     let cancellation = CancellationToken::default();
-    {
-        let mut current = CURRENT_SYNC
-            .lock()
-            .map_err(|_| "sync mutex poisoned".to_owned())?;
-        if current.is_some() {
-            return Err("a sync job is already running".into());
-        }
-        *current = Some(cancellation.clone());
-    }
-    let result = core()?
+    register_current_sync(&cancellation)?;
+    let result = api
         .sync_nso_with_cancellation(session, proxy_url, &cancellation)
         .await
         .map_err(error_text);
-    if let Ok(mut current) = CURRENT_SYNC.lock() {
-        *current = None;
-    }
+    clear_current_sync();
+    result
+}
+
+pub async fn sync_nso_from_session_token(
+    session_token: String,
+    proxy_url: Option<String>,
+) -> Result<SyncSummary, String> {
+    let api = core()?;
+    let cancellation = CancellationToken::default();
+    register_current_sync(&cancellation)?;
+    let result = api
+        .sync_nso_from_session_token(session_token, proxy_url, &cancellation)
+        .await
+        .map_err(error_text);
+    clear_current_sync();
     result
 }
 
@@ -220,6 +231,23 @@ pub async fn import_custom_files(
     core()?
         .import_custom_files(paths, game_name)
         .await
+        .map_err(error_text)
+}
+
+pub async fn import_custom_files_with_progress(
+    paths: Vec<String>,
+    game_name: String,
+    operation_id: String,
+) -> Result<ImportSummary, String> {
+    core()?
+        .import_custom_files_with_progress(paths, game_name, operation_id)
+        .await
+        .map_err(error_text)
+}
+
+pub fn current_import_progress(operation_id: String) -> Result<Option<OperationProgress>, String> {
+    core()?
+        .current_import_progress(&operation_id)
         .map_err(error_text)
 }
 
@@ -354,6 +382,23 @@ pub async fn relocate_media_library(
 fn core() -> Result<&'static CoreApi, String> {
     CORE.get()
         .ok_or_else(|| "core is not initialized; call init_core first".into())
+}
+
+fn register_current_sync(cancellation: &CancellationToken) -> Result<(), String> {
+    let mut current = CURRENT_SYNC
+        .lock()
+        .map_err(|_| "sync mutex poisoned".to_owned())?;
+    if current.is_some() {
+        return Err("a sync job is already running".into());
+    }
+    *current = Some(cancellation.clone());
+    Ok(())
+}
+
+fn clear_current_sync() {
+    if let Ok(mut current) = CURRENT_SYNC.lock() {
+        *current = None;
+    }
 }
 
 fn error_text(error: impl std::fmt::Display) -> String {

@@ -8,11 +8,24 @@ const List<String> legacyApplicationRootNames = [
   'squid_album',
 ];
 
+bool libraryProbeContainsInstallation({
+  required bool databaseReadable,
+  required BigInt mediaCount,
+  required BigInt accountCount,
+  required BigInt settingsCount,
+}) =>
+    databaseReadable &&
+    (mediaCount > BigInt.zero ||
+        accountCount > BigInt.zero ||
+        settingsCount > BigInt.zero);
+
 List<String> applicationRootCandidates(String supportDirectory) {
   final normalized = Directory(supportDirectory).absolute;
   final parent = normalized.parent;
-  final candidates = <String>[
+  final candidates = <String>{
     normalized.path,
+    _join(normalized.path, currentApplicationRootName),
+    _join(parent.path, currentApplicationRootName),
     _join(normalized.path, libraryDirectoryName),
     _join(normalized.path, currentApplicationRootName, libraryDirectoryName),
     _join(parent.path, currentApplicationRootName, libraryDirectoryName),
@@ -22,8 +35,8 @@ List<String> applicationRootCandidates(String supportDirectory) {
     ...legacyApplicationRootNames.map(
       (name) => _join(normalized.path, name, libraryDirectoryName),
     ),
-  ].toSet().toList();
-  return candidates;
+  };
+  return candidates.toList();
 }
 
 Future<String> resolveApplicationRoot(
@@ -37,8 +50,8 @@ Future<String> resolveApplicationRoot(
   }
   final normalized = Directory(supportDirectory).absolute.path;
   return normalized.endsWith(currentApplicationRootName)
-      ? _join(normalized, libraryDirectoryName)
-      : _join(normalized, currentApplicationRootName, libraryDirectoryName);
+      ? normalized
+      : _join(normalized, currentApplicationRootName);
 }
 
 Future<bool> _hasLibraryDatabasePath(String root) async {
