@@ -1,5 +1,10 @@
 # Android Build Configuration Regression
 
+This README covers only the adjacent Android test fixtures and opt-in native
+regressions. See the [documentation map](../../../../docs/DOCUMENTATION-MAP.md),
+[repository layout](../../../../docs/REPOSITORY-LAYOUT.md) and
+[complete testing guide](../../../../docs/TESTING.md) for project-wide rules.
+
 This optional integration test evaluates the real Android Gradle project.
 It verifies APK ABI filters and Rust targets for Debug, Profile, and Release.
 It also compiles the Debug Kotlin launcher and links the actual Android

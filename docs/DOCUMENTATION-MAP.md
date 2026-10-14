@@ -1,0 +1,179 @@
+# 完整文档树与阅读导航
+
+更新日期：2026-10-14
+
+本页回答“某一层目录里的文档是做什么的、什么时候读、是否提交”。
+文件存放位置以 [目录规范](REPOSITORY-LAYOUT.md) 为准，本页维护文档之间的关系，
+不复制各文档的正文。面向开发者的总入口是 [文档索引](README.md)。
+
+## 1. 标记与边界
+
+- **公开**：应随源码维护并提交；不代表自动打包进应用。
+- **本地**：按当前忽略规则保留，不提交、不上传、不随应用分发。
+  本页只说明相对位置和用途，不公开内部正文、日志、账号或测试数据。
+- **第三方**：原依赖或下载工具自带，保留来源和原许可证；
+  是否提交取决于它属于源码依赖还是本地下载。
+- **生成**：由构建、依赖或诊断工具产生，不作为人工维护的项目文档。
+
+这是当前目录约定的文档树，不是新的产品实现计划。公开仓库可以没有标为
+“本地”的文件；不要为了补齐文档树去强制添加被忽略的文件。
+
+## 2. 项目文档树
+
+```text
+仓库根目录/
+├─ README.md                              [公开] 产品和开发总入口
+├─ CONTRIBUTING.md                        [公开] 贡献、分支、PR 和发布约定
+├─ SECURITY.md                            [公开] 漏洞私下报告与安全沟通渠道
+├─ LICENSE                                [公开] 原创代码许可证
+├─ AGENTS.md                              [本地] 仓库开发边界及协作约束
+├─ docs/
+│  ├─ README.md                           [公开] 文档索引及打包/诊断导航
+│  ├─ REPOSITORY-LAYOUT.md                 [公开] 文件存放和忽略规范
+│  ├─ DOCUMENTATION-MAP.md                 [公开] 本文：完整文档树和用途
+│  ├─ TESTING.md                          [公开] 测试分类、CI 和原生门禁
+│  ├─ CHANGELOG.md                        [本地] 版本与历史实施记录
+│  ├─ legal/
+│  │  ├─ THIRD-PARTY-NOTICES.md            [公开] 依赖与字体等第三方声明
+│  │  └─ ASSET-ATTRIBUTION.md              [公开] 图标、图片、字体来源与权利边界
+│  ├─ design/                             [本地]
+│  │  ├─ nso-photo-design.md              产品、架构、数据和交互设计基线
+│  │  ├─ android-ui-redesign-spec.md       Android 独立界面层的专题设计
+│  │  ├─ ci-gate-progress.md               历史三平台 CI 实施过程，不是现行规则
+│  │  └─ plans/
+│  │     ├─ 2026-10-13-android-ui-redesign.md
+│  │     │                                Android 界面改造的执行计划与状态
+│  │     └─ 2026-10-14-android-experience.md
+│  │                                      移动体验/同步下载的任务分解与实施记录
+│  ├─ protocol/                           [本地]
+│  │  └─ nintendo-implementacao-para-comunidade.md
+│  │                                      外部 NSO/Coral 协议研究归档
+│  └─ prototypes/                         [本地]
+│     └─ squid-album-preview-v5.html       可浏览的历史界面原型，不是正式客户端
+└─ flutter_app/
+   ├─ README.md                           [公开] Flutter 子工程结构和开发命令
+   ├─ assets/fonts/
+   │  └─ SmileySans-OFL.txt                [公开/第三方] 历史字体的 OFL 许可证
+   ├─ test/fixtures/android/
+   │  └─ README.md                        [公开] 可选 Android 原生回归的运行说明
+   └─ rust_builder/
+      ├─ README.md                        [公开] Flutter/Rust 构建胶水层说明
+      └─ cargokit/
+         ├─ LICENSE                       [公开/第三方] Cargokit 来源及许可证
+         └─ build_tool/
+            └─ README.md                  [公开/第三方] 上游构建工具包的模板说明
+```
+
+### 为什么内层也有 README
+
+| 文档 | 就近保留的原因与阅读时机 |
+| --- | --- |
+| `flutter_app/README.md` | 只进入 Flutter 工程时即可找到 bridge、工具链和本机开发命令；不是另一份产品需求书 |
+| `flutter_app/rust_builder/README.md` | 解释该目录只是 native 构建胶水，不是另一个 Rust 业务实现；改构建接入时阅读 |
+| `flutter_app/rust_builder/cargokit/build_tool/README.md` | 上游脚手架自带的样例包说明；不代表应用增加命令行产品或要求照此开发 |
+| `flutter_app/test/fixtures/android/README.md` | 夹具涉及实际 Gradle/JVM 测试及显式启用条件，必须在运行前就近看见 |
+| `flutter_app/assets/fonts/SmileySans-OFL.txt` | 是许可证，不是可删的使用指南；字体本地归档后仍保留声明供打包脚本使用 |
+
+`rust_core/` 当前没有独立 Markdown 指南，业务架构由设计基线、
+公开开发说明和 Rust 源码共同说明；不为了填满每层目录而新增重复 README。
+`.github/` 和 `installer/` 的使用入口也在公开测试/打包文档中。
+各平台的 `CMakeLists.txt` 是构建脚本，不是文本说明，不能当文档移动或忽略。
+
+## 3. 本地工作记录与诊断文档树
+
+以下目录均为 **本地、不提交**。它们保存实现证据和历史过程，
+与源码中可重复运行的正式测试不是同一种材料。
+
+```text
+仓库根目录/
+├─ .superpowers/sdd/2026-10-14-android-experience/
+│  ├─ progress.md                         工作进度台账
+│  ├─ task-1-brief.md                      核心任务约束与交接说明
+│  ├─ task-1-report.md                     核心任务实施报告
+│  ├─ task-4-brief.md                      移动端任务约束与交接说明
+│  ├─ task-4-report.md                     移动端任务实施报告
+│  ├─ root-integration-report.md          集成验证和遗留项
+│  ├─ final-fix-report.md                  修正记录及相关验证
+│  └─ final-scoped-review.md               指定范围的复核结论
+├─ dist/
+│  ├─ android-ui-2026-10-13/
+│  │  ├─ RESULTS.md                        Android 界面改造的本地验证
+│  │  └─ device-s20/DEVICE-RESULTS.md       对应真机检查
+│  ├─ android-branding-2026-10-13/
+│  │  ├─ RESULTS.md                        应用身份、名称、图标的验证
+│  │  └─ device-s20/
+│  │     ├─ DEVICE-RESULTS.md              品牌相关设备检查
+│  │     ├─ LOGIN-NETWORK-DIAGNOSIS.md     登录联网问题诊断
+│  │     └─ DEBUG-AND-PERMISSIONS.md       调试模式与权限核对
+│  ├─ android-experience-2026-10-14/
+│  │  ├─ RESULTS.md                        移动体验/任务反馈的实施验收
+│  │  ├─ PERFORMANCE.md                    性能采样方法、结果与限制
+│  │  ├─ NAVIGATION-DIAGNOSIS.md           页面返回红屏的定位证据
+│  │  ├─ ALBUM-RETURN-FIX.md               相册返回修复和回归结果
+│  │  └─ COMPACT-CARD-FOLLOWUP.md          卡片尺寸、单列和标签的后续验证
+│  └─ ci/
+│     ├─ history-downloads/
+│     │  ├─ README.md                     CI 历史下载归档规则
+│     │  └─ <run-id 或旧目录名>/          下载报告/日志/截图，不逐个复制成项目文档
+│     ├─ cache-benchmark/RESULTS.md       CI 缓存与耗时对比，含适用条件
+│     ├─ android-signing-update-20261014/RESULTS.md
+│     │                                  签名与更新相关的本地验证
+│     └─ branch-migration-tools/
+│        ├─ pr-body.md                    既往分支迁移的 PR 描述草稿
+│        ├─ gitleaks/README.md            [第三方] 下载的凭据扫描工具说明
+│        └─ actionlint/                   [第三方] 下载的工作流检查工具
+│           ├─ README.md                  工具入口
+│           └─ docs/
+│              ├─ README.md              上游文档导航
+│              ├─ usage.md               调用方式
+│              ├─ reference.md           参数/行为参考
+│              ├─ install.md             安装说明
+│              ├─ config.md              配置说明
+│              ├─ checks.md              检查规则
+│              └─ api.md                 上游 API 说明
+└─ local-assets/unused-fonts/
+   ├─ README.md                           闲置字体归档、来源和再分发边界
+   └─ SmileySans-OFL.txt                   [第三方] 随本地归档字体保留的许可证副本
+```
+
+这些是目前已有的专题记录。将来增加同类验收主题时继续放在对应 `dist/` 专题，
+不把过程报告提升为现行规范。新的外部下载统一走
+`dist/ci/history-downloads/`；已有工具包保留其上游文档结构。
+不以本页中某份历史报告的存在推断当前功能或 CI 已通过。
+
+## 4. 构建和分发目录里的文档
+
+以下内容按类别列出，不逐个登记每个版本的依赖许可证或自动生成 HTML：
+
+| 位置 | 文档用途 | 提交边界 |
+| --- | --- | --- |
+| `flutter_app/android/build/reports/` | Gradle 自动生成的问题与构建诊断，例如 `problems-report.html` | 本地/生成，忽略 |
+| `flutter_app/build/`、`rust_core/target/` 及其他平台临时构建目录 | 工具链和依赖生成的说明、报告或元数据 | 本地/生成，忽略 |
+| `dist/` 中打包好的运行目录之 `docs/` | 打包脚本挑选的面向使用者说明 | 输出本地忽略；来源文档按其自身规则维护 |
+| 同一分发目录的 `licenses/` | 随应用依赖或素材一起分发的法律声明 | 输出本地忽略；不能因目录忽略就漏发许可证 |
+| 下载的 CI artifact 内部 `native-reports/` 等目录 | 本次或历史运行的检查结果；可能是 JSON、JSONL、图片而非 Markdown | 本地下载归档，不上传真实账号/媒体 |
+| IDE/包管理缓存中的 README、LICENSE | 对应工具或依赖自己的文档，不是本项目需求或架构说明 | 服从缓存目录忽略规则，不手工维护 |
+
+忽略不等于可以删除。唯一历史证据、许可证和本地未公开记录是否清理，
+仍需按 [目录规范](REPOSITORY-LAYOUT.md) 的安全要求另行确认。
+
+## 5. 阅读顺序与维护责任
+
+- 了解软件：根 `README.md` → `docs/README.md`。
+- 判断文件放哪里、是否提交：`REPOSITORY-LAYOUT.md` → 本页。
+- 修改产品交互/业务：本地设计基线 → 对应专题设计/计划 → 源码与测试。
+  公开 checkout 缺少内部材料时，依据公开说明和现有代码确认范围，
+  不把缺失材料当成验收通过或自行编造内部决策。
+- 修改测试/CI/打包：`TESTING.md` → 相关子工程或夹具 README → 脚本与工作流。
+- 处理字体/图标/依赖：`docs/legal/` → 对应原始许可证；
+  历史报告不能替代素材授权。
+
+本页是文档导航，目录规范负责位置规则，设计基线负责产品与架构，
+测试文档负责验证流程。专题历史记录只解释当时过程，不覆盖这三者。
+
+新增、改名或归档文档时，同时更新本页及父级索引；
+子目录 README 说明本层用途并提供回到总索引的相对链接。
+第三方原文、许可证和生成文档不为统一样式而擅改。
+公开索引对本地文档只写路径、用途和“不提交”标记，不建立必须存在的公开链接，
+也不复制敏感内容。这样本地维护者能查到完整树，公开源码不会因缺少内部文件
+出现一批失效链接。

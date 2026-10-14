@@ -5,6 +5,12 @@
 - [第三方声明](legal/THIRD-PARTY-NOTICES.md)
 - [项目素材授权说明](legal/ASSET-ATTRIBUTION.md)
 - [测试分类与三平台原生 Release 门禁](TESTING.md)
+- [仓库目录、文件存放与忽略规则](REPOSITORY-LAYOUT.md)
+- [完整文档树与各层文档用途](DOCUMENTATION-MAP.md)
+
+目录规范说明“文件放哪里”，文档树说明“每份文档负责什么、是否提交”。
+内层子工程和测试夹具 README 用于就近说明，第三方文档保留来源；
+内部设计、原型和诊断报告在文档树中标记为本地，不因此纳入公开提交。
 
 正式运行时代码位于 `flutter_app/` 与 `rust_core/`。内部设计文档、原型和本地变更记录不随公开快照提交。
 

@@ -48,6 +48,8 @@ credentials/
 *.bak
 
 # Build and release scratch
+/ci-artifacts-*/
+/local-assets/unused-fonts/
 .superpowers/
 .worktrees/
 worktrees/

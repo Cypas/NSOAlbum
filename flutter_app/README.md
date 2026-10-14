@@ -1,5 +1,10 @@
 # NSOAlbum Flutter 客户端
 
+本页只说明 Flutter 子工程结构、构建接入和本机开发命令，不是独立产品设计。
+上级入口：[文档索引](../docs/README.md) ·
+[完整文档树](../docs/DOCUMENTATION-MAP.md) ·
+[目录与忽略规范](../docs/REPOSITORY-LAYOUT.md)。
+
 简体中文界面显示名为“鱿型相册”；英文界面和 Windows 可执行文件使用
 `NSOAlbum`。Flutter package、Rust crate、数据库和既有用户数据目录保持兼容名称。
 

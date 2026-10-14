@@ -47,6 +47,9 @@ cd flutter_app
 ```
 
 Windows packaging scripts are documented in [docs/README.md](docs/README.md).
+The [documentation map](docs/DOCUMENTATION-MAP.md) explains nested READMEs,
+third-party notices and local-only records; the
+[repository layout](docs/REPOSITORY-LAYOUT.md) defines file locations and Git ignore boundaries.
 [Testing and native release gates](docs/TESTING.md) distinguish portable tests,
 platform-specific tests and real packaged-app diagnostics. GitHub Actions
 validates Windows x64, macOS Apple Silicon arm64 and Intel x64 on their own

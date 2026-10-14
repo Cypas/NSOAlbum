@@ -29,6 +29,17 @@ Windows 验收无需等待 macOS 构建完成，反之亦然。每个平台仅�
 失败、取消或跳过均不能使 Required validation 或正式 publish 成功。
 按平台独立验收只改变调度顺序，不改变三平台齐备和统一版本的正式发布要求。
 
+## 本地下载的 CI 数据
+
+完整文件分类与 Git 忽略边界见 [仓库目录规范](REPOSITORY-LAYOUT.md)。
+本地下载的 Actions 产物、历史报告、截图和日志统一存放在
+`dist/ci/history-downloads/`，新下载按 `<run-id>/<platform-or-artifact>/`
+分目录，禁止在仓库根目录为每次检查新建 `ci-artifacts-*` 文件夹。
+整理旧下载时保留原目录名称与文件内容，不凭目录名推测缺失的 run ID。
+这些文件不参与应用编译和打包，也不提交 Git；失败报告仍可用于历史问题排查，
+但不能代替当前提交的验证。Android 本地 `flutter_app/android/build/`
+同样属于可再生成的忽略构建产物，不包含应提交的 Gradle 配置或 Kotlin 源码。
+
 ## Android ARM64 CI
 
 `android-validation.yml` 可被完整 Validate/Release 调用，也可单独手动运行。

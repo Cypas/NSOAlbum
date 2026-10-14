@@ -53,7 +53,7 @@ The repository's MIT `LICENSE` covers original source code only. Artwork, person
 - Project: `atelier-anchor/smiley-sans`
 - Version: 2.0.1
 - License: SIL Open Font License 1.1
-- Legacy source asset only; it is no longer registered or bundled by the application. Its license text remains at `flutter_app/assets/fonts/SmileySans-OFL.txt`.
+- Historical font, no longer kept as an active source asset or bundled by the application. Its license text remains at `flutter_app/assets/fonts/SmileySans-OFL.txt`.
 
 ## Current built-in fonts
 

@@ -43,9 +43,11 @@ void main() {
   test('renamed WOFF2 cannot be accepted as a custom TTF font', () async {
     final directory = await Directory.systemTemp.createTemp('font-format-');
     addTearDown(() => directory.delete(recursive: true));
+    // Only the signature matters for rejection; no third-party webfont is
+    // needed as a fixture.
     final renamed = await File(
-      'assets/fonts/splatoon_web/Splatoon2-common-2LVXcHij.woff2',
-    ).copy('${directory.path}${Platform.pathSeparator}renamed.ttf');
+      '${directory.path}${Platform.pathSeparator}renamed.ttf',
+    ).writeAsBytes([0x77, 0x4f, 0x46, 0x32, 0, 0, 0, 0]); // wOF2
 
     await expectLater(
       prepareCustomFontFamilies([renamed.path]),
