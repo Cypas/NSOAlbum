@@ -160,15 +160,28 @@ CI 使用完整测试套件，不通过排除平台测试隐藏不支持的平�
 
 ## Flutter 测试分类
 
-`flutter_app/dart_test.yaml` 声明以下标签。未标记平台专用标签的既有测试按
-common 归类，新建可移植测试可显式使用 `common`。
+`flutter_app/dart_test.yaml` 声明以下标签。标签区分被测功能，运行主机限制由
+测试实际依赖及显式 skip 决定；未标记平台分类标签的既有测试按 common
+归类，新建共享测试可显式使用 `common`。
 
 | 分类 | 覆盖范围 | 不代表 |
 | --- | --- | --- |
 | `common` | 纯 Dart 规则、控制器、使用 FakeBackend 或模拟 channel 的 widget 行为；PowerShell 错误文本解析；标题栏组件渲染 | 实际 Rust DLL/dylib、原生窗口、真实输入法或媒体插件可用 |
 | `platform-windows` | Windows 字体管理 UI、IME channel 生命周期、实际 PowerShell 5.1 UTF-8 清单读取 | 搜狗输入法候选窗口和 USB 真机已验收 |
 | `platform-macos` | 当前 macOS 主机的窗口内容不插入 Windows 自绘标题栏、设置不显示 Windows 字体/安装器控制、Windows IME channel 不被启动、原生路径规则 | AppKit 窗口装饰、Gatekeeper 或真实播放器已验收 |
+| `platform-android` | Android 页面 widget、导航、品牌、更新解析器/控制器及 APK 契约；纯 Dart/widget 检查继续在各主机运行 | 已在 Android 设备安装、启动、播放或更新 |
 | `native-android` | 安装 Android SDK/JDK 后显式启用的真实 Gradle ABI、应用身份、品牌资源和 Release 权限检查 | 设备启动、播放、导入、编辑或后台调度已验收 |
+
+Android 功能测试集中在 `flutter_app/test/android/`。原先位于 `test/` 根目录的
+`android_apk_contract_test.dart`、`android_branding_test.dart`、
+`android_build_configuration_test.dart`、`android_release_update_test.dart`
+和 `android_update_controller_test.dart` 现位于该目录；测试间相对导入与
+运行命令同步使用新路径，夹具仍位于 `test/fixtures/android/`。
+其中构建配置测试同时带 `platform-android` 和 `native-android`，
+保留 `NSO_VERIFY_ANDROID_BUILD=1` 启用条件。双标签只计一次；
+`ci_native.ps1` 将任一 Android 标签计入同一个 Android 分类，JSON 与
+Actions 摘要分列 Common、Windows、macOS、Android。共享状态测试不因文件名
+包含 Android 而归为 Android 功能或被限制主机。
 
 macOS 的 About 包含版本检查入口，但不提供应用内安装器执行。
 `macos_release_update_test.dart` 标记为 `common`，在各主机上以明确的 macOS
@@ -179,17 +192,21 @@ macOS 的 About 包含版本检查入口，但不提供应用内安装器执行�
 `macos_renderer_test.dart` 在原生 macOS 使用真实 PlistBuddy/plutil 验证 Intel
 最终包的布尔渲染设置、缺省字段补充、arm64 元数据保持不变及错误架构拒绝。
 
-平台专用测试使用 `Platform.isWindows` / `Platform.isMacOS` 的实际主机判断，
-不伪装 `TargetPlatform`。在其他平台通过 `skip` 显式说明原因，不能在测试体内
+依赖 Windows/macOS 原生能力的测试使用 `Platform.isWindows` /
+`Platform.isMacOS` 的实际主机判断，不伪装 `TargetPlatform`。
+在其他平台通过 `skip` 显式说明原因，不能在测试体内
 直接 `return` 后把未执行的断言计为通过。混合测试文件的专用测试标题使用
-`[Windows]` / `[macOS]` 前缀，便于机器报告独立归类；专用文件使用库级标签。
-纯 PowerShell 错误解析仍在所有系统执行。
+`[Windows]` / `[macOS]` / `[Android]` 前缀，便于机器报告独立归类；
+分类文件使用库级标签。Android widget 的显式 `TargetPlatformVariant` 仅用于
+覆盖移动界面，不冒充设备验收。纯 PowerShell 错误解析仍在所有系统执行。
 
 本地只排查平台子集时可执行：
 
 ```powershell
 flutter test --tags platform-windows
 flutter test --tags platform-macos
+flutter test --tags platform-android
+flutter test test/android/android_release_update_test.dart
 flutter test --exclude-tags "platform-windows || platform-macos"
 ```
 
@@ -218,8 +235,11 @@ Ubuntu 保留 Rust/Dart/Flutter 基础验证；原生矩阵必须分别在真实
 每台原生主机重新生成 bridge、执行 Rust fmt/Clippy/单元测试、Dart 分析和完整
 Flutter 测试，然后构建当前提交的 Release 包。报告从当次 Rust libtest 摘要和
 `flutter test --machine` 事件读取实际 total/passed/failed/skipped，并区分
-common/Windows/macOS；不在文档、工作流或脚本中固定测试数量。
+common/Windows/macOS/Android；不在文档、工作流或脚本中固定测试数量。
 未运行、跳过、超时、缺少报告与测试失败必须如实显示，不能写成通过。
+`ci_test_summary_test.dart` 用合成套件标签与 machine 事件执行真实汇总脚本，
+覆盖 Android 分类、路径分隔符、跳过原因、失败/缺失/截断状态以及总数不重复；
+完整 CI 仍运行 `flutter test` 递归发现所有目录，不按分类排除测试。
 
 ### 缓存、构建与验收分离
 

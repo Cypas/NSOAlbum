@@ -1,4 +1,4 @@
-@Tags(['native-android'])
+@Tags(['platform-android', 'native-android'])
 library;
 
 import 'dart:io';

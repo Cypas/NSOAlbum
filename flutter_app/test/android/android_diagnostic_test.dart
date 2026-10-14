@@ -1,3 +1,6 @@
+@Tags(['platform-android'])
+library;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/src/ui/android/android_page_frame.dart';
 

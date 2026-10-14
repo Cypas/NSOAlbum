@@ -1,3 +1,6 @@
+@Tags(['platform-android'])
+library;
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -10,7 +13,7 @@ import 'package:squid_album/src/state/android_update_controller.dart';
 import 'package:squid_album/src/ui/android/android_update_dialog.dart';
 import 'package:squid_album/src/ui/android/android_update_controls.dart';
 
-import '../android_release_update_test.dart' show metadata;
+import 'android_release_update_test.dart' show metadata;
 
 Widget app(Widget child, String language) => MaterialApp(
   locale: Locale(language),

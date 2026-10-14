@@ -1,3 +1,6 @@
+@Tags(['platform-android'])
+library;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:squid_album/src/backend/app_backend.dart';

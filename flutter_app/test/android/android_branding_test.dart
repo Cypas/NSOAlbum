@@ -1,4 +1,4 @@
-@Tags(['common'])
+@Tags(['platform-android'])
 library;
 
 import 'dart:io';

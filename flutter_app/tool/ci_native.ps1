@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 function New-UnavailableTestSummary {
     param([string]$Status)
     $categories = [ordered]@{}
-    foreach ($category in @('Common', 'Windows', 'macOS')) {
+    foreach ($category in @('Common', 'Windows', 'macOS', 'Android')) {
         $categories[$category] = [pscustomobject]@{ Status = $Status; Total = $null; Passed = $null; Failed = $null; Skipped = $null }
     }
     [pscustomobject]@{
@@ -32,7 +32,8 @@ function Get-FlutterTestSummary {
         try { $event = $line | ConvertFrom-Json } catch { continue }
         switch ($event.type) {
             'suite' {
-                $category = $SuiteCategories[[string]$event.suite.path]
+                $suitePath = ([string]$event.suite.path).Replace('\', '/')
+                $category = $SuiteCategories[$suitePath]
                 if ([string]::IsNullOrWhiteSpace($category)) { $category = 'Common' }
                 $suites[[string]$event.suite.id] = $category
             }
@@ -45,6 +46,7 @@ function Get-FlutterTestSummary {
                 if ([string]::IsNullOrWhiteSpace($category)) { $category = 'Common' }
                 if ([string]$event.test.name -match '^\[Windows\]') { $category = 'Windows' }
                 elseif ([string]$event.test.name -match '^\[macOS\]') { $category = 'macOS' }
+                elseif ([string]$event.test.name -match '^\[Android\]') { $category = 'Android' }
                 $skipReason = [string]$event.test.metadata.skipReason
                 if ([string]::IsNullOrWhiteSpace($skipReason)) {
                     foreach ($groupId in $event.test.groupIDs) {
@@ -85,7 +87,7 @@ function Get-FlutterTestSummary {
     $passed = @($visible | Where-Object { $_.done -and -not $_.skipped -and -not $_.failed }).Count
     $complete = ($total -gt 0 -and @($visible | Where-Object { -not $_.done }).Count -eq 0 -and $null -ne $runSuccess)
     $categories = [ordered]@{}
-    foreach ($category in @('Common', 'Windows', 'macOS')) {
+    foreach ($category in @('Common', 'Windows', 'macOS', 'Android')) {
         $items = @($visible | Where-Object { $_.category -eq $category })
         $categoryPassed = @($items | Where-Object { $_.done -and -not $_.skipped -and -not $_.failed }).Count
         $categoryFailed = @($items | Where-Object { $_.failed }).Count
@@ -282,6 +284,7 @@ foreach ($file in Get-ChildItem -LiteralPath (Join-Path $projectRoot 'test') -Fi
         $tags = $annotation.Groups[1].Value
         if ($tags -match '["'']platform-windows["'']') { $category = 'Windows' }
         elseif ($tags -match '["'']platform-macos["'']') { $category = 'macOS' }
+        elseif ($tags -match '["''](?:platform-android|native-android)["'']') { $category = 'Android' }
     }
     $relative = [System.IO.Path]::GetRelativePath($projectRoot, $file.FullName)
     $suiteCategories[$file.FullName] = $category
@@ -310,6 +313,7 @@ $summary = @(
     "| Flutter common | $($flutter.Categories.Common.Status) | $($flutter.Categories.Common.Total) | $($flutter.Categories.Common.Passed) | $($flutter.Categories.Common.Failed) | $($flutter.Categories.Common.Skipped) |"
     "| Flutter Windows | $($flutter.Categories.Windows.Status) | $($flutter.Categories.Windows.Total) | $($flutter.Categories.Windows.Passed) | $($flutter.Categories.Windows.Failed) | $($flutter.Categories.Windows.Skipped) |"
     "| Flutter macOS | $($flutter.Categories.macOS.Status) | $($flutter.Categories.macOS.Total) | $($flutter.Categories.macOS.Passed) | $($flutter.Categories.macOS.Failed) | $($flutter.Categories.macOS.Skipped) |"
+    "| Flutter Android | $($flutter.Categories.Android.Status) | $($flutter.Categories.Android.Total) | $($flutter.Categories.Android.Passed) | $($flutter.Categories.Android.Failed) | $($flutter.Categories.Android.Skipped) |"
     "| Rust | $rustStatus | $($rust.Total) | $($rust.Passed) | $($rust.Failed) | $($rust.Skipped) |"
 ) -join [Environment]::NewLine
 Write-Host $summary

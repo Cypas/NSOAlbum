@@ -53,6 +53,12 @@
 Rust 独占 SQLite 和内容寻址原件；不得以整理目录为由把业务移入 Flutter
 或增加 Python 运行时。Android 原生能力保持范围明确的 Kotlin bridge。
 
+Android 功能测试（页面、品牌、更新、APK 契约及 Gradle 配置）统一放在
+`flutter_app/test/android/`，共享的合成夹具继续在 `test/fixtures/android/`。
+共享控制器状态测试保留在 `test/state/`，不按文件名中的平台词强行迁移。
+移动测试时同步相对导入、显式运行命令及文档；完整 CI 的递归发现和
+平台分类统计规则见 [测试文档](TESTING.md)。
+
 `flutter_app/lib/src/rust/` 与 `rust_core/src/frb_generated.rs` 是生成代码：
 需要提交，但不能手改。修改 bridge/跨层 DTO 后使用
 `flutter_app/tool/generate_bridge.ps1` 统一重新生成并验证两侧签名。

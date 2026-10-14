@@ -24,7 +24,9 @@ acceptance test.
 
 Prerequisites:
 
-- A complete JDK selected in `JAVA_HOME`, plus an installed Android SDK.
+- A complete JDK 17 or later selected in `JAVA_HOME`, plus an installed Android
+  SDK. These tests invoke Gradle directly: Flutter's `jdk-dir` setting does not
+  choose Java for that subprocess when the shell still resolves an older JDK.
 - Flutter has prepared the local Gradle wrapper and Android dependencies.
   On a fresh checkout, first run
   `flutter build apk --debug --target-platform android-arm64`.
@@ -34,16 +36,25 @@ Run from `flutter_app` in PowerShell:
 
 ```powershell
 $env:NSO_VERIFY_ANDROID_BUILD = '1'
-flutter test test/android_build_configuration_test.dart --reporter expanded
+flutter test test/android/android_build_configuration_test.dart --reporter expanded
 Remove-Item Env:NSO_VERIFY_ANDROID_BUILD
 ```
 
 The test is explicitly skipped in ordinary Flutter test runs. APK native-library
 contents, signatures, and on-device media operations require separate checks.
 
-`test/android_branding_test.dart` runs without the Android toolchain and compares
+`test/android/android_branding_test.dart` runs without the Android toolchain and compares
 all five density-specific launcher PNGs with the shared desktop artwork.
 The linked-resource test also verifies that Android resolves the launcher to
 these five PNGs with transparent corners, without an adaptive background layer.
 Regenerate the checked-in transparent PNG assets on Windows with
 `.\tool\generate_android_icons.ps1` after changing `assets/tray/app_icon.png`.
+
+Android UI, updater, branding, APK-contract and build-configuration tests are in
+`test/android/` and carry the `platform-android` tag. This classifies the tested
+feature, not the execution host: portable tests still run on all hosts.
+The build-configuration suite additionally carries `native-android` and keeps
+the explicit SDK/JDK opt-in above. CI reports both tags under one Android
+category; skipped native tests retain their reason and are not counted as passes.
+Run `flutter test --tags platform-android` from `flutter_app` to select Android
+tests without suppressing the native suite's declared skip behavior.
