@@ -32,5 +32,7 @@ contents, signatures, and on-device media operations require separate checks.
 
 `test/android_branding_test.dart` runs without the Android toolchain and compares
 all five density-specific launcher PNGs with the shared desktop artwork.
-Regenerate the checked-in legacy/adaptive PNG assets on Windows with
+The linked-resource test also verifies that Android resolves the launcher to
+these five PNGs with transparent corners, without an adaptive background layer.
+Regenerate the checked-in transparent PNG assets on Windows with
 `.\tool\generate_android_icons.ps1` after changing `assets/tray/app_icon.png`.

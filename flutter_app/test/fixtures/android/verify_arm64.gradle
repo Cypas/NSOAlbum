@@ -146,7 +146,49 @@ gradle.projectsEvaluated {
             if (!badging.contains("application-icon-")) {
                 throw new GradleException("Compiled Android launcher icon is missing")
             }
+            def resourceDump = root.providers.exec {
+                commandLine(aapt.absolutePath, "dump", "resources", packages.first().absolutePath)
+            }
+            def resourceLines = new String(resourceDump.standardOutput.asBytes.get(),
+                java.nio.charset.StandardCharsets.UTF_8).readLines()
+            def launcherLines = resourceLines.dropWhile {
+                !it.trim().endsWith(" mipmap/ic_launcher")
+            }.drop(1).takeWhile {
+                !it.trim().startsWith("resource ") && !it.trim().startsWith("type ")
+            }.findAll { !it.trim().isEmpty() }
+            if (launcherLines.size() != 5 ||
+                launcherLines.any { !it.trim().endsWith("ic_launcher.png type=PNG") }) {
+                throw new GradleException("Launcher must resolve to five transparent PNGs without an adaptive background: ${launcherLines}")
+            }
+            def expectedSizes = [mdpi: 48, hdpi: 72, xhdpi: 96, xxhdpi: 144, xxxhdpi: 192]
+            def archive = new java.util.zip.ZipFile(packages.first())
+            try {
+                launcherLines.each { line ->
+                    def match = line.trim() =~ /^\(([^)]+)\) \(file\) (\S+) type=PNG$/
+                    if (!match.matches() || !expectedSizes.containsKey(match[0][1])) {
+                        throw new GradleException("Unexpected launcher resource variant: ${line}")
+                    }
+                    def size = expectedSizes[match[0][1]]
+                    def entry = archive.getEntry(match[0][2])
+                    if (entry == null) throw new GradleException("Packaged launcher PNG is missing")
+                    archive.getInputStream(entry).withCloseable { stream ->
+                        def image = javax.imageio.ImageIO.read(stream)
+                        if (image == null || image.width != size || image.height != size ||
+                            !image.colorModel.hasAlpha()) {
+                            throw new GradleException("Launcher PNG must retain its dimensions and alpha: ${line}")
+                        }
+                        for (def corner in [[0, 0], [size - 1, 0], [0, size - 1], [size - 1, size - 1]]) {
+                            if ((image.getRGB(corner[0], corner[1]) >>> 24) != 0) {
+                                throw new GradleException("Launcher PNG has an opaque corner: ${line}")
+                            }
+                        }
+                    }
+                }
+            } finally {
+                archive.close()
+            }
             println("Verified compiled default/Chinese application labels and launcher icon")
+            println("Verified five packaged PNG launcher icons with transparent corners and no adaptive background")
         }
     }
 }

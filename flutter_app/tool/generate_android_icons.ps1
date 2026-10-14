@@ -63,14 +63,9 @@ try {
         $legacySize = [int](48 * $density.Value)
         Save-LauncherImage -Path (Join-Path $directory 'ic_launcher.png') `
             -CanvasSize $legacySize -ArtworkSize $legacySize
-        # Android adaptive layers are 108dp; keep the desktop artwork centered
-        # within 66dp so launcher masks retain the main illustration.
-        Save-LauncherImage -Path (Join-Path $directory 'ic_launcher_foreground.png') `
-            -CanvasSize ([int](108 * $density.Value)) `
-            -ArtworkSize ([int](66 * $density.Value))
     }
 } finally {
     $source.Dispose()
 }
 
-Write-Host 'Generated Android launcher resources from the shared PC brand PNG.'
+Write-Host 'Generated five transparent PNG launcher icons from the shared PC brand PNG.'
