@@ -6,7 +6,10 @@ It also compiles the Debug Kotlin launcher and links the actual Android
 manifest/resources to verify the application ID, launchable activity, localized
 application names, and launcher icon. The default name is `NSOAlbum`; Chinese,
 including Taiwan and Hong Kong locales, uses `鱿型相册` unchanged.
-It does not assemble an installable APK or run the application on a device.
+It also assembles the Release APK and reads its packaged manifest to require
+`INTERNET` while rejecting all-files storage, notification, and foreground-service
+permissions. This is a local test-signing build, not a distribution or device
+acceptance test.
 
 Prerequisites:
 

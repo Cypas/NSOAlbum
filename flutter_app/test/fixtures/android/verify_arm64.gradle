@@ -2,6 +2,54 @@ import groovy.xml.XmlSlurper
 
 gradle.projectsEvaluated {
     def root = gradle.rootProject
+    root.tasks.register("verifyAndroidReleaseApkPermissions") {
+        def app = root.project(":app")
+        dependsOn(app.tasks.getByName("assembleRelease"))
+        doLast {
+            def apks = app.layout.buildDirectory.dir("outputs/apk/release").get().asFileTree.matching {
+                include("*.apk")
+            }.files
+            if (apks.isEmpty()) throw new GradleException("Final Release APK is missing")
+            def executable = System.getProperty("os.name").toLowerCase().contains("windows") ? "aapt2.exe" : "aapt2"
+            def aapt = new File(app.android.sdkDirectory, "build-tools/${app.android.buildToolsVersion}/${executable}")
+            apks.each { apk ->
+                def dump = root.providers.exec {
+                    commandLine(aapt.absolutePath, "dump", "badging", apk.absolutePath)
+                }
+                def badging = new String(dump.standardOutput.asBytes.get(), java.nio.charset.StandardCharsets.UTF_8)
+                if (!badging.contains("uses-permission: name='android.permission.INTERNET'")) {
+                    throw new GradleException("Final Release APK is missing INTERNET")
+                }
+                for (def denied in ["MANAGE_EXTERNAL_STORAGE", "POST_NOTIFICATIONS", "FOREGROUND_SERVICE"]) {
+                    if (badging.contains("uses-permission: name='android.permission.${denied}'")) {
+                        throw new GradleException("Final Release APK must not request ${denied}")
+                    }
+                }
+                println("Verified final Release APK network and limited permissions")
+            }
+        }
+    }
+    root.tasks.register("verifyAndroidReleaseNetworkPermission") {
+        def app = root.project(":app")
+        def manifestTask = app.tasks.getByName("processReleaseMainManifest")
+        dependsOn(manifestTask)
+        doLast {
+            def manifests = manifestTask.outputs.files.asFileTree.matching {
+                include("**/AndroidManifest.xml")
+            }.files
+            if (manifests.isEmpty()) throw new GradleException("Release manifest is missing")
+            manifests.each { file ->
+                def manifest = new XmlSlurper(false, false).parse(file)
+                def permissions = manifest."uses-permission".collect {
+                    it.@"android:name".toString()
+                }
+                if (!permissions.contains("android.permission.INTERNET")) {
+                    throw new GradleException("Release must declare INTERNET for Nintendo/NXAPI/media requests")
+                }
+            }
+            println("Verified Release INTERNET permission")
+        }
+    }
     root.tasks.register("verifyArm64BuildConfiguration") {
         doLast {
             def app = root.project(":app")

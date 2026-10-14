@@ -135,6 +135,13 @@ jobs:
       target: ${{ matrix.target }}
       mac_arch: ${{ matrix.mac_arch }}
 
+  android:
+    name: Android ARM64 build and package checks
+    uses: ./.github/workflows/android-validation.yml
+    with:
+      ref: ${{ inputs.ref }}
+      release_tag: ${{ inputs.release_tag }}
+
   complete:
     name: Require all platforms and shared checks
     if: always()
@@ -142,6 +149,7 @@ jobs:
       - ubuntu
       - secrets
       - native
+      - android
     runs-on: ubuntu-latest
     steps:
       - name: Reject incomplete validation
@@ -150,8 +158,10 @@ jobs:
           UBUNTU_RESULT: ${{ needs.ubuntu.result }}
           SECRETS_RESULT: ${{ needs.secrets.result }}
           NATIVE_RESULT: ${{ needs.native.result }}
+          ANDROID_RESULT: ${{ needs.android.result }}
         run: |
           set -euo pipefail
           test "$UBUNTU_RESULT" = success
           test "$SECRETS_RESULT" = success
           test "$NATIVE_RESULT" = success
+          test "$ANDROID_RESULT" = success

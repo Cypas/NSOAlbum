@@ -13,6 +13,57 @@ void main() {
       'NSO_VERIFY_ANDROID_BUILD=1';
 
   test(
+    'final Release APK includes INTERNET without requesting broad storage or background privileges',
+    () async {
+      final wrapper = p.absolute(
+        'android',
+        Platform.isWindows ? 'gradlew.bat' : 'gradlew',
+      );
+      expect(
+        File(wrapper).existsSync(),
+        isTrue,
+        reason: 'Prepare the Android Gradle wrapper before native tests.',
+      );
+      final result = await Process.run(
+        wrapper,
+        [
+          '-Ptarget-platform=android-arm64',
+          '--init-script',
+          p.absolute('test/fixtures/android/verify_arm64.gradle'),
+          'verifyAndroidReleaseApkPermissions',
+          '--console=plain',
+        ],
+        workingDirectory: p.absolute('android'),
+        runInShell: Platform.isWindows,
+      );
+      expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+    },
+    skip: enabled ? false : skipReason,
+    timeout: const Timeout(Duration(minutes: 20)),
+  );
+
+  test(
+    'Release can access Nintendo and NXAPI without debug manifest permissions',
+    () async {
+      final result = await Process.run(
+        p.absolute('android', Platform.isWindows ? 'gradlew.bat' : 'gradlew'),
+        [
+          '-Ptarget-platform=android-arm64',
+          '--init-script',
+          p.absolute('test/fixtures/android/verify_arm64.gradle'),
+          'verifyAndroidReleaseNetworkPermission',
+          '--console=plain',
+        ],
+        workingDirectory: p.absolute('android'),
+        runInShell: Platform.isWindows,
+      );
+      expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+    },
+    skip: enabled ? false : skipReason,
+    timeout: const Timeout(Duration(minutes: 10)),
+  );
+
+  test(
     'real Android configuration packages and compiles only ARM64',
     () async {
       final wrapper = p.absolute(

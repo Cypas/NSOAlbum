@@ -1,0 +1,259 @@
+name: Android ARM64 validation
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact immutable commit SHA to validate
+        required: true
+        type: string
+      release_tag:
+        description: Optional stable tag checked against source versions
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Optional exact commit or branch to validate (no Release publication)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  ANDROID_BUILD_TOOLS: "36.0.0"
+  ANDROID_NDK_VERSION: "28.2.13676358"
+
+jobs:
+  resolve:
+    name: Pin Android validation commit
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - id: commit
+        shell: bash
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          if [[ "$EVENT_NAME" != workflow_dispatch ]]; then
+            [[ "$REQUESTED_REF" =~ ^[0-9a-f]{40}$ ]]
+            test "$sha" = "$REQUESTED_REF"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Validate source versions
+        id: version
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          $manifest = Get-Content -LiteralPath flutter_app/pubspec.yaml -Raw
+          if ($manifest -notmatch '(?m)^version:\s*(\d+\.\d+\.\d+)\+(\d+)\s*$') {
+            throw 'pubspec.yaml must declare stable SemVer+build.'
+          }
+          $version = $Matches[1]
+          $build = $Matches[2]
+          ./flutter_app/tool/validate_release_version.ps1 -Version $version -ReleaseTag $env:RELEASE_TAG
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "build=$build" >> $env:GITHUB_OUTPUT
+
+  build:
+    name: Test and build Android ARM64
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - name: Assert exact build commit
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install pinned Android SDK and NDK
+        run: |
+          set -euo pipefail
+          sdkmanager "platforms;android-36" "build-tools;$ANDROID_BUILD_TOOLS" "ndk;$ANDROID_NDK_VERSION"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+          components: clippy, rustfmt
+      - uses: ./.github/actions/ci-dependencies
+        with:
+          platform: android-arm64
+          codegen: "true"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.6
+          channel: stable
+          cache: true
+      - name: Cache Android Gradle dependencies only
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: nso-android-deps-v1-${{ runner.os }}-arm64-jdk17-flutter3.47.6-ndk${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('flutter_app/pubspec.lock', 'rust_core/Cargo.lock', 'flutter_app/android/**/*.gradle.kts', 'flutter_app/android/gradle/wrapper/gradle-wrapper.properties', 'flutter_app/android/gradle.properties') }}
+      - name: Resolve dependencies and select JDK
+        working-directory: flutter_app
+        run: |
+          set -euo pipefail
+          flutter config --jdk-dir "$JAVA_HOME"
+          flutter pub get
+      - name: Regenerate bridge
+        working-directory: flutter_app
+        shell: pwsh
+        run: ./tool/generate_bridge.ps1
+      - name: Rust formatting, Clippy, and unit tests
+        working-directory: rust_core
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --lib 2>&1 | tee "$RUNNER_TEMP/rust-tests.log"
+      - name: Dart analysis
+        working-directory: flutter_app
+        run: dart analyze
+      - name: Build ARM64 Release-mode test APK
+        working-directory: flutter_app
+        run: flutter build apk --release --target-platform android-arm64 --no-pub
+      - name: Full Flutter suite including opt-in Android native tests
+        working-directory: flutter_app
+        env:
+          NSO_VERIFY_ANDROID_BUILD: "1"
+        run: |
+          set -euo pipefail
+          flutter test --machine --no-pub > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests-stderr.log"
+      - name: Verify and summarize actual test totals
+        if: always()
+        shell: pwsh
+        run: |
+          ./flutter_app/tool/ci_native.ps1 -RustLog (Join-Path $env:RUNNER_TEMP 'rust-tests.log') -FlutterMachineLog (Join-Path $env:RUNNER_TEMP 'flutter-tests.jsonl') -ReportsDirectory android-reports
+      - name: Seal the exact Android test build
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+          PACKAGE_VERSION: ${{ needs.resolve.outputs.version }}
+          PACKAGE_BUILD: ${{ needs.resolve.outputs.build }}
+        run: |
+          $directory = 'dist/ci-build/android-arm64'
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          Copy-Item -LiteralPath flutter_app/build/app/outputs/flutter-apk/app-release.apk -Destination "$directory/NSOAlbum-Android-arm64-CI-Test.apk"
+          ./flutter_app/tool/ci_bundle.ps1 -Mode Seal -Directory $directory -Commit $env:EXPECTED_SHA -Platform android-arm64 -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD
+          New-Item -ItemType Directory -Path dist/ci-transfer -Force | Out-Null
+          tar -cf dist/ci-transfer/android-arm64.tar -C $directory .
+          if ($LASTEXITCODE -ne 0) { throw 'Archiving Android build failed.' }
+      - name: Upload same-run intermediate Android build
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-android-arm64-${{ needs.resolve.outputs.sha }}
+          path: dist/ci-transfer/android-arm64.tar
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+      - name: Upload Android build test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-android-arm64
+          retention-days: 14
+          if-no-files-found: ignore
+          path: |
+            android-reports/test-counts.json
+            ${{ runner.temp }}/rust-tests.log
+            ${{ runner.temp }}/flutter-tests.jsonl
+            ${{ runner.temp }}/flutter-tests-stderr.log
+
+  verify:
+    name: Verify same-run Android APK (not device smoke)
+    needs:
+      - resolve
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install pinned APK inspection tools
+        run: sdkmanager "build-tools;$ANDROID_BUILD_TOOLS"
+      - uses: actions/download-artifact@v4
+        with:
+          name: built-android-arm64-${{ needs.resolve.outputs.sha }}
+          path: dist/ci-transfer
+      - name: Verify commit, metadata, hashes, APK identity, ELF and signature
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+          PACKAGE_VERSION: ${{ needs.resolve.outputs.version }}
+          PACKAGE_BUILD: ${{ needs.resolve.outputs.build }}
+        run: |
+          if ((git rev-parse HEAD) -ne $env:EXPECTED_SHA) { throw 'Verification source commit differs.' }
+          $directory = 'dist/ci-verify/android-arm64'
+          if (Test-Path -LiteralPath $directory) { throw 'Android verification directory must be new.' }
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          tar -xpf dist/ci-transfer/android-arm64.tar -C $directory
+          if ($LASTEXITCODE -ne 0) { throw 'Extracting Android build failed.' }
+          ./flutter_app/tool/ci_bundle.ps1 -Mode Verify -Directory $directory -Commit $env:EXPECTED_SHA -Platform android-arm64 -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD
+          $tools = Join-Path $env:ANDROID_HOME "build-tools/$env:ANDROID_BUILD_TOOLS"
+          ./flutter_app/tool/verify_android_apk.ps1 -Apk "$directory/NSOAlbum-Android-arm64-CI-Test.apk" -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD -BuildToolsDirectory $tools -ReportsDirectory android-reports
+      - name: Upload static APK verification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-android-arm64
+          path: android-reports/apk-verification.json
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Upload verified test APK, never a Release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-arm64-ci-test
+          path: dist/ci-verify/android-arm64/NSOAlbum-Android-arm64-CI-Test.apk
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+
+  complete:
+    name: Require Android build and static verification
+    if: always()
+    needs:
+      - resolve
+      - build
+      - verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject failed, cancelled or skipped Android gates
+        env:
+          RESOLVE_RESULT: ${{ needs.resolve.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+        run: |
+          set -euo pipefail
+          test "$RESOLVE_RESULT" = success
+          test "$BUILD_RESULT" = success
+          test "$VERIFY_RESULT" = success

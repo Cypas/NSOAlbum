@@ -9,11 +9,12 @@
 | 事件 | 工作流与检查 | 可下载产物 | 正式发布 |
 | --- | --- | --- | --- |
 | push 到 `dev` | Dev validation：Ubuntu Rust fmt/Clippy/单测、Dart 分析、完整 Flutter 测试、Git 历史敏感扫描 | 不构建安装包 | 否 |
-| 新建/更新目标为 `main` 的 PR | Validate：Ubuntu/历史扫描及 Windows x64、macOS arm64/x64 各自完整测试、构建、签名和原生媒体验收；Required validation 汇总 | Windows 运行目录、两种 DMG；不编译 Inno | 否 |
-| PR 合入后 push 到 `main` | 同一 Validate 完整门禁，并自动编译 Windows Inno 安装器 | 运行目录、安装器、两种 DMG，保留 7 天 | 否 |
+| 新建/更新目标为 `main` 的 PR | Validate：Ubuntu/历史扫描及 Windows x64、macOS arm64/x64 各自完整测试、构建、签名和原生媒体验收；Android ARM64 测试构建/包体检查；Required validation 汇总 | Windows 运行目录、两种 DMG、Android CI 测试 APK；不编译 Inno | 否 |
+| PR 合入后 push 到 `main` | 同一 Validate 完整门禁，并自动编译 Windows Inno 安装器 | 运行目录、安装器、两种 DMG、Android CI 测试 APK，保留 7 天 | 否 |
 | 手动 Dev validation | 对所选 ref 运行 Ubuntu 基础检查及历史扫描 | 不构建安装包 | 否 |
-| 手动 Validate | 固定所选 ref 的提交，运行完整门禁；`package_installer=true` 时额外编译 Inno | 运行目录、两种 DMG；开启时含安装器 | 否 |
-| push `v*` tag 或手动 Release | 稳定 tag/版本/main 祖先检查及完整门禁 | 安装器、两种 DMG、SHA256SUMS.txt | 全部成功后发布 |
+| 手动 Validate | 固定所选 ref 的提交，运行完整门禁；`package_installer=true` 时额外编译 Inno | 运行目录、两种 DMG、Android CI 测试 APK；开启时含安装器 | 否 |
+| 手动 Android ARM64 validation | 固定所选 ref 的提交，只运行 Android 构建/测试和静态包体检查，不代替完整 Validate | Android CI 测试 APK，保留 7 天 | 否 |
+| push `v*` tag 或手动 Release | 稳定 tag/版本/main 祖先检查及完整门禁，含 Android 测试构建/包体检查 | 正式资产仍为安装器、两种 DMG、SHA256SUMS.txt；Android APK 只在 Actions artifacts | 全部成功后发布 |
 | 其他分支 push / 目标不是 `main` 的 PR | 当前没有自动触发；可手动指定 ref 验证 | 无自动产物 | 否 |
 
 PR 更新时，dev push 的轻量检查和 PR 的完整检查都可能运行，范围不同。
@@ -24,9 +25,42 @@ PR 完整检查验收拟合并提交；合入后 main push 验收实际主分支
 三平台通过可复用工作流各自执行“构建与完整单测 → 同平台验收与打包”，
 Windows 验收无需等待 macOS 构建完成，反之亦然。每个平台仅使用同次运行的
 对应平台 artifact，提交、SemVer、构建号、文件哈希、链接及权限均须匹配。
-各平台显式汇总构建与验收结果，上层再汇总三平台、Ubuntu 和历史扫描；
+各平台显式汇总构建与验收结果，上层再汇总桌面三平台、Android 构建/包体检查、Ubuntu 和历史扫描；
 失败、取消或跳过均不能使 Required validation 或正式 publish 成功。
 按平台独立验收只改变调度顺序，不改变三平台齐备和统一版本的正式发布要求。
+
+## Android ARM64 CI
+
+`android-validation.yml` 可被完整 Validate/Release 调用，也可单独手动运行。
+使用 Flutter 3.47.6、JDK 17、Android SDK 36、Build Tools 36.0.0、
+NDK 28.2.13676358，只安装 Rust `aarch64-linux-android`，APK 构建显式指定
+`flutter build apk --release --target-platform android-arm64`。依赖缓存按
+平台/架构、工具链和依赖锁隔离，不复用上次测试结果或最终 APK。
+
+构建 job 重新生成 bridge、检查 Flutter/Rust 版本、执行 Rust fmt/Clippy/单测、
+Dart 分析和完整 Flutter 测试。完整测试在 APK 构建后启用
+`NSO_VERIFY_ANDROID_BUILD=1`，执行真实 Gradle ABI 配置、编译的应用入口、
+品牌资源、Release 网络权限及最终 APK 权限检查；其他平台测试保留明确 skip。
+测试统计来自本次日志，报告 artifact 为 `validation-android-arm64`。
+
+验收 job 只下载同次 run、同提交的中间 artifact，不重新构建。使用现有
+`ci_bundle.ps1` 核对提交、平台、SemVer、构建号和所有文件 SHA-256，再通过
+`verify_android_apk.ps1` 检查最终 APK 的应用 ID、启动 Activity、版本、
+minSdk、非 debuggable、网络/受限权限和 v2 签名，并逐个读取 ELF 头验证
+AArch64；Rust Core、Flutter AOT/引擎、libmpv 和 FFmpeg 必须存在。
+静态报告 artifact 为 `verification-android-arm64`。
+
+当前使用工程既有测试签名，产物明确命名为
+`NSOAlbum-Android-arm64-CI-Test.apk`，artifact 为 `android-arm64-ci-test`。
+它不是正式签名发布包，不能作为稳定升级渠道；不匹配 Release 的
+`native-*` 下载范围，也不进入正式 Release 资产。
+正式密钥和 ARM64 运行节点尚未确认，本阶段不自动配置自托管 runner、
+不新增 x86/其他 ABI，也没有安装、启动或真实媒体 smoke。
+静态包体检查通过不等于 Android 真机或后台调度验收通过。
+
+任一 Android 构建/测试/包体检查失败、取消或跳过均使完整验证失败；
+现有桌面原生运行及发布门禁保持不变。单独手动 Android 检查不能代替
+`Required validation`。dev push 仍只有快速 Ubuntu 检查和历史扫描。
 
 ## 本地基础验证
 
@@ -59,6 +93,7 @@ common 归类，新建可移植测试可显式使用 `common`。
 | `common` | 纯 Dart 规则、控制器、使用 FakeBackend 或模拟 channel 的 widget 行为；PowerShell 错误文本解析；标题栏组件渲染 | 实际 Rust DLL/dylib、原生窗口、真实输入法或媒体插件可用 |
 | `platform-windows` | Windows 字体管理 UI、IME channel 生命周期、实际 PowerShell 5.1 UTF-8 清单读取 | 搜狗输入法候选窗口和 USB 真机已验收 |
 | `platform-macos` | 当前 macOS 主机的窗口内容不插入 Windows 自绘标题栏、设置不显示 Windows 字体/安装器控制、Windows IME channel 不被启动、原生路径规则 | AppKit 窗口装饰、Gatekeeper 或真实播放器已验收 |
+| `native-android` | 安装 Android SDK/JDK 后显式启用的真实 Gradle ABI、应用身份、品牌资源和 Release 权限检查 | 设备启动、播放、导入、编辑或后台调度已验收 |
 
 macOS 的 About 包含版本检查入口，但不提供应用内安装器执行。
 `macos_release_update_test.dart` 标记为 `common`，在各主机上以明确的 macOS

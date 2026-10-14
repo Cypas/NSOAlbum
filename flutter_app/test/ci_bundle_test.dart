@@ -67,6 +67,23 @@ void main() {
     expect((await run('Verify')).exitCode, isNot(0));
   });
 
+  test(
+    'Android APK transfer binds content to the exact source metadata',
+    () async {
+      final apk = File(p.join(root.path, 'NSOAlbum-CI-Test.apk'));
+      await apk.writeAsString('fixture APK');
+      final sealed = await run('Seal', platform: 'android-arm64');
+      expect(sealed.exitCode, 0, reason: '${sealed.stderr}');
+      expect((await run('Verify', platform: 'android-arm64')).exitCode, 0);
+      expect((await run('Verify', platform: 'windows-x64')).exitCode, isNot(0));
+      await apk.writeAsString('changed APK');
+      expect(
+        (await run('Verify', platform: 'android-arm64')).exitCode,
+        isNot(0),
+      );
+    },
+  );
+
   test('missing nested runtime file is rejected', () async {
     await seal();
     await File(p.join(root.path, 'data', 'app.so')).delete();

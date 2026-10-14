@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory)][ValidateSet('Seal', 'Verify')][string]$Mode,
     [Parameter(Mandatory)][string]$Directory,
     [Parameter(Mandatory)][ValidatePattern('^[a-f0-9]{40}$')][string]$Commit,
-    [Parameter(Mandatory)][ValidateSet('windows-x64', 'macos-arm64', 'macos-x64')][string]$Platform,
+    [Parameter(Mandatory)][ValidateSet('windows-x64', 'macos-arm64', 'macos-x64', 'android-arm64')][string]$Platform,
     [Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
     [Parameter(Mandatory)][ValidatePattern('^\d+$')][string]$BuildNumber
 )
