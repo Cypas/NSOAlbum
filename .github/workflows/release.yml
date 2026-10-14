@@ -112,13 +112,28 @@ jobs:
           path: release-assets
           pattern: native-*
           merge-multiple: true
-      - name: Collect exactly the installer and two architecture DMGs
+      - name: Download the same-run release-key-signed Android APK
+        uses: actions/download-artifact@v4
+        with:
+          name: android-arm64-signed
+          path: release-android
+      - name: Collect exactly the installer, two architecture DMGs, and signed APK
         shell: bash
         env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
           mkdir upload
+          apk="NSOAlbum-Android-arm64-${VERSION}.apk"
+          test -s "release-android/$apk"
+          test -f release-android/SHA256SUMS.txt
+          (
+            cd release-android
+            mapfile -t digests < SHA256SUMS.txt
+            test "${#digests[@]}" -eq 1
+            test "${digests[0]:66}" = "$apk"
+            sha256sum --check --strict SHA256SUMS.txt
+          )
           for name in \
             "NSOAlbum-${VERSION}-Setup.exe" \
             "NSOAlbum-macOS-arm64-${VERSION}.dmg" \
@@ -128,7 +143,8 @@ jobs:
             test -s "${matches[0]}"
             cp "${matches[0]}" "upload/$name"
           done
-          (cd upload && sha256sum ./* > SHA256SUMS.txt)
+          cp "release-android/$apk" "upload/$apk"
+          (cd upload && sha256sum *.exe *.dmg *.apk > SHA256SUMS.txt)
       - name: Publish stable release
         uses: softprops/action-gh-release@v2
         with:
@@ -141,8 +157,12 @@ jobs:
 
             All three native builds must pass Rust checks, Dart analysis, the complete Flutter test suite, and isolated packaged-app smoke tests before publication. macOS DMGs are also mounted and smoke-tested.
 
+            The Android APK supports ARM64 only and is signed with the release key. Android host tests, static APK checks, and signing verification must pass before publication. These checks do not include on-device startup, update notifications, background recovery, or cross-version installation.
+
             Windows updates verify the Inno Setup installer using the SHA-256 digest exposed by the official GitHub Releases API. SHA256SUMS.txt is included for manual verification.
           files: |
             upload/*-Setup.exe
             upload/*.dmg
+            upload/NSOAlbum-Android-arm64-*.apk
             upload/SHA256SUMS.txt
+          fail_on_unmatched_files: true

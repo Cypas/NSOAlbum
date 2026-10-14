@@ -14,7 +14,7 @@
 | 手动 Dev validation | 对所选 ref 运行 Ubuntu 基础检查及历史扫描 | 不构建安装包 | 否 |
 | 手动 Validate | 固定所选 ref 的提交，运行完整门禁；可信 main/dev 工作流的 `package_installer=true` 时额外编译 Inno 和签名 Android APK | 运行目录、两种 DMG、Android CI 测试 APK；开启时含安装器及正式签名 APK | 否 |
 | 手动 Android ARM64 validation | 固定所选 ref 的提交，只运行 Android 构建/测试和静态包体检查；`sign_release=true` 时要求可信工作流/目标历史并正式签名，不代替完整 Validate | Android CI 测试 APK；开启时含正式签名 APK，保留 7 天 | 否 |
-| push `v*` tag 或手动 Release | 稳定 tag/版本/main 祖先检查及完整门禁，含 Android 测试构建/包体检查 | 正式资产仍为安装器、两种 DMG、SHA256SUMS.txt；Android APK 只在 Actions artifacts | 全部成功后发布 |
+| push `v*` tag 或手动 Release | 稳定 tag/版本/main 祖先检查及完整门禁，含 Android 构建/测试/包体检查和正式签名 | 正式资产为安装器、两种 DMG、正式签名 ARM64 APK 和统一 SHA256SUMS.txt | 全部成功后发布 |
 | 其他分支 push / 目标不是 `main` 的 PR | 当前没有自动触发；可手动指定 ref 验证 | 无自动产物 | 否 |
 
 PR 更新时，dev push 的轻量检查和 PR 的完整检查都可能运行，范围不同。
@@ -93,8 +93,14 @@ key.properties、Gradle 缓存或 artifact。结束时清理私钥；失败删�
 正式密钥签名后的 APK 命名为 `NSOAlbum-Android-arm64-<SemVer>.apk`，
 与摘要上传 `android-arm64-signed` artifact；公开证书指纹与检查结果上传
 `signing-android-arm64`。下载前仍需确认本次完整工作流成功。
-签名产物仍不匹配 `native-*`，不自动进入正式 Release 资产；尚未运行
-Android 设备 smoke，不能把“正式密钥签名”表述为“正式发布验收完成”。
+稳定 Release 的 publish 在完整门禁成功后，单独下载同次 run 的
+`android-arm64-signed`（不使用 CI 测试 APK），核对签名 job 的摘要只包含当前
+版本 APK 且 SHA-256 匹配，再与 Windows Inno、两架构 macOS DMG 一并收集。
+APK 缺失/为空、版本文件名不符、摘要缺失/不匹配或桌面包缺失/重复均阻止发布。
+统一 `SHA256SUMS.txt` 包含四个安装包，不上传测试 APK、运行目录或 ZIP。
+Validate 和单独 Android 手动工作流仍只输出 Actions artifacts，不发布 Release。
+尚未运行 Android 设备 smoke，不能把“正式密钥签名”表述为“设备验收完成”；
+Release 说明保留主机/静态检查与设备运行检查的区别。
 
 每次 Android 构建使用临时生成的测试密钥执行真实签名回归，包括正常签名、
 输入文件保持不变、错误密码、缺失 Secret、非法 Base64、拒绝覆盖和清理。
@@ -126,10 +132,10 @@ Android 正式模式启动时按本地自然日自动检查稳定版本；发现
 完成复制也实行大小上限；应用进程不在时，DownloadManager 的网络下载
 不能保证实时硬上限，超限文件会在恢复/完成校验时拒绝，不交给安装器。
 
-目前稳定 Release 尚未包含 Android APK，客户端显示缺包状态、不下载 CI
-测试 artifact。正式签名 artifact 通过设备验收并作为同版本正式资产提供后，
-才能实际执行跨版本更新；不以 widget/包体检查替代真机通知点击、进程终止
-恢复、未知来源权限及系统安装验收。
+既有稳定 Release 尚未包含 Android APK，客户端显示缺包状态、不下载 CI
+测试 artifact。后续 Release 工作流将发布同版本正式签名 ARM64 APK；
+跨版本更新仍要求递增构建号及兼容签名。真机通知点击、进程终止恢复、
+未知来源权限及系统安装需另行验收，不以 widget/包体检查替代。
 
 ## 本地基础验证
 
@@ -347,9 +353,18 @@ artifact 不代表其他平台或完整验证已通过。
 报告中的跳过项保留明确原因，不能把未支持的平台专用测试计入通过数。
 
 Rust/Flutter 测试失败、分析失败、原生步骤失败、退出码非零、超时或缺少有效报告
-均阻止发布。必须等待 Windows x64、macOS arm64、macOS Intel 三个矩阵目标以及
-基础验证成功后，正式 tag 才能上传 Release 资产。版本一致性和 SHA-256 校验继续
-执行；不修改已发布 tag，也不因为只有一个平台成功就发布部分资产。
+均阻止发布。必须等待 Windows x64、macOS arm64、macOS Intel 三个矩阵目标、
+Android 构建/验包/正式签名以及基础验证与历史扫描成功后，正式 tag 才能上传
+Release 资产。版本一致性和 SHA-256 校验继续执行；不修改已发布 tag，
+也不因为只有一个平台成功就发布部分资产。
+
+`release_asset_collection_test.dart` 在隔离临时目录执行 Release 工作流的实际
+收集脚本，验证四个安装包的字节及统一摘要，并检查缺失/空 APK、篡改、错误
+版本/摘要、测试产物替代、桌面包缺失/重复及既有输出目录拒绝。输入均为合成
+文件；此测试只证明发布收集边界，不代表真实签名或设备安装验收。
+运行前检查 Bash 4+ 与 GNU sha256sum；不兼容的系统 shell（例如 macOS
+默认 shell）明确 skip 并说明原因。Ubuntu 发布主机及 Windows Git Bash
+继续执行真实行为测试，不将缺工具造成的失败计为负面用例通过。
 
 ## 仍需人工验收
 
