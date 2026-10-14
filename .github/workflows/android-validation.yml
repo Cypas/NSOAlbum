@@ -136,6 +136,8 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Install pinned Android SDK and NDK
         run: |
           set -euo pipefail
@@ -254,6 +256,8 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Install pinned APK inspection tools
         run: sdkmanager "build-tools;$ANDROID_BUILD_TOOLS"
       - uses: actions/download-artifact@v4
@@ -311,6 +315,8 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Install pinned signing and inspection tools
         run: sdkmanager "build-tools;$ANDROID_BUILD_TOOLS"
       - uses: actions/download-artifact@v4
