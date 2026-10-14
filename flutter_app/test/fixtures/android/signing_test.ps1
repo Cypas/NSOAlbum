@@ -50,3 +50,6 @@ try {
     }
     Remove-Item -LiteralPath $root -Recurse -Force
 }
+# Negative cases intentionally leave a failed native command's exit code.
+# Only reach success after every assertion and temporary-key cleanup completed.
+exit 0
