@@ -47,8 +47,9 @@ Windows 验收无需等待 macOS 构建完成，反之亦然。每个平台仅�
 NDK 28.2.13676358，只安装 Rust `aarch64-linux-android`，APK 构建显式指定
 `flutter build apk --release --target-platform android-arm64`。依赖缓存按
 平台/架构、工具链和依赖锁隔离，不复用上次测试结果或最终 APK。
-各 Android job 的 SDK 初始化显式只安装 `platform-tools`，不请求已不可用的
-旧 `tools` 包；后续步骤仍安装并核对固定的 SDK、Build Tools 和 NDK。
+各 Android job 将 SDK 初始化的附加包显式设为 `platform-tools`，不请求已不可用的
+旧 `tools` 包；构建 job 随后安装固定的 SDK、Build Tools 和 NDK，
+验收及签名 job 安装固定的 Build Tools。
 
 构建 job 重新生成 bridge、检查 Flutter/Rust 版本、执行 Rust fmt/Clippy/单测、
 Dart 分析和完整 Flutter 测试。完整测试在 APK 构建后启用

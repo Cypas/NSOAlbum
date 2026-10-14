@@ -105,4 +105,33 @@ void main() {
       ),
     );
   });
+
+  test(
+    'a valid nested legacy library is reused without moving its database',
+    () async {
+      final temporary = await Directory.systemTemp.createTemp(
+        'nsoalbum-paths-',
+      );
+      addTearDown(() => temporary.delete(recursive: true));
+      final root = '${temporary.path}${Platform.pathSeparator}NSOAlbum';
+      final legacy = '$root${Platform.pathSeparator}squid_album_library';
+      final database = Directory('$legacy${Platform.pathSeparator}database');
+      await database.create(recursive: true);
+      final file = File(
+        '${database.path}${Platform.pathSeparator}library.sqlite3',
+      );
+      final contents = 'x' * 4097;
+      await file.writeAsString(contents);
+
+      expect(await resolveApplicationRoot(root), legacy);
+      expect(await file.readAsString(), contents);
+      expect(
+        await File(
+          '$root${Platform.pathSeparator}database'
+          '${Platform.pathSeparator}library.sqlite3',
+        ).exists(),
+        isFalse,
+      );
+    },
+  );
 }
