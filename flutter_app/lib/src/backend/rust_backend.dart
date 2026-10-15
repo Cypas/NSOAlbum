@@ -18,6 +18,9 @@ import '../rust/models.dart';
 import '../rust/nso/provider.dart';
 import '../rust/settings.dart';
 import 'app_backend.dart';
+import 'account_tool_requests.dart';
+import 'account_tool_lifecycle.dart';
+import 'nintendo_account_tools_backend.dart';
 import 'app_logger.dart';
 import 'storage_paths.dart';
 import '../fonts/custom_font_store.dart';
@@ -38,7 +41,9 @@ class RustBackend
         SyncHistoryBackend,
         AccountSyncBackend,
         OperationProgressBackend,
-        MobileStorageBackend {
+        MobileStorageBackend,
+        NintendoAccountToolsBackend,
+        NintendoAccountToolLifecycleBackend {
   RustBackend._(this._storage, this._logger, this._libraryRoot, this._isolated);
 
   static const _sessionTokenKey = 'nintendo.session_token';
@@ -52,6 +57,9 @@ class RustBackend
 
   LoginChallenge? _pendingLogin;
   final Map<String, CoralSession> _coralSessions = {};
+  final _accountToolRequests = AccountToolRequests();
+  @override
+  final accountToolLifecycle = AccountToolLifecycle();
   AppSettings? _settings;
   int _syncCancellationEpoch = 0;
   final _operations = StreamController<OperationProgressValue>.broadcast();
@@ -219,8 +227,10 @@ class RustBackend
 
   @override
   Future<void> saveSettings(AppSettings value) async {
+    final previousProxy = _settings?.proxyUrl;
     await rust_api.saveSettings(settings: value);
     _settings = value;
+    if (previousProxy != value.proxyUrl) accountToolLifecycle.networkChanged();
   }
 
   @override
@@ -758,6 +768,7 @@ class RustBackend
     await _storage.delete(key: _sessionTokenKey);
     _coralSessions[accountId] = session;
     await _cacheProfile(accountId, session);
+    accountToolLifecycle.accountAvailable(accountId);
     _pendingLogin = null;
   }
 
@@ -826,6 +837,11 @@ class RustBackend
   @override
   Future<void> removeNintendoAccount(String accountId) async {
     _requireAccountAccess();
+    accountToolLifecycle.removeAccount(accountId);
+    for (final id in _accountToolRequests.removeAccount(accountId)) {
+      await rust_api.cancelAccountToolOperation(operationId: id);
+    }
+    await rust_api.clearAccountToolCache(accountId: accountId);
     final tokens = await _readAccountTokens();
     tokens.remove(accountId);
     _coralSessions.remove(accountId);
@@ -844,6 +860,107 @@ class RustBackend
         );
       }
     }
+  }
+
+  Future<T> _withAccountTool<T>(
+    String accountId,
+    String operationId,
+    Future<T> Function(String sessionToken) action,
+  ) async {
+    _requireAccountAccess();
+    if (accountToolLifecycle.isRemoved(accountId)) {
+      throw StateError('account_tool_sign_in_required');
+    }
+    final request = _accountToolRequests.begin(accountId, operationId);
+    try {
+      final tokens = await _readAccountTokens();
+      if (accountToolLifecycle.isRemoved(accountId) ||
+          !_accountToolRequests.isCurrent(request)) {
+        throw StateError('account_tool_cancelled');
+      }
+      final token = tokens[accountId];
+      if (token == null || token.isEmpty) {
+        throw StateError('account_tool_sign_in_required');
+      }
+      final result = await action(token);
+      if (accountToolLifecycle.isRemoved(accountId) ||
+          !_accountToolRequests.isCurrent(request)) {
+        throw StateError('account_tool_cancelled');
+      }
+      return result;
+    } finally {
+      _accountToolRequests.finish(request);
+    }
+  }
+
+  @override
+  Future<NintendoFriendsSnapshot> loadNintendoFriends(
+    String accountId,
+    String operationId,
+  ) => _withAccountTool(
+    accountId,
+    operationId,
+    (token) => rust_api.nintendoFriends(
+      accountId: accountId,
+      sessionToken: token,
+      operationId: operationId,
+      proxyUrl: _networkProxy,
+    ),
+  );
+
+  @override
+  Future<Uint8List> loadNintendoFriendAvatar(
+    String accountId,
+    String friendId,
+    String operationId,
+  ) => _withAccountTool(
+    accountId,
+    operationId,
+    (token) => rust_api.nintendoFriendAvatar(
+      accountId: accountId,
+      sessionToken: token,
+      friendId: friendId,
+      operationId: operationId,
+      proxyUrl: _networkProxy,
+    ),
+  );
+
+  @override
+  Future<SplatNetWebSession> prepareSplatNetSession(
+    String accountId,
+    String operationId, {
+    bool forceRefresh = false,
+  }) => _withAccountTool(
+    accountId,
+    operationId,
+    (token) => rust_api.prepareSplatnetSession(
+      accountId: accountId,
+      sessionToken: token,
+      operationId: operationId,
+      forceRefresh: forceRefresh,
+      proxyUrl: _networkProxy,
+    ),
+  );
+
+  @override
+  Future<SeedExportPayload> prepareSeedExport(
+    String accountId,
+    String operationId,
+  ) => _withAccountTool(
+    accountId,
+    operationId,
+    (token) => rust_api.prepareSeedExport(
+      accountId: accountId,
+      sessionToken: token,
+      operationId: operationId,
+      proxyUrl: _networkProxy,
+    ),
+  );
+
+  @override
+  Future<void> cancelAccountToolOperation(String operationId) async {
+    _accountToolRequests.cancel(operationId);
+    await rust_api.cancelAccountToolOperation(operationId: operationId);
   }
 
   NintendoAccountProfile _profileFromSession(
@@ -1062,6 +1179,7 @@ class RustBackend
     void checkCancelled() {
       if (epoch != _syncCancellationEpoch) throw StateError('task cancelled');
     }
+
     try {
       await _ensureMobileStorageAvailable();
       checkCancelled();

@@ -9,6 +9,7 @@ import '../../l10n/app_localizations.dart';
 import '../../rust/models.dart';
 import '../../rust/settings.dart';
 import '../../state/media_edit_controller.dart';
+import '../display_time.dart';
 import 'android_back_guard.dart';
 import 'android_metadata_editor.dart';
 import 'android_page_frame.dart';
@@ -391,14 +392,14 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
             if (item.capturedAt != null)
               Text(
                 context.l10n.select(
-                  zh: '拍摄/创建时间：${item.capturedAt!.toLocal()}',
-                  en: 'Captured/created: ${item.capturedAt!.toLocal()}',
+                  zh: '拍摄/创建时间：${formatUserDateTime(item.capturedAt!)}',
+                  en: 'Captured/created: ${formatUserDateTime(item.capturedAt!)}',
                 ),
               ),
             Text(
               context.l10n.select(
-                zh: '导入时间：${item.importedAt.toLocal()}',
-                en: 'Imported: ${item.importedAt.toLocal()}',
+                zh: '导入时间：${formatUserDateTime(item.importedAt)}',
+                en: 'Imported: ${formatUserDateTime(item.importedAt)}',
               ),
             ),
             Wrap(

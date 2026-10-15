@@ -16,6 +16,9 @@ subprojects {
     project.layout.buildDirectory.value(newSubprojectBuildDir)
 }
 subprojects {
+    if (name == "flutter_inappwebview_android") {
+        apply(from = rootProject.file("webview_agp_compat.gradle"))
+    }
     project.evaluationDependsOn(":app")
 }
 

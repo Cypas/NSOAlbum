@@ -1756,7 +1756,7 @@ void main() {
           ),
           'account-2': SyncRuntimeState(
             latestAttempt: SyncAttemptSummary(
-              attemptedAt: DateTime.utc(2026, 10, 5, 18, 40),
+              attemptedAt: DateTime(2026, 10, 5, 18, 40, 39, 999, 999),
               status: 'success',
               totalFound: BigInt.from(5),
               downloaded: BigInt.from(2),
@@ -1798,8 +1798,7 @@ void main() {
           matching: find.byWidgetPredicate(
             (widget) =>
                 widget is Text &&
-                RegExp(r'2026-10-\d{2} \d{2}:\d{2} · 成功')
-                    .hasMatch(widget.data ?? ''),
+                RegExp(r'^10-05 18:40:39 · 成功').hasMatch(widget.data ?? ''),
           ),
         ),
         findsOneWidget,

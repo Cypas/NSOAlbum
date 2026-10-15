@@ -7,6 +7,10 @@ regressions. See the [documentation map](../../../../docs/DOCUMENTATION-MAP.md),
 
 This optional integration test evaluates the real Android Gradle project.
 It verifies APK ABI filters and Rust targets for Debug, Profile, and Release.
+It also verifies that the pinned WebView library uses the optimized default
+ProGuard rules accepted by AGP 9 in Debug and Release. The project-scoped
+`android/webview_agp_compat.gradle` adapts only that library's obsolete default
+rule request; dependency cache sources and application optimizations are unchanged.
 It also compiles the Debug Kotlin launcher and links the actual Android
 manifest/resources to verify the application ID, launchable activity, localized
 application names, and launcher icon. The default name is `NSOAlbum`; Chinese,

@@ -27,6 +27,8 @@ import 'video_merge_page.dart';
 import 'video_thumbnail.dart';
 import 'active_page_host.dart';
 import 'font_families.dart';
+import 'display_time.dart';
+import 'account_tools/account_tools_expander.dart';
 import 'nxapi_disclosure_card.dart';
 import 'macos_update_dialog.dart';
 
@@ -5046,25 +5048,29 @@ class _TransferPageState extends State<TransferPage>
                           for (final profile in accounts)
                             Padding(
                               padding: const EdgeInsets.only(bottom: 8),
-                              child: _NintendoSyncAccountTile(
-                                key: ValueKey(
-                                  'sync-account-${profile.accountId}',
-                                ),
+                              child: AccountToolsExpander(
+                                backend: widget.backend,
                                 profile: profile,
-                                history:
-                                    accountSyncHistories[profile.accountId],
-                                selected:
-                                    profile.accountId == selectedAccountId,
-                                enabled:
-                                    !loginBusy &&
-                                    widget.sync.state != SyncState.running &&
-                                    widget.sync.state != SyncState.cancelling,
-                                onSelect: () =>
-                                    _selectAccount(profile.accountId),
-                                onAvatarTap:
-                                    profile.avatarBytes?.isNotEmpty == true
-                                    ? () => _showAvatar(profile)
-                                    : null,
+                                header: _NintendoSyncAccountTile(
+                                  key: ValueKey(
+                                    'sync-account-${profile.accountId}',
+                                  ),
+                                  profile: profile,
+                                  history:
+                                      accountSyncHistories[profile.accountId],
+                                  selected:
+                                      profile.accountId == selectedAccountId,
+                                  enabled:
+                                      !loginBusy &&
+                                      widget.sync.state != SyncState.running &&
+                                      widget.sync.state != SyncState.cancelling,
+                                  onSelect: () =>
+                                      _selectAccount(profile.accountId),
+                                  onAvatarTap:
+                                      profile.avatarBytes?.isNotEmpty == true
+                                      ? () => _showAvatar(profile)
+                                      : null,
+                                ),
                               ),
                             ),
                         ],
@@ -6442,10 +6448,10 @@ class _SyncPolicyPanelState extends State<_SyncPolicyPanel> {
                 context.l10n.select(
                   zh: status.nextSyncAt == null
                       ? '调度状态：未安排下一次检查'
-                      : '调度状态：${status.sleeping ? '休眠期' : '活跃期'} · 下次预计 ${status.nextSyncAt!.toLocal().toString().substring(0, 16)}',
+                      : '调度状态：${status.sleeping ? '休眠期' : '活跃期'} · 下次预计 ${formatUserDateTime(status.nextSyncAt!)}',
                   en: status.nextSyncAt == null
                       ? 'Schedule: no next check planned'
-                      : 'Schedule: ${status.sleeping ? 'sleeping' : 'active'} · next ${status.nextSyncAt!.toLocal().toString().substring(0, 16)}',
+                      : 'Schedule: ${status.sleeping ? 'sleeping' : 'active'} · next ${formatUserDateTime(status.nextSyncAt!)}',
                 ),
                 style: Theme.of(context).textTheme.bodySmall,
               ),
@@ -6556,12 +6562,7 @@ String _accountSyncHistoryText(
   if (attempt == null) {
     return context.l10n.select(zh: '尚未同步', en: 'Never synced');
   }
-  final time = attempt.attemptedAt.toLocal();
-  final timestamp =
-      '${time.year}-${time.month.toString().padLeft(2, '0')}-'
-      '${time.day.toString().padLeft(2, '0')} '
-      '${time.hour.toString().padLeft(2, '0')}:'
-      '${time.minute.toString().padLeft(2, '0')}';
+  final timestamp = formatNsoAttemptTime(attempt.attemptedAt);
   final result = switch (attempt.status) {
     'success' => context.l10n.select(zh: '成功', en: 'Succeeded'),
     'partial_failure' => context.l10n.select(

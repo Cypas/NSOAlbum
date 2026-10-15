@@ -7,7 +7,8 @@ use crate::api::CoreApi;
 use crate::models::{
     AlbumRule, AlbumSummary, GalleryQuery, GameTagAliasSummary, GameTagSummary, ImportSummary,
     LibraryRelocationResult, LibraryRootProbe, LoginChallenge, MediaAsset, MediaDeletionResult,
-    MediaExportSummary, OperationProgress, SyncProgress, SyncSummary, TagUsageSummary,
+    MediaExportSummary, NintendoFriendsSnapshot, OperationProgress, SeedExportPayload,
+    SplatNetWebSession, SyncProgress, SyncSummary, TagUsageSummary,
 };
 use crate::nso::CoralSession;
 use crate::settings::{AppSettings, SyncPolicy, SyncRuntimeState, SyncScheduleStatus};
@@ -113,6 +114,108 @@ pub async fn establish_coral_session(
     core()?
         .establish_coral_session(session_token, proxy_url)
         .await
+        .map_err(error_text)
+}
+
+pub async fn nintendo_friends(
+    account_id: String,
+    session_token: String,
+    operation_id: String,
+    proxy_url: Option<String>,
+) -> Result<NintendoFriendsSnapshot, String> {
+    match core()?
+        .account_tool(
+            account_id,
+            session_token,
+            operation_id,
+            proxy_url,
+            crate::nso::account_tools::ToolRequest::Friends,
+        )
+        .await
+        .map_err(error_text)?
+    {
+        crate::nso::account_tools::ToolResponse::Friends(value) => Ok(value),
+        _ => unreachable!("friend tool response"),
+    }
+}
+
+pub async fn nintendo_friend_avatar(
+    account_id: String,
+    session_token: String,
+    friend_id: String,
+    operation_id: String,
+    proxy_url: Option<String>,
+) -> Result<Vec<u8>, String> {
+    match core()?
+        .account_tool(
+            account_id,
+            session_token,
+            operation_id,
+            proxy_url,
+            crate::nso::account_tools::ToolRequest::Avatar(friend_id),
+        )
+        .await
+        .map_err(error_text)?
+    {
+        crate::nso::account_tools::ToolResponse::Avatar(value) => Ok(value),
+        _ => unreachable!("avatar tool response"),
+    }
+}
+
+pub async fn prepare_splatnet_session(
+    account_id: String,
+    session_token: String,
+    operation_id: String,
+    force_refresh: bool,
+    proxy_url: Option<String>,
+) -> Result<SplatNetWebSession, String> {
+    match core()?
+        .account_tool(
+            account_id,
+            session_token,
+            operation_id,
+            proxy_url,
+            crate::nso::account_tools::ToolRequest::Web { force_refresh },
+        )
+        .await
+        .map_err(error_text)?
+    {
+        crate::nso::account_tools::ToolResponse::Web(value) => Ok(value),
+        _ => unreachable!("web tool response"),
+    }
+}
+
+pub async fn prepare_seed_export(
+    account_id: String,
+    session_token: String,
+    operation_id: String,
+    proxy_url: Option<String>,
+) -> Result<SeedExportPayload, String> {
+    match core()?
+        .account_tool(
+            account_id,
+            session_token,
+            operation_id,
+            proxy_url,
+            crate::nso::account_tools::ToolRequest::Seed,
+        )
+        .await
+        .map_err(error_text)?
+    {
+        crate::nso::account_tools::ToolResponse::Seed(value) => Ok(value),
+        _ => unreachable!("seed tool response"),
+    }
+}
+
+pub fn cancel_account_tool_operation(operation_id: String) -> Result<bool, String> {
+    core()?
+        .cancel_account_tool_operation(operation_id)
+        .map_err(error_text)
+}
+
+pub fn clear_account_tool_cache(account_id: String) -> Result<(), String> {
+    core()?
+        .clear_account_tool_cache(account_id)
         .map_err(error_text)
 }
 

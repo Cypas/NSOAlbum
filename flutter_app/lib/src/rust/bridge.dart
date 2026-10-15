@@ -88,6 +88,66 @@ Future<CoralSession> establishCoralSession({
   proxyUrl: proxyUrl,
 );
 
+Future<NintendoFriendsSnapshot> nintendoFriends({
+  required String accountId,
+  required String sessionToken,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeNintendoFriends(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
+Future<Uint8List> nintendoFriendAvatar({
+  required String accountId,
+  required String sessionToken,
+  required String friendId,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeNintendoFriendAvatar(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  friendId: friendId,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
+Future<SplatNetWebSession> prepareSplatnetSession({
+  required String accountId,
+  required String sessionToken,
+  required String operationId,
+  required bool forceRefresh,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgePrepareSplatnetSession(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  operationId: operationId,
+  forceRefresh: forceRefresh,
+  proxyUrl: proxyUrl,
+);
+
+Future<SeedExportPayload> prepareSeedExport({
+  required String accountId,
+  required String sessionToken,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgePrepareSeedExport(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
+Future<bool> cancelAccountToolOperation({required String operationId}) =>
+    RustLib.instance.api.crateBridgeCancelAccountToolOperation(
+      operationId: operationId,
+    );
+
+Future<void> clearAccountToolCache({required String accountId}) =>
+    RustLib.instance.api.crateBridgeClearAccountToolCache(accountId: accountId);
+
 Future<SyncSummary> syncNso({
   required CoralSession session,
   String? proxyUrl,

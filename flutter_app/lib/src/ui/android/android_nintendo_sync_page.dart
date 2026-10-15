@@ -6,6 +6,7 @@ import '../../state/settings_copy.dart';
 import '../../state/sync_controller.dart';
 import '../../state/transfer_controller.dart';
 import '../nxapi_disclosure_card.dart';
+import '../display_time.dart';
 import 'android_back_guard.dart';
 import 'android_page_frame.dart';
 
@@ -79,7 +80,10 @@ class _AndroidNintendoSyncPageState extends State<AndroidNintendoSyncPage> {
                       state.histories[account.accountId]?.latestAttempt == null
                       ? null
                       : Text(
-                          '${state.histories[account.accountId]!.latestAttempt!.attemptedAt.toLocal()}',
+                          context.l10n.select(
+                            zh: '上次尝试：${formatNsoAttemptTime(state.histories[account.accountId]!.latestAttempt!.attemptedAt)}',
+                            en: 'Last attempt: ${formatNsoAttemptTime(state.histories[account.accountId]!.latestAttempt!.attemptedAt)}',
+                          ),
                         ),
                   onTap: state.busy || syncing
                       ? null

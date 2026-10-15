@@ -14,7 +14,7 @@ The repository's MIT `LICENSE` covers original source code only. Artwork, person
 ## splatoon3-nso / s3s iksm.py
 
 - Project: `Cypas/splatoon3-nso`
-- Referenced concepts: Nintendo Account PKCE flow, NXAPI OAuth and attestation calls, encrypted Coral request/response flow, NSO headers and Nintendo error retry behavior.
+- Referenced concepts: Nintendo Account PKCE flow, NXAPI OAuth and attestation calls, encrypted Coral request/response flow, NSO headers, Nintendo error retry behavior, Coral friends, SplatNet game credentials, and the gear-seed JSON wire format.
 - The referenced file includes GPLv3/upstream attribution. No Python source is shipped as part of the Dart/Rust runtime. Before public distribution, complete a license review of any behavior or material retained from this reference.
 
 ## WeAchieve Nintendo Switch Online (Coral) integration write-up
@@ -40,6 +40,13 @@ The repository's MIT `LICENSE` covers original source code only. Artwork, person
 - License: MIT for the Dart/Flutter packages and plugin source.
 - Used for in-app video playback on Windows, macOS and Android.
 - Windows distributions also bundle libmpv and ANGLE runtime libraries downloaded and verified by the package build scripts. Their upstream license notices must remain available in release packages.
+
+## flutter_inappwebview
+
+- Package: `flutter_inappwebview` 6.1.5 and its platform implementations.
+- License: Apache-2.0; preserve upstream license and notice obligations.
+- Uses the operating system's Android WebView, macOS WKWebView, or Windows WebView2 for the official SplatNet 3 site; no Chromium engine is bundled by the application.
+- The `Cypas/splatoon3-nso-web` user script was consulted only for the `requestGameWebToken` / `onGameWebTokenReceive` message contract. Its key-input, storage, copying, and remote key-service functionality is not included.
 
 ## FFmpeg Kit Flutter New — Video
 

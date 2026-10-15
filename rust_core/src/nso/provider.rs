@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use crate::album::{kind_from_type, readable_media_name};
 use crate::error::{CoreError, CoreResult};
 use crate::models::{MediaCandidate, ProviderPage, SourceType};
-use crate::transport::{nintendo_user_agent, HttpTransport};
+use crate::transport::HttpTransport;
 
 use super::attestation::AttestationService;
 
@@ -18,7 +18,7 @@ pub trait MediaProvider: Send + Sync {
     async fn list_recent(&self, cursor: Option<&str>) -> CoreResult<ProviderPage>;
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CoralSession {
     pub access_token: String,
     pub na_id: Option<String>,
@@ -49,37 +49,15 @@ impl<A: AttestationService> CoralAlbumProvider<A> {
 
     async fn coral_call(&self, path: &str, parameter: Value) -> CoreResult<Value> {
         let url = format!("{CORAL_BASE_URL}{path}");
-        let encrypted = self
-            .attestation
-            .encrypt_request(
-                &url,
-                &self.session.access_token,
-                parameter,
-                0,
-                self.session.na_id.as_deref(),
-                self.session.coral_user_id.as_deref(),
-            )
-            .await?;
-        let version = self.attestation.nso_version().await?;
-        let response = self
-            .transport
-            .post_bytes(
-                &url,
-                &[
-                    (
-                        "Authorization",
-                        format!("Bearer {}", self.session.access_token),
-                    ),
-                    ("User-Agent", nintendo_user_agent(&version)),
-                    ("X-Platform", "Android".into()),
-                    ("X-ProductVersion", version),
-                    ("Content-Type", "application/octet-stream".into()),
-                    ("Accept", "application/octet-stream,application/json".into()),
-                ],
-                encrypted.body,
-            )
-            .await?;
-        self.attestation.decrypt_response(&response).await
+        super::account_tools::coral_call(
+            &self.transport,
+            &self.attestation,
+            &self.session,
+            &url,
+            parameter,
+            0,
+        )
+        .await
     }
 }
 

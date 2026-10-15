@@ -38,7 +38,8 @@ MediaAsset media(int id) => MediaAsset(
   originalName: 'private-file-$id.png',
   storagePath: 'missing.png',
   kind: MediaKind.image,
-  importedAt: DateTime(2026, 10, 14),
+  capturedAt: DateTime(2026, 10, 13, 1, 2, 3, 456, 789),
+  importedAt: DateTime(2026, 10, 14, 9, 8, 7, 654, 321),
   gameName: '超级马力欧奥德赛',
   favorite: false,
   tags: const ['abcdefghijklm', '我的自定义标签'],
@@ -220,6 +221,13 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('android-media-1')));
       await tester.pumpAndSettle();
       expect(find.text('private-file-1.png'), findsWidgets);
+      await tester.scrollUntilVisible(
+        find.text('拍摄/创建时间：2026-10-13 01:02:03'),
+        180,
+        scrollable: find.byType(Scrollable).last,
+      );
+      expect(find.text('拍摄/创建时间：2026-10-13 01:02:03'), findsOneWidget);
+      expect(find.text('导入时间：2026-10-14 09:08:07'), findsOneWidget);
       final add = find.byKey(const Key('android-inline-add-tag'));
       await tester.ensureVisible(add);
       await tester.tap(add);

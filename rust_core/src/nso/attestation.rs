@@ -126,7 +126,7 @@ impl Default for NxapiConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct OAuthToken {
     access_token: String,
     refresh_token: Option<String>,
@@ -177,13 +177,13 @@ impl NxapiAttestationClient {
         } else {
             self.request_oauth_token("client_credentials", None).await?
         };
-        if response.status >= 400 && refresh_token.is_some() {
+        if matches!(response.status, 400 | 401) && refresh_token.is_some() {
             response = self.request_oauth_token("client_credentials", None).await?;
         }
         if let Some(message) = oauth_client_authentication_error(&response) {
             return Err(CoreError::Authentication(message));
         }
-        response.ensure_success("NXAPI OAuth token request")?;
+        response.ensure_success_redacted("NXAPI OAuth token request")?;
         let value: Value = response.json()?;
         let access_token = value
             .get("access_token")
@@ -256,7 +256,7 @@ impl NxapiAttestationClient {
                 "NXAPI client compatibility identifier is outdated; update NSOAlbum".into(),
             ));
         }
-        response.ensure_success(&format!("NXAPI {path}"))?;
+        response.ensure_success_redacted(&format!("NXAPI {path}"))?;
         Ok(response)
     }
 
@@ -308,7 +308,7 @@ impl NxapiAttestationClient {
         let response = self
             .znca_request_once("/config", &Value::Null, "application/json", None)
             .await?;
-        response.ensure_success("NXAPI /config")?;
+        response.ensure_success_redacted("NXAPI /config")?;
         let value: Value = response.json()?;
         let version = value
             .get("nso_version")
@@ -439,6 +439,31 @@ mod tests {
                 .lines()
                 .any(|line| line.eq_ignore_ascii_case(&expected)));
         }
+    }
+
+    #[tokio::test]
+    async fn rate_limited_oauth_refresh_does_not_fall_back_to_another_grant() {
+        let (oauth_url, server) = crate::transport::tests::capture_response(429, "{}", &[]);
+        let client = NxapiAttestationClient::new(
+            HttpTransport::new(Default::default()).unwrap(),
+            NxapiConfig {
+                oauth_url,
+                ..Default::default()
+            },
+        );
+        *client.token.lock().await = Some(OAuthToken {
+            access_token: "expired-test-token".into(),
+            refresh_token: Some("test-refresh".into()),
+            expires_at: Instant::now() - Duration::from_secs(1),
+        });
+        let result = client.oauth_token().await;
+        server.join().unwrap();
+        assert!(matches!(
+            result,
+            Err(CoreError::RateLimited {
+                retry_after_seconds: 60
+            })
+        ));
     }
 
     #[test]

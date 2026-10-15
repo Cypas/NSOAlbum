@@ -2,6 +2,22 @@ import groovy.xml.XmlSlurper
 
 gradle.projectsEvaluated {
     def root = gradle.rootProject
+    root.tasks.register("verifyAndroidWebViewOptimizationRules") {
+        doLast {
+            def webview = root.project(":flutter_inappwebview_android")
+            for (def mode in ["debug", "release"]) {
+                def rules = webview.android.buildTypes.getByName(mode).proguardFiles
+                println("WebView ${mode} rule files: ${rules*.name}")
+                // AGP appends its version to extracted default rule filenames.
+                if (!rules.any { it.name.startsWith("proguard-android-optimize.txt") } ||
+                    rules.any { it.name ==~ /proguard-android\.txt(-.*)?/ } ||
+                    rules.any { file -> file.exists() && file.readLines().any { it.trim() == "-dontoptimize" } }) {
+                    throw new GradleException("WebView ${mode} must use AGP-supported optimized default rules")
+                }
+            }
+            println("Verified WebView AGP optimized rules")
+        }
+    }
     root.tasks.register("verifyAndroidReleaseApkPermissions") {
         def app = root.project(":app")
         dependsOn(app.tasks.getByName("assembleRelease"))

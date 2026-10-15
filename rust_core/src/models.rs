@@ -1,6 +1,40 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NintendoFriend {
+    pub friend_id: String,
+    pub nickname: String,
+    pub note: String,
+    pub is_favorite: bool,
+    pub presence: String,
+    pub game_name: Option<String>,
+    pub total_play_time_minutes: Option<u32>,
+    pub logout_at: Option<DateTime<Utc>>,
+    pub activity: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NintendoFriendsSnapshot {
+    pub friends: Vec<NintendoFriend>,
+    pub updated_at: DateTime<Utc>,
+    pub activity_error: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SplatNetWebSession {
+    pub game_web_token: String,
+    pub expires_at: DateTime<Utc>,
+    pub language: String,
+    pub country: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeedExportPayload {
+    pub file_name: String,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MediaKind {

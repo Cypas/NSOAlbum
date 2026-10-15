@@ -465,6 +465,82 @@ class MediaExportSummary {
 
 enum MediaKind { image, video }
 
+class NintendoFriend {
+  final String friendId;
+  final String nickname;
+  final String note;
+  final bool isFavorite;
+  final String presence;
+  final String? gameName;
+  final int? totalPlayTimeMinutes;
+  final DateTime? logoutAt;
+  final String? activity;
+
+  const NintendoFriend({
+    required this.friendId,
+    required this.nickname,
+    required this.note,
+    required this.isFavorite,
+    required this.presence,
+    this.gameName,
+    this.totalPlayTimeMinutes,
+    this.logoutAt,
+    this.activity,
+  });
+
+  @override
+  int get hashCode =>
+      friendId.hashCode ^
+      nickname.hashCode ^
+      note.hashCode ^
+      isFavorite.hashCode ^
+      presence.hashCode ^
+      gameName.hashCode ^
+      totalPlayTimeMinutes.hashCode ^
+      logoutAt.hashCode ^
+      activity.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is NintendoFriend &&
+          runtimeType == other.runtimeType &&
+          friendId == other.friendId &&
+          nickname == other.nickname &&
+          note == other.note &&
+          isFavorite == other.isFavorite &&
+          presence == other.presence &&
+          gameName == other.gameName &&
+          totalPlayTimeMinutes == other.totalPlayTimeMinutes &&
+          logoutAt == other.logoutAt &&
+          activity == other.activity;
+}
+
+class NintendoFriendsSnapshot {
+  final List<NintendoFriend> friends;
+  final DateTime updatedAt;
+  final String? activityError;
+
+  const NintendoFriendsSnapshot({
+    required this.friends,
+    required this.updatedAt,
+    this.activityError,
+  });
+
+  @override
+  int get hashCode =>
+      friends.hashCode ^ updatedAt.hashCode ^ activityError.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is NintendoFriendsSnapshot &&
+          runtimeType == other.runtimeType &&
+          friends == other.friends &&
+          updatedAt == other.updatedAt &&
+          activityError == other.activityError;
+}
+
 class OperationProgress {
   final String operationId;
   final String kind;
@@ -510,6 +586,55 @@ class OperationProgress {
           processedItems == other.processedItems &&
           processedBytes == other.processedBytes &&
           totalBytes == other.totalBytes;
+}
+
+class SeedExportPayload {
+  final String fileName;
+  final Uint8List bytes;
+
+  const SeedExportPayload({required this.fileName, required this.bytes});
+
+  @override
+  int get hashCode => fileName.hashCode ^ bytes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SeedExportPayload &&
+          runtimeType == other.runtimeType &&
+          fileName == other.fileName &&
+          bytes == other.bytes;
+}
+
+class SplatNetWebSession {
+  final String gameWebToken;
+  final DateTime expiresAt;
+  final String language;
+  final String country;
+
+  const SplatNetWebSession({
+    required this.gameWebToken,
+    required this.expiresAt,
+    required this.language,
+    required this.country,
+  });
+
+  @override
+  int get hashCode =>
+      gameWebToken.hashCode ^
+      expiresAt.hashCode ^
+      language.hashCode ^
+      country.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SplatNetWebSession &&
+          runtimeType == other.runtimeType &&
+          gameWebToken == other.gameWebToken &&
+          expiresAt == other.expiresAt &&
+          language == other.language &&
+          country == other.country;
 }
 
 class SyncItemError {

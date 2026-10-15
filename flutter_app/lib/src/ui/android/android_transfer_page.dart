@@ -2,11 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../backend/app_backend.dart';
+import '../../backend/sync_failure_status.dart';
 import '../../l10n/app_localizations.dart';
 import '../../rust/models.dart';
 import '../../rust/settings.dart';
 import '../../state/sync_controller.dart';
 import '../../state/transfer_controller.dart';
+import '../display_time.dart';
+import '../account_tools/account_tools_actions.dart';
 import 'android_custom_import_page.dart';
 import 'android_nintendo_sync_page.dart';
 import 'android_page_frame.dart';
@@ -39,14 +42,9 @@ class AndroidTransferPage extends StatelessWidget {
                     subtitle: Text(
                       syncing
                           ? context.l10n.select(zh: '正在同步…', en: 'Syncing…')
-                          : controller.accounts.isEmpty
-                          ? context.l10n.select(
+                          : context.l10n.select(
                               zh: '登录账号并配置自动同步',
                               en: 'Sign in and configure automatic sync',
-                            )
-                          : context.l10n.select(
-                              zh: '已连接 ${controller.accounts.length} 个账号',
-                              en: '${controller.accounts.length} connected accounts',
                             ),
                     ),
                     trailing: const Icon(Icons.chevron_right),
@@ -61,14 +59,18 @@ class AndroidTransferPage extends StatelessWidget {
                     const Divider(height: 1),
                     for (final account in controller.accounts)
                       _AccountStatusTile(
+                        backend: controller.backend,
                         profile: account,
                         history: controller.histories[account.accountId],
                         result:
                             controller.sync.accountResults[account.accountId],
                         error: controller.sync.accountErrors[account.accountId],
                         current:
+                            syncing &&
                             controller.sync.currentAccountId ==
-                            account.accountId,
+                                account.accountId,
+                        cancelling:
+                            controller.sync.state == SyncState.cancelling,
                         authPaused: controller.sync.authPausedAccountIds
                             .contains(account.accountId),
                       ),
@@ -108,17 +110,7 @@ class AndroidTransferPage extends StatelessWidget {
                 ],
               ),
             ),
-            if (syncing || controller.sync.totalAccounts > 0)
-              _OverallSyncProgress(
-                sync: controller.sync,
-                currentAccountName: controller.accounts
-                    .where(
-                      (profile) =>
-                          profile.accountId == controller.sync.currentAccountId,
-                    )
-                    .firstOrNull
-                    ?.nickname,
-              ),
+            if (syncing) _OverallSyncProgress(sync: controller.sync),
             Card(
               child: ListTile(
                 key: const Key('android-import-entry'),
@@ -157,58 +149,108 @@ class AndroidTransferPage extends StatelessWidget {
 
 class _AccountStatusTile extends StatelessWidget {
   const _AccountStatusTile({
+    required this.backend,
     required this.profile,
     required this.history,
     required this.result,
     required this.error,
     required this.current,
+    required this.cancelling,
     required this.authPaused,
   });
 
   final NintendoAccountProfile profile;
+  final AppBackend backend;
   final SyncRuntimeState? history;
   final SyncSummary? result;
   final Object? error;
   final bool current;
+  final bool cancelling;
   final bool authPaused;
 
   @override
   Widget build(BuildContext context) {
     final attempt = history?.latestAttempt;
-    return ExpansionTile(
-      leading: CircleAvatar(
-        foregroundImage: profile.avatarBytes?.isNotEmpty == true
-            ? MemoryImage(profile.avatarBytes!)
-            : null,
-        child: profile.avatarBytes?.isNotEmpty == true
-            ? null
-            : const Icon(Icons.person_outline),
-      ),
-      title: Text(profile.nickname),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(_accountStatus(context)),
-          if (attempt != null)
-            Text(
-              context.l10n.select(
-                zh: '上次尝试：${attempt.attemptedAt.toLocal()}',
-                en: 'Last attempt: ${attempt.attemptedAt.toLocal()}',
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          if (result != null)
-            Text(
-              context.l10n.select(
-                zh: '下载 ${result!.downloaded} · 重复 ${result!.duplicates} · 失败 ${result!.failed}',
-                en: 'Downloaded ${result!.downloaded} · Duplicates ${result!.duplicates} · Failed ${result!.failed}',
-              ),
-            ),
-        ],
-      ),
-      trailing: error == null ? null : const Icon(Icons.info_outline),
+    final status = _accountStatus(context);
+    final identity = Column(
+      mainAxisSize: MainAxisSize.min,
       children: [
+        CircleAvatar(
+          foregroundImage: profile.avatarBytes?.isNotEmpty == true
+              ? MemoryImage(profile.avatarBytes!)
+              : null,
+          child: profile.avatarBytes?.isNotEmpty == true
+              ? null
+              : const Icon(Icons.person_outline),
+        ),
+        const SizedBox(height: 6),
+        Text(profile.nickname, textAlign: TextAlign.center, softWrap: true),
+      ],
+    );
+    final details = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Semantics(
+          label: status.text,
+          child: ExcludeSemantics(
+            child: Row(
+              children: [
+                Container(
+                  key: Key('android-account-status-dot-${profile.accountId}'),
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: status.color,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(child: Text(status.text)),
+              ],
+            ),
+          ),
+        ),
+        if (attempt != null)
+          Text(
+            context.l10n.select(
+              zh: '上次尝试：${formatNsoAttemptTime(attempt.attemptedAt)}',
+              en: 'Last attempt: ${formatNsoAttemptTime(attempt.attemptedAt)}',
+            ),
+          ),
+        if (result != null)
+          Text(
+            context.l10n.select(
+              zh: '下载 ${result!.downloaded} · 重复 ${result!.duplicates} · 失败 ${result!.failed}',
+              en: 'Downloaded ${result!.downloaded} · Duplicates ${result!.duplicates} · Failed ${result!.failed}',
+            ),
+          ),
+      ],
+    );
+    return ExpansionTile(
+      key: PageStorageKey('android-account-${profile.accountId}'),
+      title: LayoutBuilder(
+        builder: (context, constraints) {
+          final stacked =
+              constraints.maxWidth < 250 ||
+              MediaQuery.textScalerOf(context).scale(14) > 21;
+          if (stacked) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [identity, const SizedBox(height: 12), details],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(width: 100, child: identity),
+              const SizedBox(width: 12),
+              Expanded(child: details),
+            ],
+          );
+        },
+      ),
+      children: [
+        AccountToolsActions(backend: backend, profile: profile, mobile: true),
         if (error != null)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 8, 12),
@@ -242,69 +284,86 @@ class _AccountStatusTile extends StatelessWidget {
     );
   }
 
-  String _accountStatus(BuildContext context) {
+  ({String text, Color color}) _accountStatus(BuildContext context) {
+    ({String text, Color color}) status(String zh, String en, Color color) =>
+        (text: context.l10n.select(zh: zh, en: en), color: color);
+    final active = Colors.blue.shade600;
+    final success = Colors.green.shade600;
+    final warning = Colors.amber.shade700;
+    final failure = Colors.red.shade600;
+    final neutral = Colors.grey.shade600;
     if (current) {
-      return context.l10n.select(zh: '正在同步', en: 'Syncing');
+      return cancelling
+          ? status('正在取消同步', 'Cancelling sync', active)
+          : status('正在同步', 'Syncing', active);
     }
     if (authPaused) {
-      return context.l10n.select(
-        zh: '登录已失效，等待重新登录',
-        en: 'Sign-in expired; waiting for sign-in',
+      return status(
+        '登录已失效，等待重新登录',
+        'Sign-in expired; waiting for sign-in',
+        failure,
       );
     }
     if (error != null) {
-      return androidReadableError(context, error!);
+      switch (syncFailureStatus(error!)) {
+        case 'rate_limited':
+          return status(
+            '请求过于频繁，等待重试',
+            'Rate limited; waiting to retry',
+            warning,
+          );
+        case 'authentication_failure':
+          return status(
+            '登录已失效，等待重新登录',
+            'Sign-in expired; waiting for sign-in',
+            failure,
+          );
+        case 'cancelled':
+          return status('同步已取消', 'Sync cancelled', neutral);
+        default:
+          return (text: androidReadableError(context, error!), color: failure);
+      }
     }
     if (result != null) {
       if (result!.failed > BigInt.zero) {
-        return context.l10n.select(
-          zh: '同步完成但有部分项目失败',
-          en: 'Sync completed with some failed items',
+        return status(
+          '同步完成但有部分项目失败',
+          'Sync completed with some failed items',
+          warning,
         );
       }
-      return context.l10n.select(zh: '同步完成', en: 'Sync complete');
+      return status('同步完成', 'Sync complete', success);
     }
     switch (history?.latestAttempt?.status) {
       case 'success':
       case 'completed':
-        return context.l10n.select(zh: '上次同步成功', en: 'Last sync succeeded');
+        return status('上次同步成功', 'Last sync succeeded', success);
       case 'rate_limited':
-        return context.l10n.select(
-          zh: '请求过于频繁，等待重试',
-          en: 'Rate limited; waiting to retry',
-        );
+        return status('请求过于频繁，等待重试', 'Rate limited; waiting to retry', warning);
       case 'cancelled':
-        return context.l10n.select(
-          zh: '上次同步已取消',
-          en: 'Last sync was cancelled',
-        );
+        return status('上次同步已取消', 'Last sync was cancelled', neutral);
       case 'failure':
+        return status('上次同步未完成', 'Last sync did not complete', failure);
       case 'partial_failure':
-        return context.l10n.select(
-          zh: history?.latestAttempt?.status == 'partial_failure'
-              ? '上次同步有部分项目失败'
-              : '上次同步未完成',
-          en: history?.latestAttempt?.status == 'partial_failure'
-              ? 'Last sync had some failed items'
-              : 'Last sync did not complete',
+        return status(
+          '上次同步有部分项目失败',
+          'Last sync had some failed items',
+          warning,
         );
       case 'authentication_failure':
-        return context.l10n.select(
-          zh: '登录已失效，等待重新登录',
-          en: 'Sign-in expired; waiting for sign-in',
+        return status(
+          '登录已失效，等待重新登录',
+          'Sign-in expired; waiting for sign-in',
+          failure,
         );
     }
-    return context.l10n.select(zh: '等待同步', en: 'Waiting to sync');
+    return status('等待同步', 'Waiting to sync', neutral);
   }
 }
 
 class _OverallSyncProgress extends StatelessWidget {
-  const _OverallSyncProgress({
-    required this.sync,
-    required this.currentAccountName,
-  });
+  const _OverallSyncProgress({required this.sync});
   final SyncController sync;
-  final String? currentAccountName;
 
   @override
   Widget build(BuildContext context) {
@@ -313,9 +372,6 @@ class _OverallSyncProgress extends StatelessWidget {
     final value = total > BigInt.zero
         ? (media!.processedItems.toDouble() / total.toDouble()).clamp(0.0, 1.0)
         : null;
-    final accountValue = sync.totalAccounts > 0
-        ? (sync.completedAccounts / sync.totalAccounts).clamp(0.0, 1.0)
-        : null;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -323,34 +379,14 @@ class _OverallSyncProgress extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              sync.state == SyncState.cancelled
-                  ? context.l10n.select(
-                      zh: '账号同步已取消 · 已处理 ${sync.completedAccounts} / ${sync.totalAccounts}',
-                      en: 'Account sync cancelled · Processed ${sync.completedAccounts} / ${sync.totalAccounts}',
-                    )
-                  : sync.totalAccounts == 0
-                  ? context.l10n.select(
-                      zh: '正在准备账号队列…',
-                      en: 'Preparing account queue…',
-                    )
-                  : context.l10n.select(
-                      zh: '账号 ${sync.completedAccounts} / ${sync.totalAccounts}',
-                      en: 'Accounts ${sync.completedAccounts} / ${sync.totalAccounts}',
-                    ),
+              context.l10n.select(
+                zh: sync.state == SyncState.cancelling ? '正在取消同步…' : '正在同步…',
+                en: sync.state == SyncState.cancelling
+                    ? 'Cancelling sync…'
+                    : 'Syncing…',
+              ),
             ),
             const SizedBox(height: 8),
-            if (sync.state != SyncState.cancelled)
-              LinearProgressIndicator(
-                key: const Key('android-account-progress'),
-                value: accountValue,
-              ),
-            if (currentAccountName != null)
-              Text(
-                context.l10n.select(
-                  zh: '当前账号：$currentAccountName',
-                  en: 'Current account: $currentAccountName',
-                ),
-              ),
             if (sync.state != SyncState.cancelled) ...[
               const SizedBox(height: 8),
               LinearProgressIndicator(

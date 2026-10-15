@@ -54,6 +54,21 @@ impl HttpResponseData {
             self.status, detail
         )))
     }
+
+    pub(crate) fn ensure_success_redacted(&self, operation: &str) -> CoreResult<()> {
+        match self.status {
+            200..=299 => Ok(()),
+            401 => Err(CoreError::Authentication(format!(
+                "{operation} session has expired"
+            ))),
+            429 => Err(CoreError::RateLimited {
+                retry_after_seconds: 60,
+            }),
+            status => Err(CoreError::Provider(format!(
+                "{operation} failed (HTTP {status})"
+            ))),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -205,8 +220,25 @@ impl Drop for StreamingDownloadWriter {
 
 impl HttpTransport {
     pub fn new(config: TransportConfig) -> CoreResult<Self> {
+        Self::configured(config, reqwest::redirect::Policy::limited(10))
+    }
+
+    pub(crate) fn without_redirects(&self) -> CoreResult<Self> {
+        let mut transport =
+            Self::configured(self.config.clone(), reqwest::redirect::Policy::none())?;
+        transport
+            .download_user_agent
+            .clone_from(&self.download_user_agent);
+        Ok(transport)
+    }
+
+    fn configured(
+        config: TransportConfig,
+        redirects: reqwest::redirect::Policy,
+    ) -> CoreResult<Self> {
         let mut builder = Client::builder()
             .timeout(config.timeout)
+            .redirect(redirects)
             .user_agent(DEFAULT_USER_AGENT);
         if let Some(proxy_url) = config.proxy_url.as_deref().filter(|v| !v.trim().is_empty()) {
             let parsed = Url::parse(proxy_url)?;
@@ -246,7 +278,9 @@ impl HttpTransport {
         headers: &[(&str, String)],
     ) -> CoreResult<T> {
         let response = self.send(Method::GET, url, headers, None).await?;
-        Ok(response.error_for_status()?.json().await?)
+        let response = collect_response(response).await?;
+        response.ensure_success_redacted("JSON request")?;
+        response.json()
     }
 
     pub async fn post_json<B: Serialize + ?Sized, T: DeserializeOwned>(
@@ -255,11 +289,9 @@ impl HttpTransport {
         headers: &[(&str, String)],
         body: &B,
     ) -> CoreResult<T> {
-        let mut request = self.client.post(url).json(body);
-        for (name, value) in headers {
-            request = request.header(*name, value);
-        }
-        Ok(request.send().await?.error_for_status()?.json().await?)
+        let response = self.post_json_raw(url, headers, body).await?;
+        response.ensure_success_redacted("JSON request")?;
+        response.json()
     }
 
     pub async fn post_form<B: Serialize + ?Sized, T: DeserializeOwned>(
@@ -268,11 +300,9 @@ impl HttpTransport {
         headers: &[(&str, String)],
         body: &B,
     ) -> CoreResult<T> {
-        let mut request = self.client.post(url).form(body);
-        for (name, value) in headers {
-            request = request.header(*name, value);
-        }
-        Ok(request.send().await?.error_for_status()?.json().await?)
+        let response = self.post_form_raw(url, headers, body).await?;
+        response.ensure_success_redacted("Form request")?;
+        response.json()
     }
 
     pub async fn post_bytes(
@@ -281,17 +311,9 @@ impl HttpTransport {
         headers: &[(&str, String)],
         body: Vec<u8>,
     ) -> CoreResult<Vec<u8>> {
-        let mut request = self.client.post(url).body(body);
-        for (name, value) in headers {
-            request = request.header(*name, value);
-        }
-        Ok(request
-            .send()
-            .await?
-            .error_for_status()?
-            .bytes()
-            .await?
-            .to_vec())
+        let response = self.post_bytes_raw(url, headers, body).await?;
+        response.ensure_success_redacted("Binary request")?;
+        Ok(response.body)
     }
 
     pub async fn post_json_raw<B: Serialize + ?Sized>(
@@ -519,6 +541,14 @@ pub(crate) mod tests {
     use crate::sync::CancellationToken;
 
     pub(crate) fn capture_request(body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        capture_response(200, body, &[])
+    }
+
+    pub(crate) fn capture_response(
+        status: u16,
+        body: &'static str,
+        response_headers: &'static [(&str, &str)],
+    ) -> (String, std::thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
@@ -573,14 +603,53 @@ pub(crate) mod tests {
             }
             write!(
                 connection,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n{}",
                 body.len(),
+                response_headers.iter().map(|(key, value)| format!("{key}: {value}\r\n")).collect::<String>(),
                 body
             )
             .unwrap();
             String::from_utf8(request).unwrap()
         });
         (url, server)
+    }
+
+    #[tokio::test]
+    async fn authentication_json_preserves_rate_limits_without_echoing_remote_secrets() {
+        let (url, server) = capture_response(429, r#"{"secret":"not-for-errors"}"#, &[]);
+        let transport = HttpTransport::new(Default::default()).unwrap();
+        let result = transport
+            .post_json::<_, serde_json::Value>(&url, &[], &serde_json::json!({}))
+            .await;
+        server.join().unwrap();
+        assert!(matches!(
+            result,
+            Err(CoreError::RateLimited {
+                retry_after_seconds: 60
+            })
+        ));
+        let (url, server) = capture_response(500, r#"{"secret":"not-for-errors"}"#, &[]);
+        let result = transport
+            .post_json::<_, serde_json::Value>(&url, &[], &serde_json::json!({}))
+            .await;
+        server.join().unwrap();
+        assert!(!result.unwrap_err().to_string().contains("not-for-errors"));
+    }
+
+    #[tokio::test]
+    async fn account_transport_never_follows_cookie_bearing_redirects() {
+        let (url, server) =
+            capture_response(302, "", &[("Location", "https://evil.example/collect")]);
+        let transport = HttpTransport::new(Default::default())
+            .unwrap()
+            .without_redirects()
+            .unwrap();
+        let response = transport
+            .get_raw(&url, &[("Cookie", "_gtoken=test-only".into())])
+            .await
+            .unwrap();
+        assert_eq!(response.status, 302);
+        assert!(server.join().unwrap().contains("cookie: _gtoken=test-only"));
     }
 
     #[tokio::test]

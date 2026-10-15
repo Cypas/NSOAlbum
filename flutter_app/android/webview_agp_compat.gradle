@@ -1,0 +1,15 @@
+// flutter_inappwebview 6.1.5's Android library asks for the obsolete
+// -dontoptimize default. AGP 9 rejects that request during configuration, even
+// for Debug. Adapt only this library's Groovy DSL call; never edit the cache or
+// disable R8 optimization for the application or other plugins.
+plugins.withId('com.android.library') {
+    def library = extensions.getByName('android')
+    def original = library.metaClass.getMetaMethod('getDefaultProguardFile', String)
+    if (original == null) {
+        throw new GradleException('WebView Android DSL no longer exposes getDefaultProguardFile')
+    }
+    library.metaClass.getDefaultProguardFile = { String name ->
+        def supported = name == 'proguard-android.txt' ? 'proguard-android-optimize.txt' : name
+        original.invoke(library, supported)
+    }
+}

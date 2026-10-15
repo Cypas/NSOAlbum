@@ -17,8 +17,8 @@ use crate::models::{
     SourceType, SyncProgress, SyncSummary, TagUsageSummary,
 };
 use crate::nso::{
-    AttestationService, CoralAlbumProvider, CoralSession, CoralSessionClient, MediaProvider,
-    NintendoAuthClient, NxapiAttestationClient, NxapiConfig,
+    AttestationService, CoralAlbumProvider, CoralSession, MediaProvider, NintendoAuthClient,
+    NxapiAttestationClient, NxapiConfig,
 };
 use crate::settings::{
     AppSettings, SyncAttemptSummary, SyncPolicy, SyncRuntimeState, SyncScheduleStatus,
@@ -32,6 +32,7 @@ pub struct CoreApi {
     database: Arc<Database>,
     disable_app_proxy: AtomicBool,
     import_progress: Mutex<ImportProgressStore>,
+    account_tools: crate::nso::account_tools::AccountTools,
 }
 
 #[derive(Default)]
@@ -54,6 +55,7 @@ impl CoreApi {
             database,
             disable_app_proxy: AtomicBool::new(false),
             import_progress: Mutex::new(ImportProgressStore::default()),
+            account_tools: Default::default(),
         })
     }
 
@@ -243,13 +245,17 @@ impl CoreApi {
         cancellation: &CancellationToken,
     ) -> CoreResult<CoralSession> {
         cancellation.check()?;
-        let transport = self.transport(proxy_url)?;
-        let attestation = NxapiAttestationClient::new(transport.clone(), NxapiConfig::default());
-        let client = CoralSessionClient::new(transport, attestation);
-        tokio::select! {
-            _ = cancellation.cancelled() => Err(CoreError::Cancelled),
-            result = client.login_with_session_token(&session_token) => result,
-        }
+        let proxy = self.resolve_proxy_url(proxy_url)?;
+        let transport = Self::transport_with_resolved_proxy(proxy.clone())?;
+        self.account_tools
+            .authenticate(
+                &session_token,
+                None,
+                proxy.as_deref(),
+                transport,
+                cancellation,
+            )
+            .await
     }
 
     pub async fn sync_nso_from_session_token(
@@ -258,15 +264,34 @@ impl CoreApi {
         proxy_url: Option<String>,
         cancellation: &CancellationToken,
     ) -> CoreResult<SyncSummary> {
-        let session = self
-            .establish_coral_session_with_cancellation(
-                session_token,
-                proxy_url.clone(),
-                cancellation,
-            )
-            .await?;
-        self.sync_nso_with_cancellation(session, proxy_url, cancellation)
-            .await
+        let proxy = self.resolve_proxy_url(proxy_url)?;
+        let transport = Self::transport_with_resolved_proxy(proxy.clone())?;
+        for attempt in 0..2 {
+            let session = self
+                .account_tools
+                .authenticate_with_refresh(
+                    &session_token,
+                    None,
+                    proxy.as_deref(),
+                    transport.clone(),
+                    cancellation,
+                    attempt > 0,
+                )
+                .await?;
+            let result = self
+                .sync_nso_with_resolved_transport(
+                    session,
+                    proxy.clone(),
+                    transport.clone(),
+                    cancellation,
+                )
+                .await;
+            match result {
+                Err(CoreError::Authentication(_)) if attempt == 0 => continue,
+                other => return other,
+            }
+        }
+        unreachable!("bounded sync authentication retry")
     }
 
     pub async fn sync_nso(
@@ -285,8 +310,23 @@ impl CoreApi {
         cancellation: &CancellationToken,
     ) -> CoreResult<SyncSummary> {
         cancellation.check()?;
-        let transport = self.transport(proxy_url)?;
-        let attestation = NxapiAttestationClient::new(transport.clone(), NxapiConfig::default());
+        let proxy = self.resolve_proxy_url(proxy_url)?;
+        let transport = Self::transport_with_resolved_proxy(proxy.clone())?;
+        self.sync_nso_with_resolved_transport(session, proxy, transport, cancellation)
+            .await
+    }
+
+    async fn sync_nso_with_resolved_transport(
+        &self,
+        session: CoralSession,
+        proxy: Option<String>,
+        transport: HttpTransport,
+        cancellation: &CancellationToken,
+    ) -> CoreResult<SyncSummary> {
+        cancellation.check()?;
+        let attestation = self
+            .account_tools
+            .attestation(proxy.as_deref(), &transport)?;
         let nso_version = tokio::select! {
             _ = cancellation.cancelled() => return Err(CoreError::Cancelled),
             result = attestation.nso_version() => result?,
@@ -302,6 +342,36 @@ impl CoreApi {
 
     pub fn current_sync_progress(&self) -> CoreResult<Option<SyncProgress>> {
         self.database.current_sync_progress_any()
+    }
+
+    pub(crate) async fn account_tool(
+        &self,
+        account_id: String,
+        session_token: String,
+        operation_id: String,
+        proxy_url: Option<String>,
+        request: crate::nso::account_tools::ToolRequest,
+    ) -> CoreResult<crate::nso::account_tools::ToolResponse> {
+        let proxy = self.resolve_proxy_url(proxy_url)?;
+        let transport = Self::transport_with_resolved_proxy(proxy.clone())?.without_redirects()?;
+        self.account_tools
+            .execute(
+                &account_id,
+                &session_token,
+                &operation_id,
+                proxy.as_deref(),
+                transport,
+                request,
+            )
+            .await
+    }
+
+    pub fn cancel_account_tool_operation(&self, operation_id: String) -> CoreResult<bool> {
+        self.account_tools.cancel(&operation_id)
+    }
+
+    pub fn clear_account_tool_cache(&self, account_id: String) -> CoreResult<()> {
+        self.account_tools.clear(&account_id)
     }
 
     pub fn list_media(&self, query: GalleryQuery) -> CoreResult<Vec<MediaAsset>> {
@@ -1044,6 +1114,10 @@ impl CoreApi {
 
     fn transport(&self, explicit_proxy: Option<String>) -> CoreResult<HttpTransport> {
         let proxy_url = self.resolve_proxy_url(explicit_proxy)?;
+        Self::transport_with_resolved_proxy(proxy_url)
+    }
+
+    fn transport_with_resolved_proxy(proxy_url: Option<String>) -> CoreResult<HttpTransport> {
         HttpTransport::new(TransportConfig {
             proxy_url,
             ..TransportConfig::default()
@@ -1553,6 +1627,182 @@ mod tests {
                 .as_deref(),
             Some("http://127.0.0.1:9090")
         );
+    }
+
+    struct RouteProbe {
+        url: String,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        server: Option<std::thread::JoinHandle<Option<String>>>,
+    }
+
+    impl RouteProbe {
+        fn new(status: u16) -> Self {
+            use std::io::{Read, Write};
+            use std::sync::atomic::{AtomicBool, Ordering};
+            use std::sync::Arc;
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let stop = Arc::new(AtomicBool::new(false));
+            let stop_server = Arc::clone(&stop);
+            let server = std::thread::spawn(move || {
+                while !stop_server.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut connection, _)) => {
+                            connection.set_nonblocking(false).unwrap();
+                            connection
+                                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                                .unwrap();
+                            let mut request = Vec::new();
+                            let mut buffer = [0_u8; 1024];
+                            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                                let count = connection.read(&mut buffer).unwrap();
+                                assert!(count > 0);
+                                request.extend_from_slice(&buffer[..count]);
+                                assert!(request.len() < 64 * 1024);
+                            }
+                            write!(connection, "HTTP/1.1 {status} Test\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}").unwrap();
+                            return Some(String::from_utf8(request).unwrap());
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                        Err(error) => panic!("route probe failed: {error}"),
+                    }
+                }
+                None
+            });
+            Self {
+                url,
+                stop,
+                server: Some(server),
+            }
+        }
+        fn finish(mut self) -> Option<String> {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.server.take().unwrap().join().unwrap()
+        }
+    }
+    impl Drop for RouteProbe {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(server) = self.server.take() {
+                let _ = server.join();
+            }
+        }
+    }
+
+    struct ProxyChangingAuthenticator {
+        database: std::sync::Arc<crate::database::Database>,
+        settings_after_auth: AppSettings,
+        auth_probe: String,
+    }
+    #[async_trait::async_trait]
+    impl crate::nso::account_tools::AccountAuthenticator for ProxyChangingAuthenticator {
+        async fn login(
+            &self,
+            transport: crate::transport::HttpTransport,
+            _: crate::nso::NxapiAttestationClient,
+            _: &str,
+        ) -> crate::error::CoreResult<crate::nso::session::AuthenticatedCoralSession> {
+            transport
+                .get_raw(&self.auth_probe, &[])
+                .await?
+                .ensure_success_redacted("auth probe")?;
+            self.database
+                .set_setting("app.settings", &self.settings_after_auth)?;
+            Ok(crate::nso::session::AuthenticatedCoralSession {
+                session: crate::nso::CoralSession {
+                    access_token: "test-only-coral".into(),
+                    na_id: Some("account-a".into()),
+                    coral_user_id: Some("123456".into()),
+                    expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                    nickname: "test".into(),
+                    avatar_url: None,
+                    avatar_bytes: None,
+                },
+                language: "en-US".into(),
+                country: "US".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_keeps_the_original_request_transport_when_saved_proxy_changes_during_auth() {
+        use crate::nso::{NxapiAttestationClient, NxapiConfig};
+        use crate::transport::{HttpTransport, TransportConfig};
+        let library = tempdir().unwrap();
+        let mut api = CoreApi::open(library.path()).unwrap();
+        let original_route = RouteProbe::new(429);
+        let changed_proxy = RouteProbe::new(503);
+        let settings_after_auth = AppSettings {
+            proxy_url: Some(changed_proxy.url.clone()),
+            library_path: library.path().to_string_lossy().into_owned(),
+            theme: "ocean".into(),
+            language: "en".into(),
+            gallery_columns: 4,
+            gallery_rows: 3,
+            show_note_preview: true,
+            show_game_tag: true,
+            compact_tag_display: true,
+            auto_play_video: false,
+            auto_sync_on_launch: false,
+            close_behavior: "ask".into(),
+            custom_font_paths: Vec::new(),
+            sync_policy: SyncPolicy::default(),
+        };
+        let config = NxapiConfig {
+            znca_base_url: format!("{}/api/znca", original_route.url),
+            ..Default::default()
+        };
+        let direct_client = NxapiAttestationClient::new(
+            HttpTransport::new(Default::default()).unwrap(),
+            config.clone(),
+        );
+        let proxied_client = NxapiAttestationClient::new(
+            HttpTransport::new(TransportConfig {
+                proxy_url: Some(changed_proxy.url.clone()),
+                ..Default::default()
+            })
+            .unwrap(),
+            config,
+        );
+        let (auth_probe, auth_server) = crate::transport::tests::capture_request("{}");
+        api.account_tools = crate::nso::account_tools::test_support::service_with_clients(
+            std::sync::Arc::new(ProxyChangingAuthenticator {
+                database: api.database(),
+                settings_after_auth,
+                auth_probe,
+            }),
+            vec![
+                (None, direct_client),
+                (Some(changed_proxy.url.clone()), proxied_client),
+            ],
+        );
+        let result = api
+            .sync_nso_from_session_token(
+                "test-session".into(),
+                None,
+                &crate::sync::CancellationToken::default(),
+            )
+            .await;
+        let auth_request = auth_server.join().unwrap();
+        let original_request = original_route.finish();
+        let new_proxy_request = changed_proxy.finish();
+        assert!(auth_request.starts_with("GET / HTTP/1.1"));
+        assert!(
+            new_proxy_request.is_none(),
+            "an in-flight sync must not migrate to the newly saved proxy"
+        );
+        assert!(original_request
+            .as_deref()
+            .is_some_and(|request| request.starts_with("GET /api/znca/config HTTP/1.1")));
+        assert!(matches!(
+            result,
+            Err(crate::error::CoreError::RateLimited {
+                retry_after_seconds: 60
+            })
+        ));
     }
 
     #[tokio::test]

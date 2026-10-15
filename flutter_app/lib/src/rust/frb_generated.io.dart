@@ -139,6 +139,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<NintendoFriend> dco_decode_list_nintendo_friend(dynamic raw);
+
+  @protected
   Int64List dco_decode_list_prim_i_64_strict(dynamic raw);
 
   @protected
@@ -170,6 +173,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   MediaKind dco_decode_media_kind(dynamic raw);
+
+  @protected
+  NintendoFriend dco_decode_nintendo_friend(dynamic raw);
+
+  @protected
+  NintendoFriendsSnapshot dco_decode_nintendo_friends_snapshot(dynamic raw);
 
   @protected
   OperationProgress dco_decode_operation_progress(dynamic raw);
@@ -208,6 +217,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
+
+  @protected
+  SeedExportPayload dco_decode_seed_export_payload(dynamic raw);
+
+  @protected
+  SplatNetWebSession dco_decode_splat_net_web_session(dynamic raw);
 
   @protected
   SyncAttemptSummary dco_decode_sync_attempt_summary(dynamic raw);
@@ -386,6 +401,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<NintendoFriend> sse_decode_list_nintendo_friend(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Int64List sse_decode_list_prim_i_64_strict(SseDeserializer deserializer);
 
   @protected
@@ -427,6 +447,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   MediaKind sse_decode_media_kind(SseDeserializer deserializer);
+
+  @protected
+  NintendoFriend sse_decode_nintendo_friend(SseDeserializer deserializer);
+
+  @protected
+  NintendoFriendsSnapshot sse_decode_nintendo_friends_snapshot(
+    SseDeserializer deserializer,
+  );
 
   @protected
   OperationProgress sse_decode_operation_progress(SseDeserializer deserializer);
@@ -471,6 +499,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer);
+
+  @protected
+  SeedExportPayload sse_decode_seed_export_payload(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SplatNetWebSession sse_decode_splat_net_web_session(
+    SseDeserializer deserializer,
+  );
 
   @protected
   SyncAttemptSummary sse_decode_sync_attempt_summary(
@@ -693,6 +731,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_nintendo_friend(
+    List<NintendoFriend> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_prim_i_64_strict(
     Int64List self,
     SseSerializer serializer,
@@ -748,6 +792,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_media_kind(MediaKind self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_nintendo_friend(
+    NintendoFriend self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_nintendo_friends_snapshot(
+    NintendoFriendsSnapshot self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_operation_progress(
@@ -806,6 +862,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_list_prim_u_8_strict(
     Uint8List? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_seed_export_payload(
+    SeedExportPayload self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_splat_net_web_session(
+    SplatNetWebSession self,
     SseSerializer serializer,
   );
 

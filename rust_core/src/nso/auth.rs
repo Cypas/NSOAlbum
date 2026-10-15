@@ -14,7 +14,7 @@ use crate::transport::HttpTransport;
 const CLIENT_ID: &str = "71b963c1b7b6d119";
 const REDIRECT_URI: &str = "npf71b963c1b7b6d119://auth";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct NintendoTokens {
     pub access_token: String,
     pub id_token: String,

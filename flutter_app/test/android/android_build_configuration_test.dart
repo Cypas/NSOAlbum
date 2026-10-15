@@ -11,6 +11,27 @@ void main() {
   const skipReason =
       'Requires Android SDK/JDK, a prepared Gradle wrapper, and '
       'NSO_VERIFY_ANDROID_BUILD=1';
+  test(
+    'pinned WebView config uses optimized Proguard defaults with current AGP',
+    () async {
+      final result = await Process.run(
+        p.absolute('android', Platform.isWindows ? 'gradlew.bat' : 'gradlew'),
+        [
+          '-Ptarget-platform=android-arm64',
+          '--init-script',
+          p.absolute('test/fixtures/android/verify_arm64.gradle'),
+          'verifyAndroidWebViewOptimizationRules',
+          '--console=plain',
+        ],
+        workingDirectory: p.absolute('android'),
+        runInShell: Platform.isWindows,
+      );
+      expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+      expect(result.stdout, contains('Verified WebView AGP optimized rules'));
+    },
+    skip: enabled ? false : skipReason,
+    timeout: const Timeout(Duration(minutes: 10)),
+  );
 
   test(
     'Android updater validates official metadata signatures and bounded files',

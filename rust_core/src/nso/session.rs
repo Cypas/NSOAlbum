@@ -10,6 +10,13 @@ use super::provider::CoralSession;
 
 const CORAL_LOGIN_URL: &str = "https://api-lp1.znc.srv.nintendo.net/v4/Account/Login";
 
+#[derive(Clone)]
+pub(crate) struct AuthenticatedCoralSession {
+    pub session: CoralSession,
+    pub language: String,
+    pub country: String,
+}
+
 fn account_login_parameter(id_token: &str, language: &str) -> Value {
     json!({
         "language": language,
@@ -35,12 +42,18 @@ impl<A: AttestationService> CoralSessionClient<A> {
     }
 
     pub async fn login_with_session_token(&self, session_token: &str) -> CoreResult<CoralSession> {
+        Ok(self.login_with_account_info(session_token).await?.session)
+    }
+
+    pub(crate) async fn login_with_account_info(
+        &self,
+        session_token: &str,
+    ) -> CoreResult<AuthenticatedCoralSession> {
         let auth = NintendoAuthClient::new(self.transport.clone());
         let tokens = auth.exchange_session_token(session_token).await?;
         let profile = auth.fetch_profile(&tokens.access_token).await?;
         let parameter = account_login_parameter(&tokens.id_token, &profile.language);
 
-        let mut last_response = None;
         for attempt in 0..2 {
             let encrypted = self
                 .attestation
@@ -68,12 +81,16 @@ impl<A: AttestationService> CoralSessionClient<A> {
                     encrypted.body,
                 )
                 .await?;
+            response.ensure_success_redacted("Coral Account/Login")?;
             let decoded = self.decode_coral_response(&response).await?;
             if attempt == 0 && is_attestation_rejection(&decoded) {
-                last_response = Some(decoded);
                 continue;
             }
-            response.ensure_success("Coral Account/Login")?;
+            if is_attestation_rejection(&decoded) {
+                return Err(CoreError::Authentication(
+                    "Coral rejected account authentication".into(),
+                ));
+            }
             let mut session = parse_session(&decoded, &profile)?;
             if let Some(avatar_url) = session.avatar_url.as_deref() {
                 session.avatar_bytes = self
@@ -84,13 +101,16 @@ impl<A: AttestationService> CoralSessionClient<A> {
                     .await
                     .ok();
             }
-            return Ok(session);
+            return Ok(AuthenticatedCoralSession {
+                session,
+                language: profile.language,
+                country: profile.country,
+            });
         }
 
-        Err(CoreError::Authentication(format!(
-            "Coral rejected method-1 attestation twice: {}",
-            last_response.unwrap_or(Value::Null)
-        )))
+        Err(CoreError::Authentication(
+            "Coral rejected account authentication".into(),
+        ))
     }
 
     async fn decode_coral_response(&self, response: &HttpResponseData) -> CoreResult<Value> {
@@ -119,7 +139,7 @@ fn is_attestation_rejection(value: &Value) -> bool {
 fn parse_session(value: &Value, profile: &crate::nso::NintendoProfile) -> CoreResult<CoralSession> {
     let result = value
         .get("result")
-        .ok_or_else(|| CoreError::Authentication(format!("Coral login has no result: {value}")))?;
+        .ok_or_else(|| CoreError::Authentication("Coral login has no result".into()))?;
     let credential = result
         .get("webApiServerCredential")
         .ok_or_else(|| CoreError::Authentication("Coral login has no credential".into()))?;

@@ -41,11 +41,13 @@
 | Android 独立页面和移动布局 | `flutter_app/lib/src/ui/android/` | 是 |
 | 桌面界面与共享展示组件 | `flutter_app/lib/src/ui/` 中对应模块 | 是 |
 | Dart 后端门面、状态控制器 | `flutter_app/lib/src/backend/`、`flutter_app/lib/src/state/` | 是 |
+| 跨平台账号好友、观星与内嵌网页组件 | `flutter_app/lib/src/ui/account_tools/` | 是，平台外框与原生策略分离 |
 | Rust 数据库、文件仓库、协议、导入与同步 | `rust_core/src/` | 是 |
 | Flutter 单元/widget 测试 | `flutter_app/test/`，Android 测试放其 `android/` 子目录 | 是 |
 | Android JVM 测试 | `flutter_app/android/app/src/test/` | 是 |
 | 可重复使用的合成测试夹具 | `flutter_app/test/fixtures/<模块>/` | 是 |
 | 构建、打包、校验和生成脚本 | `flutter_app/tool/` | 是 |
+| 无账号 WebView 原生生命周期探针 | `flutter_app/tool/account_tools_webview_smoke.dart` | 是，独立开发入口，不访问账号/图库 |
 | Android/macOS/Windows runner 源码与配置 | `flutter_app/android/`、`macos/`、`windows/` 的对应源码目录 | 是 |
 | Windows 安装器模板 | `installer/` | 是 |
 | GitHub 工作流与共享 Action | `.github/workflows/`、`.github/actions/` | 是 |

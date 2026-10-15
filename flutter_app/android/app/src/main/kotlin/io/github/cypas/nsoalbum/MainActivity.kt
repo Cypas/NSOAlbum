@@ -28,6 +28,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        SplatNetWebViewDisposal.register(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
             "io.github.cypas.nsoalbum/storage").setMethodCallHandler { call, result ->
             if (call.method != "locations") {

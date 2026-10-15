@@ -15,6 +15,7 @@ import 'package:squid_album/src/state/settings_controller.dart';
 import 'package:squid_album/src/state/sync_controller.dart';
 import 'package:squid_album/src/state/transfer_controller.dart';
 import 'package:squid_album/src/ui/android/android_transfer_page.dart';
+import 'package:squid_album/src/ui/android/android_nintendo_sync_page.dart';
 import 'package:squid_album/src/ui/platform_ui.dart';
 
 import '../home_shell_test.dart' show FakeBackend;
@@ -43,19 +44,23 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byType(NavigationDestination).at(2));
     await tester.pumpAndSettle();
+    expect(find.byKey(const Key('android-media-progress')), findsNothing);
+    expect(find.textContaining('已连接 1 个账号'), findsNothing);
     expect(find.byKey(const Key('android-sync-all')), findsOneWidget);
     expect(find.text('Player'), findsOneWidget);
     await tester.tap(find.byKey(const Key('android-sync-all')));
     await tester.pump(const Duration(milliseconds: 350));
-    expect(find.text('正在准备账号队列…'), findsOneWidget);
+    expect(find.text('正在同步…'), findsWidgets);
+    expect(find.textContaining('已连接 1 个账号'), findsNothing);
     expect(find.textContaining('当前媒体 2 / 5'), findsOneWidget);
     await tester.tap(find.byKey(const Key('android-sync-entry')));
     await tester.pumpAndSettle();
+    expect(find.byKey(const Key('android-media-progress')), findsNothing);
     await tester.tap(find.byKey(const Key('android-page-back')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.byKey(const Key('android-sync-entry')), findsOneWidget);
-    expect(find.text('正在同步…'), findsOneWidget);
+    expect(find.text('正在同步…'), findsWidgets);
     expect(backend.syncCalls, 1);
     gate.complete(
       SyncSummary(
@@ -69,6 +74,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    expect(find.byKey(const Key('android-media-progress')), findsNothing);
+    expect(find.textContaining('账号 1 / 1'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
@@ -157,14 +164,17 @@ void main() {
   }, variant: TargetPlatformVariant({TargetPlatform.android}));
 
   testWidgets(
-    'account statuses and account progress distinguish partial and paused states',
+    'account statuses use text and traffic-light colors with one progress bar',
     (tester) async {
+      final semantics = tester.ensureSemantics();
       final backend = FakeBackend(
         mediaItems: [],
         signedIn: true,
         accountProfiles: const [
           NintendoAccountProfile(accountId: 'a', nickname: 'A'),
           NintendoAccountProfile(accountId: 'b', nickname: 'B'),
+          NintendoAccountProfile(accountId: 'c', nickname: 'C'),
+          NintendoAccountProfile(accountId: 'd', nickname: 'D'),
         ],
         accountSyncHistories: {
           'a': SyncRuntimeState(
@@ -187,12 +197,41 @@ void main() {
               failed: BigInt.one,
             ),
           ),
+          'c': SyncRuntimeState(
+            latestAttempt: SyncAttemptSummary(
+              attemptedAt: DateTime.utc(2026, 10, 14, 1, 2, 3, 456, 789),
+              status: 'success',
+              totalFound: BigInt.one,
+              downloaded: BigInt.one,
+              duplicates: BigInt.zero,
+              failed: BigInt.zero,
+            ),
+          ),
+          'd': SyncRuntimeState(
+            latestAttempt: SyncAttemptSummary(
+              attemptedAt: DateTime.utc(2026, 10, 14),
+              status: 'cancelled',
+              totalFound: BigInt.zero,
+              downloaded: BigInt.zero,
+              duplicates: BigInt.zero,
+              failed: BigInt.zero,
+            ),
+          ),
         },
       );
       final settings = SettingsController(backend);
       final sync = SyncController(backend, allAccounts: true)
-        ..totalAccounts = 2
+        ..state = SyncState.running
+        ..totalAccounts = 4
         ..completedAccounts = 1
+        ..progress = SyncProgress(
+          jobId: 'partial',
+          status: 'running',
+          totalItems: BigInt.from(4),
+          processedItems: BigInt.one,
+          synchronizedItems: BigInt.one,
+          failedItems: BigInt.zero,
+        )
         ..accountResults['a'] = SyncSummary(
           jobId: 'partial',
           totalFound: BigInt.from(3),
@@ -221,27 +260,304 @@ void main() {
 
       expect(find.text('同步完成但有部分项目失败'), findsOneWidget);
       expect(find.text('登录已失效，等待重新登录'), findsOneWidget);
-      final accountBar = tester.widget<LinearProgressIndicator>(
-        find.byKey(const Key('android-account-progress')),
+      expect(find.text('上次同步成功'), findsOneWidget);
+      expect(find.text('上次同步已取消'), findsOneWidget);
+      expect(find.byKey(const Key('android-account-progress')), findsNothing);
+      final mediaBar = tester.widget<LinearProgressIndicator>(
+        find.byKey(const Key('android-media-progress')),
       );
-      expect(accountBar.value, .5);
+      expect(mediaBar.value, .25);
+      expect(_statusDotColor(tester, 'a'), Colors.amber.shade700);
+      expect(_statusDotColor(tester, 'b'), Colors.red.shade600);
+      expect(_statusDotColor(tester, 'c'), Colors.green.shade600);
+      expect(_statusDotColor(tester, 'd'), Colors.grey.shade600);
+      expect(find.bySemanticsLabel(RegExp('同步完成但有部分项目失败')), findsOneWidget);
+      expect(find.textContaining('上次尝试：'), findsNWidgets(4));
+      expect(find.textContaining('2026-'), findsNothing);
+      expect(find.textContaining(RegExp(r'\.\d{3}')), findsNothing);
+
+      sync.currentAccountId = 'a';
+      sync.state = SyncState.running;
+      sync.notifyListeners();
+      await tester.pump();
+      expect(find.text('正在同步'), findsOneWidget);
+      expect(_statusDotColor(tester, 'a'), Colors.blue.shade600);
+
+      sync.state = SyncState.cancelling;
+      sync.notifyListeners();
+      await tester.pump();
+      expect(find.text('正在取消同步'), findsOneWidget);
+      expect(_statusDotColor(tester, 'a'), Colors.blue.shade600);
+
+      sync.currentAccountId = null;
+      sync.state = SyncState.completed;
       sync.accountResults.remove('a');
       sync.notifyListeners();
       await tester.pump();
       expect(find.text('上次同步有部分项目失败'), findsOneWidget);
+      expect(_statusDotColor(tester, 'a'), Colors.amber.shade700);
       sync.state = SyncState.cancelled;
-      sync.completedAccounts = 2;
+      sync.completedAccounts = 4;
       sync.notifyListeners();
       await tester.pump();
       expect(find.byKey(const Key('android-account-progress')), findsNothing);
       expect(find.byKey(const Key('android-media-progress')), findsNothing);
-      expect(find.textContaining('账号同步已取消'), findsOneWidget);
+      expect(find.textContaining('账号同步已取消'), findsNothing);
+      expect(find.text('上次同步已取消'), findsOneWidget);
       transfer.dispose();
       sync.dispose();
       settings.dispose();
+      semantics.dispose();
     },
     variant: TargetPlatformVariant({TargetPlatform.android}),
   );
+
+  for (final locale in ['zh', 'en']) {
+    for (final brightness in Brightness.values) {
+      testWidgets(
+        'account states retain meaning at 320dp and 2x text in $locale $brightness',
+        (tester) async {
+          tester.view.physicalSize = const Size(320, 1800);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.resetPhysicalSize);
+          addTearDown(tester.view.resetDevicePixelRatio);
+          final backend = FakeBackend(
+            signedIn: true,
+            mediaItems: [],
+            accountProfiles: const [
+              NintendoAccountProfile(
+                accountId: 'a',
+                nickname: '很长的完整用户名 Long Nintendo Account Display Name',
+              ),
+            ],
+          );
+          final settings = SettingsController(backend);
+          final sync = SyncController(backend, allAccounts: true)
+            ..state = SyncState.running
+            ..totalAccounts = 1;
+          final transfer = TransferController(backend, settings, sync);
+          await transfer.refresh();
+          await tester.pumpWidget(
+            MaterialApp(
+              locale: Locale(locale),
+              theme: ThemeData(brightness: brightness),
+              localizationsDelegates: const [
+                AppLocalizations.delegate,
+                GlobalMaterialLocalizations.delegate,
+                GlobalWidgetsLocalizations.delegate,
+                GlobalCupertinoLocalizations.delegate,
+              ],
+              supportedLocales: AppLocalizations.supportedLocales,
+              builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(context)
+                    .copyWith(textScaler: TextScaler.linear(2)),
+                child: child!,
+              ),
+              home: AndroidTransferPage(controller: transfer),
+            ),
+          );
+          await tester.pump();
+          final name = find.text('很长的完整用户名 Long Nintendo Account Display Name');
+          expect(tester.widget<Text>(name).maxLines, isNull);
+          expect(
+            tester.getTopLeft(name).dy,
+            greaterThan(
+              tester.getBottomLeft(find.byType(CircleAvatar).first).dy,
+            ),
+          );
+
+          final scenarios = [
+            (
+              history: 'success',
+              error: null,
+              zh: '上次同步成功',
+              en: 'Last sync succeeded',
+              color: Colors.green.shade600,
+            ),
+            (
+              history: 'partial_failure',
+              error: null,
+              zh: '上次同步有部分项目失败',
+              en: 'Last sync had some failed items',
+              color: Colors.amber.shade700,
+            ),
+            (
+              history: 'failure',
+              error: null,
+              zh: '上次同步未完成',
+              en: 'Last sync did not complete',
+              color: Colors.red.shade600,
+            ),
+            (
+              history: 'authentication_failure',
+              error: null,
+              zh: '登录已失效，等待重新登录',
+              en: 'Sign-in expired; waiting for sign-in',
+              color: Colors.red.shade600,
+            ),
+            (
+              history: 'rate_limited',
+              error: null,
+              zh: '请求过于频繁，等待重试',
+              en: 'Rate limited; waiting to retry',
+              color: Colors.amber.shade700,
+            ),
+            (
+              history: 'cancelled',
+              error: null,
+              zh: '上次同步已取消',
+              en: 'Last sync was cancelled',
+              color: Colors.grey.shade600,
+            ),
+            (
+              history: null,
+              error: null,
+              zh: '等待同步',
+              en: 'Waiting to sync',
+              color: Colors.grey.shade600,
+            ),
+            (
+              history: 'success',
+              error: StateError('HTTP 429'),
+              zh: '请求过于频繁，等待重试',
+              en: 'Rate limited; waiting to retry',
+              color: Colors.amber.shade700,
+            ),
+            (
+              history: 'success',
+              error: StateError('network timeout'),
+              zh: '网络请求失败，请检查连接后重试。',
+              en: 'Network request failed. Check your connection and try again.',
+              color: Colors.red.shade600,
+            ),
+            (
+              history: 'success',
+              error: StateError('authentication failed'),
+              zh: '登录已失效，等待重新登录',
+              en: 'Sign-in expired; waiting for sign-in',
+              color: Colors.red.shade600,
+            ),
+            (
+              history: 'success',
+              error: StateError('task cancelled'),
+              zh: '同步已取消',
+              en: 'Sync cancelled',
+              color: Colors.grey.shade600,
+            ),
+          ];
+          for (final scenario in scenarios) {
+            transfer.histories['a'] = SyncRuntimeState(
+              latestAttempt: scenario.history == null
+                  ? null
+                  : SyncAttemptSummary(
+                      attemptedAt: DateTime(2026, 1, 2, 3, 4, 5, 999, 999),
+                      status: scenario.history!,
+                      totalFound: BigInt.zero,
+                      downloaded: BigInt.zero,
+                      duplicates: BigInt.zero,
+                      failed: BigInt.zero,
+                    ),
+            );
+            sync.accountErrors.clear();
+            if (scenario.error != null) {
+              sync.accountErrors['a'] = scenario.error!;
+            }
+            transfer.publish();
+            await tester.pump();
+            expect(
+              find.text(locale == 'zh' ? scenario.zh : scenario.en),
+              findsOneWidget,
+            );
+            expect(_statusDotColor(tester, 'a'), scenario.color);
+            expect(
+              find.byKey(const Key('android-account-progress')),
+              findsNothing,
+            );
+            await tester.scrollUntilVisible(
+              find.byKey(const Key('android-media-progress')),
+              160,
+              scrollable: find.byType(Scrollable).first,
+            );
+            expect(
+              tester
+                  .widget<LinearProgressIndicator>(
+                    find.byKey(const Key('android-media-progress')),
+                  )
+                  .value,
+              isNull,
+            );
+            if (scenario.history != null) {
+              expect(
+                find.text(
+                  '${locale == 'zh' ? '上次尝试：' : 'Last attempt: '}01-02 03:04:05',
+                ),
+                findsOneWidget,
+              );
+            }
+            expect(tester.takeException(), isNull);
+          }
+
+          // Authentication pause supersedes even a retained successful result.
+          sync.accountErrors.clear();
+          sync.accountResults['a'] = _summary('complete');
+          sync.authPausedAccountIds.add('a');
+          sync.notifyListeners();
+          await tester.pump();
+          expect(_statusDotColor(tester, 'a'), Colors.red.shade600);
+          expect(
+            find.text(
+              locale == 'zh'
+                  ? '登录已失效，等待重新登录'
+                  : 'Sign-in expired; waiting for sign-in',
+            ),
+            findsOneWidget,
+          );
+          sync.authPausedAccountIds.clear();
+          sync.notifyListeners();
+          await tester.pump();
+          expect(_statusDotColor(tester, 'a'), Colors.green.shade600);
+          expect(
+            find.text(locale == 'zh' ? '同步完成' : 'Sync complete'),
+            findsOneWidget,
+          );
+
+          await tester.ensureVisible(find.byKey(const Key('android-sync-entry')));
+          await tester.pump();
+          await tester.tap(find.byKey(const Key('android-sync-entry')));
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 400));
+          expect(
+            find.descendant(
+              of: find.byType(AndroidNintendoSyncPage),
+              matching: find.textContaining('01-02 03:04:05'),
+            ),
+            findsOneWidget,
+          );
+          await tester.tap(find.byKey(const Key('android-page-back')));
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 400));
+          expect(_statusDotColor(tester, 'a'), Colors.green.shade600);
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+          transfer.dispose();
+          sync.dispose();
+          settings.dispose();
+        },
+        variant: TargetPlatformVariant({TargetPlatform.android}),
+      );
+    }
+  }
+}
+
+Color _statusDotColor(WidgetTester tester, String accountId) {
+  final decoration =
+      tester
+              .widget<Container>(
+                find.byKey(Key('android-account-status-dot-$accountId')),
+              )
+              .decoration!
+          as BoxDecoration;
+  return decoration.color!;
 }
 
 SyncSummary _summary(String id) => SyncSummary(

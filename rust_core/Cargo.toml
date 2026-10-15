@@ -15,6 +15,7 @@ filetime = "0.2"
 flutter_rust_bridge = { version = "=2.13.0", features = ["chrono"] }
 hex = "0.4"
 rand = "0.8"
+regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "brotli", "stream"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

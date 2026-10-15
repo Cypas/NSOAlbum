@@ -43,8 +43,9 @@
 │  │  └─ plans/
 │  │     ├─ 2026-10-13-android-ui-redesign.md
 │  │     │                                Android 界面改造的执行计划与状态
-│  │     └─ 2026-10-14-android-experience.md
-│  │                                      移动体验/同步下载的任务分解与实施记录
+│  │     ├─ 2026-10-14-android-experience.md
+│  │     │                                移动体验/同步下载的任务分解与实施记录
+│  │     └─ 2026-10-15-account-tools.md     三平台账号工具与移动同步展示的本地实施计划
 │  ├─ protocol/                           [本地]
 │  │  └─ nintendo-implementacao-para-comunidade.md
 │  │                                      外部 NSO/Coral 协议研究归档
@@ -177,3 +178,8 @@
 公开索引对本地文档只写路径、用途和“不提交”标记，不建立必须存在的公开链接，
 也不复制敏感内容。这样本地维护者能查到完整树，公开源码不会因缺少内部文件
 出现一批失效链接。
+
+账号工具的原生 WebView 探针及其运行前提见 `flutter_app/README.md`；
+本地实施、审查和设备验收记录分别归档于
+`.superpowers/sdd/2026-10-15-account-tools/` 与 `dist/time-sync-display-20261015/`，
+均不提交，不包含公开发行验收结论或真实账号导出文件。
