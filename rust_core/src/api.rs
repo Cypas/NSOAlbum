@@ -43,6 +43,28 @@ struct ImportProgressStore {
 
 const MAX_TERMINAL_IMPORT_PROGRESS: usize = 32;
 
+#[cfg(test)]
+mod device_sync_account_guard_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn normal_account_tool_is_rejected_by_library_gate_before_proxy_or_network_work() {
+        let root = tempfile::tempdir().unwrap();
+        let api = CoreApi::open(root.path()).unwrap();
+        let _exclusive = api.database().device_sync_exclusive().unwrap();
+        let result = api
+            .account_tool(
+                "synthetic-account".into(),
+                "synthetic-token".into(),
+                "synthetic-operation".into(),
+                Some("not a proxy".into()),
+                crate::nso::account_tools::ToolRequest::Friends,
+            )
+            .await;
+        assert!(matches!(result, Err(CoreError::LibraryBusy)));
+    }
+}
+
 impl CoreApi {
     pub fn open(library_root: impl AsRef<Path>) -> CoreResult<Self> {
         let library_root = library_root.as_ref().to_path_buf();
@@ -50,13 +72,24 @@ impl CoreApi {
         let database = Arc::new(Database::open(
             library_root.join("database").join("library.sqlite3"),
         )?);
-        Ok(Self {
+        let api = Self {
             library_root,
             database,
             disable_app_proxy: AtomicBool::new(false),
             import_progress: Mutex::new(ImportProgressStore::default()),
             account_tools: Default::default(),
-        })
+        };
+        if api.database.device_sync_recovery_pending() {
+            api.database
+                .validate_existing_original_root(&api.library_root)?;
+            api.database
+                .validate_existing_original_root(&api.media_root()?)?;
+        } else {
+            let _opening = api.database.write_lease()?;
+            api.database.ensure_original_root(&api.library_root)?;
+            api.database.ensure_original_root(&api.media_root()?)?;
+        }
+        Ok(api)
     }
 
     pub fn library_root(&self) -> String {
@@ -77,7 +110,24 @@ impl CoreApi {
             30 | 45 | 60 | 90 | 120
         ) {
             settings.sync_policy.active_interval_minutes = 30;
-            self.database.set_setting("app.settings", &settings)?;
+            if !self.database.device_sync_recovery_pending() {
+                self.database.set_setting("app.settings", &settings)?;
+            }
+        }
+        Ok(Some(settings))
+    }
+
+    /// Startup and safe-mode must inspect the real media root without repairing
+    /// persisted settings before protected device recovery has been checked.
+    pub fn bootstrap_settings(&self) -> CoreResult<Option<AppSettings>> {
+        let Some(mut settings) = self.database.get_setting::<AppSettings>("app.settings")? else {
+            return Ok(None);
+        };
+        if !matches!(
+            settings.sync_policy.active_interval_minutes,
+            30 | 45 | 60 | 90 | 120
+        ) {
+            settings.sync_policy.active_interval_minutes = 30;
         }
         Ok(Some(settings))
     }
@@ -196,6 +246,7 @@ impl CoreApi {
         &self,
         proxy_url: Option<String>,
     ) -> CoreResult<LoginChallenge> {
+        let _writing = self.database.write_lease()?;
         let transport = self.transport(proxy_url)?;
         NintendoAuthClient::new(transport).create_login_challenge()
     }
@@ -216,6 +267,7 @@ impl CoreApi {
         verifier: String,
         proxy_url: Option<String>,
     ) -> CoreResult<String> {
+        let _writing = self.database.write_lease()?;
         let transport = self.transport(proxy_url)?;
         let auth = NintendoAuthClient::new(transport.clone());
         let code = auth.parse_callback(&callback_url, &expected_state)?;
@@ -234,6 +286,22 @@ impl CoreApi {
             session_token,
             proxy_url,
             &CancellationToken::default(),
+            None,
+        )
+        .await
+    }
+
+    pub async fn establish_coral_session_for_account(
+        &self,
+        session_token: String,
+        expected_account: String,
+        proxy_url: Option<String>,
+    ) -> CoreResult<CoralSession> {
+        self.establish_coral_session_with_cancellation(
+            session_token,
+            proxy_url,
+            &CancellationToken::default(),
+            Some(&expected_account),
         )
         .await
     }
@@ -243,14 +311,16 @@ impl CoreApi {
         session_token: String,
         proxy_url: Option<String>,
         cancellation: &CancellationToken,
+        expected_account: Option<&str>,
     ) -> CoreResult<CoralSession> {
+        let _writing = self.database.write_lease()?;
         cancellation.check()?;
         let proxy = self.resolve_proxy_url(proxy_url)?;
         let transport = Self::transport_with_resolved_proxy(proxy.clone())?;
         self.account_tools
             .authenticate(
                 &session_token,
-                None,
+                expected_account,
                 proxy.as_deref(),
                 transport,
                 cancellation,
@@ -264,6 +334,34 @@ impl CoreApi {
         proxy_url: Option<String>,
         cancellation: &CancellationToken,
     ) -> CoreResult<SyncSummary> {
+        self.sync_nso_from_session_token_expected(session_token, None, proxy_url, cancellation)
+            .await
+    }
+
+    pub async fn sync_nso_from_session_token_for_account(
+        &self,
+        session_token: String,
+        expected_account: String,
+        proxy_url: Option<String>,
+        cancellation: &CancellationToken,
+    ) -> CoreResult<SyncSummary> {
+        self.sync_nso_from_session_token_expected(
+            session_token,
+            Some(expected_account),
+            proxy_url,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn sync_nso_from_session_token_expected(
+        &self,
+        session_token: String,
+        expected_account: Option<String>,
+        proxy_url: Option<String>,
+        cancellation: &CancellationToken,
+    ) -> CoreResult<SyncSummary> {
+        let _writing = self.database.write_lease()?;
         let proxy = self.resolve_proxy_url(proxy_url)?;
         let transport = Self::transport_with_resolved_proxy(proxy.clone())?;
         for attempt in 0..2 {
@@ -271,7 +369,7 @@ impl CoreApi {
                 .account_tools
                 .authenticate_with_refresh(
                     &session_token,
-                    None,
+                    expected_account.as_deref(),
                     proxy.as_deref(),
                     transport.clone(),
                     cancellation,
@@ -309,6 +407,7 @@ impl CoreApi {
         proxy_url: Option<String>,
         cancellation: &CancellationToken,
     ) -> CoreResult<SyncSummary> {
+        let _writing = self.database.write_lease()?;
         cancellation.check()?;
         let proxy = self.resolve_proxy_url(proxy_url)?;
         let transport = Self::transport_with_resolved_proxy(proxy.clone())?;
@@ -323,6 +422,7 @@ impl CoreApi {
         transport: HttpTransport,
         cancellation: &CancellationToken,
     ) -> CoreResult<SyncSummary> {
+        let _writing = self.database.write_lease()?;
         cancellation.check()?;
         let attestation = self
             .account_tools
@@ -352,6 +452,7 @@ impl CoreApi {
         proxy_url: Option<String>,
         request: crate::nso::account_tools::ToolRequest,
     ) -> CoreResult<crate::nso::account_tools::ToolResponse> {
+        let _writing = self.database.write_lease()?;
         let proxy = self.resolve_proxy_url(proxy_url)?;
         let transport = Self::transport_with_resolved_proxy(proxy.clone())?.without_redirects()?;
         self.account_tools
@@ -474,9 +575,11 @@ impl CoreApi {
     }
 
     pub fn delete_media(&self, media_id: i64) -> CoreResult<MediaDeletionResult> {
+        let _writing = self.database.write_lease()?;
+        self.database.ensure_original_root(&self.media_root()?)?;
         let entry = self.database.media_storage_entry(media_id)?;
-        self.delete_media_file(&entry.storage_path, &entry.sha256)?;
         self.database.delete_media_record(media_id)?;
+        self.delete_media_file(&entry.storage_path, &entry.sha256)?;
         Ok(MediaDeletionResult {
             removed_from_album: false,
             deleted_from_library: true,
@@ -489,6 +592,8 @@ impl CoreApi {
         album_id: i64,
         media_id: i64,
     ) -> CoreResult<MediaDeletionResult> {
+        let _writing = self.database.write_lease()?;
+        self.database.ensure_original_root(&self.media_root()?)?;
         self.database.remove_media_from_album(album_id, media_id)?;
         let remaining_album_count = self.database.media_album_membership_count(media_id)?;
         if remaining_album_count > 0 {
@@ -499,8 +604,8 @@ impl CoreApi {
             });
         }
         let entry = self.database.media_storage_entry(media_id)?;
-        self.delete_media_file(&entry.storage_path, &entry.sha256)?;
         self.database.delete_media_record(media_id)?;
+        self.delete_media_file(&entry.storage_path, &entry.sha256)?;
         Ok(MediaDeletionResult {
             removed_from_album: true,
             deleted_from_library: true,
@@ -512,6 +617,10 @@ impl CoreApi {
         &self,
         settings: AppSettings,
     ) -> CoreResult<LibraryRelocationResult> {
+        let exclusive = self.database.device_sync_exclusive()?;
+        self.database.check_relocation(&exclusive)?;
+        let current_root = self.media_root()?;
+        self.database.ensure_original_root(&current_root)?;
         validate_settings(&settings)?;
         let destination_root = PathBuf::from(settings.library_path.trim());
         if !destination_root.is_absolute() {
@@ -519,10 +628,10 @@ impl CoreApi {
                 "media library path must be absolute".into(),
             ));
         }
+        self.database.ensure_original_root(&destination_root)?;
         tokio::fs::create_dir_all(destination_root.join("originals")).await?;
 
         let entries = self.database.list_media_storage_entries()?;
-        let current_root = self.media_root()?;
         let mut path_updates = Vec::with_capacity(entries.len());
         let mut created_files = Vec::new();
         let mut old_files = Vec::new();
@@ -554,25 +663,40 @@ impl CoreApi {
                     verify_file_hash(&destination, &entry.sha256).await?;
                 } else {
                     copy_verified(&source, &destination, &entry.sha256).await?;
-                    created_files.push(destination.clone());
+                    created_files.push((destination.clone(), entry.sha256.clone()));
                 }
-                old_files.push(source);
+                old_files.push((source, entry.sha256.clone()));
             }
             path_updates.push((entry.id, destination.to_string_lossy().into_owned()));
         }
 
         let moved_files = old_files.len();
-        if let Err(error) = self
-            .database
-            .relocate_media_paths_and_settings(&path_updates, &settings)
-        {
-            for path in created_files {
-                let _ = tokio::fs::remove_file(path).await;
+        if let Err(error) = self.database.relocate_media_paths_and_settings_exclusive(
+            &exclusive,
+            &path_updates,
+            &settings,
+        ) {
+            for (path, sha256) in created_files {
+                let _ = self.database.cleanup_original_exclusive(
+                    &exclusive,
+                    &destination_root,
+                    &path,
+                    &sha256,
+                );
             }
             return Err(error);
         }
-        for path in old_files {
-            let _ = tokio::fs::remove_file(path).await;
+        for (path, sha256) in old_files {
+            let _ =
+                self.database
+                    .cleanup_original_exclusive(&exclusive, &current_root, &path, &sha256);
+        }
+        if !same_path(
+            &current_root.canonicalize()?,
+            &destination_root.canonicalize()?,
+        ) {
+            self.database
+                .release_original_root_if_unused(&exclusive, &current_root)?;
         }
         Ok(LibraryRelocationResult {
             moved_files,
@@ -612,6 +736,7 @@ impl CoreApi {
         game_name: String,
         operation_id: String,
     ) -> CoreResult<ImportSummary> {
+        let _writing = self.database.write_lease()?;
         let operation_id = operation_id.trim().to_owned();
         if operation_id.is_empty() {
             return Err(CoreError::InvalidConfig(
@@ -738,6 +863,8 @@ impl CoreApi {
         processed_path: String,
         overwrite: bool,
     ) -> CoreResult<MediaAsset> {
+        let _writing = self.database.write_lease()?;
+        self.database.ensure_original_root(&self.media_root()?)?;
         let source = self.database.media_asset(media_id)?;
         if source.kind != MediaKind::Video {
             return Err(CoreError::InvalidConfig(
@@ -763,7 +890,12 @@ impl CoreApi {
                 &generated_tag,
             ) {
                 if staged.created {
-                    let _ = tokio::fs::remove_file(&staged.path).await;
+                    let _ = self.database.cleanup_original(
+                        repository.root(),
+                        &staged.path,
+                        &staged.sha256,
+                        Some(&staged.pin),
+                    );
                 }
                 return Err(error);
             }
@@ -793,6 +925,8 @@ impl CoreApi {
         bytes: Vec<u8>,
         extension: String,
     ) -> CoreResult<MediaAsset> {
+        let _writing = self.database.write_lease()?;
+        self.database.ensure_original_root(&self.media_root()?)?;
         const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
         let source = self.database.media_asset(media_id)?;
         if source.kind != MediaKind::Video {
@@ -852,6 +986,8 @@ impl CoreApi {
         media_ids: Vec<i64>,
         processed_path: String,
     ) -> CoreResult<MediaAsset> {
+        let _writing = self.database.write_lease()?;
+        self.database.ensure_original_root(&self.media_root()?)?;
         if media_ids.len() < 2 {
             return Err(CoreError::InvalidConfig(
                 "at least two videos are required for merging".into(),
@@ -929,6 +1065,8 @@ impl CoreApi {
         game_name_override: Option<String>,
         operation_id: Option<&str>,
     ) -> CoreResult<ImportSummary> {
+        let _writing = self.database.write_lease()?;
+        self.database.ensure_original_root(&self.media_root()?)?;
         let repository = MediaRepository::new(self.media_root()?, Arc::clone(&self.database));
         let mut files = BTreeSet::new();
         for value in paths {
@@ -1136,7 +1274,7 @@ impl CoreApi {
 
     fn media_root(&self) -> CoreResult<PathBuf> {
         Ok(self
-            .load_settings()?
+            .bootstrap_settings()?
             .map(|settings| PathBuf::from(settings.library_path))
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| self.library_root.clone()))
@@ -1158,9 +1296,10 @@ impl CoreApi {
             .copy_media_metadata(source_ids, target_id, generated_tag)
         {
             if let Ok(entry) = self.database.media_storage_entry(target_id) {
-                let _ = self.delete_media_file(&entry.storage_path, &entry.sha256);
+                if self.database.delete_media_record(target_id).is_ok() {
+                    let _ = self.delete_media_file(&entry.storage_path, &entry.sha256);
+                }
             }
-            let _ = self.database.delete_media_record(target_id);
             return Err(error);
         }
         Ok(())
@@ -1175,12 +1314,9 @@ impl CoreApi {
     }
 
     fn delete_media_file(&self, value: &str, sha256: &str) -> CoreResult<()> {
-        let path = PathBuf::from(value);
         let media_root = self.media_root()?;
-        let Some(canonical) = managed_media_file_path(&path, sha256, &media_root)? else {
-            return Ok(());
-        };
-        std::fs::remove_file(canonical)?;
+        self.database
+            .cleanup_original(&media_root, Path::new(value), sha256, None)?;
         Ok(())
     }
 }
@@ -1221,7 +1357,7 @@ fn edited_media_candidate(
     game_name: Option<String>,
 ) -> MediaCandidate {
     let game_name = game_name.unwrap_or_else(|| source.game_name.clone());
-    let captured_at = source.captured_at.or(Some(source.imported_at));
+    let captured_at = source.captured_at.or(source.imported_at);
     let unique_id = uuid::Uuid::new_v4().simple().to_string();
     MediaCandidate {
         remote_id: None,
@@ -1456,11 +1592,17 @@ async fn export_media_entry(
     } else {
         entry.game_name.trim()
     };
-    let date = entry
-        .timestamp
-        .with_timezone(&Local)
-        .format("%Y%m%d")
-        .to_string();
+    let date = entry.timestamp.map_or_else(
+        || {
+            if language == "en" {
+                "Unknown date"
+            } else {
+                "未知日期"
+            }
+            .to_owned()
+        },
+        |timestamp| timestamp.with_timezone(&Local).format("%Y%m%d").to_string(),
+    );
     let rendered = name_format
         .replace("{相册内名称}", original_stem)
         .replace("{游戏名}", game_name)
@@ -1554,6 +1696,61 @@ mod tests {
     use super::{nintendo_capture_sequence, nintendo_capture_time, CoreApi};
     use crate::models::{GalleryQuery, MediaDeletionResult, MediaKind};
     use crate::settings::{AppSettings, SyncPolicy};
+
+    #[test]
+    fn opening_core_does_not_repair_settings_before_startup_recovery() {
+        let library = tempdir().unwrap();
+        let api = CoreApi::open(library.path()).unwrap();
+        let settings = AppSettings {
+            proxy_url: None,
+            library_path: library.path().to_string_lossy().into_owned(),
+            theme: "ocean".into(),
+            language: "en".into(),
+            gallery_columns: 4,
+            gallery_rows: 3,
+            show_note_preview: true,
+            show_game_tag: true,
+            compact_tag_display: true,
+            auto_play_video: false,
+            auto_sync_on_launch: false,
+            close_behavior: "ask".into(),
+            custom_font_paths: Vec::new(),
+            sync_policy: SyncPolicy {
+                enabled: false,
+                active_interval_minutes: 10,
+                sleep_after_hours: 6,
+            },
+        };
+        api.database.set_setting("app.settings", &settings).unwrap();
+        drop(api);
+
+        let reopened = CoreApi::open(library.path()).unwrap();
+        let persisted: AppSettings = reopened
+            .database
+            .get_setting("app.settings")
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.sync_policy.active_interval_minutes, 10);
+        assert_eq!(persisted.library_path, settings.library_path);
+        let snapshot = reopened.bootstrap_settings().unwrap().unwrap();
+        assert_eq!(snapshot.sync_policy.active_interval_minutes, 30);
+        assert_eq!(snapshot.library_path, settings.library_path);
+        let unchanged: AppSettings = reopened
+            .database
+            .get_setting("app.settings")
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.sync_policy.active_interval_minutes, 10);
+        assert_eq!(
+            reopened
+                .load_settings()
+                .unwrap()
+                .unwrap()
+                .sync_policy
+                .active_interval_minutes,
+            30
+        );
+    }
 
     #[test]
     fn upgrades_legacy_sync_interval_without_changing_sleep_threshold() {

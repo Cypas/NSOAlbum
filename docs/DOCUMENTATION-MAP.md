@@ -39,13 +39,26 @@
 │  ├─ design/                             [本地]
 │  │  ├─ nso-photo-design.md              产品、架构、数据和交互设计基线
 │  │  ├─ android-ui-redesign-spec.md       Android 独立界面层的专题设计
+│  │  ├─ device-sync-spec.md               跨设备配对、数据及恢复的批准规格
+│  │  ├─ device-sync-execution-spec.md     准入、缓存、本地交接及任务生命周期增补
+│  │  ├─ device-sync-local-apply-design.md 网络到本地应用的授权和恢复技术设计
 │  │  ├─ ci-gate-progress.md               历史三平台 CI 实施过程，不是现行规则
 │  │  └─ plans/
 │  │     ├─ 2026-10-13-android-ui-redesign.md
 │  │     │                                Android 界面改造的执行计划与状态
 │  │     ├─ 2026-10-14-android-experience.md
 │  │     │                                移动体验/同步下载的任务分解与实施记录
-│  │     └─ 2026-10-15-account-tools.md     三平台账号工具与移动同步展示的本地实施计划
+│  │     ├─ 2026-10-15-account-tools.md     三平台账号工具与移动同步展示的本地实施计划
+│  │     ├─ 2026-10-16-device-sync.md       跨设备配对、同步及恢复的本地实施计划
+│  │     ├─ 2026-10-17-device-sync-execution.md
+│  │                                        执行增补第一切面：验证缓存及复用
+│  │     ├─ 2026-10-17-device-sync-space.md   执行增补第二切面：分卷峰值空间预算
+│  │     ├─ 2026-10-17-device-sync-local-apply.md
+│  │                                        本地应用交接、原生所有权及账号收尾计划
+│  │     ├─ 2026-10-17-device-sync-native-fixes.md
+│  │                                        Windows 引擎前选主、TLS 背压及 Android 目录修正
+│  │     └─ 2026-10-18-device-sync-phone-control.md
+│  │                                        手机单端控制、预览授权及容量/速度展示实施记录
 │  ├─ protocol/                           [本地]
 │  │  └─ nintendo-implementacao-para-comunidade.md
 │  │                                      外部 NSO/Coral 协议研究归档
@@ -179,7 +192,55 @@
 也不复制敏感内容。这样本地维护者能查到完整树，公开源码不会因缺少内部文件
 出现一批失效链接。
 
+跨设备同步批准规格保存在本地 `docs/design/device-sync-spec.md`；
+实施台账在 `.superpowers/sdd/2026-10-16-device-sync/`，本地传输/设备证据在
+`dist/device-sync-20261016/`。这些内部材料不提交，不存放真实账号凭据或作为发布证明。
+执行增补台账在`.superpowers/sdd/2026-10-17-device-sync-execution/`，
+起始冻结源/中断日志及新合成证据在`dist/device-sync-20261017-execution/`；
+均本地保留不提交，不覆盖旧计划证据。
+空间预算台账在`.superpowers/sdd/2026-10-17-device-sync-space/`，
+合成预算/页面/复验与修正证据在`dist/device-sync-20261017-execution/space/`；
+本地交接技术设计及计划也属于本地不提交文档，不代表已实现或设备验收通过。
+对应源码中，`flutter_app/lib/src/startup/` 负责页面无关的启动准备及桌面等待式关闭，
+`lib/src/backend/device_sync/` 拥有设备恢复生命周期，
+`lib/src/ui/device_sync/` 放置启动反馈与设备同步展示；测试位于
+`flutter_app/test/device_sync/`。这些目录的存放边界仍以目录规范为准。
+
+桌面 helper 的普通三模式/双架构构建、来源摘要、独立验包和无设备 IPC 边界见
+`docs/TESTING.md` 的“桌面 MTP helper”；构建胶水入口见
+`flutter_app/rust_builder/README.md`。本地 `task-5c-brief.md`、
+`task-5c-report.md` 与 `dist/device-sync-20261016/task5c/` 分别保存合同、
+作者报告和 before/after、补丁、构建及负面检查证据，不提交、不随应用分发，
+不作为真实 MTP 或 macOS 验收通过声明。
+
 账号工具的原生 WebView 探针及其运行前提见 `flutter_app/README.md`；
 本地实施、审查和设备验收记录分别归档于
 `.superpowers/sdd/2026-10-15-account-tools/` 与 `dist/time-sync-display-20261015/`，
 均不提交，不包含公开发行验收结论或真实账号导出文件。
+
+`dist/device-sync-deviceqa-20261017/` 保存 Windows/Android Debug 实机通道检查，
+其 `round2/` 保存桌面单实例和后续传输测试的过程、失败与最终结果；
+均为本地忽略资料，不包含个人图库或账号凭据，不能以局部通道通过代替完整同步验收。
+本地 `docs/design/plans/2026-10-17-device-sync-native-fixes.md` 记录上述失败后的
+原生启动拦截、有界输入背压及 Android 目录句柄修正计划；新增证据在同专题
+`round3/`，不覆盖前轮结果，不提交内部计划及设备日志。
+该轮 `RESULTS.md` 分别记录两轮双向融合/覆盖与重复启动通过、完整软件回归、
+手机原包恢复，以及仍未解决的诊断主窗口退出异常；局部通过不代表整体验收完成。
+同专题 `round4-full-app/` 记录正常主入口的两端完整 Debug 构建、Android
+覆盖安装与后续应用内验收进度；构建/安装记录不代表已完成传输或授权个人库写入。
+
+内部配对输入接口及调用边界见 `flutter_app/README.md` 的“Debug 配对输入接口”；
+本地失败测试、生命周期回归及完整 Flutter 复验见
+`dist/device-sync-debug-pairing-20261018/RESULTS.md`，不提交、不随应用分发。
+调试输入不绕过配对、账号及接收预览确认；其验证结果不能替代扫码或真实传输验收。
+
+后续连接方式自动选择、SSID 提示与安装包版本/构建号严格匹配的接口说明同在
+`flutter_app/README.md`；本地失败测试、审查修正、合成 Bridge 验证和两端 Debug
+构建/设备记录放在 `dist/device-sync-auto-connection-20261018/`，本地、不提交。
+这些记录须分别标明源码测试、原生构建和实机步骤，不将一个阶段当作其余阶段通过。
+
+桌面相册、导入与同步、设置的标题栏溢出修正记录在本地设计基线对应章节，
+真实字体的失败复现、定向分析及页面回归日志存于
+`dist/desktop-header-overflow-20261018/`（本地、不提交）。
+正式回归用例为 `flutter_app/test/desktop_page_header_test.dart`；
+widget 通过不表示正在运行的应用包已更新。

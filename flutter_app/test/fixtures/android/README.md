@@ -62,3 +62,13 @@ the explicit SDK/JDK opt-in above. CI reports both tags under one Android
 category; skipped native tests retain their reason and are not counted as passes.
 Run `flutter test --tags platform-android` from `flutter_app` to select Android
 tests without suppressing the native suite's declared skip behavior.
+
+`verify_device_sync.gradle` compiles the production SAF mailbox, operation and
+picker policies with a pure JVM behavioral harness. It exercises fixed scopes,
+bounded byte copies, cancellation, stale picker results and 140 sequential
+read/acknowledgement cycles without an ever-growing live directory. From
+`flutter_app/android`, run
+`.\gradlew.bat -Ptarget-platform=android-arm64 --init-script ../test/fixtures/android/verify_device_sync.gradle verifyDeviceSyncPolicy`.
+This does not prove Android document-provider consent, persistence or hardware
+I/O. The standalone native probe and its limitations are documented in the
+Flutter README. Never run simultaneous native builds in the same checkout.

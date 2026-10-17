@@ -11,6 +11,7 @@ import 'package:squid_album/src/l10n/app_localizations.dart';
 import 'package:squid_album/src/rust/models.dart';
 import 'package:squid_album/src/ui/android/android_layout.dart';
 import 'package:squid_album/src/ui/android/android_media_card.dart';
+import 'package:squid_album/src/ui/android/android_media_viewer.dart';
 import 'package:squid_album/src/ui/android/android_page_frame.dart';
 import 'package:squid_album/src/ui/platform_ui.dart';
 
@@ -32,14 +33,14 @@ class StorageBackend extends FakeBackend implements MobileStorageBackend {
   ];
 }
 
-MediaAsset media(int id) => MediaAsset(
+MediaAsset media(int id, {bool unknownDates = false}) => MediaAsset(
   id: id,
   sha256: 'fixture-$id',
   originalName: 'private-file-$id.png',
   storagePath: 'missing.png',
   kind: MediaKind.image,
-  capturedAt: DateTime(2026, 10, 13, 1, 2, 3, 456, 789),
-  importedAt: DateTime(2026, 10, 14, 9, 8, 7, 654, 321),
+  capturedAt: unknownDates ? null : DateTime(2026, 10, 13, 1, 2, 3, 456, 789),
+  importedAt: unknownDates ? null : DateTime(2026, 10, 14, 9, 8, 7, 654, 321),
   gameName: '超级马力欧奥德赛',
   favorite: false,
   tags: const ['abcdefghijklm', '我的自定义标签'],
@@ -47,6 +48,87 @@ MediaAsset media(int id) => MediaAsset(
 );
 
 void main() {
+  for (final locale in ['zh', 'en']) {
+    testWidgets(
+      'unknown imported detail survives inline edits and navigation in $locale',
+      (tester) async {
+        final unknown = media(1, unknownDates: true);
+        final backend = FakeBackend(mediaItems: [unknown, media(2)]);
+        await tester.pumpWidget(
+          MaterialApp(
+            locale: Locale(locale),
+            localizationsDelegates: const [
+              AppLocalizations.delegate,
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: AndroidMediaViewer(
+              backend: backend,
+              items: [unknown, media(2)],
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final imported = find.text(
+          locale == 'zh' ? '导入时间：未知' : 'Imported: Unknown',
+        );
+        await tester.ensureVisible(imported);
+        expect(imported, findsOneWidget);
+        final add = find.byKey(const Key('android-inline-add-tag'));
+        await tester.ensureVisible(add);
+        await tester.tap(add);
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('android-inline-tag-input')),
+          'New',
+        );
+        await tester.testTextInput.receiveAction(TextInputAction.done);
+        await tester.pumpAndSettle();
+        final edit = find.byKey(const Key('android-inline-edit-note'));
+        await tester.ensureVisible(edit);
+        await tester.tap(edit);
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('android-inline-note-input')),
+          'Updated note',
+        );
+        final save = find.byKey(const Key('android-inline-save-note'));
+        await tester.ensureVisible(save);
+        await tester.tap(save);
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(imported);
+        expect(imported, findsOneWidget);
+        expect(find.text('Updated note'), findsOneWidget);
+        expect(find.text('New'), findsOneWidget);
+        final next = find.byTooltip(locale == 'zh' ? '下一个' : 'Next');
+        await tester.ensureVisible(next);
+        await tester.tap(next);
+        await tester.pumpAndSettle();
+        final known = find.text(
+          locale == 'zh'
+              ? '导入时间：2026-10-14 09:08:07'
+              : 'Imported: 2026-10-14 09:08:07',
+        );
+        await tester.ensureVisible(known);
+        expect(known, findsOneWidget);
+        final previous = find.byTooltip(locale == 'zh' ? '上一个' : 'Previous');
+        await tester.ensureVisible(previous);
+        await tester.tap(previous);
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(imported);
+        expect(imported, findsOneWidget);
+        expect(find.text('Updated note'), findsOneWidget);
+        expect(find.text('New'), findsOneWidget);
+        expect(find.text('private-file-1.png'), findsWidgets);
+        expect(find.text('超级马力欧奥德赛'), findsWidgets);
+        expect(find.textContaining('1970'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets('mobile settings offer confirmed private storage, not a proxy', (
     tester,
   ) async {

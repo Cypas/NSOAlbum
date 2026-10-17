@@ -1,0 +1,40 @@
+gradle.projectsEvaluated {
+    def root = gradle.rootProject
+    def app = root.findProject(":app")
+    if (app == null) return
+    def compiler = app.configurations.getByName("kotlinCompilerClasspath")
+    def output = root.layout.buildDirectory.dir("device-sync-policy-test")
+    def compile = root.tasks.register("compileDeviceSyncPolicyTest", JavaExec) {
+        def sources = [
+            app.file("src/main/kotlin/io/github/cypas/nsoalbum/DeviceSyncPolicy.kt"),
+            app.file("src/main/kotlin/io/github/cypas/nsoalbum/DeviceSyncMailbox.kt"),
+            app.file("src/main/kotlin/io/github/cypas/nsoalbum/DeviceSyncPicker.kt"),
+            app.file("src/main/kotlin/io/github/cypas/nsoalbum/DeviceSyncSafDirectory.kt"),
+            app.file("src/test/kotlin/io/github/cypas/nsoalbum/DeviceSyncPolicyTest.kt"),
+        ]
+        sources += root.fileTree("../test/fixtures/android/device_sync_directory") {
+            include("*.kt")
+        }.files.toList().sort()
+        inputs.files(sources)
+        outputs.dir(output)
+        mainClass.set("org.jetbrains.kotlin.cli.jvm.K2JVMCompiler")
+        classpath = compiler
+        doFirst {
+            output.get().asFile.mkdirs()
+            args = ["-no-stdlib", "-no-reflect", "-classpath", compiler.asPath,
+                "-d", output.get().asFile.absolutePath] +
+                sources.collect { it.absolutePath }
+        }
+    }
+    root.tasks.register("verifyDeviceSyncPolicy", JavaExec) {
+        dependsOn(compile)
+        finalizedBy("verifyDeviceSyncSafDirectory")
+        mainClass.set("io.github.cypas.nsoalbum.DeviceSyncPolicyTest")
+        classpath = root.files(output, compiler.resolve())
+    }
+    root.tasks.register("verifyDeviceSyncSafDirectory", JavaExec) {
+        dependsOn(compile)
+        mainClass.set("io.github.cypas.nsoalbum.DeviceSyncSafDirectoryTest")
+        classpath = root.files(output, compiler.resolve())
+    }
+}

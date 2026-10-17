@@ -11,6 +11,8 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart' show kDebugMode, kReleaseMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -27,6 +29,11 @@ import 'src/state/settings_controller.dart';
 import 'src/state/sync_controller.dart';
 import 'src/startup/startup_diagnostics.dart';
 import 'src/startup/startup_options.dart';
+import 'src/startup/application_bootstrap.dart';
+import 'src/startup/desktop_startup_close.dart';
+import 'src/startup/desktop_single_instance.dart';
+import 'src/startup/desktop_instance_window.dart';
+import 'src/ui/device_sync/startup_page.dart';
 import 'src/ui/ci_smoke_page.dart';
 import 'src/ui/home_shell.dart';
 import 'src/ui/android/android_update_dialog.dart';
@@ -44,6 +51,35 @@ Future<void> main(List<String> arguments) async {
     exit(64);
   }
   WidgetsFlutterBinding.ensureInitialized();
+  DesktopSingleInstance? desktopInstance;
+  // Windows elects before constructing Flutter/plugins in its native runner.
+  if (Platform.isMacOS && !startupOptions.ciSmoke) {
+    try {
+      desktopInstance = await DesktopSingleInstance.acquire(
+        directory: Directory(
+          p.join(
+            (await getApplicationSupportDirectory()).path,
+            'desktop-instance',
+          ),
+        ),
+        onActivate: () async {
+          await windowManager.ensureInitialized();
+          await windowManager.show();
+          await windowManager.restore();
+          await windowManager.focus();
+        },
+      );
+      if (desktopInstance == null) {
+        await dismissSecondaryDesktopWindow();
+        return;
+      }
+    } catch (_) {
+      stderr.writeln(
+        'NSOAlbum could not acquire or activate its desktop instance',
+      );
+      exit(73);
+    }
+  }
   StartupDiagnostics? diagnostics;
   try {
     diagnostics = await StartupDiagnostics.open(startupOptions);
@@ -76,97 +112,149 @@ Future<void> main(List<String> arguments) async {
         ? 'media-kit-disabled'
         : 'media-kit-deferred',
   );
-  RustBackend? backend;
-  Object? startupError;
-  try {
-    await diagnostics?.phase('rust-core-initialization-start');
-    backend = await RustBackend.open(
-      logger: diagnostics?.logger,
-      applicationRoot: diagnostics?.applicationRoot,
-      isolated: startupOptions.ciSmoke,
-    ).timeout(const Duration(seconds: 30));
-    if (Platform.isWindows && !startupOptions.ciSmoke) {
-      final fontReport = await loadCustomFontFamilies(
-        backend.settings.customFontPaths,
-        language: backend.settings.language,
+  final startupDiagnostics = diagnostics;
+  final bootstrap = ApplicationBootstrap(
+    safeMode: startupOptions.safeMode && !startupOptions.ciSmoke,
+    prepare: () async {
+      await startupDiagnostics?.phase('rust-core-initialization-start');
+      return RustBackend.prepare(
+        logger: startupDiagnostics?.logger,
+        applicationRoot: startupDiagnostics?.applicationRoot,
+        isolated: startupOptions.ciSmoke,
       );
-      for (final path in fontReport.failedPaths) {
-        await backend.logError(
-          'Failed to load saved custom font; skipped during startup',
-          FileSystemException('Unable to load custom font', path),
+    },
+    initializePresentation: (backend) async {
+      if (Platform.isWindows &&
+          !startupOptions.ciSmoke &&
+          !startupOptions.safeMode) {
+        final fontReport = await loadCustomFontFamilies(
+          backend.settings.customFontPaths,
+          language: backend.settings.language,
         );
+        for (final path in fontReport.failedPaths) {
+          await backend.logError(
+            'Failed to load saved custom font; skipped during startup',
+            FileSystemException('Unable to load custom font', path),
+          );
+        }
       }
+      await startupDiagnostics?.phase('rust-core-initialization-complete');
+    },
+  );
+  // No prepare/recovery future may start before native interception exists.
+  final desktopClose = await DesktopStartupClose.protect(
+    bootstrap: bootstrap,
+    options: startupOptions,
+    desktop: Platform.isWindows || Platform.isMacOS,
+    onError: (error, stack) {
+      unawaited(
+        startupDiagnostics?.failure('desktop-close-failed', error, stack) ??
+            Future<void>.value(),
+      );
+    },
+    onClosed: desktopInstance?.close,
+  );
+  AppBackend? diagnosticBackend;
+  BootstrapPhase? reportedPhase;
+  bootstrap.addListener(() {
+    final phase = bootstrap.phase;
+    final backend = bootstrap.backend;
+    if (backend != null &&
+        diagnosticBackend == null &&
+        (phase == BootstrapPhase.recovering ||
+            phase == BootstrapPhase.localOnly)) {
+      diagnosticBackend = backend;
+      _installRuntimeErrorHandlers(backend, startupDiagnostics);
     }
-    await diagnostics?.phase('rust-core-initialization-complete');
-    FlutterError.onError = (details) {
-      FlutterError.presentError(details);
-      unawaited(
-        backend!.logError(
-          'Unhandled Flutter framework error',
-          details.exception,
-          details.stack,
-        ),
-      );
-      unawaited(
-        diagnostics?.failure(
-              'flutter-framework-error',
-              details.exception,
-              details.stack,
-            ) ??
-            Future<void>.value(),
-      );
+    if (reportedPhase == phase) return;
+    reportedPhase = phase;
+    final label = switch (phase) {
+      BootstrapPhase.timedOut => 'core-preparation-timeout',
+      BootstrapPhase.failed => 'startup-recovery-incomplete',
+      BootstrapPhase.localOnly => 'startup-recovery-deferred',
+      BootstrapPhase.ready => 'startup-ready',
+      _ => null,
     };
-    PlatformDispatcher.instance.onError = (error, stackTrace) {
-      unawaited(
-        backend!.logError('Unhandled asynchronous error', error, stackTrace),
-      );
-      unawaited(
-        diagnostics?.failure(
-              'unhandled-asynchronous-error',
-              error,
-              stackTrace,
-            ) ??
-            Future<void>.value(),
-      );
-      return false;
-    };
-  } catch (error) {
-    startupError = error;
-    await diagnostics?.failure('rust-core-initialization', error);
-  }
+    if (label != null) {
+      unawaited(startupDiagnostics?.phase(label) ?? Future<void>.value());
+    }
+  });
   if (startupOptions.ciSmoke) {
-    if (backend == null || diagnostics == null) {
-      stderr.writeln('NSOAlbum CI smoke core initialization failed');
-      exit(1);
-    }
-    runApp(
-      CiSmokeApp(
-        backend: backend,
-        options: startupOptions,
-        diagnostics: diagnostics,
-        gallery: startupOptions.ciSmokeScenario == 'reopen'
-            ? const SizedBox.shrink()
-            : SquidAlbumApp(
-                backend: backend,
-                startupOptions: startupOptions,
-                diagnostics: diagnostics,
-              ),
-      ),
-    );
-    return;
+    bootstrap.addListener(() {
+      if ((bootstrap.phase == BootstrapPhase.failed ||
+              bootstrap.phase == BootstrapPhase.timedOut) &&
+          !bootstrap.busy) {
+        stderr.writeln('NSOAlbum CI smoke core initialization failed');
+        exit(1);
+      }
+    });
   }
   await diagnostics?.phase('run-app-start');
   runApp(
-    SquidAlbumApp(
-      backend: backend,
-      startupError: startupError,
-      startupOptions: startupOptions,
-      diagnostics: diagnostics,
+    DeviceSyncStartupApp(
+      controller: bootstrap,
+      theme: (theme) => resolveAppUiPlatform() == AppUiPlatform.android
+          ? androidTheme(theme)
+          : _themeFor(theme),
+      frame: (child, title) => resolveAppUiPlatform() == AppUiPlatform.android
+          ? child
+          : DesktopWindowFrame(title: title, child: child),
+      application: (backend) {
+        final app = SquidAlbumApp(
+          backend: backend,
+          startupOptions: startupOptions,
+          diagnostics: startupDiagnostics,
+          desktopClose: desktopClose,
+        );
+        if (!startupOptions.ciSmoke) return app;
+        return CiSmokeApp(
+          backend: backend as RustBackend,
+          options: startupOptions,
+          diagnostics: startupDiagnostics!,
+          gallery: startupOptions.ciSmokeScenario == 'reopen'
+              ? const SizedBox.shrink()
+              : app,
+        );
+      },
     ),
   );
   WidgetsBinding.instance.addPostFrameCallback((_) {
     unawaited(diagnostics?.phase('first-frame') ?? Future<void>.value());
   });
+}
+
+void _installRuntimeErrorHandlers(
+  AppBackend backend,
+  StartupDiagnostics? diagnostics,
+) {
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    unawaited(
+      backend.logError(
+        'Unhandled Flutter framework error',
+        details.exception,
+        details.stack,
+      ),
+    );
+    unawaited(
+      diagnostics?.failure(
+            'flutter-framework-error',
+            details.exception,
+            details.stack,
+          ) ??
+          Future<void>.value(),
+    );
+  };
+  PlatformDispatcher.instance.onError = (error, stackTrace) {
+    unawaited(
+      backend.logError('Unhandled asynchronous error', error, stackTrace),
+    );
+    unawaited(
+      diagnostics?.failure('unhandled-asynchronous-error', error, stackTrace) ??
+          Future<void>.value(),
+    );
+    return false;
+  };
 }
 
 class SquidAlbumApp extends StatefulWidget {
@@ -178,6 +266,7 @@ class SquidAlbumApp extends StatefulWidget {
     this.diagnostics,
     this.onRestartApplication,
     this.uiPlatform,
+    this.desktopClose,
   });
 
   final AppBackend? backend;
@@ -186,6 +275,7 @@ class SquidAlbumApp extends StatefulWidget {
   final StartupDiagnostics? diagnostics;
   final Future<void> Function()? onRestartApplication;
   final AppUiPlatform? uiPlatform;
+  final DesktopStartupClose? desktopClose;
 
   @override
   State<SquidAlbumApp> createState() => _SquidAlbumAppState();
@@ -454,8 +544,9 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
     WidgetsBinding.instance.removeObserver(this);
     androidUpdates?.dispose();
     settings?.removeListener(_settingsChanged);
+    widget.desktopClose?.releasePolicy(this);
     if (desktopLifecycleReady) {
-      windowManager.removeListener(this);
+      if (widget.desktopClose == null) windowManager.removeListener(this);
       trayManager.removeListener(this);
       unawaited(trayManager.destroy());
     }
@@ -489,15 +580,23 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
         );
         await widget.diagnostics?.phase('custom-titlebar-enabled');
       }
-      windowManager.addListener(this);
+      if (widget.desktopClose == null) windowManager.addListener(this);
       trayManager.addListener(this);
-      await windowManager.setPreventClose(true);
+      if (widget.desktopClose == null) {
+        await windowManager.setPreventClose(true);
+      }
       await trayManager.setIcon(
         Platform.isWindows
             ? 'assets/tray/app_icon.ico'
             : 'assets/tray/app_icon.png',
       );
+      if (!mounted) {
+        trayManager.removeListener(this);
+        await trayManager.destroy();
+        return;
+      }
       desktopLifecycleReady = true;
+      widget.desktopClose?.adoptPolicy(this, _handleWindowClose);
       await _updateDesktopChrome();
     } catch (error, stackTrace) {
       await widget.backend?.logError(
@@ -639,7 +738,10 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
     if (quitting) return;
     quitting = true;
     try {
-      if (desktopLifecycleReady) {
+      if (widget.desktopClose != null) {
+        if (desktopLifecycleReady) await trayManager.destroy();
+        await widget.desktopClose!.closeApplication();
+      } else if (desktopLifecycleReady) {
         await trayManager.destroy();
         await windowManager.setPreventClose(false);
         await windowManager.close();

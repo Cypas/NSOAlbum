@@ -31,6 +31,8 @@ import 'display_time.dart';
 import 'account_tools/account_tools_expander.dart';
 import 'nxapi_disclosure_card.dart';
 import 'macos_update_dialog.dart';
+import 'device_sync/album_source_label.dart';
+import 'device_sync/entry.dart';
 
 Future<void> showLatestReleaseUpdate(
   BuildContext context, {
@@ -482,6 +484,7 @@ class _HomeShellState extends State<HomeShell> {
           albumId: album.id,
           albumName: _albumDisplayName(context, album),
           albumDescription: album.description,
+          albumSourceDeviceName: album.sourceDeviceName,
           albumType: album.albumType,
           albumSystemKey: album.systemKey,
           showTransferAction: false,
@@ -500,6 +503,10 @@ class _HomeShellState extends State<HomeShell> {
         enableVideoFeatures: widget.enableVideoFeatures,
         enableMtpDetection: widget.enableMtpDetection,
         onImportComplete: () => libraryKey.currentState?._reload(),
+        onDeviceSyncChanged: () async {
+          libraryKey.currentState?._reload();
+          if (mounted) setState(() => albumPageRevision++);
+        },
         onNintendoAccountChanged: widget.onNintendoAccountChanged,
       ),
       SettingsPage(
@@ -850,10 +857,21 @@ class _PageFrame extends StatelessWidget {
   Widget build(BuildContext context) {
     final content = CustomScrollView(
       slivers: [
-        SliverPersistentHeader(
-          pinned: fixedHeader,
-          delegate: _PageHeaderDelegate(child: _header(context), extent: 72),
-        ),
+        if (fixedHeader)
+          SliverPersistentHeader(
+            pinned: true,
+            delegate: _PageHeaderDelegate(child: _header(context), extent: 72),
+          )
+        else
+          SliverToBoxAdapter(
+            child: Material(
+              color: Theme.of(context).colorScheme.surface,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 72),
+                child: _header(context),
+              ),
+            ),
+          ),
         SliverPadding(
           padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
           sliver: SliverToBoxAdapter(child: child),
@@ -1422,6 +1440,7 @@ class LibraryPage extends StatefulWidget {
     this.albumId,
     this.albumName,
     this.albumDescription,
+    this.albumSourceDeviceName,
     this.albumType,
     this.albumSystemKey,
     this.showTransferAction = true,
@@ -1436,6 +1455,7 @@ class LibraryPage extends StatefulWidget {
   final int? albumId;
   final String? albumName;
   final String? albumDescription;
+  final String? albumSourceDeviceName;
   final String? albumType;
   final String? albumSystemKey;
   final bool showTransferAction;
@@ -1997,11 +2017,20 @@ class _LibraryPageState extends State<LibraryPage> {
                 child: ListTile(
                   leading: const Icon(Icons.photo_album_outlined),
                   title: Text(album.name),
-                  subtitle: Text(
-                    context.l10n.select(
-                      zh: '${album.mediaCount} 个媒体',
-                      en: '${album.mediaCount} media',
-                    ),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        context.l10n.select(
+                          zh: '${album.mediaCount} 个媒体',
+                          en: '${album.mediaCount} media',
+                        ),
+                      ),
+                      AlbumSourceLabel(
+                        name: album.sourceDeviceName,
+                        systemKey: album.systemKey,
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -2504,6 +2533,17 @@ class _LibraryPageState extends State<LibraryPage> {
     fixedHeader: true,
     child: Column(
       children: [
+        if (widget.albumId != null && widget.albumSystemKey != 'favorites')
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: AlbumSourceLabel(
+                name: widget.albumSourceDeviceName,
+                systemKey: widget.albumSystemKey,
+              ),
+            ),
+          ),
         Wrap(
           spacing: 10,
           runSpacing: 10,
@@ -4614,6 +4654,14 @@ class _AlbumCard extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 4),
+                if (album.systemKey != 'favorites') ...[
+                  AlbumSourceLabel(
+                    name: album.sourceDeviceName,
+                    systemKey: album.systemKey,
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                  const SizedBox(height: 3),
+                ],
                 if (album.description.trim().isNotEmpty) ...[
                   Text(
                     album.description.trim(),
@@ -4646,6 +4694,7 @@ class TransferPage extends StatefulWidget {
     required this.sync,
     required this.settings,
     required this.onImportComplete,
+    this.onDeviceSyncChanged,
     this.onNintendoAccountChanged,
     this.enableVideoFeatures = true,
     this.enableMtpDetection = true,
@@ -4654,6 +4703,7 @@ class TransferPage extends StatefulWidget {
   final SyncController sync;
   final SettingsController settings;
   final VoidCallback onImportComplete;
+  final Future<void> Function()? onDeviceSyncChanged;
   final Future<void> Function()? onNintendoAccountChanged;
   final bool enableVideoFeatures;
   final bool enableMtpDetection;
@@ -4991,6 +5041,21 @@ class _TransferPageState extends State<TransferPage>
     ),
     child: Column(
       children: [
+        DeviceSyncEntry(
+          backend: widget.backend,
+          mobile: false,
+          onLibraryChanged: () async {
+            await _loadAccountState();
+            await _loadCustomGameTags();
+            if (widget.onDeviceSyncChanged case final changed?) {
+              await changed();
+            } else {
+              widget.onImportComplete();
+            }
+            // No accountChanged callback: this must not start NSO sync.
+          },
+        ),
+        const SizedBox(height: 12),
         TabBar(
           controller: tabs,
           tabs: [

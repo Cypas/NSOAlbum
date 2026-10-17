@@ -54,6 +54,9 @@ sdkVersion:'24'
 uses-permission: name='android.permission.INTERNET'
 uses-permission: name='android.permission.POST_NOTIFICATIONS'
 uses-permission: name='android.permission.REQUEST_INSTALL_PACKAGES'
+uses-permission: name='android.permission.CAMERA'
+uses-feature-not-required: name='android.hardware.camera'
+uses-feature-not-required: name='android.hardware.camera.autofocus'
 launchable-activity: name='io.github.cypas.nsoalbum.MainActivity' label='NSOAlbum' icon=''
 native-code: 'arm64-v8a'
 "@
@@ -68,6 +71,13 @@ native-code: 'arm64-v8a'
     Assert-Rejected { Assert-AndroidBadging ($badging.Replace("uses-permission: name='android.permission.INTERNET'", '')) '0.2.14' '47' } 'missing INTERNET'
     Assert-Rejected { Assert-AndroidBadging ($badging.Replace("uses-permission: name='android.permission.POST_NOTIFICATIONS'", '')) '0.2.14' '47' } 'missing update notification permission'
     Assert-Rejected { Assert-AndroidBadging ($badging.Replace("uses-permission: name='android.permission.REQUEST_INSTALL_PACKAGES'", '')) '0.2.14' '47' } 'missing update installation permission'
+    Assert-Rejected { Assert-AndroidBadging ($badging.Replace("uses-permission: name='android.permission.CAMERA'", '')) '0.2.14' '47' } 'missing optional scanner permission'
+    foreach ($feature in @('android.hardware.camera', 'android.hardware.camera.autofocus')) {
+        Assert-Rejected { Assert-AndroidBadging ($badging.Replace("uses-feature-not-required: name='$feature'", '')) '0.2.14' '47' } "missing optional $feature declaration"
+        Assert-Rejected { Assert-AndroidBadging ($badging.Replace("uses-feature-not-required: name='$feature'", "uses-feature: name='$feature'")) '0.2.14' '47' } "required $feature excludes camera-less devices"
+        Assert-Rejected { Assert-AndroidBadging "$badging`nuses-feature: name='$feature'" '0.2.14' '47' } "conflicting required $feature declaration"
+        Assert-Rejected { Assert-AndroidBadging "$badging`nuses-implied-feature: name='$feature' reason='scanner permission'" '0.2.14' '47' } "implicitly required $feature declaration"
+    }
     Assert-Rejected { Assert-AndroidBadging "$badging`napplication-debuggable" '0.2.14' '47' } 'debuggable APK'
     Assert-Rejected { Assert-AndroidBadging "$badging`nuses-permission: name='android.permission.MANAGE_EXTERNAL_STORAGE'" '0.2.14' '47' } 'all-files permission'
     Assert-Rejected { Assert-AndroidBadging ($badging.Replace("native-code: 'arm64-v8a'", "native-code: 'arm64-v8a' 'x86'")) '0.2.14' '47' } 'multiple packaged ABIs'

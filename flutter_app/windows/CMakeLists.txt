@@ -57,6 +57,7 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/../tool/desktop_mtp_worker.cmake")
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can
@@ -74,6 +75,8 @@ set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")
 
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
+install(FILES "$<TARGET_FILE_DIR:${BINARY_NAME}>/nsoalbum_mtp_worker.exe"
+  DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
 
 install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   COMPONENT Runtime)

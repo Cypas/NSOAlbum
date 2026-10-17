@@ -56,9 +56,16 @@ function Assert-AndroidBadging {
             $Badging -match '(?m)^application-debuggable') {
         throw 'APK must have the expected launcher, minSdk 24, ARM64 only, and non-debuggable Release code.'
     }
-    foreach ($required in @('INTERNET', 'POST_NOTIFICATIONS', 'REQUEST_INSTALL_PACKAGES')) {
+    foreach ($required in @('INTERNET', 'POST_NOTIFICATIONS', 'REQUEST_INSTALL_PACKAGES', 'CAMERA')) {
         if ($Badging -notmatch "(?m)^uses-permission: name='android\.permission\.$required'") {
             throw "Final Release APK is missing $required."
+        }
+    }
+    foreach ($feature in @('android.hardware.camera', 'android.hardware.camera.autofocus')) {
+        $escaped = [regex]::Escape($feature)
+        if ($Badging -notmatch "(?m)^uses-feature-not-required: name='$escaped'(?:\s|$)" -or
+                $Badging -match "(?m)^uses-(?:implied-)?feature: name='$escaped'(?:\s|$)") {
+            throw "Scanner hardware must remain optional in the final Release APK: $feature."
         }
     }
     foreach ($denied in @('MANAGE_EXTERNAL_STORAGE', 'FOREGROUND_SERVICE')) {

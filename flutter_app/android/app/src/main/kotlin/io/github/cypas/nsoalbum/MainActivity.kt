@@ -14,6 +14,7 @@ import java.io.File
 
 class MainActivity : FlutterActivity() {
     private var notificationPermissionResult: MethodChannel.Result? = null
+    private var deviceSyncSaf: DeviceSyncSafChannel? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -29,6 +30,9 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         SplatNetWebViewDisposal.register(flutterEngine)
+        deviceSyncSaf?.close()
+        deviceSyncSaf = DeviceSyncSafChannel(this, MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger, "io.github.cypas.nsoalbum/device_sync_saf"))
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
             "io.github.cypas.nsoalbum/storage").setMethodCallHandler { call, result ->
             if (call.method != "locations") {
@@ -116,8 +120,15 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        deviceSyncSaf?.close()
+        deviceSyncSaf = null
         notificationPermissionResult?.success(false)
         notificationPermissionResult = null
         super.onDestroy()
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (deviceSyncSaf?.onActivityResult(requestCode, resultCode, data) == true) return
+        super.onActivityResult(requestCode, resultCode, data)
     }
 }

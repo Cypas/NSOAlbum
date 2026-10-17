@@ -43,6 +43,7 @@ class AlbumSummary {
   final bool pinned;
   final String? systemKey;
   final BigInt mediaCount;
+  final String? sourceDeviceName;
 
   const AlbumSummary({
     required this.id,
@@ -52,6 +53,7 @@ class AlbumSummary {
     required this.pinned,
     this.systemKey,
     required this.mediaCount,
+    this.sourceDeviceName,
   });
 
   @override
@@ -62,7 +64,8 @@ class AlbumSummary {
       albumType.hashCode ^
       pinned.hashCode ^
       systemKey.hashCode ^
-      mediaCount.hashCode;
+      mediaCount.hashCode ^
+      sourceDeviceName.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -75,7 +78,8 @@ class AlbumSummary {
           albumType == other.albumType &&
           pinned == other.pinned &&
           systemKey == other.systemKey &&
-          mediaCount == other.mediaCount;
+          mediaCount == other.mediaCount &&
+          sourceDeviceName == other.sourceDeviceName;
 }
 
 enum GalleryKindFilter { all, image, video }
@@ -328,7 +332,7 @@ class MediaAsset {
   final String storagePath;
   final MediaKind kind;
   final DateTime? capturedAt;
-  final DateTime importedAt;
+  final DateTime? importedAt;
   final String? gameTitleId;
   final String gameName;
   final bool favorite;
@@ -342,7 +346,7 @@ class MediaAsset {
     required this.storagePath,
     required this.kind,
     this.capturedAt,
-    required this.importedAt,
+    this.importedAt,
     this.gameTitleId,
     required this.gameName,
     required this.favorite,

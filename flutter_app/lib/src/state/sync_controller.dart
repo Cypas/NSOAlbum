@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../backend/app_backend.dart';
+import '../backend/device_sync/account_gate.dart';
 import '../backend/sync_failure_status.dart';
 import '../rust/models.dart';
 import '../rust/settings.dart';
@@ -52,6 +53,31 @@ class SyncController extends ChangeNotifier {
 
   Future<void> run({bool automatic = false, List<String>? accountIds}) async {
     if (running || _disposed) return;
+    AccountWorkPermit? permit;
+    if (_backend case final AccountWorkBackend backend) {
+      try {
+        permit = backend.accountWorkGate.normalPermit();
+      } on DeviceSyncBusy {
+        return;
+      }
+    }
+    try {
+      if (permit != null) {
+        await permit.run(
+          () => _runAdmitted(automatic: automatic, accountIds: accountIds),
+        );
+      } else {
+        await _runAdmitted(automatic: automatic, accountIds: accountIds);
+      }
+    } finally {
+      permit?.release();
+    }
+  }
+
+  Future<void> _runAdmitted({
+    required bool automatic,
+    List<String>? accountIds,
+  }) async {
     automaticRun = automatic;
     suppressAutomaticRelaunch = false;
     _cancelRequested = false;
@@ -132,6 +158,7 @@ class SyncController extends ChangeNotifier {
     final profiles = await _backend.listNintendoAccounts();
     if (_cancelRequested) return;
     final available = profiles.map((profile) => profile.accountId).toSet();
+    accountSchedules.removeWhere((id, _) => !available.contains(id));
     var queue = accountIds == null
         ? profiles.map((profile) => profile.accountId).toList()
         : accountIds.where(available.contains).toSet().toList();
@@ -262,9 +289,17 @@ class SyncController extends ChangeNotifier {
         (await _backend.listNintendoAccounts())
             .map((profile) => profile.accountId)
             .toList();
+    if (accountIds == null) {
+      accountSchedules.removeWhere((id, _) => !ids.contains(id));
+    }
     for (final id in ids) {
       try {
         accountSchedules[id] = await backend.loadAccountSyncSchedule(id);
+        if (_backend case final AccountScheduleAdmissionBackend admission) {
+          if (!await admission.automaticAccountHasLocalHistory(id)) {
+            accountSchedules[id] = null;
+          }
+        }
         if (_backend case final SyncHistoryBackend histories) {
           final history = await histories.loadSyncAccountHistory(id);
           final status = history.latestAttempt?.status;
@@ -291,6 +326,7 @@ class SyncController extends ChangeNotifier {
     if (!allAccounts || _backend is! AccountSyncBackend) return const [];
     final profiles = await _backend.listNintendoAccounts();
     final ids = profiles.map((profile) => profile.accountId).toList();
+    accountSchedules.removeWhere((id, _) => !ids.contains(id));
     await refreshAccountScheduleStatuses(accountIds: ids);
     final instant = (now ?? DateTime.now()).toUtc();
     return ids.where((id) {

@@ -8,10 +8,13 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/src/backend/rust_backend.dart';
+import 'package:squid_album/src/backend/device_sync/account_gate.dart';
 import 'package:squid_album/src/backend/rust_initialization.dart';
 import 'package:squid_album/src/rust/frb_generated.dart';
 import 'package:squid_album/src/rust/models.dart';
 import 'package:squid_album/src/rust/settings.dart';
+
+import '../device_sync/startup_native_boundary.dart';
 
 const _tokensKey = 'nintendo.account_tokens.v1';
 const _account = 'synthetic-account';
@@ -48,6 +51,59 @@ void main() {
     storage: const FlutterSecureStorage(),
     applicationRoot: root.path,
   );
+
+  test('device preparation is Busy for the whole normal credential-read/request lifetime', () async {
+    final backend = await open();
+    storage.readGate = Completer<void>();
+    final request = backend.loadNintendoFriends(_account, 'normal-inflight');
+    await storage.tokenReadStarted.future;
+    DeviceAccountPermit? incorrectlyAdmitted;
+    var blocked = false;
+    try {
+      incorrectlyAdmitted = backend.accountWorkGate.device();
+    } on DeviceSyncBusy {
+      blocked = true;
+    } finally {
+      incorrectlyAdmitted?.release();
+      storage.readGate!.complete();
+      await request;
+    }
+    expect(blocked, isTrue);
+    final device = backend.accountWorkGate.device();
+    final before = Map.of(storage.values);
+    await expectLater(
+      backend.selectNintendoAccount(_account),
+      throwsA(isA<DeviceSyncBusy>()),
+    );
+    expect(storage.values, before);
+    device.release();
+  });
+
+  test('same-ID account replacement cannot publish before its registered native cleanup completes', () async {
+    final backend = await open();
+    final cleaned = Completer<void>();
+    final registration = backend.accountToolLifecycle.registerCleanup(
+      _account,
+      () => cleaned.future,
+    );
+    final device = backend.accountWorkGate.device();
+    final invalidation = backend.invalidateDeviceAccounts({_account});
+    await rust.cacheCleared.future;
+    try {
+      expect(backend.accountToolLifecycle.isRemoved(_account), isTrue);
+      expect(
+        () => backend.publishDeviceAccounts({_account}),
+        throwsA(isA<DeviceSyncBusy>()),
+      );
+    } finally {
+      cleaned.complete();
+      await invalidation;
+      backend.publishDeviceAccounts({_account});
+      registration.remove();
+      device.release();
+    }
+    expect(backend.accountToolLifecycle.isRemoved(_account), isFalse);
+  });
 
   test(
     'an already initialized bridge does not load another native library',
@@ -140,7 +196,7 @@ void main() {
   });
 }
 
-class _RustBoundary implements RustLibApi {
+class _RustBoundary with NoPendingStartupBoundary implements RustLibApi {
   final initializedRoots = <String>[];
   final friendDispatches = <String>[];
   final cancelled = <String>[];

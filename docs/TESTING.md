@@ -139,6 +139,34 @@ Android 正式模式启动时按本地自然日自动检查稳定版本；发现
 
 ## 本地基础验证
 
+### 本地应用运行模式
+
+Windows/macOS 桌面端及 Android 的本地运行和交互测试默认使用 Debug。
+只有用户明确要求时才使用 Profile 或 Release，性能测试也不例外；
+Debug 性能数据不能作为正式包性能结论。此约定优先于既有本地非 Debug
+验收建议，但不改写历史证据，也不改变 CI、正式打包及发布的 Release 门禁。
+
+Dart 界面修改优先热重载，初始化变化使用热重启。Rust、Bridge、原生代码
+或原生依赖变化仍需重新编译相应 Debug 原生组件并重启，不能通过 Dart
+热重载替代。Android 本地构建继续仅使用既定 ARM64 目标。
+
+### 桌面单实例
+
+Windows/macOS 普通启动在准备 Rust Core 之前取得当前系统用户的应用实例锁。
+重复启动只显示、恢复和聚焦原窗口，不重新加载当前页面或图库。
+退出流程必须先安全关闭图库及窗口，再释放实例锁；关闭失败仍保留原实例。
+Android 不使用该桌面入口；合法 `--ci-smoke` 仍使用独立新根，
+不唤起或阻塞用户的普通应用。
+
+`flutter test test/desktop_single_instance_test.dart` 使用真实 Dart 子进程、
+OS 文件锁和回环连接验证选主、并发、退出/崩溃后重开与无效请求拒绝。
+`test/device_sync/startup_desktop_close_test.dart` 覆盖关闭失败不能提前释放锁。
+这些 Common 测试不代替 Windows/macOS 真实窗口的托盘、最小化及聚焦验收。
+
+磁盘空间不足时，可在空间充足的位置建立独立源码构建副本，核对源码摘要后
+沿用副本内的工具默认输出路径。保留主工作区及原缓存，不以目录联接绕过测试
+对构建路径的检查，也不拿旧编译产物代替新源码验证。
+
 从仓库根目录分别进入对应目录，执行全部命令：
 
 ```powershell
@@ -281,6 +309,58 @@ FFmpeg `.xcframework` 同名下载冲突时删除对应条目，最多重试一�
 普通文件的完整 tar 往返。`macos_cache_retry_test.dart`
 执行真实 bash 包装器，但构建命令为可控 fixture；只证明有限重试控制流程，
 不代表真实 macOS 打包已验收。
+
+### 桌面 MTP helper
+
+设备同步使用固定 sibling：Windows 为 `nsoalbum_mtp_worker.exe`，
+macOS 为 `.app/Contents/MacOS/nsoalbum_mtp_worker`；不从 PATH、远端
+材料或手机文件选择可执行程序。Android 不打包这个桌面进程。
+Windows 工程自身 CMake 在 Cargokit 库目标之后构建 helper，并使 Runner
+依赖它。Runner 与 helper 共用显式配置输出目录，避免旧 CMake policy
+作用域中的反向目标依赖；回归测试使用真实可编译 Runner 目标覆盖三种模式。
+macOS Runner 在 Flutter embed 之后、最终应用 CodeSign 之前
+构建并复制 helper，不把 Pod 产物目录当成应用目录。
+
+普通 Debug 使用 Cargo debug，Profile/Release 使用 Cargo release。
+macOS 普通双架构构建分别消费两个 Rust target 的本次成功 Cargo JSON，
+校验每个 slice 后在私有构建目录运行 lipo，再复制最终 helper；显式单架构
+发布仍要求完全匹配的 thin Mach-O。普通签名构建先签 helper，再由 Xcode
+签 Runner；发布脚本先完成复制、RPATH 修正及全部依赖检查，最后由嵌套
+Mach-O 到根应用签名。签前和签后摘要分开记录。
+
+`build_desktop_native.dart` 只从本次成功 Cargo JSON 选择当前 crate、模式
+和目标的实际产物；绝对路径及原始 JSON 留在 ignored 构建报告。
+Windows 打包同时替换并核对该次 Release DLL/helper，在 `data/` 保存不含
+开发机路径的必要摘要。`package_windows.ps1 -PackageDirectory <目录>`
+只接受本仓库 `dist/` 内不存在的新目录，逐层拒绝 reparse point 和越界路径；
+默认版本目录已存在时也拒绝，不再删除历史同版本包。
+
+原生构建与独立验包都显式要求 helper 的架构、摘要、同次来源和无设备 IPC。
+macOS 最终 helper 摘要由 producer 在签名后生成，随同一 sealed artifact
+流转；`--reuse-app` 只验证该包，不补文件、不修依赖、不重建或重签。
+全文件 seal 不能替代 helper 必需条件。验包还调用
+`test_mtp_worker_bundle.dart`，在自有隔离副本中真正拒绝缺失、空、损坏和
+错架构 helper，不把一般 seal 拒绝当作产品检查成功。
+
+`verify_mtp_worker.dart` 从包内固定路径启动 helper，使用原有四字节网络序
+长度和有界 JSON 发送 `{"method":"close"}`，要求成功 null 响应及自然零退出。
+初始 worker 没有 device，Close 不枚举或打开手机；ready 日志不能通过验证。
+探针限制响应和 stderr，异常、超时或取消只回收自己创建的进程；子进程工作
+目录固定在 helper 目录，Windows 搜索路径限包内和系统目录，macOS 不继承
+开发用 DYLD 注入变量。macOS 另外验证 lipo、执行位、链接、依赖与签名。
+
+`mtp_worker_packaging_test.dart` 执行真实 PowerShell、CMake/MSBuild、
+Cargo JSON 消费、PE 校验和受控进程；Cargo/编译工具边界使用合成产物。
+该文件每次在 `flutter_app/build/test-fixtures/mtp-worker-packaging/run-*`
+新建独立证据目录并输出位置，编译夹具和每个用例均使用新路径；不自动删除、
+覆盖或复用既有运行。内容仅为小型合成文件/工具，不含账号或用户媒体，
+不进入 Runner Release 包。删除证据不是功能断言；子进程退出/drain 和
+精确异常回收仍必须完成。此保留策略不表示已定位 Windows 瞬时删除拒绝的原因。
+`mtp_worker_binary_test.dart` 检查实际二进制头解析，POSIX 执行位在 Windows
+明确 skip。`mtp_worker_macos_packaging_test.dart` 使用合成 macOS 工具链运行
+真实包装脚本，覆盖签名顺序、普通配置/双架构、reuse 不改写与具名失败；
+它不是原生 macOS、真实签名、系统快捷方式或 DMG 验收。
+无设备 Close 也不代表 MTP 授权、媒体读写、拔线或重连通过。
 
 ## 真实 Release 冒烟
 

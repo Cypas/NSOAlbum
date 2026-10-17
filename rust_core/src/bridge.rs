@@ -4,6 +4,17 @@
 use std::sync::{Mutex, OnceLock};
 
 use crate::api::CoreApi;
+use crate::device_sync::driver::{Direction, DriverError};
+use crate::device_sync::headless::{
+    self, EndpointStatus, HostInfo, JournalInfo, LibraryInfo, RestoreInfo,
+};
+use crate::device_sync::planner::SyncMode;
+use crate::device_sync::read_model::ReadError;
+use crate::device_sync::read_model::{
+    BackupPageRead, ConflictPageRead, EndpointRead, PreviewRead, RestoreSummaryRead,
+};
+use crate::device_sync::runtime::DeviceCommandError;
+use crate::device_sync::usb::{UsbAction, UsbReply, UsbView};
 use crate::models::{
     AlbumRule, AlbumSummary, GalleryQuery, GameTagAliasSummary, GameTagSummary, ImportSummary,
     LibraryRelocationResult, LibraryRootProbe, LoginChallenge, MediaAsset, MediaDeletionResult,
@@ -16,6 +27,353 @@ use crate::sync::CancellationToken;
 
 static CORE: OnceLock<CoreApi> = OnceLock::new();
 static CURRENT_SYNC: Mutex<Option<CancellationToken>> = Mutex::new(None);
+
+pub fn device_sync_open_library(library_root: String) -> Result<LibraryInfo, String> {
+    headless::open(library_root)
+}
+pub fn device_sync_library_info(library: String) -> Result<LibraryInfo, String> {
+    headless::library_info(&library)
+}
+pub async fn device_sync_close_library(library: String) -> Result<(), String> {
+    headless::close_library_async(&library).await
+}
+pub fn device_sync_journal(
+    library: String,
+    operation: String,
+) -> Result<Option<JournalInfo>, String> {
+    headless::journal(&library, &operation)
+}
+pub fn device_sync_backup_journal(library: String, backup: String) -> Result<JournalInfo, String> {
+    headless::backup_journal(&library, &backup)
+}
+pub fn device_sync_host(
+    library: String,
+    name: String,
+    tcp_address: Option<String>,
+) -> Result<HostInfo, String> {
+    headless::host(&library, &name, tcp_address.as_deref())
+}
+pub fn device_sync_client(
+    library: String,
+    invitation: String,
+    name: String,
+) -> Result<String, String> {
+    headless::client(&library, &invitation, &name)
+}
+pub fn device_sync_host_tcp(
+    library: String,
+    name: String,
+    address: String,
+    wifi_ssid: Option<String>,
+    app_build: Option<crate::device_sync::connection::ApplicationBuild>,
+) -> Result<HostInfo, String> {
+    headless::host_tcp_with_network(&library, &name, &address, wifi_ssid, app_build)
+}
+pub fn device_sync_inspect_invitation(
+    invitation: String,
+    app_build: crate::device_sync::connection::ApplicationBuild,
+) -> Result<crate::device_sync::connection::InvitationConnection, ReadError> {
+    crate::device_sync::connection::inspect_compatible(
+        &invitation,
+        chrono::Utc::now().timestamp(),
+        &app_build,
+    )
+    .map_err(|error| ReadError::session(&error))
+}
+pub fn device_sync_client_tcp(
+    library: String,
+    invitation: String,
+    name: String,
+) -> Result<String, String> {
+    headless::client_tcp(&library, &invitation, &name)
+}
+pub fn device_sync_host_usb(
+    library: String,
+    name: String,
+    app_build: Option<crate::device_sync::connection::ApplicationBuild>,
+) -> Result<HostInfo, String> {
+    headless::host_usb_with_build(&library, &name, app_build)
+}
+pub fn device_sync_client_usb(
+    library: String,
+    invitation: String,
+    name: String,
+) -> Result<String, String> {
+    headless::client_usb(&library, &invitation, &name)
+}
+pub fn device_sync_usb_view(endpoint: String) -> Result<UsbView, ReadError> {
+    headless::usb_view(&endpoint)
+}
+pub fn device_sync_usb_select(
+    endpoint: String,
+    device: String,
+    storage: String,
+) -> Result<(), ReadError> {
+    headless::usb_select(&endpoint, &device, &storage)
+}
+pub async fn device_sync_usb_next(endpoint: String) -> Result<Option<UsbAction>, ReadError> {
+    headless::usb_next(&endpoint).await
+}
+pub fn device_sync_usb_complete(endpoint: String, reply: UsbReply) -> Result<(), ReadError> {
+    headless::usb_complete(&endpoint, reply)
+}
+pub async fn device_sync_usb_wait_closed(endpoint: String) -> Result<UsbView, ReadError> {
+    headless::usb_closed(&endpoint).await
+}
+pub fn device_sync_status(endpoint: String) -> Result<EndpointStatus, String> {
+    headless::status(&endpoint)
+}
+pub fn device_sync_read_endpoint(endpoint: String) -> EndpointRead {
+    headless::read_endpoint(&endpoint)
+}
+pub fn device_sync_read_preview(endpoint: String) -> PreviewRead {
+    headless::read_preview(&endpoint)
+}
+pub fn device_sync_read_conflicts(
+    endpoint: String,
+    binding: String,
+    cursor: Option<String>,
+    limit: usize,
+) -> ConflictPageRead {
+    headless::read_conflicts(&endpoint, &binding, cursor.as_deref(), limit)
+}
+pub fn device_sync_read_backups(
+    library: String,
+    cursor: Option<String>,
+    limit: usize,
+) -> BackupPageRead {
+    headless::read_backups(&library, cursor.as_deref(), limit)
+}
+pub fn device_sync_read_restore_summary(restore: String, binding: String) -> RestoreSummaryRead {
+    headless::read_restore_summary(&restore, &binding)
+}
+pub fn device_sync_poll(endpoint: String) -> Result<(), String> {
+    headless::tick(&endpoint)
+}
+pub async fn device_sync_confirmation_code(endpoint: String) -> Result<String, DeviceCommandError> {
+    headless::command(&endpoint, |d| d.confirmation_code()).await
+}
+pub async fn device_sync_confirm(endpoint: String) -> Result<(), DeviceCommandError> {
+    headless::command(&endpoint, |d| d.confirm_pairing()).await
+}
+pub async fn device_sync_consent_controlled(
+    endpoint: String,
+    accepted: bool,
+) -> Result<(), DeviceCommandError> {
+    headless::command(&endpoint, move |d| d.consent_controlled(accepted)).await
+}
+pub async fn device_sync_approve_controlled(
+    endpoint: String,
+    binding: String,
+) -> Result<(), DeviceCommandError> {
+    headless::command(&endpoint, move |d| d.approve_controlled_preview(&binding)).await
+}
+pub async fn device_sync_publish_account_preview(
+    endpoint: String,
+    binding: String,
+    added: u64,
+    replaced: u64,
+    removed: u64,
+    kept: u64,
+) -> Result<(), DeviceCommandError> {
+    headless::command(&endpoint, move |d| {
+        d.publish_account_preview(
+            &binding,
+            crate::device_sync::read_model::ChangeCounts {
+                added,
+                replaced,
+                removed,
+                kept,
+            },
+        )
+    })
+    .await
+}
+pub async fn device_sync_configure(
+    endpoint: String,
+    phone_to_desktop: bool,
+    overwrite: bool,
+    include_accounts: bool,
+) -> Result<(), DeviceCommandError> {
+    headless::command(&endpoint, move |d| {
+        d.configure(
+            if phone_to_desktop {
+                Direction::PhoneToDesktop
+            } else {
+                Direction::DesktopToPhone
+            },
+            if overwrite {
+                SyncMode::Overwrite
+            } else {
+                SyncMode::Merge
+            },
+            include_accounts,
+        )
+    })
+    .await
+}
+pub async fn device_sync_export_accounts(
+    endpoint: String,
+    payload: Vec<u8>,
+    state_digest: String,
+) -> Result<(), DeviceCommandError> {
+    let payload = zeroize::Zeroizing::new(payload);
+    if payload.len() > crate::device_sync::accounts::MAX_ACCOUNT_BYTES || state_digest.len() > 64 {
+        return Err(DeviceCommandError {
+            code: crate::device_sync::read_model::ReadError::InvalidInput,
+            executed: false,
+        });
+    }
+    headless::command(&endpoint, move |d| {
+        d.authorize_accounts_export(&payload, &state_digest)
+    })
+    .await
+}
+pub async fn device_sync_receive_accounts(
+    endpoint: String,
+    state_digest: String,
+) -> Result<(), DeviceCommandError> {
+    if state_digest.len() > 64 {
+        return Err(DeviceCommandError {
+            code: crate::device_sync::read_model::ReadError::InvalidInput,
+            executed: false,
+        });
+    }
+    headless::command(&endpoint, move |d| {
+        d.authorize_accounts_receive(&state_digest)
+    })
+    .await
+}
+pub async fn device_sync_decline_accounts(endpoint: String) -> Result<(), DeviceCommandError> {
+    headless::command(&endpoint, |d| d.decline_accounts()).await
+}
+pub async fn device_sync_account_payload(
+    endpoint: String,
+) -> Result<Option<Vec<u8>>, DeviceCommandError> {
+    headless::command(&endpoint, |d| {
+        d.accounts_payload()
+            .map(|payload| payload.map(|p| p.to_vec()))
+    })
+    .await
+}
+pub async fn device_sync_approve(endpoint: String) -> Result<(), DeviceCommandError> {
+    headless::command(&endpoint, |d| d.approve_preview()).await
+}
+pub async fn device_sync_approve_accounts(
+    endpoint: String,
+    binding: String,
+    state_digest: String,
+    external: String,
+) -> Result<(), DeviceCommandError> {
+    if binding.len() > 256 || state_digest.len() > 64 || external.len() > 36 {
+        return Err(DeviceCommandError {
+            code: crate::device_sync::read_model::ReadError::InvalidInput,
+            executed: false,
+        });
+    }
+    headless::command(&endpoint, move |d| {
+        d.approve_accounts_preview(
+            &binding,
+            &state_digest,
+            uuid::Uuid::parse_str(&external).map_err(|_| DriverError::Protocol)?,
+        )
+    })
+    .await
+}
+pub async fn device_sync_source_final(
+    endpoint: String,
+    state_digest: String,
+) -> Result<(), DeviceCommandError> {
+    if state_digest.len() > 64 {
+        return Err(DeviceCommandError {
+            code: crate::device_sync::read_model::ReadError::InvalidInput,
+            executed: false,
+        });
+    }
+    headless::command(&endpoint, move |d| d.approve_accounts_final(&state_digest)).await
+}
+pub async fn device_sync_target_final(
+    endpoint: String,
+    state_digest: String,
+) -> Result<(), DeviceCommandError> {
+    if state_digest.len() > 64 {
+        return Err(DeviceCommandError {
+            code: crate::device_sync::read_model::ReadError::InvalidInput,
+            executed: false,
+        });
+    }
+    headless::command(&endpoint, move |d| {
+        d.approve_accounts_target_final(&state_digest)
+    })
+    .await
+}
+pub async fn device_sync_external_check(endpoint: String) -> Result<(), DeviceCommandError> {
+    headless::command(&endpoint, |d| d.check_external_commit()).await
+}
+pub async fn device_sync_external_step(endpoint: String) -> Result<(), DeviceCommandError> {
+    headless::command(&endpoint, |d| d.external_step()).await
+}
+pub async fn device_sync_finalize_accounts(
+    endpoint: String,
+    external: String,
+) -> Result<(), DeviceCommandError> {
+    if external.len() > 36 {
+        return Err(DeviceCommandError {
+            code: crate::device_sync::read_model::ReadError::InvalidInput,
+            executed: false,
+        });
+    }
+    headless::command(&endpoint, move |d| {
+        d.finalize_accounts(uuid::Uuid::parse_str(&external).map_err(|_| DriverError::Protocol)?)
+    })
+    .await
+}
+pub fn device_sync_drain(endpoint: String) -> Result<Vec<u8>, String> {
+    headless::drain(&endpoint)
+}
+pub fn device_sync_ingest(endpoint: String, bytes: Vec<u8>) -> Result<(), String> {
+    headless::ingest(&endpoint, &bytes)
+}
+pub fn device_sync_written(endpoint: String, bytes: usize) -> Result<(), String> {
+    headless::written(&endpoint, bytes)
+}
+pub fn device_sync_finish_success(endpoint: String) -> Result<bool, String> {
+    headless::finish_success(&endpoint)
+}
+pub fn device_sync_cancel_signal(endpoint: String) -> Result<(), String> {
+    headless::cancel_signal(&endpoint)
+}
+pub async fn device_sync_shutdown(endpoint: String) -> Result<(), String> {
+    headless::shutdown_async(&endpoint).await
+}
+pub async fn device_sync_close_endpoint(endpoint: String) -> Result<(), String> {
+    headless::close_endpoint_async(&endpoint).await
+}
+pub fn device_sync_compensate(library: String, operation: String) -> Result<JournalInfo, String> {
+    headless::compensate(&library, &operation)
+}
+pub fn device_sync_preview_restore(library: String, backup: String) -> Result<RestoreInfo, String> {
+    headless::preview_restore(&library, &backup)
+}
+pub fn device_sync_apply_restore(
+    restore: String,
+    binding: String,
+    external: Option<String>,
+) -> Result<RestoreInfo, String> {
+    headless::apply_restore(&restore, &binding, external.as_deref())
+}
+pub fn device_sync_validate_restore(restore: String, binding: String) -> Result<(), String> {
+    headless::validate_restore(&restore, &binding)
+}
+pub fn device_sync_finalize_restore(restore: String, external: String) -> Result<(), String> {
+    headless::finalize_restore(&restore, &external)
+}
+pub fn device_sync_close_restore(restore: String) -> Result<(), String> {
+    headless::close_restore(&restore)
+}
+pub fn device_sync_cancel_restore(restore: String) -> Result<(), String> {
+    headless::cancel_restore(&restore)
+}
 
 pub fn init_core(library_root: String) -> Result<(), String> {
     if CORE.get().is_some() {
@@ -31,6 +389,10 @@ pub fn probe_library_root(library_root: String) -> Result<LibraryRootProbe, Stri
 
 pub fn load_settings() -> Result<Option<AppSettings>, String> {
     core()?.load_settings().map_err(error_text)
+}
+
+pub fn bootstrap_settings() -> Result<Option<AppSettings>, String> {
+    core()?.bootstrap_settings().map_err(error_text)
 }
 
 pub fn save_settings(settings: AppSettings) -> Result<(), String> {
@@ -113,6 +475,17 @@ pub async fn establish_coral_session(
 ) -> Result<CoralSession, String> {
     core()?
         .establish_coral_session(session_token, proxy_url)
+        .await
+        .map_err(error_text)
+}
+
+pub async fn establish_coral_session_for_account(
+    session_token: String,
+    expected_account: String,
+    proxy_url: Option<String>,
+) -> Result<CoralSession, String> {
+    core()?
+        .establish_coral_session_for_account(session_token, expected_account, proxy_url)
         .await
         .map_err(error_text)
 }
@@ -243,6 +616,27 @@ pub async fn sync_nso_from_session_token(
     register_current_sync(&cancellation)?;
     let result = api
         .sync_nso_from_session_token(session_token, proxy_url, &cancellation)
+        .await
+        .map_err(error_text);
+    clear_current_sync();
+    result
+}
+
+pub async fn sync_nso_from_session_token_for_account(
+    session_token: String,
+    expected_account: String,
+    proxy_url: Option<String>,
+) -> Result<SyncSummary, String> {
+    let api = core()?;
+    let cancellation = CancellationToken::default();
+    register_current_sync(&cancellation)?;
+    let result = api
+        .sync_nso_from_session_token_for_account(
+            session_token,
+            expected_account,
+            proxy_url,
+            &cancellation,
+        )
         .await
         .map_err(error_text);
     clear_current_sync();

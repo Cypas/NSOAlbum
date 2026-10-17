@@ -84,7 +84,7 @@ mod tests {
             storage_path: "a.jpg".into(),
             kind: MediaKind::Image,
             captured_at: None,
-            imported_at: Utc::now(),
+            imported_at: Some(Utc::now()),
             game_title_id: None,
             game_name: "Splatoon 3".into(),
             favorite: true,

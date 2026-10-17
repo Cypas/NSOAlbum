@@ -95,10 +95,22 @@ fi
 EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
 MAIN="$APP/Contents/MacOS/$EXECUTABLE"
 [[ -x "$MAIN" ]] || { echo "Missing app executable: $MAIN" >&2; exit 1; }
+WORKER="$APP/Contents/MacOS/nsoalbum_mtp_worker"
+[[ -s "$WORKER" && -x "$WORKER" && ! -L "$WORKER" ]] || {
+  echo "Missing, empty, linked or non-executable MTP helper: $WORKER" >&2; exit 1;
+}
+if [[ -z "$REUSE_APP" ]]; then
+  WORKER_BUILD_RECORD="$(dirname "$APP")/nsoalbum-mtp-worker.build.json"
+else
+  WORKER_BUILD_RECORD="$(dirname "$APP")/nsoalbum-mtp-worker.final.json"
+fi
+[[ -s "$WORKER_BUILD_RECORD" ]] || { echo "Missing same-run MTP helper build record" >&2; exit 1; }
+dart run "$SCRIPT_DIR/verify_mtp_worker.dart" --bundle "$APP" --platform "macos-$ARCH" --build-record "$WORKER_BUILD_RECORD"
 APP_CANONICAL="$(realpath "$APP")"
 
 FOUND="$(lipo -archs "$MAIN" | tr ' ' '\n' | sort | paste -sd, -)"
 [[ "$FOUND" == "$EXPECTED" ]] || { echo "Expected $EXPECTED executable, got $FOUND" >&2; exit 1; }
+[[ "$(lipo -archs "$WORKER")" == "$EXPECTED" ]] || { echo "MTP helper architecture differs from $EXPECTED" >&2; exit 1; }
 
 expand_runtime_path() {
   local value="$1" binary="$2"
@@ -215,7 +227,15 @@ done < <(find "$APP/Contents" \( -type f -o -type l \) -print0)
 if [[ -z "$REUSE_APP" ]]; then
   bash "$SCRIPT_DIR/sign_macos_app.sh" "$APP" "$PROJECT_ROOT/macos/Runner/Release.entitlements"
 fi
+codesign --verify --strict "$WORKER"
 codesign --verify --deep --strict "$APP"
+if [[ -z "$REUSE_APP" ]]; then
+  WORKER_FINAL_RECORD="$REPORTS/nsoalbum-mtp-worker.final.json"
+  dart run "$SCRIPT_DIR/verify_mtp_worker.dart" --bundle "$APP" --platform "macos-$ARCH" \
+    --build-record "$WORKER_BUILD_RECORD" --write-record "$WORKER_FINAL_RECORD"
+else
+  WORKER_FINAL_RECORD="$WORKER_BUILD_RECORD"
+fi
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" == "$VERSION" ]] || exit 1
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" == "$BUILD_NUMBER" ]] || exit 1
 ENTITLEMENTS="$(codesign -d --entitlements :- "$APP" 2>/dev/null)"
@@ -275,6 +295,8 @@ MOUNTED_APP="$MOUNT/NSOAlbum.app"
 [[ -d "$MOUNTED_APP" ]] || { echo "DMG did not contain NSOAlbum.app" >&2; exit 1; }
 codesign --verify --deep --strict "$MOUNTED_APP"
 [[ "$(lipo -archs "$MOUNTED_APP/Contents/MacOS/$EXECUTABLE")" == "$EXPECTED" ]] || exit 1
+dart run "$SCRIPT_DIR/verify_mtp_worker.dart" --bundle "$MOUNTED_APP" --platform "macos-$ARCH" \
+  --build-record "$WORKER_FINAL_RECORD"
 run_smoke --launch-app "$MOUNTED_APP" --reports-dir "$REPORTS/dmg"
 hdiutil detach "$MOUNT" -quiet
 rmdir "$MOUNT"

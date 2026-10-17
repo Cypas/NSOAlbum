@@ -1,0 +1,125 @@
+import 'package:flutter/material.dart';
+
+import '../../l10n/app_localizations.dart';
+
+/// Explicit alternatives, independent of transport roles or native authority.
+class DeviceSyncModeSelector extends StatelessWidget {
+  const DeviceSyncModeSelector({
+    super.key,
+    required this.phoneToDesktop,
+    required this.overwrite,
+    required this.includeAccounts,
+    required this.enabled,
+    required this.onDirectionChanged,
+    required this.onOverwriteChanged,
+    required this.onAccountsChanged,
+  });
+
+  final bool phoneToDesktop, overwrite, includeAccounts, enabled;
+  final ValueChanged<bool> onDirectionChanged;
+  final ValueChanged<bool> onOverwriteChanged;
+  final ValueChanged<bool> onAccountsChanged;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      _group(
+        context,
+        key: 'device-direction',
+        title: context.l10n.select(zh: '同步方向', en: 'Direction'),
+        value: phoneToDesktop,
+        options: (
+          context.l10n.select(zh: '电脑 → 手机', en: 'Desktop → Phone'),
+          context.l10n.select(zh: '手机 → 电脑', en: 'Phone → Desktop'),
+        ),
+        keys: ('device-desktop-to-phone', 'device-phone-to-desktop'),
+        onChanged: onDirectionChanged,
+      ),
+      _group(
+        context,
+        key: 'device-overwrite',
+        title: context.l10n.select(zh: '同步模式', en: 'Sync mode'),
+        value: overwrite,
+        options: (
+          context.l10n.select(zh: '融合', en: 'Merge'),
+          context.l10n.select(zh: '覆盖', en: 'Overwrite'),
+        ),
+        keys: ('device-mode-merge', 'device-mode-overwrite'),
+        onChanged: onOverwriteChanged,
+      ),
+      Text(
+        overwrite
+            ? context.l10n.select(
+                zh: '以来源图库为准，移出接收端独有项目并保留恢复备份。',
+                en: 'Use the source library, remove receiver-only items and retain a recovery backup.',
+              )
+            : context.l10n.select(
+                zh: '合并两端内容，保留接收端独有项目。',
+                en: 'Combine both libraries and keep receiver-only items.',
+              ),
+      ),
+      _group(
+        context,
+        key: 'device-include-accounts',
+        title: context.l10n.select(zh: '账号范围', en: 'Accounts'),
+        value: includeAccounts,
+        options: (
+          context.l10n.select(zh: '不传输账号', en: 'Exclude accounts'),
+          context.l10n.select(zh: '包含全部账号', en: 'Include all accounts'),
+        ),
+        keys: ('device-library-only', 'device-with-accounts'),
+        onChanged: onAccountsChanged,
+      ),
+      if (includeAccounts)
+        Text(
+          context.l10n.select(
+            zh: '包含 Nintendo 账号与登录凭据，继续后仍需单独授权。',
+            en: 'Includes Nintendo accounts and sign-in credentials. Separate consent is required to continue.',
+          ),
+        ),
+      const SizedBox(height: 12),
+    ],
+  );
+
+  Widget _group(
+    BuildContext context, {
+    required String key,
+    required String title,
+    required bool value,
+    required (String, String) options,
+    required (String, String) keys,
+    required ValueChanged<bool> onChanged,
+  }) => Padding(
+    key: Key(key),
+    padding: const EdgeInsets.symmetric(vertical: 10),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Semantics(
+          header: true,
+          child: Text(title, style: Theme.of(context).textTheme.titleMedium),
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            ChoiceChip(
+              key: Key(keys.$1),
+              label: Text(options.$1, softWrap: true),
+              selected: !value,
+              onSelected: enabled ? (_) => onChanged(false) : null,
+            ),
+            ChoiceChip(
+              key: Key(keys.$2),
+              label: Text(options.$2, softWrap: true),
+              selected: value,
+              onSelected: enabled ? (_) => onChanged(true) : null,
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+}

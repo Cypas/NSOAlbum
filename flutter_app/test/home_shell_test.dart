@@ -243,6 +243,98 @@ void main() {
     expect(find.byTooltip('收藏'), findsOneWidget);
   });
 
+  testWidgets('favorite clone keeps unknown dates and metadata in the viewer', (
+    tester,
+  ) async {
+    final unknown = MediaAsset(
+      id: 42,
+      sha256: 'unknown-fixture',
+      originalName: 'unknown.jpg',
+      storagePath: 'missing.jpg',
+      kind: MediaKind.image,
+      importedAt: null,
+      gameTitleId: 'title-id',
+      gameName: 'Unknown Game',
+      favorite: false,
+      tags: const ['Original tag'],
+      note: 'Original note',
+    );
+    final backend = FakeBackend(mediaItems: [unknown]);
+    await tester.pumpWidget(SquidAlbumApp(backend: backend));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('收藏'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('unknown.jpg'));
+    await tester.pumpAndSettle();
+    final shown = tester
+        .widget<MediaViewer>(find.byType(MediaViewer))
+        .items
+        .single;
+    expect(shown.importedAt, isNull);
+    expect(shown.capturedAt, isNull);
+    expect(shown.favorite, isTrue);
+    expect(shown.sha256, 'unknown-fixture');
+    expect(shown.gameTitleId, 'title-id');
+    expect(shown.tags, ['Original tag']);
+    expect(shown.note, 'Original note');
+    expect(shown.storagePath, 'missing.jpg');
+    expect(tester.takeException(), isNull);
+  });
+
+  test(
+    'media fixture queries match production date ties and unknown boundaries',
+    () async {
+      MediaAsset item(int id, DateTime? importedAt) => MediaAsset(
+        id: id,
+        sha256: 'query-$id',
+        originalName: 'query-$id.jpg',
+        storagePath: 'missing.jpg',
+        kind: MediaKind.image,
+        importedAt: importedAt,
+        gameName: 'Game',
+        favorite: false,
+        tags: const [],
+      );
+      final date = DateTime.utc(2020, 1, 1, 0, 0, 0, 1);
+      final backend = FakeBackend(
+        mediaItems: [
+          item(3, null),
+          item(1, date),
+          item(4, null),
+          item(2, date),
+        ],
+      );
+      expect((await backend.listMedia()).map((media) => media.id), [
+        2,
+        1,
+        4,
+        3,
+      ]);
+      expect(
+        (await backend.listMedia(newestFirst: false)).map((media) => media.id),
+        [3, 4, 1, 2],
+      );
+      expect(
+        (await backend.listMedia(capturedFrom: date)).map((media) => media.id),
+        [2, 1],
+      );
+      expect(
+        (await backend.listMedia(
+          capturedUntil: date.add(const Duration(microseconds: 1)),
+        )).map((media) => media.id),
+        [2, 1],
+      );
+      expect(await backend.listMedia(capturedUntil: date), isEmpty);
+      expect(
+        (await backend.listMedia(
+          capturedFrom: date,
+          capturedUntil: date.add(const Duration(microseconds: 1)),
+        )).map((media) => media.id),
+        [2, 1],
+      );
+    },
+  );
+
   testWidgets('search ignores case and Traditional Chinese variants', (
     tester,
   ) async {
@@ -522,7 +614,7 @@ void main() {
   ) async {
     final backend = FakeBackend(
       mediaItems: [
-        _media(id: 1, name: 'first.jpg'),
+        _media(id: 1, name: 'first.jpg', capturedAt: DateTime.utc(2026, 10, 4)),
         _media(id: 2, name: 'second.jpg'),
       ],
     );
@@ -679,7 +771,15 @@ void main() {
     final backend = FakeBackend(
       mediaItems: List.generate(
         20,
-        (index) => _media(id: index + 1, name: 'media-${index + 1}.jpg'),
+        (index) => _media(
+          id: index + 1,
+          name: 'media-${index + 1}.jpg',
+          capturedAt: DateTime.utc(
+            2026,
+            10,
+            3,
+          ).subtract(Duration(seconds: index)),
+        ),
       ),
     );
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
@@ -2549,13 +2649,25 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
       )
       ..removeWhere((item) {
         final timestamp = item.capturedAt ?? item.importedAt;
+        if (timestamp == null) {
+          return capturedFrom != null || capturedUntil != null;
+        }
         return (capturedFrom != null && timestamp.isBefore(capturedFrom)) ||
             (capturedUntil != null && !timestamp.isBefore(capturedUntil));
       })
       ..sort((a, b) {
         final aTime = a.capturedAt ?? a.importedAt;
         final bTime = b.capturedAt ?? b.importedAt;
-        return newestFirst ? bTime.compareTo(aTime) : aTime.compareTo(bTime);
+        final int byDate;
+        if (aTime == null) {
+          byDate = bTime == null ? 0 : 1;
+        } else if (bTime == null) {
+          byDate = -1;
+        } else {
+          byDate = bTime.compareTo(aTime);
+        }
+        final order = byDate == 0 ? b.id.compareTo(a.id) : byDate;
+        return newestFirst ? order : -order;
       });
     return result.isEmpty && mediaItems == null
         ? [_media(id: 1, name: 'sample.jpg')]

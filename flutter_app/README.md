@@ -14,8 +14,13 @@ Flutter 负责跨平台界面与系统集成，Rust Core 负责 SQLite、媒体�
 
 - `lib/src/rust/`：由 `flutter_rust_bridge_codegen` 生成的绑定，不手工修改（动态库 stem 配置除外）。
 - `lib/src/backend/`：Dart 后端门面、安全凭据存储与登录/同步流程。
+- `lib/src/backend/device_sync/`：同一图库的设备同步与受控恢复生命周期；安全材料不传给页面。
+- `lib/src/startup/`：核心准备、启动恢复、桌面等待式关闭与普通应用初始化的编排；
+  原生关闭拦截先于核心准备安装，普通桌面窗口仅委托关闭策略，不接管原生退出。
 - `lib/src/state/`：设置和同步状态控制器。
 - `lib/src/ui/account_tools/`：绑定指定账号的好友、鱿鱼圈和观星页面。
+- `lib/src/ui/device_sync/`：可绘制的启动检查、恢复反馈与设备同步展示。
+- `test/device_sync/`：合成安全存储、生命周期及显式启用的真实 Bridge 回归测试。
 - `rust_builder/`：Cargokit 平台构建脚手架。
 - `../rust_core/`：Rust 核心 crate。
 
@@ -68,3 +73,70 @@ Android 先用 `flutter build apk --debug --target-platform android-arm64 -t too
 当前 AGP 9；不编辑插件缓存、不关闭 R8、不更改其他插件或应用规则。
 回归测试通过实际 Gradle 项目验证 Debug/Release 配置，运行方法见
 `test/fixtures/android/README.md`。
+
+## 跨设备原生字节探针
+
+### Debug 配对输入接口
+
+正常应用的设备同步页在 Debug 模式下注册 VM Service 扩展
+`ext.squid_album.deviceSyncPairing`。这是带认证调试连接中的页面输入接口，
+不是额外的网络服务或产品配对方式；Release/Profile 不注册且不接受调用。
+
+- `action=status`：读取当前页面的 `generation`、`mobile`、`transport`、
+  `canInject` 和 `canRead`，不返回邀请材料。
+- `action=read,generation=<当前代次>`：仅桌面当前未过期、未确认的邀请可读；
+  返回 `generation` 和 `invitation`。
+- `action=inject,generation=<当前代次>,invitation=<邀请>`：仅前台、可操作的
+  手机设备同步页接受，走相机扫码返回后的同一连接及目录授权流程。
+  成功返回 `accepted=true`，不代表配对确认或传输完成。
+
+每次调用先检查页面代次；离页、被其他路由覆盖、手机退后台、忙状态、
+过期邀请及空/超过 8192 UTF-8 字节的输入均受限制。接口不能确认配对、
+配置同步范围、授权账号或批准接收预览。真实双方确认及接收确认仍使用原 UI。
+邀请和调试服务认证 URL 仅在受控调试器内存中传递，不写命令行、文件或日志，
+不对外暴露调试端口。该接口不替代相机识别验收。
+
+源码在 `lib/src/ui/device_sync/debug_pairing.dart`；接口及真实页面接线测试为
+`test/device_sync/debug_pairing_test.dart` 和 `debug_pairing_page_test.dart`。
+手机由 Rust 校验邀请及软件版本后选择邀请中的连接方式；内部注入与相机扫码
+使用相同路径，不接收独立的通道覆盖参数。
+
+### 连接提示与应用版本匹配
+
+桌面选择 USB 或局域网地址并创建二维码；手机不再重复选择通道。
+邀请中的 `app_build` 包含平台安装包实际 `version` 和 `build_number`，
+与协议版本 `version` 分开。正常页面要求两端两项完全一致；
+缺少版本字段的旧邀请同样拒绝，不进入同步预览、传输或写入。
+应用版本还绑定到 TLS exporter 上下文和认证消息；仅篡改二维码字段不能通过认证。
+这不是自动升级能力，也不把底层无版本的合成协议夹具用于普通应用配对。
+
+网络快照由 `lib/src/platform/device_sync_network.dart` 按需读取。
+Android 仅在 Wi-Fi 配对操作中请求前台位置权限以读取 SSID，不读取位置坐标、
+BSSID、附近网络或后台定位。拒绝、系统限制、读取失败和网络切换显示未知；
+同名只是提示，不同名或未知仍尝试原邀请的安全连接，不静默切换 USB/Wi-Fi。
+桌面只把与所选地址可靠对应的 SSID 写入邀请。所锁定插件在 macOS 上的
+SSID/IP 接口可能不同，因此只显示可读名称和关联未知，不假装已确认对应关系。
+
+邀请投影不按手机墙上时钟拒绝配对，继续沿用主机过期与单调期限保护和现有
+时钟偏差冲突处理。USB 是否连到对应电脑仍由邀请绑定的安全握手与双方确认决定，
+不把“插着一根线”当作设备身份。页面在权限请求前复核前台，权限弹窗恢复后才继续连接。
+
+### 独立合成通道
+
+`tool/device_sync_saf_probe.dart` 是独立 Android 开发入口，不初始化 Rust Core、
+账号或图库。使用
+`flutter build apk --debug --target-platform android-arm64 -t tool/device_sync_saf_probe.dart`
+构建。系统目录选择器只接受外部存储提供方的 `Documents/NSOAlbumSync` 精确目录，
+需要使用者明确授权；不申请全盘权限。探针仅在新建随机会话中交换合成字节，
+不能当作 TLS、媒体同步或发布验收。设备运行后覆盖安装普通 Debug 包，不卸载或清空。
+
+桌面独立探针在 `../rust_core/examples/device_sync_native_probe.rs`。先从 Rust
+目录执行 `cargo build --bin nsoalbum_mtp_worker`，再执行
+`cargo run --example device_sync_native_probe [32位小写十六进制合成会话ID]`。
+仅应连接一台明确用于合成测试的 MTP 设备；省略参数时创建随机新会话。
+Windows 强制使用 WPD，macOS 使用原生 USB；没有驱动替换、后台进程终止或传输回退。
+只终止本探针创建的 Rust 工作进程。普通桌面构建通过工程自身胶水生成并放置
+工作进程，发布验包显式检查包内固定 sibling、架构、来源摘要及无设备 Close；
+该检查不枚举手机。macOS 原生运行和实际授权、读写、拔线重连须单独验收；
+这些入口不表示 USB 同步已可交付。详见
+[桌面 helper 构建与验包](../docs/TESTING.md#桌面-mtp-helper)。

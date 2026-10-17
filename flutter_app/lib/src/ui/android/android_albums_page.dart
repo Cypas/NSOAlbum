@@ -10,6 +10,7 @@ import 'android_library_page.dart';
 import 'android_layout.dart';
 import 'android_media_card.dart';
 import 'android_page_frame.dart';
+import '../device_sync/album_source_label.dart';
 
 class AndroidAlbumsPage extends StatefulWidget {
   const AndroidAlbumsPage({
@@ -121,7 +122,7 @@ class _AndroidAlbumsPageState extends State<AndroidAlbumsPage> {
                   mainAxisSpacing: spacing,
                   mainAxisExtent:
                       tileWidth * 9 / 16 +
-                      MediaQuery.textScalerOf(context).scale(16) * 4 +
+                      MediaQuery.textScalerOf(context).scale(16) * 6 +
                       54,
                 ),
                 itemCount: values.length,
@@ -170,11 +171,20 @@ class _AndroidAlbumsPageState extends State<AndroidAlbumsPage> {
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
                             ),
-                            subtitle: Text(
-                              context.l10n.select(
-                                zh: '${album.mediaCount} 个媒体',
-                                en: '${album.mediaCount} media',
-                              ),
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  context.l10n.select(
+                                    zh: '${album.mediaCount} 个媒体',
+                                    en: '${album.mediaCount} media',
+                                  ),
+                                ),
+                                AlbumSourceLabel(
+                                  name: album.sourceDeviceName,
+                                  systemKey: album.systemKey,
+                                ),
+                              ],
                             ),
                             trailing: album.systemKey != null
                                 ? null

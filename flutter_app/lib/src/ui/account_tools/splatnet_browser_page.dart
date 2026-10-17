@@ -94,6 +94,7 @@ class _SplatNetBrowserPageState extends State<SplatNetBrowserPage> {
   NativeWebViewLifecycle nativeView = NativeWebViewLifecycle();
   bool preparing = false;
   AccountToolLifecycle? lifecycleEvents;
+  AccountCleanupRegistration? credentialCleanup;
 
   @override
   void didChangeDependencies() {
@@ -105,6 +106,10 @@ class _SplatNetBrowserPageState extends State<SplatNetBrowserPage> {
         lifecycleEvents = (backend as NintendoAccountToolLifecycleBackend)
             .accountToolLifecycle;
         lifecycleEvents!.addListener(onPolicyChanged);
+        credentialCleanup = lifecycleEvents!.registerCleanup(
+          widget.profile.accountId,
+          closeResources,
+        );
       }
       unawaited(prepare());
     }
@@ -385,6 +390,11 @@ class _SplatNetBrowserPageState extends State<SplatNetBrowserPage> {
     _browserCleanup = closeResources();
     // Retain the failed future for the next entry; avoid an unhandled async error.
     unawaited(_browserCleanup.catchError((Object _) {}));
+    unawaited(
+      _browserCleanup
+          .then((_) => credentialCleanup?.remove())
+          .catchError((Object _) {}),
+    );
     super.dispose();
   }
 

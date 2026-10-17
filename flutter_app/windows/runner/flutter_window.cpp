@@ -7,8 +7,9 @@
 
 #include "flutter/generated_plugin_registrant.h"
 
-FlutterWindow::FlutterWindow(const flutter::DartProject& project)
-    : project_(project) {}
+FlutterWindow::FlutterWindow(const flutter::DartProject& project,
+                             NativeSingleInstance* instance)
+    : project_(project), instance_(instance) {}
 
 FlutterWindow::~FlutterWindow() {}
 
@@ -89,6 +90,11 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  LRESULT activation = 0;
+  if (instance_ &&
+      instance_->HandleActivation(hwnd, message, wparam, lparam, &activation)) {
+    return activation;
+  }
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =

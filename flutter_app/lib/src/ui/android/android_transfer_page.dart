@@ -10,13 +10,19 @@ import '../../state/sync_controller.dart';
 import '../../state/transfer_controller.dart';
 import '../display_time.dart';
 import '../account_tools/account_tools_actions.dart';
+import '../device_sync/entry.dart';
 import 'android_custom_import_page.dart';
 import 'android_nintendo_sync_page.dart';
 import 'android_page_frame.dart';
 
 class AndroidTransferPage extends StatelessWidget {
-  const AndroidTransferPage({super.key, required this.controller});
+  const AndroidTransferPage({
+    super.key,
+    required this.controller,
+    this.onDeviceSyncChanged,
+  });
   final TransferController controller;
+  final Future<void> Function()? onDeviceSyncChanged;
 
   @override
   Widget build(BuildContext context) => AndroidPageFrame(
@@ -140,6 +146,18 @@ class AndroidTransferPage extends StatelessWidget {
                   en: 'Imported ${result.imported} · Duplicates ${result.duplicates} · Failed ${result.failed}',
                 ),
               ),
+            DeviceSyncEntry(
+              backend: controller.backend,
+              mobile: true,
+              onLibraryChanged: () async {
+                if (onDeviceSyncChanged case final changed?) {
+                  await changed();
+                } else {
+                  controller.onImported?.call();
+                  await controller.refresh();
+                }
+              },
+            ),
           ],
         );
       },

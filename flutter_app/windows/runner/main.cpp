@@ -3,10 +3,12 @@
 #include <windows.h>
 
 #include <fstream>
+#include <cstdio>
 #include <string>
 
 #include "flutter_window.h"
 #include "utils.h"
+#include "native_single_instance.h"
 
 namespace {
 
@@ -54,14 +56,28 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     CreateAndAttachConsole();
   }
 
+  std::vector<std::string> command_line_arguments = GetCommandLineArguments();
+  // Invalid smoke arguments are still rejected by Dart before any core opens.
+  const bool smoke = HasArgument(command_line_arguments, "--ci-smoke");
+  NativeSingleInstance desktop_instance(
+      smoke ? std::filesystem::path{} : NativeSingleInstance::UserDirectory());
+  if (!smoke) {
+    const auto outcome = desktop_instance.AcquireOrActivate();
+    if (outcome == NativeSingleInstance::Outcome::Activated) {
+      std::fputs("NSOAlbum: activated existing desktop window\n", stdout);
+      return EXIT_SUCCESS;
+    }
+    if (outcome != NativeSingleInstance::Outcome::Primary) {
+      std::fputs("NSOAlbum: desktop instance unavailable\n", stderr);
+      return 73;
+    }
+  }
+
   // Initialize COM, so that it is available for use in the library and/or
   // plugins.
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
   flutter::DartProject project(L"data");
-
-  std::vector<std::string> command_line_arguments =
-      GetCommandLineArguments();
 
   // Keep the renderer on the stable Skia path. Do not force a GPU adapter or
   // move the UI isolate onto the platform thread: both options change plugin
@@ -77,11 +93,16 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
-  FlutterWindow window(project);
+  FlutterWindow window(project, smoke ? nullptr : &desktop_instance);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
   if (!window.Create(L"NSOAlbum", origin, size)) {
     return EXIT_FAILURE;
+  }
+  if (!smoke && !desktop_instance.Attach(window.GetHandle())) {
+    window.Destroy();
+    ::CoUninitialize();
+    return 73;
   }
   window.SetQuitOnClose(true);
 

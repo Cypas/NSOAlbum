@@ -113,6 +113,14 @@ class _AndroidShellState extends State<AndroidShell> {
     previous = widget.sync.state;
   }
 
+  Future<void> deviceSyncChanged() async {
+    if (!mounted) return;
+    setState(() => albumRevision++);
+    await library.reload();
+    await transfer.refresh();
+    // Refresh display only: do not signal the NSO automatic-sync scheduler.
+  }
+
   @override
   void dispose() {
     widget.sync.removeListener(syncChanged);
@@ -161,7 +169,10 @@ class _AndroidShellState extends State<AndroidShell> {
                       settings: widget.settings,
                       revision: albumRevision,
                     ),
-                    AndroidTransferPage(controller: transfer),
+                    AndroidTransferPage(
+                      controller: transfer,
+                      onDeviceSyncChanged: deviceSyncChanged,
+                    ),
                     AndroidSettingsPage(
                       controller: widget.settings,
                       backend: widget.backend,

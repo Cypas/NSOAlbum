@@ -96,21 +96,63 @@ pub struct HttpTransport {
 }
 
 #[derive(Debug)]
+/// A temporary file created by this transport, never an arbitrary caller-owned path.
+///
+/// ```compile_fail
+/// use squid_album_core::transport::DownloadedMedia;
+/// let forged = DownloadedMedia {
+///     path: "/someone/else/original.jpg".into(),
+///     sha256: "a".repeat(64),
+///     size: 1,
+/// };
+/// ```
+///
+/// ```compile_fail
+/// use squid_album_core::transport::DownloadedMedia;
+/// fn replace_owned_path(download: &mut DownloadedMedia) {
+///     download.path = "/someone/else/original.jpg".into();
+/// }
+/// ```
 pub struct DownloadedMedia {
-    pub path: PathBuf,
-    pub sha256: String,
-    pub size: u64,
+    path: PathBuf,
+    temporary_root: PathBuf,
+    sha256: String,
+    size: u64,
+    owned: bool,
+}
+
+impl DownloadedMedia {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub(crate) async fn publish_to(&mut self, destination: &Path) -> CoreResult<()> {
+        tokio::fs::rename(&self.path, destination).await?;
+        self.owned = false;
+        Ok(())
+    }
 }
 
 impl Drop for DownloadedMedia {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        if self.owned && self.path.parent() == Some(self.temporary_root.as_path()) {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
 struct StreamingDownloadWriter {
     file: Option<tokio::fs::File>,
     path: PathBuf,
+    temporary_root: PathBuf,
     expected_size: Option<u64>,
     limit: u64,
     size: u64,
@@ -130,11 +172,35 @@ impl StreamingDownloadWriter {
             validate_size(expected, limit)?;
         }
         tokio::fs::create_dir_all(temporary_root).await?;
+        let mut component_path = PathBuf::new();
+        for component in temporary_root.components() {
+            component_path.push(component);
+            if !matches!(
+                component,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            ) {
+                continue;
+            }
+            if std::fs::symlink_metadata(&component_path)?
+                .file_type()
+                .is_symlink()
+            {
+                return Err(CoreError::InvalidConfig(
+                    "download temporary root is a symbolic link".into(),
+                ));
+            }
+        }
+        let temporary_root = temporary_root.canonicalize()?;
         let path = temporary_root.join(format!("{}.part", uuid::Uuid::new_v4()));
-        let file = tokio::fs::File::create(&path).await?;
+        let file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await?;
         Ok(Self {
             file: Some(file),
             path,
+            temporary_root,
             expected_size,
             limit,
             size: 0,
@@ -197,8 +263,10 @@ impl StreamingDownloadWriter {
         self.completed = true;
         Ok(DownloadedMedia {
             path: self.path.clone(),
+            temporary_root: self.temporary_root.clone(),
             sha256: hex::encode(self.hasher.clone().finalize()),
             size: self.size,
+            owned: true,
         })
     }
 
@@ -206,6 +274,24 @@ impl StreamingDownloadWriter {
         self.file.take();
         let _ = tokio::fs::remove_file(&self.path).await;
         self.completed = true;
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    pub async fn download_bytes(root: &Path, bytes: &[u8]) -> DownloadedMedia {
+        let mut writer = StreamingDownloadWriter::create(
+            root,
+            Some(bytes.len() as u64),
+            DEFAULT_MAX_DOWNLOAD_BYTES,
+            CancellationToken::default(),
+        )
+        .await
+        .unwrap();
+        writer.write_chunk(bytes).await.unwrap();
+        writer.finish().await.unwrap()
     }
 }
 
@@ -664,12 +750,12 @@ pub(crate) mod tests {
         writer.write_chunk(b"def").await.unwrap();
         let download = writer.finish().await.unwrap();
 
-        assert_eq!(download.size, 6);
+        assert_eq!(download.size(), 6);
         assert_eq!(
-            download.sha256,
+            download.sha256(),
             "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721"
         );
-        assert_eq!(tokio::fs::read(&download.path).await.unwrap(), b"abcdef");
+        assert_eq!(tokio::fs::read(download.path()).await.unwrap(), b"abcdef");
     }
 
     #[tokio::test]
@@ -741,11 +827,35 @@ pub(crate) mod tests {
         .unwrap();
         writer.write_chunk(b"data").await.unwrap();
         let download = writer.finish().await.unwrap();
-        let path = download.path.clone();
+        let path = download.path().to_path_buf();
 
         drop(download);
 
         assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn review_fix1_r2_symbolic_temporary_root_is_rejected_without_deleting_other_files() {
+        let parent = tempfile::tempdir().unwrap();
+        let target = parent.path().join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        let sentinel = target.join("unowned.jpg");
+        std::fs::write(&sentinel, b"not a transport temporary").unwrap();
+        let linked = parent.path().join("linked");
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&target, &linked).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &linked).unwrap();
+        assert!(
+            StreamingDownloadWriter::create(&linked, Some(1), 4, CancellationToken::default())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(&sentinel).unwrap(),
+            b"not a transport temporary"
+        );
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 1);
     }
 
     #[tokio::test]

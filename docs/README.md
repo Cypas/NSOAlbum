@@ -14,6 +14,13 @@
 
 正式运行时代码位于 `flutter_app/` 与 `rust_core/`。内部设计文档、原型和本地变更记录不随公开快照提交。
 
+正常应用的 Debug 配对输入接口及安全边界见
+[Flutter 开发说明](../flutter_app/README.md#debug-配对输入接口)，
+仅供替代调试时的扫码输入，不自动确认或应用同步。
+设备同步由手机确认本次连接、同步选项和最终预览；桌面创建一次性二维码、
+展示进度并保留取消入口。协议控制与真实传输速率的源码位置见目录规范；
+内部设计及验收记录的本地边界见文档树。
+
 当前 Windows 开发环境已启用 Developer Mode，Flutter 插件可以直接创建符号链接；其他开发机若未启用，可使用 Windows 打包脚本的 CMake/目录联接回退流程。
 
 应用版本和构建号以 `flutter_app/pubspec.yaml` 为准，Rust crate 使用相同 SemVer，正式发布标签使用 `v<SemVer>`。升级时会优先使用 `NSOAlbum` 应用支持目录；若新目录没有有效数据，则继续使用 `Fresh Album`、`FreshAlbum` 或 `squid_album` 中检测到的旧库。Windows 默认图库目录按 `Pictures\NSOAlbum`、`Pictures\FreshAlbum` 的顺序探测，已有设置中的手动路径始终优先。Rust 会在单个 SQLite 事务中显式补齐历史缺失列并回滚失败迁移。
@@ -29,6 +36,10 @@
 ```
 
 发布目录中的说明文档位于 `docs\`，第三方声明和字体许可证位于 `licenses\`。
+脚本只创建全新目录，已有同版本目录不会被删除；本地隔离输出可用
+`-PackageDirectory "..\dist\<专题>\<新目录>"`，必须位于本仓库 `dist\`
+内且不能经目录联接越界。桌面 helper 的正常构建、同次产物来源和独立
+验包规则见 [测试文档](TESTING.md#桌面-mtp-helper)。
 
 安装 Inno Setup 6 后，可基于已经生成的目录版创建安装器：
 

@@ -184,6 +184,10 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
   @override
   Widget build(BuildContext context) {
     final item = items[index];
+    final importedAt = item.importedAt;
+    final imported = importedAt == null
+        ? context.l10n.select(zh: '未知', en: 'Unknown')
+        : formatUserDateTime(importedAt);
     final settings = widget.settings ?? widget.backend.settings;
     return AndroidBackGuard(
       busy: busy,
@@ -398,8 +402,8 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
               ),
             Text(
               context.l10n.select(
-                zh: '导入时间：${formatUserDateTime(item.importedAt)}',
-                en: 'Imported: ${formatUserDateTime(item.importedAt)}',
+                zh: '导入时间：$imported',
+                en: 'Imported: $imported',
               ),
             ),
             Wrap(

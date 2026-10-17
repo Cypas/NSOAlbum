@@ -11,6 +11,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path_provider_windows/path_provider_windows.dart';
+import 'package:path/path.dart' as p;
 import 'package:url_launcher/url_launcher.dart';
 
 import '../rust/bridge.dart' as rust_api;
@@ -28,6 +29,10 @@ import 'rust_initialization.dart';
 import 'video_operation_progress.dart';
 import 'mobile_storage_policy.dart';
 import 'sync_failure_status.dart';
+import 'device_sync/account_gate.dart';
+import 'device_sync/account_storage.dart';
+import 'device_sync/account_coordinator.dart';
+import 'device_sync/startup_lifecycle.dart';
 
 const _windowsPicturesKnownFolderId = '{33E28130-4E1E-4676-835A-98395C3BC3BB}';
 
@@ -43,20 +48,93 @@ class RustBackend
         OperationProgressBackend,
         MobileStorageBackend,
         NintendoAccountToolsBackend,
-        NintendoAccountToolLifecycleBackend {
-  RustBackend._(this._storage, this._logger, this._libraryRoot, this._isolated);
+        NintendoAccountToolLifecycleBackend,
+        AccountWorkBackend,
+        AccountScheduleAdmissionBackend,
+        DeviceSyncStartupBackend {
+  RustBackend._(
+    this._storage,
+    this._logger,
+    this._libraryRoot,
+    this._isolated,
+  ) {
+    deviceSyncStartup = DeviceSyncStartupLifecycle(
+      gate: accountWorkGate,
+      openLibrary: () async =>
+          (await rust_api.deviceSyncOpenLibrary(libraryRoot: _libraryRoot))
+              .handle,
+      coordinator: (handle) => DeviceAccountCoordinator(
+        library: handle,
+        storage: FlutterAccountSecureStorage(_storage),
+        gate: accountWorkGate,
+        invalidate: invalidateDeviceAccounts,
+        publish: publishDeviceAccounts,
+      ),
+      initialize: _initializeSettings,
+      isolated: _isolated,
+    );
+  }
 
+  static final _prepared = <String, Future<RustBackend>>{};
   static const _sessionTokenKey = 'nintendo.session_token';
   static const _accountTokensKey = 'nintendo.account_tokens.v1';
   static const _accountProfilesKey = 'nintendo.account_profiles.v1';
   static const _selectedAccountKey = 'nintendo.selected_account.v1';
   final FlutterSecureStorage _storage;
+  @override
+  final accountWorkGate = AccountWorkGate();
   final AppLogger _logger;
   final String _libraryRoot;
   final bool _isolated;
+  @override
+  late final DeviceSyncStartupLifecycle deviceSyncStartup;
+  bool _initializingSettings = false;
+  Future<AppSettings>? _defaults;
+  Future<RustBackend>? _registration;
 
   LoginChallenge? _pendingLogin;
   final Map<String, CoralSession> _coralSessions = {};
+  final Map<String, String> _coralTokens = {};
+  int _accountCredentialEpoch = 0;
+  int _accountMutationIntent = 0;
+  int _loginFlow = 0;
+  int _pendingLoginFlow = 0;
+  int _pendingLoginIntent = 0;
+  Future<void> _accountCommitTail = Future<void>.value();
+  final Object _accountCommitZone = Object();
+  Object? _accountCommitOwner;
+  final _deviceInvalidatingAccounts = <String>{};
+
+  Future<T> _commitAccounts<T>(Future<T> Function() action) {
+    final inherited = Zone.current[_accountCommitZone];
+    if (inherited != null && identical(inherited, _accountCommitOwner)) {
+      return action();
+    }
+    final previous = _accountCommitTail;
+    final done = Completer<void>();
+    _accountCommitTail = done.future;
+    return () async {
+      await previous;
+      final owner = Object();
+      _accountCommitOwner = owner;
+      try {
+        return await runZoned(action, zoneValues: {_accountCommitZone: owner});
+      } finally {
+        _accountCommitOwner = null;
+        done.complete();
+      }
+    }();
+  }
+
+  void _checkLogin(LoginChallenge pending, int flow, int intent, int epoch) {
+    if (!identical(_pendingLogin, pending) ||
+        flow != _loginFlow ||
+        intent != _accountMutationIntent ||
+        epoch != _accountCredentialEpoch) {
+      throw StateError('Nintendo sign-in flow is no longer current');
+    }
+  }
+
   final _accountToolRequests = AccountToolRequests();
   @override
   final accountToolLifecycle = AccountToolLifecycle();
@@ -82,6 +160,7 @@ class RustBackend
   }
 
   Future<void> _ensureMobileStorageAvailable() async {
+    if (!deviceSyncStartup.ready) throw const DeviceSyncBusy();
     if (!Platform.isAndroid) return;
     // Existing private legacy media paths remain valid. Removable locations
     // must still be mounted; never substitute another media root.
@@ -103,32 +182,135 @@ class RustBackend
     String? applicationRoot,
     bool isolated = false,
   }) async {
+    final backend = await prepare(
+      storage: storage,
+      logger: logger,
+      applicationRoot: applicationRoot,
+      isolated: isolated,
+    );
+    await backend.deviceSyncStartup.start();
+    if (!backend.deviceSyncStartup.ready) {
+      throw AccountRecoveryRequired(
+        backend.deviceSyncStartup.recovery?.status ?? 'startup_failed',
+      );
+    }
+    return backend;
+  }
+
+  static Future<RustBackend> prepare({
+    FlutterSecureStorage? storage,
+    AppLogger? logger,
+    String? applicationRoot,
+    bool isolated = false,
+  }) async {
     await ensureRustLibInitialized();
     if (isolated && applicationRoot == null) {
       throw ArgumentError('Isolated backend requires an explicit root');
     }
-    final libraryRoot =
+    final resolvedRoot =
         applicationRoot ??
         await resolveApplicationRoot(
           (await getApplicationSupportDirectory()).path,
         );
-    await rust_api.initCore(libraryRoot: libraryRoot);
-    await rust_api.setRuntimeProxyPolicy(disableAppProxy: Platform.isAndroid);
-    final appLogger = logger ?? AppLogger('$libraryRoot/logs/squid_album.log');
-    await appLogger.ensureExists();
-    final backend = RustBackend._(
-      storage ?? const FlutterSecureStorage(),
-      appLogger,
-      libraryRoot,
-      isolated,
-    );
-    await backend.loadSettings();
-    await appLogger.info('Application core initialized');
-    return backend;
+    final libraryRoot = await Directory(resolvedRoot).exists()
+        ? await Directory(resolvedRoot).resolveSymbolicLinks()
+        : resolvedRoot;
+    final key = _rootKey(libraryRoot);
+    final existing = _prepared[key];
+    if (existing != null) {
+      final backend = await existing;
+      if (backend._isolated != isolated) {
+        throw StateError('Library startup isolation does not match its owner');
+      }
+      return backend;
+    }
+    late final Future<RustBackend> preparing;
+    preparing = () async {
+      await rust_api.initCore(libraryRoot: libraryRoot);
+      await rust_api.setRuntimeProxyPolicy(disableAppProxy: Platform.isAndroid);
+      final appLogger =
+          logger ?? AppLogger('$libraryRoot/logs/squid_album.log');
+      await appLogger.ensureExists();
+      final backend = RustBackend._(
+        storage ?? const FlutterSecureStorage(),
+        appLogger,
+        libraryRoot,
+        isolated,
+      );
+      backend._registration = preparing;
+      try {
+        backend._settings =
+            await rust_api.bootstrapSettings() ??
+            await backend._defaultSettings();
+        await appLogger.info('Application core prepared');
+        return backend;
+      } catch (_) {
+        await backend.deviceSyncStartup.close();
+        rethrow;
+      }
+    }();
+    _prepared[key] = preparing;
+    try {
+      return await preparing;
+    } catch (_) {
+      if (identical(_prepared[key], preparing)) _prepared.remove(key);
+      rethrow;
+    }
+  }
+
+  static String _rootKey(String root) {
+    final path = p.normalize(p.absolute(root));
+    return Platform.isWindows ? path.toLowerCase() : path;
+  }
+
+  @override
+  Future<void> close() async {
+    await deviceSyncStartup.close();
+    final key = _rootKey(_libraryRoot);
+    if (identical(_prepared[key], _registration)) _prepared.remove(key);
   }
 
   @override
   AppSettings get settings => _settings!;
+
+  Future<void> invalidateDeviceAccounts(Set<String> accountIds) async {
+    if (!accountWorkGate.busy) throw const DeviceSyncBusy();
+    _accountCredentialEpoch++;
+    _pendingLogin = null;
+    _deviceInvalidatingAccounts.addAll(accountIds);
+    final cleanup = accountToolLifecycle.invalidateAndWait(accountIds);
+    try {
+      for (final accountId in accountIds) {
+        _coralSessions.remove(accountId);
+        _coralTokens.remove(accountId);
+        for (final id in _accountToolRequests.removeAccount(accountId)) {
+          await rust_api.cancelAccountToolOperation(operationId: id);
+        }
+        await rust_api.clearAccountToolCache(accountId: accountId);
+      }
+    } finally {
+      await cleanup;
+    }
+    _deviceInvalidatingAccounts.removeAll(accountIds);
+  }
+
+  void publishDeviceAccounts(Set<String> accountIds) {
+    if (!accountWorkGate.busy ||
+        accountIds.any(_deviceInvalidatingAccounts.contains)) {
+      throw const DeviceSyncBusy();
+    }
+    for (final accountId in accountIds) {
+      accountToolLifecycle.accountAvailable(accountId);
+    }
+  }
+
+  @override
+  Future<bool> automaticAccountHasLocalHistory(String accountId) async {
+    final history = await rust_api.syncAccountHistory(accountId: accountId);
+    return history.lastSuccessfulSyncAt != null ||
+        history.lastNewMediaAt != null ||
+        history.latestAttempt != null;
+  }
 
   @override
   String get logFilePath => _logger.path;
@@ -194,39 +376,57 @@ class RustBackend
   }
 
   Future<AppSettings> loadSettings() async {
+    if (!_initializingSettings && !deviceSyncStartup.ready) {
+      throw const DeviceSyncBusy();
+    }
     final persisted = await rust_api.loadSettings();
     if (persisted != null) {
       _settings = persisted;
       return persisted;
     }
-    final defaults = AppSettings(
-      libraryPath: _isolated
-          ? '$_libraryRoot${Platform.pathSeparator}media'
-          : await resolveDefaultLibraryPath(_libraryRoot),
-      theme: 'ocean',
-      language: interfaceLanguageForLocale(PlatformDispatcher.instance.locale),
-      galleryColumns: Platform.isAndroid ? 2 : 4,
-      galleryRows: 3,
-      showNotePreview: true,
-      showGameTag: true,
-      compactTagDisplay: true,
-      autoPlayVideo: false,
-      autoSyncOnLaunch: true,
-      closeBehavior: 'ask',
-      customFontPaths: const [],
-      syncPolicy: const SyncPolicy(
-        enabled: false,
-        activeIntervalMinutes: 30,
-        sleepAfterHours: 24,
-      ),
-    );
+    final defaults = await _defaultSettings();
     await rust_api.saveSettings(settings: defaults);
     _settings = defaults;
     return _settings!;
   }
 
+  Future<void> _initializeSettings() async {
+    _initializingSettings = true;
+    try {
+      await loadSettings();
+    } finally {
+      _initializingSettings = false;
+    }
+  }
+
+  Future<AppSettings> _defaultSettings() =>
+      _defaults ??= _buildDefaultSettings();
+
+  Future<AppSettings> _buildDefaultSettings() async => AppSettings(
+    libraryPath: _isolated
+        ? '$_libraryRoot${Platform.pathSeparator}media'
+        : await resolveDefaultLibraryPath(_libraryRoot),
+    theme: 'ocean',
+    language: interfaceLanguageForLocale(PlatformDispatcher.instance.locale),
+    galleryColumns: Platform.isAndroid ? 2 : 4,
+    galleryRows: 3,
+    showNotePreview: true,
+    showGameTag: true,
+    compactTagDisplay: true,
+    autoPlayVideo: false,
+    autoSyncOnLaunch: true,
+    closeBehavior: 'ask',
+    customFontPaths: const [],
+    syncPolicy: const SyncPolicy(
+      enabled: false,
+      activeIntervalMinutes: 30,
+      sleepAfterHours: 24,
+    ),
+  );
+
   @override
   Future<void> saveSettings(AppSettings value) async {
+    if (!deviceSyncStartup.ready) throw const DeviceSyncBusy();
     final previousProxy = _settings?.proxyUrl;
     await rust_api.saveSettings(settings: value);
     _settings = value;
@@ -235,6 +435,7 @@ class RustBackend
 
   @override
   Future<List<String>> importCustomFonts(List<String> sourcePaths) async {
+    if (!deviceSyncStartup.ready) throw const DeviceSyncBusy();
     return CustomFontStore(supportDirectory: _libraryRoot)
         .importFiles(sourcePaths);
   }
@@ -715,10 +916,15 @@ class RustBackend
 
   Future<LoginChallenge> _beginNintendoLogin({bool openBrowser = true}) async {
     _requireAccountAccess();
+    final flow = ++_loginFlow;
+    final intent = ++_accountMutationIntent;
+    _pendingLogin = null;
     final challenge = await rust_api.createNintendoLoginChallenge(
       proxyUrl: _networkProxy,
     );
-    _pendingLogin = null;
+    if (flow != _loginFlow || intent != _accountMutationIntent) {
+      throw StateError('Nintendo sign-in flow is no longer current');
+    }
     if (openBrowser) {
       final opened = await launchUrl(
         Uri.parse(challenge.authorizationUrl),
@@ -732,15 +938,24 @@ class RustBackend
         );
       }
     }
+    if (flow != _loginFlow || intent != _accountMutationIntent) {
+      throw StateError('Nintendo sign-in flow is no longer current');
+    }
     _pendingLogin = challenge;
+    _pendingLoginFlow = flow;
+    _pendingLoginIntent = intent;
     return challenge;
   }
 
   @override
-  Future<void> beginNintendoLogin() => _beginNintendoLogin();
+  Future<void> beginNintendoLogin() =>
+      accountWorkGate.normal(() => _beginNintendoLogin());
 
   @override
-  Future<void> completeNintendoLogin(String callbackUrl) async {
+  Future<void> completeNintendoLogin(String callbackUrl) =>
+      accountWorkGate.normal(() => _completeNintendoLogin(callbackUrl));
+
+  Future<void> _completeNintendoLogin(String callbackUrl) async {
     _requireAccountAccess();
     final pending = _pendingLogin;
     if (pending == null) {
@@ -750,44 +965,78 @@ class RustBackend
             : '没有待完成的 Nintendo 登录流程',
       );
     }
+    final flow = _pendingLoginFlow;
+    final intent = _pendingLoginIntent;
+    final epoch = _accountCredentialEpoch;
+    _checkLogin(pending, flow, intent, epoch);
     final sessionToken = await rust_api.exchangeNintendoCallback(
       callbackUrl: callbackUrl,
       expectedState: pending.state,
       verifier: pending.verifier,
       proxyUrl: _networkProxy,
     );
+    _checkLogin(pending, flow, intent, epoch);
     final session = await rust_api.establishCoralSession(
       sessionToken: sessionToken,
       proxyUrl: _networkProxy,
     );
+    _checkLogin(pending, flow, intent, epoch);
     final accountId = _accountId(session);
-    final tokens = await _readAccountTokens();
-    tokens[accountId] = sessionToken;
-    await _writeAccountTokens(tokens);
-    await _storage.write(key: _selectedAccountKey, value: accountId);
-    await _storage.delete(key: _sessionTokenKey);
-    _coralSessions[accountId] = session;
-    await _cacheProfile(accountId, session);
-    accountToolLifecycle.accountAvailable(accountId);
-    _pendingLogin = null;
+    await _commitAccounts(() async {
+      _checkLogin(pending, flow, intent, epoch);
+      final publishingEpoch = ++_accountCredentialEpoch;
+      final cleanup = accountToolLifecycle.invalidateAndWait({accountId});
+      for (final id in _accountToolRequests.removeAccount(accountId)) {
+        await rust_api.cancelAccountToolOperation(operationId: id);
+      }
+      await rust_api.clearAccountToolCache(accountId: accountId);
+      await cleanup;
+      _checkLogin(pending, flow, intent, publishingEpoch);
+      final tokens = await _readStoredAccountTokens();
+      _checkLogin(pending, flow, intent, publishingEpoch);
+      // Once the first OS mutation is admitted, finish this one serialized
+      // commit. A newer mutation runs afterward, never between its four keys.
+      tokens[accountId] = sessionToken;
+      await _writeAccountTokens(tokens);
+      await _storage.write(key: _selectedAccountKey, value: accountId);
+      await _storage.delete(key: _sessionTokenKey);
+      await _cacheProfile(accountId, session);
+      _coralSessions[accountId] = session;
+      _coralTokens[accountId] = sessionToken;
+      accountToolLifecycle.accountAvailable(accountId);
+      if (identical(_pendingLogin, pending) && _pendingLoginFlow == flow) {
+        _pendingLogin = null;
+      }
+    });
   }
 
   @override
-  Future<bool> get isSignedIn async {
+  Future<bool> get isSignedIn => deviceSyncStartup.deferred
+      ? Future.value(false)
+      : accountWorkGate.normal(_isSignedIn);
+  Future<bool> _isSignedIn() async {
     if (_isolated) return false;
     if ((await _readStoredAccountTokens()).isNotEmpty) return true;
     return (await _storage.read(key: _sessionTokenKey))?.isNotEmpty == true;
   }
 
   @override
-  Future<NintendoAccountProfile?> get nintendoAccountProfile async {
+  Future<NintendoAccountProfile?> get nintendoAccountProfile =>
+      deviceSyncStartup.deferred
+      ? Future.value(null)
+      : accountWorkGate.normal(_nintendoAccountProfile);
+  Future<NintendoAccountProfile?> _nintendoAccountProfile() async {
     final accountId = await selectedNintendoAccountId;
     if (accountId == null) return null;
     return (await _readCachedProfiles())[accountId];
   }
 
   @override
-  Future<List<NintendoAccountProfile>> listNintendoAccounts() async {
+  Future<List<NintendoAccountProfile>> listNintendoAccounts() =>
+      deviceSyncStartup.deferred
+      ? Future.value(const [])
+      : accountWorkGate.normal(_listNintendoAccounts);
+  Future<List<NintendoAccountProfile>> _listNintendoAccounts() async {
     if (_isolated) return const [];
     final tokens = await _readAccountTokens();
     final selected = await selectedNintendoAccountId;
@@ -813,56 +1062,87 @@ class RustBackend
   }
 
   @override
-  Future<String?> get selectedNintendoAccountId async {
+  Future<String?> get selectedNintendoAccountId => deviceSyncStartup.deferred
+      ? Future.value(null)
+      : accountWorkGate.normal(_selectedNintendoAccountId);
+  Future<String?> _selectedNintendoAccountId() async {
     if (_isolated) return null;
     final tokens = await _readAccountTokens();
     if (tokens.isEmpty) return null;
     final selected = await _storage.read(key: _selectedAccountKey);
     if (selected != null && tokens.containsKey(selected)) return selected;
-    final fallback = tokens.keys.first;
-    await _storage.write(key: _selectedAccountKey, value: fallback);
-    return fallback;
+    return _commitAccounts(() async {
+      final current = await _readStoredAccountTokens();
+      if (current.isEmpty) return null;
+      final latest = await _storage.read(key: _selectedAccountKey);
+      if (latest != null && current.containsKey(latest)) return latest;
+      final fallback = current.keys.first;
+      await _storage.write(key: _selectedAccountKey, value: fallback);
+      return fallback;
+    });
   }
 
   @override
-  Future<void> selectNintendoAccount(String accountId) async {
+  Future<void> selectNintendoAccount(String accountId) =>
+      accountWorkGate.normal(() => _selectNintendoAccount(accountId));
+  Future<void> _selectNintendoAccount(String accountId) async {
     _requireAccountAccess();
-    final tokens = await _readAccountTokens();
-    if (!tokens.containsKey(accountId)) {
-      throw StateError('Nintendo account is no longer available');
-    }
-    await _storage.write(key: _selectedAccountKey, value: accountId);
-  }
-
-  @override
-  Future<void> removeNintendoAccount(String accountId) async {
-    _requireAccountAccess();
-    accountToolLifecycle.removeAccount(accountId);
-    for (final id in _accountToolRequests.removeAccount(accountId)) {
-      await rust_api.cancelAccountToolOperation(operationId: id);
-    }
-    await rust_api.clearAccountToolCache(accountId: accountId);
-    final tokens = await _readAccountTokens();
-    tokens.remove(accountId);
-    _coralSessions.remove(accountId);
-    final profiles = await _readCachedProfiles();
-    profiles.remove(accountId);
-    await _writeCachedProfiles(profiles);
-    await _writeAccountTokens(tokens);
-    final selected = await _storage.read(key: _selectedAccountKey);
-    if (selected == accountId || !tokens.containsKey(selected)) {
-      if (tokens.isEmpty) {
-        await _storage.delete(key: _selectedAccountKey);
-      } else {
-        await _storage.write(
-          key: _selectedAccountKey,
-          value: tokens.keys.first,
-        );
+    _accountMutationIntent++;
+    await _commitAccounts(() async {
+      final tokens = await _readStoredAccountTokens();
+      if (!tokens.containsKey(accountId)) {
+        throw StateError('Nintendo account is no longer available');
       }
-    }
+      await _storage.write(key: _selectedAccountKey, value: accountId);
+    });
+  }
+
+  @override
+  Future<void> removeNintendoAccount(String accountId) =>
+      accountWorkGate.normal(() => _removeNintendoAccount(accountId));
+  Future<void> _removeNintendoAccount(String accountId) async {
+    _requireAccountAccess();
+    _accountMutationIntent++;
+    _pendingLogin = null;
+    await _commitAccounts(() async {
+      _accountCredentialEpoch++;
+      final cleanup = accountToolLifecycle.invalidateAndWait({accountId});
+      for (final id in _accountToolRequests.removeAccount(accountId)) {
+        await rust_api.cancelAccountToolOperation(operationId: id);
+      }
+      await rust_api.clearAccountToolCache(accountId: accountId);
+      await cleanup;
+      final tokens = await _readStoredAccountTokens();
+      tokens.remove(accountId);
+      _coralSessions.remove(accountId);
+      _coralTokens.remove(accountId);
+      final profiles = await _readCachedProfiles();
+      profiles.remove(accountId);
+      await _writeCachedProfiles(profiles);
+      await _writeAccountTokens(tokens);
+      final selected = await _storage.read(key: _selectedAccountKey);
+      if (selected == accountId || !tokens.containsKey(selected)) {
+        if (tokens.isEmpty) {
+          await _storage.delete(key: _selectedAccountKey);
+        } else {
+          await _storage.write(
+            key: _selectedAccountKey,
+            value: tokens.keys.first,
+          );
+        }
+      }
+    });
   }
 
   Future<T> _withAccountTool<T>(
+    String accountId,
+    String operationId,
+    Future<T> Function(String sessionToken) action,
+  ) => accountWorkGate.normal(
+    () => _withAccountToolAdmitted(accountId, operationId, action),
+  );
+
+  Future<T> _withAccountToolAdmitted<T>(
     String accountId,
     String operationId,
     Future<T> Function(String sessionToken) action,
@@ -979,17 +1259,26 @@ class RustBackend
     bool forceRefresh = false,
   }) async {
     final now = DateTime.now().toUtc();
+    final epoch = _accountCredentialEpoch;
     final cached = _coralSessions[accountId];
     if (!forceRefresh &&
         cached != null &&
+        _coralTokens[accountId] == sessionToken &&
         (cached.expiresAt == null || cached.expiresAt!.isAfter(now))) {
       return cached;
     }
-    final session = await rust_api.establishCoralSession(
+    final session = await rust_api.establishCoralSessionForAccount(
       sessionToken: sessionToken,
+      expectedAccount: accountId,
       proxyUrl: _networkProxy,
     );
+    if (_accountId(session) != accountId ||
+        epoch != _accountCredentialEpoch ||
+        accountToolLifecycle.isRemoved(accountId)) {
+      throw StateError('Nintendo account identity changed');
+    }
     _coralSessions[accountId] = session;
+    _coralTokens[accountId] = sessionToken;
     return session;
   }
 
@@ -1006,6 +1295,8 @@ class RustBackend
 
   Future<Map<String, String>> _readAccountTokens() async {
     _requireAccountAccess();
+    final intent = _accountMutationIntent;
+    final epoch = _accountCredentialEpoch;
     final tokens = await _readStoredAccountTokens();
     if (tokens.isNotEmpty) return tokens;
     final legacy = await _storage.read(key: _sessionTokenKey);
@@ -1014,14 +1305,33 @@ class RustBackend
       sessionToken: legacy,
       proxyUrl: _networkProxy,
     );
-    final accountId = _accountId(session);
-    tokens[accountId] = legacy;
-    _coralSessions[accountId] = session;
-    await _cacheProfile(accountId, session);
-    await _writeAccountTokens(tokens);
-    await _storage.write(key: _selectedAccountKey, value: accountId);
-    await _storage.delete(key: _sessionTokenKey);
-    return tokens;
+    void checkMigration() {
+      if (intent != _accountMutationIntent ||
+          epoch != _accountCredentialEpoch) {
+        throw StateError('Nintendo legacy account state changed');
+      }
+    }
+
+    checkMigration();
+    return _commitAccounts(() async {
+      checkMigration();
+      final current = await _readStoredAccountTokens();
+      final currentLegacy = await _storage.read(key: _sessionTokenKey);
+      checkMigration();
+      if (current.isNotEmpty || currentLegacy != legacy) {
+        throw StateError('Nintendo legacy account state changed');
+      }
+      _accountCredentialEpoch++;
+      final accountId = _accountId(session);
+      final migrated = <String, String>{accountId: legacy};
+      await _cacheProfile(accountId, session);
+      await _writeAccountTokens(migrated);
+      await _storage.write(key: _selectedAccountKey, value: accountId);
+      await _storage.delete(key: _sessionTokenKey);
+      _coralSessions[accountId] = session;
+      _coralTokens[accountId] = legacy;
+      return migrated;
+    });
   }
 
   Future<void> _writeAccountTokens(Map<String, String> tokens) async {
@@ -1091,11 +1401,21 @@ class RustBackend
     await _storage.write(key: _accountProfilesKey, value: jsonEncode(encoded));
   }
 
-  Future<void> _cacheProfile(String accountId, CoralSession session) async {
+  Future<void> _cacheProfile(
+    String accountId,
+    CoralSession session, {
+    int? expectedEpoch,
+    String? expectedToken,
+  }) => _commitAccounts(() async {
+    if ((expectedEpoch != null && expectedEpoch != _accountCredentialEpoch) ||
+        (expectedToken != null &&
+            (await _readStoredAccountTokens())[accountId] != expectedToken)) {
+      throw StateError('Nintendo account profile is no longer current');
+    }
     final profiles = await _readCachedProfiles();
     profiles[accountId] = _profileFromSession(accountId, session);
     await _writeCachedProfiles(profiles);
-  }
+  });
 
   String _accountId(CoralSession session) {
     final value = session.naId ?? session.coralUserId;
@@ -1106,7 +1426,9 @@ class RustBackend
   }
 
   @override
-  Future<SyncSummary> syncNintendoAlbum() async {
+  Future<SyncSummary> syncNintendoAlbum() =>
+      accountWorkGate.normal(_syncNintendoAlbum);
+  Future<SyncSummary> _syncNintendoAlbum() async {
     _requireAccountAccess();
     final tokens = await _readAccountTokens();
     final accountId = await selectedNintendoAccountId;
@@ -1120,12 +1442,18 @@ class RustBackend
     if (Platform.isAndroid) return syncNintendoAccount(accountId);
     final SyncSummary summary;
     try {
+      final credentialEpoch = _accountCredentialEpoch;
       final session = await _validCoralSessionFor(
         accountId,
         tokens[accountId]!,
         forceRefresh: true,
       );
-      await _cacheProfile(accountId, session);
+      await _cacheProfile(
+        accountId,
+        session,
+        expectedEpoch: credentialEpoch,
+        expectedToken: tokens[accountId],
+      );
       summary = await rust_api.syncNso(
         session: session,
         proxyUrl: _networkProxy,
@@ -1173,7 +1501,9 @@ class RustBackend
   }
 
   @override
-  Future<SyncSummary> syncNintendoAccount(String accountId) async {
+  Future<SyncSummary> syncNintendoAccount(String accountId) =>
+      accountWorkGate.normal(() => _syncNintendoAccount(accountId));
+  Future<SyncSummary> _syncNintendoAccount(String accountId) async {
     _requireAccountAccess();
     final epoch = _syncCancellationEpoch;
     void checkCancelled() {
@@ -1188,8 +1518,9 @@ class RustBackend
       final token = tokens[accountId];
       if (token == null) throw StateError('Nintendo account requires sign-in');
       // Rust registers cancellation before any authentication/network work.
-      final summary = await rust_api.syncNsoFromSessionToken(
+      final summary = await rust_api.syncNsoFromSessionTokenForAccount(
         sessionToken: token,
+        expectedAccount: accountId,
         proxyUrl: _networkProxy,
       );
       try {
@@ -1276,11 +1607,22 @@ class RustBackend
       rust_api.syncAccountHistory(accountId: accountId);
 
   @override
-  Future<void> signOut() async {
+  Future<void> signOut() => accountWorkGate.normal(_signOut);
+  Future<void> _signOut() async {
     _requireAccountAccess();
+    _accountMutationIntent++;
     _pendingLogin = null;
-    final selected = await selectedNintendoAccountId;
-    if (selected != null) await removeNintendoAccount(selected);
+    await _commitAccounts(() async {
+      final tokens = await _readStoredAccountTokens();
+      final saved = await _storage.read(key: _selectedAccountKey);
+      final selected = tokens.containsKey(saved)
+          ? saved
+          : tokens.isEmpty
+          ? null
+          : tokens.keys.first;
+      if (selected != null) await _removeNintendoAccount(selected);
+      await _storage.delete(key: _sessionTokenKey);
+    });
   }
 
   void _requireAccountAccess() {

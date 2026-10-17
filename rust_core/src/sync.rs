@@ -11,6 +11,7 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 
 use crate::database::Database;
+use crate::device_sync::library_guard::{PublicationPin, WriteLease};
 use crate::error::{CoreError, CoreResult};
 use crate::models::{MediaCandidate, SyncItemError, SyncSummary};
 use crate::nso::MediaProvider;
@@ -62,6 +63,8 @@ pub struct StagedMedia {
     pub size: u64,
     pub path: PathBuf,
     pub created: bool,
+    pub(crate) pin: PublicationPin,
+    _writing: WriteLease,
 }
 
 impl MediaRepository {
@@ -78,6 +81,8 @@ impl MediaRepository {
         bytes: &[u8],
         provider: Option<&str>,
     ) -> CoreResult<(i64, bool)> {
+        let _writing = self.database.write_lease()?;
+        self.database.ensure_original_root(&self.root)?;
         let sha256 = hex::encode(Sha256::digest(bytes));
         let destination = self
             .root
@@ -85,12 +90,14 @@ impl MediaRepository {
             .join(&sha256[0..2])
             .join(&sha256[2..4])
             .join(format!("{sha256}.{}", candidate.storage_extension()));
+        let parent = destination.parent().expect("content path has parent");
+        tokio::fs::create_dir_all(parent).await?;
+        let pin =
+            self.database
+                .pin_original(&self.root, &destination, &sha256, bytes.len() as u64)?;
         let created = !destination.exists();
         if created {
-            let parent = destination.parent().expect("content path has parent");
-            tokio::fs::create_dir_all(parent).await?;
-            let temporary =
-                destination.with_extension(format!("{}.part", candidate.storage_extension()));
+            let temporary = parent.join(format!("{}.part", uuid::Uuid::new_v4()));
             let mut file = tokio::fs::File::create(&temporary).await?;
             file.write_all(bytes).await?;
             file.flush().await?;
@@ -114,8 +121,10 @@ impl MediaRepository {
             candidate,
             provider,
         );
-        if result.is_err() && created {
-            let _ = tokio::fs::remove_file(&destination).await;
+        if created && !matches!(result, Ok((_, true))) {
+            let _ = self
+                .database
+                .cleanup_original(&self.root, &destination, &sha256, Some(&pin));
         }
         result
     }
@@ -126,6 +135,8 @@ impl MediaRepository {
         source: &Path,
         provider: Option<&str>,
     ) -> CoreResult<(i64, bool)> {
+        let _writing = self.database.write_lease()?;
+        self.database.ensure_original_root(&self.root)?;
         let staged = self
             .stage_file(source, candidate.storage_extension())
             .await?;
@@ -136,8 +147,13 @@ impl MediaRepository {
             candidate,
             provider,
         );
-        if result.is_err() && staged.created {
-            let _ = tokio::fs::remove_file(&staged.path).await;
+        if staged.created && !matches!(result, Ok((_, true))) {
+            let _ = self.database.cleanup_original(
+                &self.root,
+                &staged.path,
+                &staged.sha256,
+                Some(&staged.pin),
+            );
         }
         result
     }
@@ -145,48 +161,47 @@ impl MediaRepository {
     pub async fn import_downloaded(
         &self,
         candidate: &MediaCandidate,
-        downloaded: DownloadedMedia,
+        mut downloaded: DownloadedMedia,
         provider: Option<&str>,
     ) -> CoreResult<(i64, bool)> {
+        let _writing = self.database.write_lease()?;
+        self.database.ensure_original_root(&self.root)?;
+        let sha256 = downloaded.sha256().to_owned();
+        let size = downloaded.size();
         let destination = self
             .root
             .join("originals")
-            .join(&downloaded.sha256[0..2])
-            .join(&downloaded.sha256[2..4])
-            .join(format!(
-                "{}.{}",
-                downloaded.sha256,
-                candidate.storage_extension()
-            ));
+            .join(&sha256[0..2])
+            .join(&sha256[2..4])
+            .join(format!("{}.{}", sha256, candidate.storage_extension()));
+        tokio::fs::create_dir_all(destination.parent().expect("content path has parent")).await?;
+        let pin = self
+            .database
+            .pin_original(&self.root, &destination, &sha256, size)?;
         let created = !destination.exists();
         if created {
             tokio::fs::create_dir_all(destination.parent().expect("content path has parent"))
                 .await?;
-            if let Err(error) = tokio::fs::rename(&downloaded.path, &destination).await {
-                if destination.exists() {
-                    let _ = tokio::fs::remove_file(&downloaded.path).await;
-                } else {
-                    let _ = tokio::fs::remove_file(&downloaded.path).await;
-                    return Err(error.into());
+            if let Err(error) = downloaded.publish_to(&destination).await {
+                if !destination.exists() {
+                    return Err(error);
                 }
             }
-        } else {
-            let _ = tokio::fs::remove_file(&downloaded.path).await;
         }
-        let result = self.database.register_media(
-            &downloaded.sha256,
-            downloaded.size,
-            &destination,
-            candidate,
-            provider,
-        );
-        if result.is_err() && created {
-            let _ = tokio::fs::remove_file(&destination).await;
+        let result = self
+            .database
+            .register_media(&sha256, size, &destination, candidate, provider);
+        if created && !matches!(result, Ok((_, true))) {
+            let _ = self
+                .database
+                .cleanup_original(&self.root, &destination, &sha256, Some(&pin));
         }
         result
     }
 
     pub async fn stage_file(&self, source: &Path, extension: &str) -> CoreResult<StagedMedia> {
+        let writing = self.database.write_lease()?;
+        self.database.ensure_original_root(&self.root)?;
         const MAX_MEDIA_BYTES: u64 = 256 * 1024 * 1024;
 
         let metadata = tokio::fs::metadata(source).await?;
@@ -250,6 +265,10 @@ impl MediaRepository {
             .join(&sha256[0..2])
             .join(&sha256[2..4])
             .join(format!("{sha256}.{extension}"));
+        tokio::fs::create_dir_all(destination.parent().expect("content path has parent")).await?;
+        let pin = self
+            .database
+            .pin_original(&self.root, &destination, &sha256, size)?;
         let created = !destination.exists();
         if destination.exists() {
             let _ = tokio::fs::remove_file(&temporary).await;
@@ -271,6 +290,8 @@ impl MediaRepository {
             size,
             path: destination,
             created,
+            pin,
+            _writing: writing,
         })
     }
 
@@ -395,6 +416,10 @@ impl<P: MediaProvider, D: MediaDownloader> SyncEngine<P, D> {
         cursor: Option<&str>,
         cancellation: &CancellationToken,
     ) -> CoreResult<SyncSummary> {
+        let _writing = self.repository.database.write_lease()?;
+        self.repository
+            .database
+            .ensure_original_root(self.repository.root())?;
         cancellation.check()?;
         let job_id = uuid::Uuid::new_v4().to_string();
         let provider_name = self.provider.provider_name();
@@ -813,15 +838,8 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
 
-            tokio::fs::create_dir_all(temporary_root).await?;
             let bytes = url.as_bytes();
-            let path = temporary_root.join(format!("{}.part", uuid::Uuid::new_v4()));
-            tokio::fs::write(&path, bytes).await?;
-            Ok(DownloadedMedia {
-                path,
-                sha256: hex::encode(Sha256::digest(bytes)),
-                size: bytes.len() as u64,
-            })
+            Ok(crate::transport::test_support::download_bytes(temporary_root, bytes).await)
         }
     }
 
@@ -848,15 +866,8 @@ mod tests {
                 _ = tokio::time::sleep(Duration::from_millis(20)) => {}
             }
             self.active.fetch_sub(1, Ordering::SeqCst);
-            tokio::fs::create_dir_all(temporary_root).await?;
             let bytes = url.as_bytes();
-            let path = temporary_root.join(format!("{}.part", uuid::Uuid::new_v4()));
-            tokio::fs::write(&path, bytes).await?;
-            Ok(DownloadedMedia {
-                path,
-                sha256: hex::encode(Sha256::digest(bytes)),
-                size: bytes.len() as u64,
-            })
+            Ok(crate::transport::test_support::download_bytes(temporary_root, bytes).await)
         }
     }
 
@@ -1003,38 +1014,32 @@ mod tests {
             source_path: None,
         };
         let bytes = b"same";
-        let sha256 = hex::encode(Sha256::digest(bytes));
-
-        let first_part = directory.path().join("first.part");
-        tokio::fs::write(&first_part, bytes).await.unwrap();
+        let download = crate::transport::test_support::download_bytes(
+            &directory.path().join("temporary"),
+            bytes,
+        )
+        .await;
+        let first_part = download.path().to_path_buf();
         let (_, created) = repository
-            .import_downloaded(
-                &candidate,
-                DownloadedMedia {
-                    path: first_part.clone(),
-                    sha256: sha256.clone(),
-                    size: bytes.len() as u64,
-                },
-                Some("test"),
-            )
+            .import_downloaded(&candidate, download, Some("test"))
             .await
             .unwrap();
         assert!(created);
         assert!(!first_part.exists());
 
-        let second_part = directory.path().join("second.part");
-        tokio::fs::write(&second_part, bytes).await.unwrap();
+        let download = crate::transport::test_support::download_bytes(
+            &directory.path().join("temporary"),
+            bytes,
+        )
+        .await;
+        let second_part = download.path().to_path_buf();
         let (_, created) = repository
             .import_downloaded(
                 &MediaCandidate {
                     remote_id: Some("remote-two".into()),
                     ..candidate
                 },
-                DownloadedMedia {
-                    path: second_part.clone(),
-                    sha256,
-                    size: bytes.len() as u64,
-                },
+                download,
                 Some("test"),
             )
             .await

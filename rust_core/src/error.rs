@@ -4,6 +4,16 @@ pub type CoreResult<T> = Result<T, CoreError>;
 
 #[derive(Debug, Error)]
 pub enum CoreError {
+    #[error("library is busy")]
+    LibraryBusy,
+    #[error("library lifecycle lock is unavailable or unsafe")]
+    LibraryLockUnavailable,
+    #[error("library originals are retained by a device snapshot or backup")]
+    LibraryReferenced,
+    #[error("media root ownership does not match this local database")]
+    LibraryRootOwnership,
+    #[error("device-sync durable recovery metadata is missing or ambiguous")]
+    DeviceSyncRecoveryRequired,
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
     #[error("authentication failed: {0}")]

@@ -16,6 +16,7 @@ import 'android_metadata_editor.dart';
 import 'android_page_frame.dart';
 import 'android_video_merge_page.dart';
 import 'android_text_prompt.dart';
+import '../device_sync/album_source_label.dart';
 
 class AndroidLibraryPage extends StatefulWidget {
   const AndroidLibraryPage({
@@ -146,7 +147,16 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
           for (final album in albums)
             SimpleDialogOption(
               onPressed: () => Navigator.pop(context, album),
-              child: Text(album.name),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(album.name),
+                  AlbumSourceLabel(
+                    name: album.sourceDeviceName,
+                    systemKey: album.systemKey,
+                  ),
+                ],
+              ),
             ),
         ],
       ),
@@ -542,6 +552,17 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                     sliver: SliverToBoxAdapter(
                       child: Column(
                         children: [
+                          if (widget.album case final album?
+                              when album.systemKey != 'favorites') ...[
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: AlbumSourceLabel(
+                                name: album.sourceDeviceName,
+                                systemKey: album.systemKey,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                          ],
                           TextField(
                             key: const Key('android-library-search'),
                             controller: search,

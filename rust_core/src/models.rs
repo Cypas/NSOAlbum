@@ -105,7 +105,7 @@ pub struct MediaAsset {
     pub storage_path: String,
     pub kind: MediaKind,
     pub captured_at: Option<DateTime<Utc>>,
-    pub imported_at: DateTime<Utc>,
+    pub imported_at: Option<DateTime<Utc>>,
     pub game_title_id: Option<String>,
     pub game_name: String,
     pub favorite: bool,
@@ -282,6 +282,8 @@ pub struct AlbumSummary {
     pub pinned: bool,
     pub system_key: Option<String>,
     pub media_count: u64,
+    #[serde(default)]
+    pub source_device_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

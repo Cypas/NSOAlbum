@@ -9,6 +9,17 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' as ffi;
 
+import 'device_sync/connection.dart';
+import 'device_sync/driver.dart';
+import 'device_sync/headless.dart';
+import 'device_sync/native_io.dart';
+import 'device_sync/planner.dart';
+import 'device_sync/read_model.dart';
+import 'device_sync/runtime.dart';
+import 'device_sync/source_names.dart';
+import 'device_sync/space_budget.dart';
+import 'device_sync/usb.dart';
+import 'device_sync/work.dart';
 import 'frb_generated.dart';
 import 'models.dart';
 import 'nso/provider.dart';
@@ -32,6 +43,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String dco_decode_String(dynamic raw);
 
   @protected
+  AgreedConfiguration dco_decode_agreed_configuration(dynamic raw);
+
+  @protected
   AlbumRule dco_decode_album_rule(dynamic raw);
 
   @protected
@@ -41,16 +55,57 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AppSettings dco_decode_app_settings(dynamic raw);
 
   @protected
+  ApplicationBuild dco_decode_application_build(dynamic raw);
+
+  @protected
+  BackupMetadata dco_decode_backup_metadata(dynamic raw);
+
+  @protected
+  BackupPage dco_decode_backup_page(dynamic raw);
+
+  @protected
+  BackupPageRead dco_decode_backup_page_read(dynamic raw);
+
+  @protected
+  BackupUnavailableReason dco_decode_backup_unavailable_reason(dynamic raw);
+
+  @protected
   bool dco_decode_bool(dynamic raw);
 
   @protected
   DateTime dco_decode_box_autoadd_Chrono_Utc(dynamic raw);
 
   @protected
+  AgreedConfiguration dco_decode_box_autoadd_agreed_configuration(dynamic raw);
+
+  @protected
   AppSettings dco_decode_box_autoadd_app_settings(dynamic raw);
 
   @protected
+  ApplicationBuild dco_decode_box_autoadd_application_build(dynamic raw);
+
+  @protected
+  BackupPage dco_decode_box_autoadd_backup_page(dynamic raw);
+
+  @protected
+  BackupUnavailableReason dco_decode_box_autoadd_backup_unavailable_reason(
+    dynamic raw,
+  );
+
+  @protected
+  bool dco_decode_box_autoadd_bool(dynamic raw);
+
+  @protected
+  ChangeCounts dco_decode_box_autoadd_change_counts(dynamic raw);
+
+  @protected
+  ConflictPage dco_decode_box_autoadd_conflict_page(dynamic raw);
+
+  @protected
   CoralSession dco_decode_box_autoadd_coral_session(dynamic raw);
+
+  @protected
+  EndpointView dco_decode_box_autoadd_endpoint_view(dynamic raw);
 
   @protected
   GalleryQuery dco_decode_box_autoadd_gallery_query(dynamic raw);
@@ -59,7 +114,25 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
 
   @protected
+  JournalInfo dco_decode_box_autoadd_journal_info(dynamic raw);
+
+  @protected
   OperationProgress dco_decode_box_autoadd_operation_progress(dynamic raw);
+
+  @protected
+  PreviewSummary dco_decode_box_autoadd_preview_summary(dynamic raw);
+
+  @protected
+  ReadError dco_decode_box_autoadd_read_error(dynamic raw);
+
+  @protected
+  ReceiverBudgetView dco_decode_box_autoadd_receiver_budget_view(dynamic raw);
+
+  @protected
+  RestoreSummary dco_decode_box_autoadd_restore_summary(dynamic raw);
+
+  @protected
+  SourceDescription dco_decode_box_autoadd_source_description(dynamic raw);
 
   @protected
   SyncAttemptSummary dco_decode_box_autoadd_sync_attempt_summary(dynamic raw);
@@ -71,16 +144,61 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SyncProgress dco_decode_box_autoadd_sync_progress(dynamic raw);
 
   @protected
+  TcpView dco_decode_box_autoadd_tcp_view(dynamic raw);
+
+  @protected
   int dco_decode_box_autoadd_u_32(dynamic raw);
 
   @protected
   BigInt dco_decode_box_autoadd_u_64(dynamic raw);
 
   @protected
+  UsbAction dco_decode_box_autoadd_usb_action(dynamic raw);
+
+  @protected
+  UsbCloseReason dco_decode_box_autoadd_usb_close_reason(dynamic raw);
+
+  @protected
+  UsbReply dco_decode_box_autoadd_usb_reply(dynamic raw);
+
+  @protected
   BigInt dco_decode_box_autoadd_usize(dynamic raw);
 
   @protected
+  ChangeCounts dco_decode_change_counts(dynamic raw);
+
+  @protected
+  Conflict dco_decode_conflict(dynamic raw);
+
+  @protected
+  ConflictCounts dco_decode_conflict_counts(dynamic raw);
+
+  @protected
+  ConflictPage dco_decode_conflict_page(dynamic raw);
+
+  @protected
+  ConflictPageRead dco_decode_conflict_page_read(dynamic raw);
+
+  @protected
+  ConflictReason dco_decode_conflict_reason(dynamic raw);
+
+  @protected
   CoralSession dco_decode_coral_session(dynamic raw);
+
+  @protected
+  DeviceCommandError dco_decode_device_command_error(dynamic raw);
+
+  @protected
+  Direction dco_decode_direction(dynamic raw);
+
+  @protected
+  EndpointRead dco_decode_endpoint_read(dynamic raw);
+
+  @protected
+  EndpointStatus dco_decode_endpoint_status(dynamic raw);
+
+  @protected
+  EndpointView dco_decode_endpoint_view(dynamic raw);
 
   @protected
   GalleryKindFilter dco_decode_gallery_kind_filter(dynamic raw);
@@ -95,6 +213,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   GameTagSummary dco_decode_game_tag_summary(dynamic raw);
 
   @protected
+  HostInfo dco_decode_host_info(dynamic raw);
+
+  @protected
   int dco_decode_i_32(dynamic raw);
 
   @protected
@@ -105,6 +226,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ImportSummary dco_decode_import_summary(dynamic raw);
+
+  @protected
+  InvitationConnection dco_decode_invitation_connection(dynamic raw);
+
+  @protected
+  JournalInfo dco_decode_journal_info(dynamic raw);
+
+  @protected
+  LibraryInfo dco_decode_library_info(dynamic raw);
 
   @protected
   LibraryRelocationResult dco_decode_library_relocation_result(dynamic raw);
@@ -120,6 +250,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<AlbumSummary> dco_decode_list_album_summary(dynamic raw);
+
+  @protected
+  List<BackupMetadata> dco_decode_list_backup_metadata(dynamic raw);
+
+  @protected
+  List<Conflict> dco_decode_list_conflict(dynamic raw);
 
   @protected
   List<GameTagAliasSummary> dco_decode_list_game_tag_alias_summary(dynamic raw);
@@ -139,6 +275,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<NativeDevice> dco_decode_list_native_device(dynamic raw);
+
+  @protected
+  List<NativeStorage> dco_decode_list_native_storage(dynamic raw);
+
+  @protected
   List<NintendoFriend> dco_decode_list_nintendo_friend(dynamic raw);
 
   @protected
@@ -151,10 +293,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<StorageRole> dco_decode_list_storage_role(dynamic raw);
+
+  @protected
   List<SyncItemError> dco_decode_list_sync_item_error(dynamic raw);
 
   @protected
   List<TagUsageSummary> dco_decode_list_tag_usage_summary(dynamic raw);
+
+  @protected
+  List<VolumeBudgetView> dco_decode_list_volume_budget_view(dynamic raw);
 
   @protected
   LoginChallenge dco_decode_login_challenge(dynamic raw);
@@ -175,6 +323,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MediaKind dco_decode_media_kind(dynamic raw);
 
   @protected
+  NativeDevice dco_decode_native_device(dynamic raw);
+
+  @protected
+  NativeStorage dco_decode_native_storage(dynamic raw);
+
+  @protected
   NintendoFriend dco_decode_nintendo_friend(dynamic raw);
 
   @protected
@@ -190,13 +344,61 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DateTime? dco_decode_opt_box_autoadd_Chrono_Utc(dynamic raw);
 
   @protected
+  AgreedConfiguration? dco_decode_opt_box_autoadd_agreed_configuration(
+    dynamic raw,
+  );
+
+  @protected
   AppSettings? dco_decode_opt_box_autoadd_app_settings(dynamic raw);
+
+  @protected
+  ApplicationBuild? dco_decode_opt_box_autoadd_application_build(dynamic raw);
+
+  @protected
+  BackupPage? dco_decode_opt_box_autoadd_backup_page(dynamic raw);
+
+  @protected
+  BackupUnavailableReason? dco_decode_opt_box_autoadd_backup_unavailable_reason(
+    dynamic raw,
+  );
+
+  @protected
+  bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
+
+  @protected
+  ChangeCounts? dco_decode_opt_box_autoadd_change_counts(dynamic raw);
+
+  @protected
+  ConflictPage? dco_decode_opt_box_autoadd_conflict_page(dynamic raw);
+
+  @protected
+  EndpointView? dco_decode_opt_box_autoadd_endpoint_view(dynamic raw);
 
   @protected
   PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
 
   @protected
+  JournalInfo? dco_decode_opt_box_autoadd_journal_info(dynamic raw);
+
+  @protected
   OperationProgress? dco_decode_opt_box_autoadd_operation_progress(dynamic raw);
+
+  @protected
+  PreviewSummary? dco_decode_opt_box_autoadd_preview_summary(dynamic raw);
+
+  @protected
+  ReadError? dco_decode_opt_box_autoadd_read_error(dynamic raw);
+
+  @protected
+  ReceiverBudgetView? dco_decode_opt_box_autoadd_receiver_budget_view(
+    dynamic raw,
+  );
+
+  @protected
+  RestoreSummary? dco_decode_opt_box_autoadd_restore_summary(dynamic raw);
+
+  @protected
+  SourceDescription? dco_decode_opt_box_autoadd_source_description(dynamic raw);
 
   @protected
   SyncAttemptSummary? dco_decode_opt_box_autoadd_sync_attempt_summary(
@@ -207,10 +409,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SyncProgress? dco_decode_opt_box_autoadd_sync_progress(dynamic raw);
 
   @protected
+  TcpView? dco_decode_opt_box_autoadd_tcp_view(dynamic raw);
+
+  @protected
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
 
   @protected
   BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw);
+
+  @protected
+  UsbAction? dco_decode_opt_box_autoadd_usb_action(dynamic raw);
+
+  @protected
+  UsbCloseReason? dco_decode_opt_box_autoadd_usb_close_reason(dynamic raw);
 
   @protected
   BigInt? dco_decode_opt_box_autoadd_usize(dynamic raw);
@@ -219,16 +430,58 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  PairingStage dco_decode_pairing_stage(dynamic raw);
+
+  @protected
+  PreviewRead dco_decode_preview_read(dynamic raw);
+
+  @protected
+  PreviewSummary dco_decode_preview_summary(dynamic raw);
+
+  @protected
+  ProgressView dco_decode_progress_view(dynamic raw);
+
+  @protected
+  ReadError dco_decode_read_error(dynamic raw);
+
+  @protected
+  ReceiverBudgetView dco_decode_receiver_budget_view(dynamic raw);
+
+  @protected
+  RestoreInfo dco_decode_restore_info(dynamic raw);
+
+  @protected
+  RestoreSummary dco_decode_restore_summary(dynamic raw);
+
+  @protected
+  RestoreSummaryRead dco_decode_restore_summary_read(dynamic raw);
+
+  @protected
   SeedExportPayload dco_decode_seed_export_payload(dynamic raw);
 
   @protected
+  SourceDescription dco_decode_source_description(dynamic raw);
+
+  @protected
+  SpaceEstimate dco_decode_space_estimate(dynamic raw);
+
+  @protected
   SplatNetWebSession dco_decode_splat_net_web_session(dynamic raw);
+
+  @protected
+  State dco_decode_state(dynamic raw);
+
+  @protected
+  StorageRole dco_decode_storage_role(dynamic raw);
 
   @protected
   SyncAttemptSummary dco_decode_sync_attempt_summary(dynamic raw);
 
   @protected
   SyncItemError dco_decode_sync_item_error(dynamic raw);
+
+  @protected
+  SyncMode dco_decode_sync_mode(dynamic raw);
 
   @protected
   SyncPolicy dco_decode_sync_policy(dynamic raw);
@@ -249,6 +502,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   TagUsageSummary dco_decode_tag_usage_summary(dynamic raw);
 
   @protected
+  TcpPhase dco_decode_tcp_phase(dynamic raw);
+
+  @protected
+  TcpView dco_decode_tcp_view(dynamic raw);
+
+  @protected
+  TransportKind dco_decode_transport_kind(dynamic raw);
+
+  @protected
   int dco_decode_u_32(dynamic raw);
 
   @protected
@@ -261,13 +523,39 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void dco_decode_unit(dynamic raw);
 
   @protected
+  UsbAction dco_decode_usb_action(dynamic raw);
+
+  @protected
+  UsbActionKind dco_decode_usb_action_kind(dynamic raw);
+
+  @protected
+  UsbCloseReason dco_decode_usb_close_reason(dynamic raw);
+
+  @protected
+  UsbReply dco_decode_usb_reply(dynamic raw);
+
+  @protected
+  UsbView dco_decode_usb_view(dynamic raw);
+
+  @protected
   BigInt dco_decode_usize(dynamic raw);
+
+  @protected
+  VolumeBudgetView dco_decode_volume_budget_view(dynamic raw);
+
+  @protected
+  WorkStage dco_decode_work_stage(dynamic raw);
 
   @protected
   DateTime sse_decode_Chrono_Utc(SseDeserializer deserializer);
 
   @protected
   String sse_decode_String(SseDeserializer deserializer);
+
+  @protected
+  AgreedConfiguration sse_decode_agreed_configuration(
+    SseDeserializer deserializer,
+  );
 
   @protected
   AlbumRule sse_decode_album_rule(SseDeserializer deserializer);
@@ -279,16 +567,69 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AppSettings sse_decode_app_settings(SseDeserializer deserializer);
 
   @protected
+  ApplicationBuild sse_decode_application_build(SseDeserializer deserializer);
+
+  @protected
+  BackupMetadata sse_decode_backup_metadata(SseDeserializer deserializer);
+
+  @protected
+  BackupPage sse_decode_backup_page(SseDeserializer deserializer);
+
+  @protected
+  BackupPageRead sse_decode_backup_page_read(SseDeserializer deserializer);
+
+  @protected
+  BackupUnavailableReason sse_decode_backup_unavailable_reason(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
   DateTime sse_decode_box_autoadd_Chrono_Utc(SseDeserializer deserializer);
 
   @protected
+  AgreedConfiguration sse_decode_box_autoadd_agreed_configuration(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   AppSettings sse_decode_box_autoadd_app_settings(SseDeserializer deserializer);
 
   @protected
+  ApplicationBuild sse_decode_box_autoadd_application_build(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BackupPage sse_decode_box_autoadd_backup_page(SseDeserializer deserializer);
+
+  @protected
+  BackupUnavailableReason sse_decode_box_autoadd_backup_unavailable_reason(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  bool sse_decode_box_autoadd_bool(SseDeserializer deserializer);
+
+  @protected
+  ChangeCounts sse_decode_box_autoadd_change_counts(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ConflictPage sse_decode_box_autoadd_conflict_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   CoralSession sse_decode_box_autoadd_coral_session(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  EndpointView sse_decode_box_autoadd_endpoint_view(
     SseDeserializer deserializer,
   );
 
@@ -301,7 +642,33 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
+  JournalInfo sse_decode_box_autoadd_journal_info(SseDeserializer deserializer);
+
+  @protected
   OperationProgress sse_decode_box_autoadd_operation_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  PreviewSummary sse_decode_box_autoadd_preview_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ReadError sse_decode_box_autoadd_read_error(SseDeserializer deserializer);
+
+  @protected
+  ReceiverBudgetView sse_decode_box_autoadd_receiver_budget_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  RestoreSummary sse_decode_box_autoadd_restore_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SourceDescription sse_decode_box_autoadd_source_description(
     SseDeserializer deserializer,
   );
 
@@ -319,16 +686,65 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  TcpView sse_decode_box_autoadd_tcp_view(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
 
   @protected
   BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
 
   @protected
+  UsbAction sse_decode_box_autoadd_usb_action(SseDeserializer deserializer);
+
+  @protected
+  UsbCloseReason sse_decode_box_autoadd_usb_close_reason(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  UsbReply sse_decode_box_autoadd_usb_reply(SseDeserializer deserializer);
+
+  @protected
   BigInt sse_decode_box_autoadd_usize(SseDeserializer deserializer);
 
   @protected
+  ChangeCounts sse_decode_change_counts(SseDeserializer deserializer);
+
+  @protected
+  Conflict sse_decode_conflict(SseDeserializer deserializer);
+
+  @protected
+  ConflictCounts sse_decode_conflict_counts(SseDeserializer deserializer);
+
+  @protected
+  ConflictPage sse_decode_conflict_page(SseDeserializer deserializer);
+
+  @protected
+  ConflictPageRead sse_decode_conflict_page_read(SseDeserializer deserializer);
+
+  @protected
+  ConflictReason sse_decode_conflict_reason(SseDeserializer deserializer);
+
+  @protected
   CoralSession sse_decode_coral_session(SseDeserializer deserializer);
+
+  @protected
+  DeviceCommandError sse_decode_device_command_error(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  Direction sse_decode_direction(SseDeserializer deserializer);
+
+  @protected
+  EndpointRead sse_decode_endpoint_read(SseDeserializer deserializer);
+
+  @protected
+  EndpointStatus sse_decode_endpoint_status(SseDeserializer deserializer);
+
+  @protected
+  EndpointView sse_decode_endpoint_view(SseDeserializer deserializer);
 
   @protected
   GalleryKindFilter sse_decode_gallery_kind_filter(
@@ -347,6 +763,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   GameTagSummary sse_decode_game_tag_summary(SseDeserializer deserializer);
 
   @protected
+  HostInfo sse_decode_host_info(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_i_32(SseDeserializer deserializer);
 
   @protected
@@ -357,6 +776,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ImportSummary sse_decode_import_summary(SseDeserializer deserializer);
+
+  @protected
+  InvitationConnection sse_decode_invitation_connection(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  JournalInfo sse_decode_journal_info(SseDeserializer deserializer);
+
+  @protected
+  LibraryInfo sse_decode_library_info(SseDeserializer deserializer);
 
   @protected
   LibraryRelocationResult sse_decode_library_relocation_result(
@@ -376,6 +806,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<AlbumSummary> sse_decode_list_album_summary(
     SseDeserializer deserializer,
   );
+
+  @protected
+  List<BackupMetadata> sse_decode_list_backup_metadata(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<Conflict> sse_decode_list_conflict(SseDeserializer deserializer);
 
   @protected
   List<GameTagAliasSummary> sse_decode_list_game_tag_alias_summary(
@@ -401,6 +839,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<NativeDevice> sse_decode_list_native_device(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<NativeStorage> sse_decode_list_native_storage(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<NintendoFriend> sse_decode_list_nintendo_friend(
     SseDeserializer deserializer,
   );
@@ -415,12 +863,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  List<StorageRole> sse_decode_list_storage_role(SseDeserializer deserializer);
+
+  @protected
   List<SyncItemError> sse_decode_list_sync_item_error(
     SseDeserializer deserializer,
   );
 
   @protected
   List<TagUsageSummary> sse_decode_list_tag_usage_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<VolumeBudgetView> sse_decode_list_volume_budget_view(
     SseDeserializer deserializer,
   );
 
@@ -449,6 +905,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MediaKind sse_decode_media_kind(SseDeserializer deserializer);
 
   @protected
+  NativeDevice sse_decode_native_device(SseDeserializer deserializer);
+
+  @protected
+  NativeStorage sse_decode_native_storage(SseDeserializer deserializer);
+
+  @protected
   NintendoFriend sse_decode_nintendo_friend(SseDeserializer deserializer);
 
   @protected
@@ -466,7 +928,45 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DateTime? sse_decode_opt_box_autoadd_Chrono_Utc(SseDeserializer deserializer);
 
   @protected
+  AgreedConfiguration? sse_decode_opt_box_autoadd_agreed_configuration(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   AppSettings? sse_decode_opt_box_autoadd_app_settings(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ApplicationBuild? sse_decode_opt_box_autoadd_application_build(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BackupPage? sse_decode_opt_box_autoadd_backup_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BackupUnavailableReason? sse_decode_opt_box_autoadd_backup_unavailable_reason(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer);
+
+  @protected
+  ChangeCounts? sse_decode_opt_box_autoadd_change_counts(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ConflictPage? sse_decode_opt_box_autoadd_conflict_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  EndpointView? sse_decode_opt_box_autoadd_endpoint_view(
     SseDeserializer deserializer,
   );
 
@@ -474,7 +974,37 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
+  JournalInfo? sse_decode_opt_box_autoadd_journal_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   OperationProgress? sse_decode_opt_box_autoadd_operation_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  PreviewSummary? sse_decode_opt_box_autoadd_preview_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ReadError? sse_decode_opt_box_autoadd_read_error(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ReceiverBudgetView? sse_decode_opt_box_autoadd_receiver_budget_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  RestoreSummary? sse_decode_opt_box_autoadd_restore_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SourceDescription? sse_decode_opt_box_autoadd_source_description(
     SseDeserializer deserializer,
   );
 
@@ -489,10 +1019,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  TcpView? sse_decode_opt_box_autoadd_tcp_view(SseDeserializer deserializer);
+
+  @protected
   int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
 
   @protected
   BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer);
+
+  @protected
+  UsbAction? sse_decode_opt_box_autoadd_usb_action(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  UsbCloseReason? sse_decode_opt_box_autoadd_usb_close_reason(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BigInt? sse_decode_opt_box_autoadd_usize(SseDeserializer deserializer);
@@ -501,14 +1044,57 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  PairingStage sse_decode_pairing_stage(SseDeserializer deserializer);
+
+  @protected
+  PreviewRead sse_decode_preview_read(SseDeserializer deserializer);
+
+  @protected
+  PreviewSummary sse_decode_preview_summary(SseDeserializer deserializer);
+
+  @protected
+  ProgressView sse_decode_progress_view(SseDeserializer deserializer);
+
+  @protected
+  ReadError sse_decode_read_error(SseDeserializer deserializer);
+
+  @protected
+  ReceiverBudgetView sse_decode_receiver_budget_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  RestoreInfo sse_decode_restore_info(SseDeserializer deserializer);
+
+  @protected
+  RestoreSummary sse_decode_restore_summary(SseDeserializer deserializer);
+
+  @protected
+  RestoreSummaryRead sse_decode_restore_summary_read(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SeedExportPayload sse_decode_seed_export_payload(
     SseDeserializer deserializer,
   );
 
   @protected
+  SourceDescription sse_decode_source_description(SseDeserializer deserializer);
+
+  @protected
+  SpaceEstimate sse_decode_space_estimate(SseDeserializer deserializer);
+
+  @protected
   SplatNetWebSession sse_decode_splat_net_web_session(
     SseDeserializer deserializer,
   );
+
+  @protected
+  State sse_decode_state(SseDeserializer deserializer);
+
+  @protected
+  StorageRole sse_decode_storage_role(SseDeserializer deserializer);
 
   @protected
   SyncAttemptSummary sse_decode_sync_attempt_summary(
@@ -517,6 +1103,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SyncItemError sse_decode_sync_item_error(SseDeserializer deserializer);
+
+  @protected
+  SyncMode sse_decode_sync_mode(SseDeserializer deserializer);
 
   @protected
   SyncPolicy sse_decode_sync_policy(SseDeserializer deserializer);
@@ -539,6 +1128,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   TagUsageSummary sse_decode_tag_usage_summary(SseDeserializer deserializer);
 
   @protected
+  TcpPhase sse_decode_tcp_phase(SseDeserializer deserializer);
+
+  @protected
+  TcpView sse_decode_tcp_view(SseDeserializer deserializer);
+
+  @protected
+  TransportKind sse_decode_transport_kind(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_u_32(SseDeserializer deserializer);
 
   @protected
@@ -551,13 +1149,40 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_decode_unit(SseDeserializer deserializer);
 
   @protected
+  UsbAction sse_decode_usb_action(SseDeserializer deserializer);
+
+  @protected
+  UsbActionKind sse_decode_usb_action_kind(SseDeserializer deserializer);
+
+  @protected
+  UsbCloseReason sse_decode_usb_close_reason(SseDeserializer deserializer);
+
+  @protected
+  UsbReply sse_decode_usb_reply(SseDeserializer deserializer);
+
+  @protected
+  UsbView sse_decode_usb_view(SseDeserializer deserializer);
+
+  @protected
   BigInt sse_decode_usize(SseDeserializer deserializer);
+
+  @protected
+  VolumeBudgetView sse_decode_volume_budget_view(SseDeserializer deserializer);
+
+  @protected
+  WorkStage sse_decode_work_stage(SseDeserializer deserializer);
 
   @protected
   void sse_encode_Chrono_Utc(DateTime self, SseSerializer serializer);
 
   @protected
   void sse_encode_String(String self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_agreed_configuration(
+    AgreedConfiguration self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_album_rule(AlbumRule self, SseSerializer serializer);
@@ -569,11 +1194,44 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_app_settings(AppSettings self, SseSerializer serializer);
 
   @protected
+  void sse_encode_application_build(
+    ApplicationBuild self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_backup_metadata(
+    BackupMetadata self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_backup_page(BackupPage self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_backup_page_read(
+    BackupPageRead self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_backup_unavailable_reason(
+    BackupUnavailableReason self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_Chrono_Utc(
     DateTime self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_agreed_configuration(
+    AgreedConfiguration self,
     SseSerializer serializer,
   );
 
@@ -584,8 +1242,47 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_application_build(
+    ApplicationBuild self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_backup_page(
+    BackupPage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_backup_unavailable_reason(
+    BackupUnavailableReason self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_change_counts(
+    ChangeCounts self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_conflict_page(
+    ConflictPage self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_coral_session(
     CoralSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_endpoint_view(
+    EndpointView self,
     SseSerializer serializer,
   );
 
@@ -602,8 +1299,44 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_journal_info(
+    JournalInfo self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_operation_progress(
     OperationProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_preview_summary(
+    PreviewSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_read_error(
+    ReadError self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_receiver_budget_view(
+    ReceiverBudgetView self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_restore_summary(
+    RestoreSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_source_description(
+    SourceDescription self,
     SseSerializer serializer,
   );
 
@@ -626,16 +1359,85 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_tcp_view(TcpView self, SseSerializer serializer);
+
+  @protected
   void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_usb_action(
+    UsbAction self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_usb_close_reason(
+    UsbCloseReason self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_usb_reply(
+    UsbReply self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_usize(BigInt self, SseSerializer serializer);
 
   @protected
+  void sse_encode_change_counts(ChangeCounts self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_conflict(Conflict self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_conflict_counts(
+    ConflictCounts self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_conflict_page(ConflictPage self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_conflict_page_read(
+    ConflictPageRead self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_conflict_reason(
+    ConflictReason self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_coral_session(CoralSession self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_device_command_error(
+    DeviceCommandError self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_direction(Direction self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_endpoint_read(EndpointRead self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_endpoint_status(
+    EndpointStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_endpoint_view(EndpointView self, SseSerializer serializer);
 
   @protected
   void sse_encode_gallery_kind_filter(
@@ -659,6 +1461,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_host_info(HostInfo self, SseSerializer serializer);
+
+  @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
 
   @protected
@@ -672,6 +1477,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_import_summary(ImportSummary self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_invitation_connection(
+    InvitationConnection self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_journal_info(JournalInfo self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_library_info(LibraryInfo self, SseSerializer serializer);
 
   @protected
   void sse_encode_library_relocation_result(
@@ -699,6 +1516,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     List<AlbumSummary> self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_list_backup_metadata(
+    List<BackupMetadata> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_conflict(List<Conflict> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_game_tag_alias_summary(
@@ -731,6 +1557,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_native_device(
+    List<NativeDevice> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_native_storage(
+    List<NativeStorage> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_nintendo_friend(
     List<NintendoFriend> self,
     SseSerializer serializer,
@@ -752,6 +1590,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_storage_role(
+    List<StorageRole> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_sync_item_error(
     List<SyncItemError> self,
     SseSerializer serializer,
@@ -760,6 +1604,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_tag_usage_summary(
     List<TagUsageSummary> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_volume_budget_view(
+    List<VolumeBudgetView> self,
     SseSerializer serializer,
   );
 
@@ -794,6 +1644,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_media_kind(MediaKind self, SseSerializer serializer);
 
   @protected
+  void sse_encode_native_device(NativeDevice self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_native_storage(NativeStorage self, SseSerializer serializer);
+
+  @protected
   void sse_encode_nintendo_friend(
     NintendoFriend self,
     SseSerializer serializer,
@@ -821,8 +1677,53 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_agreed_configuration(
+    AgreedConfiguration? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_app_settings(
     AppSettings? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_application_build(
+    ApplicationBuild? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_backup_page(
+    BackupPage? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_backup_unavailable_reason(
+    BackupUnavailableReason? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_change_counts(
+    ChangeCounts? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_conflict_page(
+    ConflictPage? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_endpoint_view(
+    EndpointView? self,
     SseSerializer serializer,
   );
 
@@ -833,8 +1734,44 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_journal_info(
+    JournalInfo? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_operation_progress(
     OperationProgress? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_preview_summary(
+    PreviewSummary? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_read_error(
+    ReadError? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_receiver_budget_view(
+    ReceiverBudgetView? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_restore_summary(
+    RestoreSummary? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_source_description(
+    SourceDescription? self,
     SseSerializer serializer,
   );
 
@@ -851,10 +1788,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_tcp_view(
+    TcpView? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_usb_action(
+    UsbAction? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_usb_close_reason(
+    UsbCloseReason? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_box_autoadd_usize(BigInt? self, SseSerializer serializer);
@@ -866,16 +1821,70 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_pairing_stage(PairingStage self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_preview_read(PreviewRead self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_preview_summary(
+    PreviewSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_progress_view(ProgressView self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_read_error(ReadError self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_receiver_budget_view(
+    ReceiverBudgetView self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_restore_info(RestoreInfo self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_restore_summary(
+    RestoreSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_restore_summary_read(
+    RestoreSummaryRead self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_seed_export_payload(
     SeedExportPayload self,
     SseSerializer serializer,
   );
 
   @protected
+  void sse_encode_source_description(
+    SourceDescription self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_space_estimate(SpaceEstimate self, SseSerializer serializer);
+
+  @protected
   void sse_encode_splat_net_web_session(
     SplatNetWebSession self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_state(State self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_storage_role(StorageRole self, SseSerializer serializer);
 
   @protected
   void sse_encode_sync_attempt_summary(
@@ -885,6 +1894,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_sync_item_error(SyncItemError self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_sync_mode(SyncMode self, SseSerializer serializer);
 
   @protected
   void sse_encode_sync_policy(SyncPolicy self, SseSerializer serializer);
@@ -914,6 +1926,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_tcp_phase(TcpPhase self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_tcp_view(TcpView self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_transport_kind(TransportKind self, SseSerializer serializer);
+
+  @protected
   void sse_encode_u_32(int self, SseSerializer serializer);
 
   @protected
@@ -926,7 +1947,34 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_unit(void self, SseSerializer serializer);
 
   @protected
+  void sse_encode_usb_action(UsbAction self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_usb_action_kind(UsbActionKind self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_usb_close_reason(
+    UsbCloseReason self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_usb_reply(UsbReply self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_usb_view(UsbView self, SseSerializer serializer);
+
+  @protected
   void sse_encode_usize(BigInt self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_volume_budget_view(
+    VolumeBudgetView self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_work_stage(WorkStage self, SseSerializer serializer);
 }
 
 // Section: wire_class

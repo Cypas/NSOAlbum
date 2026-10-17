@@ -190,7 +190,7 @@ jobs:
           ./tool/package_windows.ps1 -Version $env:PACKAGE_VERSION -SkipTests -SkipBridgeGeneration
           $package = [System.IO.Path]::GetFullPath("../dist/NSOAlbum-Windows-x64-$env:PACKAGE_VERSION")
           foreach ($name in @(
-            'NSOAlbum.exe', 'flutter_windows.dll', 'squid_album_core.dll',
+            'NSOAlbum.exe', 'flutter_windows.dll', 'squid_album_core.dll', 'nsoalbum_mtp_worker.exe',
             'ffmpeg_kit_flutter_new_video_plugin.dll', 'libffmpegkit.dll',
             'libmpv-2.dll', 'media_kit_video_plugin.dll',
             'media_kit_libs_windows_video_plugin.dll', 'data/app.so', 'data/icudtl.dat'
@@ -211,9 +211,13 @@ jobs:
               @(Get-ChildItem -LiteralPath $assetRoot -File -Recurse).Count -eq 0) {
             throw 'Required Flutter asset directory is missing or empty.'
           }
-          $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath '../rust_core/target/release/squid_album_core.dll').Hash
+          $workerRecord = Join-Path $package 'data/mtp-worker-build.json'
+          $record = Get-Content -LiteralPath $workerRecord -Raw -Encoding UTF8 | ConvertFrom-Json
+          $sourceHash = $record.librarySha256
           $packageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $package 'squid_album_core.dll')).Hash
-          if ($sourceHash -ne $packageHash) { throw 'Packaged Rust DLL does not match the fresh source build.' }
+          if ($sourceHash -ne $packageHash.ToLowerInvariant()) { throw 'Packaged Rust DLL does not match the current Cargo JSON build.' }
+          dart run tool/verify_mtp_worker.dart --bundle $package --platform windows-x64 --build-record $workerRecord
+          if ($LASTEXITCODE -ne 0) { throw 'Fresh Windows MTP helper validation failed.' }
       - name: Build and sign macOS app once
         if: inputs.mac_arch != ''
         working-directory: flutter_app
@@ -235,6 +239,7 @@ jobs:
           bash tool/package_macos.sh --architecture "$PACKAGE_ARCH" --version "$PACKAGE_VERSION" --build-number "$PACKAGE_BUILD" --reports ../native-reports/build --build-only
           mkdir -p "../dist/ci-build/macos-$PACKAGE_ARCH"
           ditto build/macos/Build/Products/Release/NSOAlbum.app "../dist/ci-build/macos-$PACKAGE_ARCH/NSOAlbum.app"
+          cp ../native-reports/build/nsoalbum-mtp-worker.final.json "../dist/ci-build/macos-$PACKAGE_ARCH/nsoalbum-mtp-worker.final.json"
       - name: Seal the exact build and archive without losing links or permissions
         env:
           EXPECTED_SHA: ${{ inputs.ref }}
@@ -348,6 +353,24 @@ jobs:
           $reports = [System.IO.Path]::GetFullPath('../native-reports/smoke')
           dart run tool/run_release_smoke.dart --launch-app $executable --reports-dir $reports
           if ($LASTEXITCODE -ne 0) { throw 'Windows packaged native smoke failed.' }
+      - name: Independently require the same-run MTP helper and reject missing or damaged helpers
+        working-directory: flutter_app
+        env:
+          PACKAGE_PLATFORM: ${{ inputs.platform }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if ($env:PACKAGE_PLATFORM -eq 'windows-x64') {
+            $bundle = [IO.Path]::GetFullPath("../dist/NSOAlbum-Windows-x64-$env:PACKAGE_VERSION")
+            $record = Join-Path $bundle 'data/mtp-worker-build.json'
+          } else {
+            $base = [IO.Path]::GetFullPath("../dist/ci-build/$env:PACKAGE_PLATFORM")
+            $bundle = Join-Path $base 'NSOAlbum.app'
+            $record = Join-Path $base 'nsoalbum-mtp-worker.final.json'
+          }
+          dart run tool/verify_mtp_worker.dart --bundle $bundle --platform $env:PACKAGE_PLATFORM --build-record $record
+          if ($LASTEXITCODE -ne 0) { throw 'Same-run packaged MTP helper is missing or invalid.' }
+          dart run tool/test_mtp_worker_bundle.dart --bundle $bundle --platform $env:PACKAGE_PLATFORM --build-record $record
+          if ($LASTEXITCODE -ne 0) { throw 'Independent helper negative controls failed.' }
       - name: Prove Windows smoke detects injected native failures
         if: inputs.platform == 'windows-x64'
         working-directory: flutter_app
