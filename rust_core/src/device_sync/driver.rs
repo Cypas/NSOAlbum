@@ -5,6 +5,7 @@ mod throughput;
 use super::{
     accounts::{AccountCollector, AccountSet},
     clock::{Clock, ConnectionSample},
+    diagnostics::{self, Boundary as DiagnosticBoundary},
     library_guard::ExclusiveLease,
     planner::{build_plan_controlled, SyncMode, SyncPlan},
     receiver::{
@@ -500,6 +501,7 @@ impl Driver {
                 source_device,
                 &self.work,
             )
+            .inspect_err(|error| diagnostics::core(DiagnosticBoundary::PreviewSummary, error))
             .map_err(work_error)?,
         );
         Ok(())
@@ -999,15 +1001,24 @@ impl Driver {
                 .as_ref()
                 .ok_or(DriverError::Protocol)?
                 .digest_controlled(&self.work)
+                .inspect_err(|error| {
+                    diagnostics::core(DiagnosticBoundary::PreviewSourceDigest, error)
+                })
                 .map_err(work_error)?,
             self.target
                 .as_ref()
                 .ok_or(DriverError::Protocol)?
                 .digest_controlled(&self.work)
+                .inspect_err(|error| {
+                    diagnostics::core(DiagnosticBoundary::PreviewTargetDigest, error)
+                })
                 .map_err(work_error)?,
             plan,
         );
-        self.work.digest_json(&value).map_err(work_error)
+        self.work
+            .digest_json(&value)
+            .inspect_err(|error| diagnostics::core(DiagnosticBoundary::PreviewBinding, error))
+            .map_err(work_error)
     }
     pub fn approve_preview(&mut self) -> Result<()> {
         if (self.session.phone_controlled() && !self.preview_approved)
@@ -1323,6 +1334,12 @@ impl Driver {
             if receive
                 .staging_mut()
                 .requires_transfer(&sha)
+                .inspect_err(|error| {
+                    diagnostics::receiver(
+                        DiagnosticBoundary::PreparedTargetTransferSet,
+                        &super::receiver::ReceiverError::Staging(*error),
+                    )
+                })
                 .map_err(|_| DriverError::Library)?
             {
                 transfer_total = transfer_total
@@ -1376,10 +1393,18 @@ impl Driver {
             let receive = preparation
                 .worker
                 .join()
-                .map_err(|_| DriverError::Library)?
+                .map_err(|_| {
+                    diagnostics::driver(DiagnosticBoundary::PreparationJoin, &DriverError::Library);
+                    DriverError::Library
+                })?
+                .inspect_err(|error| {
+                    diagnostics::receiver(DiagnosticBoundary::PreparedTarget, error)
+                })
                 .map_err(receiver_work_error)?;
             self.cancel.check().map_err(|_| DriverError::Cancelled)?;
-            return self.prepared_target(receive);
+            return self.prepared_target(receive).inspect_err(|error| {
+                diagnostics::driver(DiagnosticBoundary::PreparedTarget, error)
+            });
         }
         if completed > preparation.last_enqueued {
             preparation.last_enqueued = completed;
@@ -1555,8 +1580,14 @@ impl Driver {
                     .collector
                     .take()
                     .ok_or(DriverError::Protocol)?
-                    .finish(&digest)?;
-                self.received_snapshot(snapshot, digest)?;
+                    .finish(&digest)
+                    .inspect_err(|error| {
+                        diagnostics::channel(DiagnosticBoundary::SnapshotEnd, error)
+                    })?;
+                self.received_snapshot(snapshot, digest)
+                    .inspect_err(|error| {
+                        diagnostics::driver(DiagnosticBoundary::ReceivedSnapshot, error)
+                    })?;
             }
             Message::PreparationProgress {
                 source_digest,

@@ -17,6 +17,7 @@ object DeviceSyncPolicyTest {
             )
         }
         check(regressionsFailed == 0) { "$regressionsFailed capacity regressions failed" }
+        diagnosticPrivacy()
         var checks = 0
         fun verify(value: Boolean) { check(value); checks++ }
         fun rejects(action: () -> Unit) = verify(runCatching(action).isFailure)
@@ -141,6 +142,21 @@ object DeviceSyncPolicyTest {
         streamingOwner.cancel()
         rejects { streaming.acknowledge("mobile", "0000000000000000.block") }
         println("DeviceSyncPolicyTest PASS $checks checks")
+    }
+
+    private fun diagnosticPrivacy() {
+        check(DeviceSyncPolicy.diagnostic("openSession", IllegalArgumentException("INVALID_DIRECTORY")) ==
+            "device_sync_saf method=openSession category=InvalidArgument reason=INVALID_DIRECTORY code=INVALID_BLOCK")
+        for (privateValue in listOf(
+            "content://private/tree/private?token=synthetic-secret",
+            "INVALID_DIRECTORY\nprivate-document-id",
+            "private-scope private-account private-name",
+        )) {
+            check(DeviceSyncPolicy.diagnostic(privateValue, IllegalArgumentException(privateValue)) ==
+                "device_sync_saf method=other category=InvalidArgument reason=other code=INVALID_BLOCK")
+            check(DeviceSyncPolicy.diagnostic("readBlock", java.io.IOException(privateValue)) ==
+                "device_sync_saf method=readBlock category=Io reason=other code=DEVICE_SYNC_UNAVAILABLE")
+        }
     }
 
     private fun fullWindow() {

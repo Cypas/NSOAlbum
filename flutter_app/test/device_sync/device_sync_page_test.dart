@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/src/backend/device_sync/service_contract.dart';
+import 'package:squid_album/src/backend/device_sync/account_gate.dart';
 import 'package:squid_album/src/l10n/app_localizations.dart';
 import 'package:squid_album/src/platform/device_sync_network.dart';
 import 'package:squid_album/src/rust/device_sync/connection.dart';
@@ -151,6 +152,149 @@ void main() {
       }
     }
   });
+
+  testWidgets(
+    'successful later observation dismisses only its earlier transient Busy',
+    (tester) async {
+      for (final failure in [
+        const DeviceSyncBusy(),
+        const DeviceSyncReadFailure(read.ReadError.unavailable),
+        StateError('Synthetic observation failure'),
+      ]) {
+        final session = _RecoveringObservationSession(failure);
+        final access = PageAccess()..sessionFactory = () => session;
+        await openPage(tester, access);
+        await createHost(tester);
+        expect(find.byKey(const Key('device-page-error')), findsOneWidget);
+        await tester.pump(const Duration(milliseconds: 600));
+        await tester.pump();
+        expect(session.refreshes, greaterThanOrEqualTo(2));
+        expect(find.text('Sync did not complete'), findsOneWidget);
+        expect(
+          find.byKey(const Key('device-page-error')),
+          failure is DeviceSyncBusy ? findsNothing : findsOneWidget,
+        );
+        expect(find.byKey(const Key('device-session-error')), findsOneWidget);
+        await endPage(tester);
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+    },
+  );
+
+  testWidgets(
+    'unavailable projection cannot dismiss observation Busy before a valid read',
+    (tester) async {
+      final session = _RecoveringObservationSession(const DeviceSyncBusy())
+        ..unavailableProjection = true;
+      final access = PageAccess()..sessionFactory = () => session;
+      await openPage(tester, access);
+      await createHost(tester);
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+      expect(session.refreshes, greaterThanOrEqualTo(2));
+      expect(find.byKey(const Key('device-page-error')), findsOneWidget);
+      session.unavailableProjection = false;
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+      expect(find.byKey(const Key('device-page-error')), findsNothing);
+      expect(find.text('Sync did not complete'), findsOneWidget);
+      await endPage(tester);
+    },
+  );
+
+  testWidgets(
+    'successful observation does not dismiss an unrelated USB action Busy',
+    (tester) async {
+      final session = _ActionBusySession();
+      final access = PageAccess()..sessionFactory = () => session;
+      await openPage(tester, access);
+      await tester.tap(find.byKey(const Key('device-usb')));
+      await tester.pump();
+      await reveal(tester, find.byKey(const Key('device-create-code')));
+      await tester.tap(find.byKey(const Key('device-create-code')));
+      await tester.pump();
+      await tester.ensureVisible(find.byKey(const Key('device-find-usb')));
+      await tester.tap(find.byKey(const Key('device-find-usb')));
+      await tester.pump();
+      expect(find.byKey(const Key('device-page-error')), findsOneWidget);
+      session.update(endpoint(driver.State.failed));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+      expect(find.byKey(const Key('device-page-error')), findsOneWidget);
+      await endPage(tester);
+    },
+  );
+
+  testWidgets(
+    'intervening observation Busy cannot replace a retained fatal read error',
+    (tester) async {
+      final session = _RecoveringObservationSession(
+        const DeviceSyncReadFailure(read.ReadError.unavailable),
+      )..busyOnSecondRead = true;
+      final access = PageAccess()..sessionFactory = () => session;
+      await openPage(tester, access);
+      await createHost(tester);
+      final original = tester
+          .widget<Text>(find.byKey(const Key('device-page-error')))
+          .data;
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+      expect(session.refreshes, 2);
+      expect(
+        tester.widget<Text>(find.byKey(const Key('device-page-error'))).data,
+        original,
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+      expect(session.refreshes, 3);
+      expect(
+        tester.widget<Text>(find.byKey(const Key('device-page-error'))).data,
+        original,
+      );
+      await endPage(tester);
+    },
+  );
+
+  testWidgets(
+    'intervening observation Busy preserves action diagnostics through valid read',
+    (tester) async {
+      for (final failure in [
+        const DeviceSyncReadFailure(read.ReadError.unavailable),
+        const DeviceSyncBusy(),
+      ]) {
+        final session = _ActionBusySession(failure);
+        final access = PageAccess()..sessionFactory = () => session;
+        await openPage(tester, access);
+        await tester.tap(find.byKey(const Key('device-usb')));
+        await tester.pump();
+        await reveal(tester, find.byKey(const Key('device-create-code')));
+        await tester.tap(find.byKey(const Key('device-create-code')));
+        await tester.pump();
+        await tester.ensureVisible(find.byKey(const Key('device-find-usb')));
+        await tester.tap(find.byKey(const Key('device-find-usb')));
+        await tester.pump();
+        final original = tester
+            .widget<Text>(find.byKey(const Key('device-page-error')))
+            .data;
+        session.nextRefreshFailure = const DeviceSyncBusy();
+        await tester.pump(const Duration(milliseconds: 600));
+        await tester.pump();
+        expect(
+          tester.widget<Text>(find.byKey(const Key('device-page-error'))).data,
+          original,
+        );
+        session.update(endpoint(driver.State.failed));
+        await tester.pump(const Duration(milliseconds: 600));
+        await tester.pump();
+        expect(
+          tester.widget<Text>(find.byKey(const Key('device-page-error'))).data,
+          original,
+        );
+        await endPage(tester);
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+    },
+  );
 
   testWidgets(
     'terminal cleanup keeps observing until the original owner settles',
@@ -415,4 +559,45 @@ class _CleanupSession extends PanelSession {
 class _UnsettledSession extends PanelSession {
   @override
   bool get settled => false;
+}
+
+class _RecoveringObservationSession extends PanelSession {
+  _RecoveringObservationSession(this.firstFailure);
+  final Object firstFailure;
+  bool unavailableProjection = false;
+  bool busyOnSecondRead = false;
+  int refreshes = 0;
+  @override
+  Future<read.EndpointRead> refresh() async {
+    refreshes++;
+    if (refreshes == 1) throw firstFailure;
+    if (refreshes == 2 && busyOnSecondRead) throw const DeviceSyncBusy();
+    if (unavailableProjection) {
+      state = read.EndpointRead(
+        progress: state.progress,
+        error: read.ReadError.unavailable,
+      );
+      return state;
+    }
+    failure = read.ReadError.disconnected;
+    state = endpoint(driver.State.failed, host: true, controller: false);
+    return state;
+  }
+}
+
+class _ActionBusySession extends PanelSession {
+  _ActionBusySession([this.actionFailure = const DeviceSyncBusy()]);
+  final Object actionFailure;
+  Object? nextRefreshFailure;
+  @override
+  Future<read.EndpointRead> refresh() async {
+    final failure = nextRefreshFailure;
+    nextRefreshFailure = null;
+    if (failure != null) throw failure;
+    return state;
+  }
+
+  @override
+  Future<List<DeviceUsbStorageChoice>> usbChoices() async =>
+      throw actionFailure;
 }

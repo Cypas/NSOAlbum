@@ -53,6 +53,7 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
   bool _invitationInspected = false;
   List<DeviceUsbStorageChoice>? _storages;
   Object? _error;
+  bool _errorFromObservation = false;
   bool _usb = false, _leaving = false, _asking = false, _allowPop = false;
   bool _changed = false;
   bool _ownedSettled = false, _settledFailure = false;
@@ -171,12 +172,17 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
     if (mounted) setState(() {});
   }
 
+  void _setError(Object? error, {bool observation = false}) {
+    _error = error;
+    _errorFromObservation = observation;
+  }
+
   Future<void> _run(Future<void> Function(int epoch) action) async {
     if (_action != null || _leaving) return;
     final done = Completer<void>();
     _action = done.future;
     final epoch = _epoch;
-    setState(() => _error = null);
+    setState(() => _setError(null));
     try {
       await action(epoch);
     } catch (error, stack) {
@@ -188,7 +194,7 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
           _lateOpeningStack = stack;
         }
       }
-      if (mounted && epoch == _epoch) setState(() => _error = error);
+      if (mounted && epoch == _epoch) setState(() => _setError(error));
     } finally {
       done.complete();
       _action = null;
@@ -214,8 +220,10 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
     final epoch = _epoch;
     late final Future<void> flight;
     flight = () async {
+      var reading = true;
       try {
         final read = await session.refresh();
+        reading = false;
         if (!mounted ||
             _leaving ||
             epoch != _epoch ||
@@ -223,6 +231,12 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
           return;
         }
         final view = read.value;
+        if (view != null &&
+            read.error == null &&
+            _errorFromObservation &&
+            _error is DeviceSyncBusy) {
+          _setError(null);
+        }
         if (view?.source == false &&
             view?.cleanupPending == false &&
             (view?.stage == driver.State.completed ||
@@ -234,7 +248,9 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
         if (mounted && epoch == _epoch) setState(() {});
       } catch (error) {
         if (mounted && epoch == _epoch && !_leaving) {
-          setState(() => _error = error);
+          if (!reading || error is! DeviceSyncBusy || _error == null) {
+            setState(() => _setError(error, observation: reading));
+          }
         }
       } finally {
         if (identical(_observation, flight)) _observation = null;
@@ -359,7 +375,7 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
     _ownedSessions.clear();
     _attempt = null;
     _storages = null;
-    _error = null;
+    _setError(null);
     _leaving = false;
     _settledFailure = false;
     _ownedSettled = false;
@@ -438,7 +454,7 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
     } catch (error) {
       if (mounted) {
         setState(() {
-          _error = error;
+          _setError(error);
           _leaving = false;
           _settledFailure = _ownedSettled;
         });

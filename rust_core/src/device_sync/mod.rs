@@ -5,6 +5,7 @@ mod account_tests;
 pub mod accounts;
 pub mod clock;
 pub mod connection;
+mod diagnostics;
 pub mod driver;
 pub mod headless;
 #[cfg(test)]

@@ -413,7 +413,8 @@ impl UsbDriver {
             }
         };
         if let Some((action, reply)) = completed {
-            self.accept_completion(control, &action, reply)?;
+            self.accept_completion(control, &action, reply)
+                .inspect_err(|error| super::diagnostics::usb(action.kind, error))?;
         }
         if matches!(self.stage, Stage::Done) {
             return Ok(true);

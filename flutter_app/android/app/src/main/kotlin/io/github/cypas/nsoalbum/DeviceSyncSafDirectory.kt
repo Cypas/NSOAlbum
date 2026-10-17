@@ -5,9 +5,8 @@ import android.net.Uri
 import android.os.CancellationSignal
 import android.provider.DocumentsContract
 import java.io.Closeable
-import java.io.FileNotFoundException
 
-/** Direct lookup under the exact external-storage tree; never enumerates historical sessions. */
+/** Bounded parent metadata lookup; never opens or descends into historical sessions. */
 internal class DeviceSyncSafDirectory(
     private val resolver: ContentResolver,
     private val tree: Uri,
@@ -25,25 +24,40 @@ internal class DeviceSyncSafDirectory(
         val closing = Closeable { signal.cancel() }
         owner.track(closing)
         try {
-            return resolver.query(
-                DocumentsContract.buildDocumentUriUsingTree(tree, id),
+            val cursor = resolver.query(
+                DocumentsContract.buildChildDocumentsUriUsingTree(tree, parent),
                 arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                     DocumentsContract.Document.COLUMN_DISPLAY_NAME,
                     DocumentsContract.Document.COLUMN_MIME_TYPE,
                     DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_FLAGS),
                 null, null, null, signal,
-            )?.use { cursor ->
+            ) ?: error("DIRECTORY_UNAVAILABLE")
+            return cursor.use {
                 owner.check()
-                if (!cursor.moveToNext()) return@use null
-                val node = SyncDocument(cursor.getString(0), cursor.getString(1),
-                    cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR, cursor.getLong(3))
-                require(cursor.getInt(4) and DocumentsContract.Document.FLAG_VIRTUAL_DOCUMENT == 0 &&
-                    node.id == id && node.name == name && node.directory) { "INVALID_DIRECTORY" }
-                require(!cursor.moveToNext()) { "DUPLICATE_DOCUMENT" }
-                node
+                var found: SyncDocument? = null
+                var count = 0
+                val ids = mutableSetOf<String>()
+                val names = mutableSetOf<String>()
+                while (cursor.moveToNext()) {
+                    owner.check()
+                    require(++count <= DeviceSyncPolicy.MAX_ENTRIES) { "TOO_MANY_ENTRIES" }
+                    val node = SyncDocument(cursor.getString(0), cursor.getString(1),
+                        cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR, cursor.getLong(3))
+                    require(cursor.getInt(4) and DocumentsContract.Document.FLAG_VIRTUAL_DOCUMENT == 0 &&
+                        node.name.isNotEmpty() && !node.name.contains('/') && !node.name.contains('\\') &&
+                        node.name != "." && node.name != ".." && node.id == "$parent/${node.name}") {
+                        "INVALID_DOCUMENT"
+                    }
+                    require(ids.add(node.id) && names.add(node.name)) { "DUPLICATE_DOCUMENT" }
+                    if (node.name == name) {
+                        require(node.id == id && node.directory) { "INVALID_DIRECTORY" }
+                        found = node
+                    }
+                }
+                owner.check()
+                require(found != null || count < DeviceSyncPolicy.MAX_ENTRIES) { "TOO_MANY_ENTRIES" }
+                found
             }
-        } catch (_: FileNotFoundException) {
-            return null
         } finally { owner.untrack(closing) }
     }
 }

@@ -2,11 +2,13 @@ package io.github.cypas.nsoalbum
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.net.Uri
 import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
 import android.provider.DocumentsContract
+import android.util.Log
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.Closeable
@@ -83,7 +85,7 @@ internal class DeviceSyncSafChannel(
                     if (picker.outstanding) throw DeviceSyncIoBusy()
                     val args = call.arguments as? Map<*, *> ?: error("INVALID_SCOPE")
                     val owner = owners.open(ownerScope(args))
-                    execute(owner, result) {
+                    execute(owner, result, call.method) {
                         val tree = authorizedTree()
                         mailbox = DeviceSyncMailbox(AndroidDocuments(tree, owner),
                             DocumentsContract.getTreeDocumentId(tree), owner)
@@ -93,7 +95,7 @@ internal class DeviceSyncSafChannel(
                 "listBlocks", "readBlock", "writeCiphertextBlock", "acknowledgeBlock" -> {
                     val args = call.arguments as? Map<*, *> ?: error("INVALID_SCOPE")
                     val owner = owners.requireActive(ownerScope(args))
-                    execute(owner, result) {
+                    execute(owner, result, call.method) {
                         authorizedTree()
                         val box = mailbox ?: error("OPERATION_CLOSED")
                         when (call.method) {
@@ -113,7 +115,14 @@ internal class DeviceSyncSafChannel(
                 else -> result.notImplemented()
             }
         } catch (failure: Exception) {
+            debugFailure(call.method, failure)
             result.error(DeviceSyncPolicy.errorCode(failure), null, null)
+        }
+    }
+
+    private fun debugFailure(method: String, failure: Throwable) {
+        if ((activity.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            Log.e("NSOAlbumDeviceSync", DeviceSyncPolicy.diagnostic(method, failure))
         }
     }
 
@@ -123,7 +132,7 @@ internal class DeviceSyncSafChannel(
         args["ownerToken"] as? String ?: throw IllegalArgumentException("INVALID_SCOPE"),
     )
 
-    private fun execute(owner: DeviceSyncOperation, result: MethodChannel.Result, action: () -> Any?) {
+    private fun execute(owner: DeviceSyncOperation, result: MethodChannel.Result, method: String, action: () -> Any?) {
         check(pending == null) { "BUSY" }
         ioSlot.begin()
         pending = result
@@ -142,6 +151,7 @@ internal class DeviceSyncSafChannel(
                 if (!destroyed && epoch == generation && operation === owner && pending === result) {
                     pending = null
                     answer.fold(result::success) {
+                        debugFailure(method, it)
                         val code = DeviceSyncPolicy.errorCode(it)
                         if (it is DeviceSyncWindowFull) {
                             result.error(code, null, null)
@@ -172,7 +182,8 @@ internal class DeviceSyncSafChannel(
             activity.contentResolver.takePersistableUriPermission(tree, flags)
             preferences.edit().putString("tree", tree.toString()).apply()
             result.success(true)
-        } catch (_: Exception) {
+        } catch (failure: Exception) {
+            debugFailure("selectTree", failure)
             result.error("DIRECTORY_NOT_AUTHORIZED", "Select Documents/NSOAlbumSync only.", null)
         }
         return true

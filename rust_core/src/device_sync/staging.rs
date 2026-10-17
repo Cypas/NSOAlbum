@@ -6,6 +6,7 @@ use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use super::diagnostics::{self, Boundary};
 use super::library_guard::{ExclusiveLease, OriginalIdentity, PublicationPin};
 use super::manifest::{Manifest, MediaRecord};
 use super::planner::SyncPlan;
@@ -371,15 +372,31 @@ impl StagingOperation {
             return Err(StagingError::PlanChanged);
         }
         let (runtime, media_root) = database.device_sync_file_roots().map_err(core_error)?;
-        paths::ensure_directory(&runtime)?;
-        paths::ensure_directory(&media_root)?;
-        let runtime = runtime
-            .canonicalize()
-            .map_err(|_| StagingError::UnsafePath)?;
+        paths::ensure_directory(&runtime).inspect_err(|error| {
+            diagnostics::receiver(
+                Boundary::StageRuntimeEnsure,
+                &super::receiver::ReceiverError::Staging(*error),
+            )
+        })?;
+        paths::ensure_directory(&media_root).inspect_err(|error| {
+            diagnostics::receiver(
+                Boundary::StageMediaEnsure,
+                &super::receiver::ReceiverError::Staging(*error),
+            )
+        })?;
+        let runtime = runtime.canonicalize().map_err(|error| {
+            diagnostics::core(Boundary::StageRuntimeCanonical, &CoreError::Io(error));
+            StagingError::UnsafePath
+        })?;
         let media_root = database
             .ensure_original_root(&media_root)
             .map_err(core_error)?;
-        let cache = CacheRoot::open(&runtime)?;
+        let cache = CacheRoot::open(&runtime).inspect_err(|error| {
+            diagnostics::receiver(
+                Boundary::StageCacheOpen,
+                &super::receiver::ReceiverError::Staging(*error),
+            )
+        })?;
         let mut entries = BTreeMap::new();
         let mut cached_bytes = 0_u64;
         for entry in &plan.media {
@@ -388,7 +405,12 @@ impl StagingOperation {
                 let cached = if entry.reuse_original {
                     None
                 } else {
-                    cache.lookup(record, work)?
+                    cache.lookup(record, work).inspect_err(|error| {
+                        diagnostics::receiver(
+                            Boundary::StageCacheLookup,
+                            &super::receiver::ReceiverError::Staging(*error),
+                        )
+                    })?
                 };
                 if cached.is_some() {
                     cached_bytes = cached_bytes
@@ -428,7 +450,12 @@ impl StagingOperation {
         let id = uuid::Uuid::new_v4();
         let directory = runtime.join(id.to_string());
         work.check().map_err(core_error)?;
-        paths::create_operation(&directory)?;
+        paths::create_operation(&directory).inspect_err(|error| {
+            diagnostics::receiver(
+                Boundary::StageOperationCreate,
+                &super::receiver::ReceiverError::Staging(*error),
+            )
+        })?;
         drop(_writing);
         Ok(Self {
             database,
@@ -1589,6 +1616,187 @@ mod tests {
         std::os::windows::fs::symlink_dir(target, link).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[cfg(any(windows, unix))]
+    fn configure_alias(
+        database: &Database,
+        target: &Path,
+    ) -> (tempfile::TempDir, std::path::PathBuf) {
+        let holder = tempfile::tempdir().unwrap();
+        let alias = holder.path().join("configured-root");
+        link_directory(target, &alias);
+        let settings = crate::settings::AppSettings {
+            proxy_url: None,
+            library_path: alias.to_string_lossy().into_owned(),
+            theme: "ocean".into(),
+            language: "en".into(),
+            gallery_columns: 4,
+            gallery_rows: 3,
+            show_note_preview: true,
+            show_game_tag: true,
+            compact_tag_display: true,
+            auto_play_video: false,
+            auto_sync_on_launch: false,
+            close_behavior: "ask".into(),
+            custom_font_paths: vec![],
+            sync_policy: Default::default(),
+        };
+        crate::database::staging_test_support::persisted_settings(database, &settings);
+        (holder, alias)
+    }
+
+    #[cfg(any(windows, unix))]
+    #[test]
+    fn staging_owned_root_alias_prepares_without_rewriting_settings() {
+        let (root, database, source, target, plan) = fixture();
+        database.ensure_original_root(root.path()).unwrap();
+        let (_holder, alias) = configure_alias(&database, root.path());
+        let operation = StagingOperation::prepare(database.clone(), &source, &target, &plan)
+            .expect("an already-owned configured root has a canonical effective identity");
+        assert_eq!(operation.media_root, root.path().canonicalize().unwrap());
+        assert_eq!(
+            database
+                .get_setting::<crate::settings::AppSettings>("app.settings")
+                .unwrap()
+                .unwrap()
+                .library_path,
+            alias.to_string_lossy()
+        );
+        assert_eq!(
+            database.device_sync_header().unwrap().generation,
+            target.header.generation
+        );
+        assert!(!root.path().join("originals").exists());
+    }
+
+    #[cfg(any(windows, unix))]
+    #[test]
+    fn staging_ordinary_configured_root_keeps_existing_admission() {
+        for exists in [false, true] {
+            let (root, database, source, target, plan) = fixture();
+            let (_holder, configured) = configure_alias(&database, root.path());
+            #[cfg(windows)]
+            std::fs::remove_dir(&configured).unwrap();
+            #[cfg(unix)]
+            std::fs::remove_file(&configured).unwrap();
+            if exists {
+                std::fs::create_dir(&configured).unwrap();
+            }
+            let marker =
+                configured.join(crate::device_sync::library_guard::ORIGINAL_ROOT_OWNER_FILE);
+            assert!(!marker.exists());
+            let operation = StagingOperation::prepare(database, &source, &target, &plan).unwrap();
+            assert_eq!(operation.media_root, configured.canonicalize().unwrap());
+            assert!(marker.is_file());
+            assert!(!configured.join("originals").exists());
+        }
+    }
+
+    #[cfg(any(windows, unix))]
+    #[test]
+    fn staging_owned_root_alias_never_adopts_unowned_or_foreign_targets() {
+        for foreign in [false, true] {
+            let (_root, database, source, target, plan) = fixture();
+            let outside = tempfile::tempdir().unwrap();
+            let marker = outside
+                .path()
+                .join(crate::device_sync::library_guard::ORIGINAL_ROOT_OWNER_FILE);
+            let _foreign = if foreign {
+                let other =
+                    Database::open(outside.path().join("database/library.sqlite3")).unwrap();
+                other.ensure_original_root(outside.path()).unwrap();
+                Some(other)
+            } else {
+                None
+            };
+            let before = std::fs::read(&marker).ok();
+            let sentinel = outside.path().join("unchanged");
+            std::fs::write(&sentinel, b"private-synthetic-fixture").unwrap();
+            let (_holder, _alias) = configure_alias(&database, outside.path());
+            assert!(StagingOperation::prepare(database, &source, &target, &plan).is_err());
+            assert_eq!(std::fs::read(&marker).ok(), before);
+            assert_eq!(
+                std::fs::read(sentinel).unwrap(),
+                b"private-synthetic-fixture"
+            );
+            assert!(!outside.path().join("originals").exists());
+            assert!(!outside.path().join("temporary").exists());
+        }
+    }
+
+    #[cfg(any(windows, unix))]
+    #[test]
+    fn staging_owned_root_alias_retarget_cannot_publish_into_another_library() {
+        let (root, database, source, target, plan) = fixture();
+        database.ensure_original_root(root.path()).unwrap();
+        let (_holder, alias) = configure_alias(&database, root.path());
+        let mut operation =
+            StagingOperation::prepare(database.clone(), &source, &target, &plan).unwrap();
+        receive(&mut operation);
+        let outside = tempfile::tempdir().unwrap();
+        let other = Database::open(outside.path().join("database/library.sqlite3")).unwrap();
+        other.ensure_original_root(outside.path()).unwrap();
+        #[cfg(windows)]
+        std::fs::remove_dir(&alias).unwrap();
+        #[cfg(unix)]
+        std::fs::remove_file(&alias).unwrap();
+        link_directory(outside.path(), &alias);
+        let lease = database.device_sync_exclusive().unwrap();
+        assert!(matches!(
+            operation.publish(
+                &lease,
+                operation.operation_id(),
+                ABC_SHA,
+                &CancellationToken::default(),
+                &mut |_| {}
+            ),
+            Err(StagingError::RootOwnership | StagingError::PlanChanged)
+        ));
+        assert!(!outside.path().join("originals").exists());
+        assert!(!root.path().join("originals").exists());
+    }
+
+    #[cfg(any(windows, unix))]
+    #[test]
+    fn staging_owned_root_alias_rechecks_current_root_and_marker_before_publish() {
+        for retarget in [false, true] {
+            let (root, database, source, target, plan) = fixture();
+            database.ensure_original_root(root.path()).unwrap();
+            let (_holder, alias) = configure_alias(&database, root.path());
+            let mut operation =
+                StagingOperation::prepare(database.clone(), &source, &target, &plan).unwrap();
+            receive(&mut operation);
+            let alternate = tempfile::tempdir().unwrap();
+            if retarget {
+                database.ensure_original_root(alternate.path()).unwrap();
+                #[cfg(windows)]
+                std::fs::remove_dir(&alias).unwrap();
+                #[cfg(unix)]
+                std::fs::remove_file(&alias).unwrap();
+                link_directory(alternate.path(), &alias);
+            } else {
+                std::fs::write(
+                    root.path()
+                        .join(crate::device_sync::library_guard::ORIGINAL_ROOT_OWNER_FILE),
+                    b"invalid-owner",
+                )
+                .unwrap();
+            }
+            let lease = database.device_sync_exclusive().unwrap();
+            assert!(matches!(
+                operation.publish(
+                    &lease,
+                    operation.operation_id(),
+                    ABC_SHA,
+                    &CancellationToken::default(),
+                    &mut |_| {}
+                ),
+                Err(StagingError::RootOwnership | StagingError::PlanChanged)
+            ));
+            assert!(!root.path().join("originals").exists());
+            assert!(!alternate.path().join("originals").exists());
+        }
     }
 
     #[cfg(any(windows, unix))]

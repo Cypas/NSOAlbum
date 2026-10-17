@@ -27,6 +27,52 @@ internal object DeviceSyncPolicy {
         is IllegalArgumentException -> "INVALID_BLOCK"
         else -> "DEVICE_SYNC_UNAVAILABLE"
     }
+    /** Diagnostic-only fixed vocabulary; never return exception/provider text or scope values. */
+    fun diagnostic(method: String, error: Throwable): String {
+        val safeMethod = when (method) {
+            "selectTree", "openSession", "listBlocks", "readBlock", "writeCiphertextBlock",
+            "acknowledgeBlock", "close", "cancel", "revoke" -> method
+            else -> "other"
+        }
+        val category = when (error) {
+            is DeviceSyncWindowFull -> "WindowFull"
+            is DeviceSyncIoBusy -> "Busy"
+            is SecurityException -> "Security"
+            is IllegalArgumentException -> "InvalidArgument"
+            is IllegalStateException -> "InvalidState"
+            is java.io.IOException -> "Io"
+            else -> "Other"
+        }
+        val reason = if (error is IllegalArgumentException || error is IllegalStateException) {
+            when (error.message) {
+                "INVALID_SCOPE" -> "INVALID_SCOPE"
+                "INVALID_BLOCK" -> "INVALID_BLOCK"
+                "BLOCK_TOO_LARGE" -> "BLOCK_TOO_LARGE"
+                "INVALID_DOCUMENT" -> "INVALID_DOCUMENT"
+                "INVALID_DIRECTORY" -> "INVALID_DIRECTORY"
+                "DUPLICATE_DOCUMENT" -> "DUPLICATE_DOCUMENT"
+                "TOO_MANY_ENTRIES" -> "TOO_MANY_ENTRIES"
+                "INVALID_SEQUENCE" -> "INVALID_SEQUENCE"
+                "BLOCK_NOT_READ" -> "BLOCK_NOT_READ"
+                "BLOCK_NOT_FOUND" -> "BLOCK_NOT_FOUND"
+                "BLOCK_CHANGED" -> "BLOCK_CHANGED"
+                "BLOCK_EXISTS" -> "BLOCK_EXISTS"
+                "TOO_MANY_UNACKNOWLEDGED_BLOCKS" -> "TOO_MANY_UNACKNOWLEDGED_BLOCKS"
+                "STALE_OPERATION" -> "STALE_OPERATION"
+                "OPERATION_CLOSED" -> "OPERATION_CLOSED"
+                "WINDOW_FULL" -> "WINDOW_FULL"
+                "BUSY" -> "BUSY"
+                "DIRECTORY_UNAVAILABLE" -> "DIRECTORY_UNAVAILABLE"
+                "CREATE_FAILED" -> "CREATE_FAILED"
+                "READ_FAILED" -> "READ_FAILED"
+                "WRITE_FAILED" -> "WRITE_FAILED"
+                "PUBLISH_FAILED" -> "PUBLISH_FAILED"
+                "ACKNOWLEDGEMENT_FAILED" -> "ACKNOWLEDGEMENT_FAILED"
+                else -> "other"
+            }
+        } else "other"
+        return "device_sync_saf method=$safeMethod category=$category reason=$reason code=${errorCode(error)}"
+    }
     fun copyBounded(input: InputStream, output: OutputStream, operation: DeviceSyncOperation) {
         var size = 0
         val buffer = ByteArray(8192)

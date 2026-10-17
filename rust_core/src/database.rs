@@ -1014,6 +1014,61 @@ pub struct Database {
     alias_validation_runs: std::sync::atomic::AtomicUsize,
 }
 
+fn device_sync_root_spelling_key(path: &Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut components = path.components();
+        let mut spelling = match components.next() {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::VerbatimDisk(drive) => {
+                    std::path::PathBuf::from(format!("{}:", char::from(drive)))
+                }
+                Prefix::VerbatimUNC(server, share) => {
+                    let mut value = std::ffi::OsString::from(r"\\");
+                    value.push(server);
+                    value.push(r"\");
+                    value.push(share);
+                    std::path::PathBuf::from(value)
+                }
+                _ => return crate::device_sync::library_guard::path_key(path),
+            },
+            _ => return crate::device_sync::library_guard::path_key(path),
+        };
+        for component in components {
+            spelling.push(component.as_os_str());
+        }
+        crate::device_sync::library_guard::path_key(&spelling)
+    }
+    #[cfg(not(windows))]
+    crate::device_sync::library_guard::path_key(path)
+}
+
+#[cfg(all(test, windows))]
+mod device_sync_root_spelling_tests {
+    use super::*;
+
+    #[test]
+    fn device_sync_root_spelling_equates_windows_disk_and_unc_prefixes_only() {
+        assert_eq!(
+            device_sync_root_spelling_key(Path::new(r"\\?\C:\Media")),
+            std::path::PathBuf::from(r"c:\media")
+        );
+        assert_eq!(
+            device_sync_root_spelling_key(Path::new(r"\\?\UNC\Server\共享\Media")),
+            std::path::PathBuf::from(r"\\server\共享\media")
+        );
+        assert_ne!(
+            device_sync_root_spelling_key(Path::new(r"C:\One")),
+            device_sync_root_spelling_key(Path::new(r"C:\Other"))
+        );
+        assert_ne!(
+            device_sync_root_spelling_key(Path::new(r"\\server\share\media")),
+            device_sync_root_spelling_key(Path::new(r"\\other\share\media"))
+        );
+    }
+}
+
 const MAX_GAME_ALIAS_ROW_BYTES: usize = 1024 * 1024;
 const MAX_GAME_ALIAS_PROOF_BYTES: usize = 8 * 1024 * 1024;
 const MAX_GAME_ALIAS_PROOF_NODES: usize = 65_536;
@@ -2298,6 +2353,22 @@ pub fn probe_library_root(root: impl AsRef<Path>) -> CoreResult<LibraryRootProbe
 pub(crate) mod staging_test_support {
     use super::*;
 
+    pub(crate) fn persisted_settings(database: &Database, settings: &AppSettings) {
+        database
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO app_setting(key,value_json,updated_at) VALUES('app.settings',?1,?2)
+                 ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",
+                params![
+                    serde_json::to_string(settings).unwrap(),
+                    Utc::now().to_rfc3339()
+                ],
+            )
+            .unwrap();
+    }
+
     pub(crate) fn row(
         database: &Database,
         lease: &ExclusiveLease,
@@ -2594,6 +2665,28 @@ impl Database {
             .map(|settings| std::path::PathBuf::from(settings.library_path))
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| self.default_media_root.clone());
+        // Resolve an existing configured alias only after proving that its target
+        // already belongs to this database. Keep settings untouched and leave
+        // ordinary/uncreated roots to the existing strict staging admission.
+        let media = if media.is_absolute()
+            && !media.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            }) {
+            match media.canonicalize() {
+                Ok(canonical)
+                    if device_sync_root_spelling_key(&canonical)
+                        != device_sync_root_spelling_key(&media) =>
+                {
+                    self.validate_existing_original_root(&media)?
+                }
+                _ => media,
+            }
+        } else {
+            media
+        };
         Ok((self.default_media_root.join("temporary/device-sync"), media))
     }
 

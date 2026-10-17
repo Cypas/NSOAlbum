@@ -7,6 +7,10 @@ object DocumentsContract {
         check(documentId.startsWith(tree.documentId + "/"))
         return Uri(documentId)
     }
+    fun buildChildDocumentsUriUsingTree(tree: Uri, documentId: String): Uri {
+        check(documentId == tree.documentId || documentId.startsWith(tree.documentId + "/"))
+        return Uri(documentId, children = true)
+    }
     fun getTreeDocumentId(tree: Uri) = tree.documentId
     object Document {
         const val COLUMN_DOCUMENT_ID = "document_id"

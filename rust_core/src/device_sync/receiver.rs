@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::diagnostics::{self, Boundary};
 use super::manifest::{Manifest, ManifestCollector, ManifestHeader};
 use super::planner::{SyncMode, SyncPlan};
 use super::source_names::{SourceDescription, SourceDescriptions};
@@ -70,10 +71,14 @@ impl Snapshot {
         work: &super::work::WorkControl,
     ) -> CoreResult<Self> {
         work.check()?;
-        let _lease = database.device_sync_exclusive()?;
+        let _lease = database
+            .device_sync_exclusive()
+            .inspect_err(|error| diagnostics::core(Boundary::SnapshotLease, error))?;
         Self::read_with_header_controlled(
             database,
-            database.device_sync_header()?,
+            database
+                .device_sync_header()
+                .inspect_err(|error| diagnostics::core(Boundary::SnapshotHeader, error))?,
             Some(local_name),
             work,
         )
@@ -127,37 +132,47 @@ impl Snapshot {
     ) -> CoreResult<Self> {
         let _scope = work.begin(super::work::WorkStage::Scanning)?;
         work.checkpoint(super::work::WorkStage::Scanning, 0)?;
-        let mut collector = ManifestCollector::with_control(header.clone(), work.clone())?;
+        let mut collector = ManifestCollector::with_control(header.clone(), work.clone())
+            .inspect_err(|error| diagnostics::core(Boundary::SnapshotCollector, error))?;
         let mut cursor = None;
         loop {
-            let page = database.device_sync_manifest_page_controlled(
-                &header,
-                cursor.as_ref(),
-                128,
-                work,
-            )?;
+            let page = database
+                .device_sync_manifest_page_controlled(&header, cursor.as_ref(), 128, work)
+                .inspect_err(|error| diagnostics::core(Boundary::SnapshotPage, error))?;
             work.checkpoint(super::work::WorkStage::Scanning, page.records.len())?;
             cursor = page.next.clone();
-            collector.push(page)?;
+            collector
+                .push(page)
+                .inspect_err(|error| diagnostics::core(Boundary::SnapshotCollector, error))?;
             if cursor.is_none() {
                 break;
             }
         }
-        let manifest = collector.finish()?;
-        let mut known = database.device_sync_source_names_controlled(work)?;
+        let manifest = collector
+            .finish()
+            .inspect_err(|error| diagnostics::core(Boundary::SnapshotCollector, error))?;
+        let mut known = database
+            .device_sync_source_names_controlled(work)
+            .inspect_err(|error| diagnostics::core(Boundary::SnapshotSources, error))?;
         if let Some(name) = local_name {
             known.retain(|e| e.library_uuid != header.library_uuid);
-            known.push(SourceDescription::new(header.library_uuid, name.into())?);
+            known.push(
+                SourceDescription::new(header.library_uuid, name.into())
+                    .inspect_err(|error| diagnostics::core(Boundary::SnapshotSources, error))?,
+            );
         }
-        let sources = SourceDescriptions::filtered_controlled(&manifest, known, work)?;
+        let sources = SourceDescriptions::filtered_controlled(&manifest, known, work)
+            .inspect_err(|error| diagnostics::core(Boundary::SnapshotFilter, error))?;
         work.checkpoint(super::work::WorkStage::FinalCheck, 0)?;
-        let current = database.device_sync_header()?;
+        let current = database
+            .device_sync_header()
+            .inspect_err(|error| diagnostics::core(Boundary::SnapshotFinalHeader, error))?;
         if current.library_uuid != manifest.header.library_uuid
             || current.generation != manifest.header.generation
         {
-            return Err(CoreError::InvalidConfig(
-                "device-sync snapshot changed".into(),
-            ));
+            let error = CoreError::InvalidConfig("device-sync snapshot changed".into());
+            diagnostics::core(Boundary::SnapshotGenerationChanged, &error);
+            return Err(error);
         }
         work.check()?;
         Ok(Self { manifest, sources })
@@ -260,28 +275,39 @@ impl ReceiveOperation {
         clock: Option<super::clock::ClockTrust>,
         work: &super::work::WorkControl,
     ) -> ReceiverResult<Self> {
-        source.sources.validate_controlled(&source.manifest, work)?;
-        let target = Snapshot::read_controlled(&database, local_name, work)?;
+        source
+            .sources
+            .validate_controlled(&source.manifest, work)
+            .inspect_err(|error| diagnostics::core(Boundary::ReceiverSourceValidation, error))?;
+        let target = Snapshot::read_controlled(&database, local_name, work)
+            .inspect_err(|error| diagnostics::core(Boundary::TargetSnapshot, error))?;
         let plan = super::planner::build_plan_controlled(
             &source.manifest,
             &target.manifest,
             mode,
             clock,
             work,
-        )?;
+        )
+        .inspect_err(|error| diagnostics::core(Boundary::ReceiverPlan, error))?;
         let staging = StagingOperation::prepare_controlled(
             database.clone(),
             &source.manifest,
             &target.manifest,
             &plan,
             work,
-        )?;
-        let receiver_budget = super::space_budget::measure(
-            &staging,
-            database.device_sync_metadata_cost(&target, &plan, work)?,
-            work,
-        )?;
-        work.check()?;
+        )
+        .inspect_err(|error| {
+            diagnostics::receiver(Boundary::ReceiverStaging, &ReceiverError::Staging(*error))
+        })?;
+        let metadata = database
+            .device_sync_metadata_cost(&target, &plan, work)
+            .inspect_err(|error| diagnostics::core(Boundary::ReceiverMetadataCost, error))?;
+        let receiver_budget =
+            super::space_budget::measure(&staging, metadata, work).inspect_err(|error| {
+                diagnostics::receiver(Boundary::ReceiverBudget, &ReceiverError::Staging(*error))
+            })?;
+        work.check()
+            .inspect_err(|error| diagnostics::core(Boundary::ReceiverFinalCheck, error))?;
         Ok(Self {
             database,
             source,

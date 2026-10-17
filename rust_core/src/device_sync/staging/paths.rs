@@ -1,6 +1,20 @@
 use std::path::{Component, Path};
 
 use super::{StagingError, StagingResult};
+use crate::device_sync::diagnostics::{self, Boundary};
+
+fn unsafe_path(boundary: Boundary) -> StagingError {
+    diagnostics::receiver(
+        boundary,
+        &crate::device_sync::receiver::ReceiverError::Staging(StagingError::UnsafePath),
+    );
+    StagingError::UnsafePath
+}
+
+fn unsafe_io(boundary: Boundary, error: std::io::Error) -> StagingError {
+    diagnostics::core(boundary, &crate::error::CoreError::Io(error));
+    StagingError::UnsafePath
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct FileIdentity(u64, u64);
@@ -60,7 +74,7 @@ impl HeldDirectory {
         inspect(&self.path)?;
         for (path, expected) in &self.ancestors {
             if FileIdentity::of(&open_checked(path, true)?)? != *expected {
-                return Err(StagingError::UnsafePath);
+                return Err(unsafe_path(Boundary::PathHeldAncestorIdentity));
             }
         }
         Ok(())
@@ -86,9 +100,10 @@ fn is_link(metadata: &std::fs::Metadata) -> bool {
 
 fn open_checked(path: &Path, directory: bool) -> StagingResult<std::fs::File> {
     inspect(path)?;
-    let before = std::fs::symlink_metadata(path).map_err(|_| StagingError::UnsafePath)?;
+    let before = std::fs::symlink_metadata(path)
+        .map_err(|error| unsafe_io(Boundary::PathOpenBeforeStat, error))?;
     if before.is_dir() != directory || (!directory && !before.is_file()) {
-        return Err(StagingError::UnsafePath);
+        return Err(unsafe_path(Boundary::PathOpenKind));
     }
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -105,16 +120,20 @@ fn open_checked(path: &Path, directory: bool) -> StagingResult<std::fs::File> {
         use std::os::windows::fs::OpenOptionsExt;
         options.custom_flags(0x0020_0000 | if directory { 0x0200_0000 } else { 0 });
     }
-    let file = options.open(path).map_err(|_| StagingError::UnsafePath)?;
-    let opened = file.metadata().map_err(|_| StagingError::UnsafePath)?;
+    let file = options
+        .open(path)
+        .map_err(|error| unsafe_io(Boundary::PathOpenHandle, error))?;
+    let opened = file
+        .metadata()
+        .map_err(|error| unsafe_io(Boundary::PathOpenAfterStat, error))?;
     if is_link(&opened) || opened.is_dir() != directory || (!directory && !opened.is_file()) {
-        return Err(StagingError::UnsafePath);
+        return Err(unsafe_path(Boundary::PathOpenKind));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         if before.dev() != opened.dev() || before.ino() != opened.ino() {
-            return Err(StagingError::UnsafePath);
+            return Err(unsafe_path(Boundary::PathOpenIdentity));
         }
     }
     inspect(path)?;
@@ -240,7 +259,7 @@ pub(super) fn inspect(path: &Path) -> StagingResult<()> {
             .components()
             .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
     {
-        return Err(StagingError::UnsafePath);
+        return Err(unsafe_path(Boundary::PathSyntax));
     }
     let mut current = std::path::PathBuf::new();
     for component in path.components() {
@@ -248,12 +267,13 @@ pub(super) fn inspect(path: &Path) -> StagingResult<()> {
         if matches!(component, Component::Prefix(_)) {
             continue;
         }
-        let metadata = std::fs::symlink_metadata(&current).map_err(|_| StagingError::UnsafePath)?;
-        if is_link(&metadata)
-            || (!metadata.is_dir() && current != path)
-            || (!metadata.is_dir() && !metadata.is_file())
-        {
-            return Err(StagingError::UnsafePath);
+        let metadata = std::fs::symlink_metadata(&current)
+            .map_err(|error| unsafe_io(Boundary::PathInspectStat, error))?;
+        if is_link(&metadata) {
+            return Err(unsafe_path(Boundary::PathInspectLink));
+        }
+        if (!metadata.is_dir() && current != path) || (!metadata.is_dir() && !metadata.is_file()) {
+            return Err(unsafe_path(Boundary::PathInspectKind));
         }
     }
     Ok(())
@@ -265,7 +285,7 @@ pub(super) fn ensure_directory(path: &Path) -> StagingResult<()> {
             .components()
             .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
     {
-        return Err(StagingError::UnsafePath);
+        return Err(unsafe_path(Boundary::PathSyntax));
     }
     let mut current = std::path::PathBuf::new();
     for component in path.components() {
@@ -275,7 +295,13 @@ pub(super) fn ensure_directory(path: &Path) -> StagingResult<()> {
         }
         match std::fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.is_dir() && !is_link(&metadata) => {}
-            Ok(_) => return Err(StagingError::UnsafePath),
+            Ok(metadata) => {
+                return Err(unsafe_path(if is_link(&metadata) {
+                    Boundary::PathEnsureLink
+                } else {
+                    Boundary::PathEnsureKind
+                }))
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let builder = std::fs::DirBuilder::new();
                 #[cfg(unix)]
@@ -285,11 +311,16 @@ pub(super) fn ensure_directory(path: &Path) -> StagingResult<()> {
                     use std::os::unix::fs::DirBuilderExt;
                     builder.mode(0o700);
                 }
-                builder
-                    .create(&current)
-                    .map_err(|error| super::io_error(&error, StagingError::UnsafePath))?;
+                builder.create(&current).map_err(|error| {
+                    let mapped = super::io_error(&error, StagingError::UnsafePath);
+                    diagnostics::core(
+                        Boundary::PathEnsureCreate,
+                        &crate::error::CoreError::Io(error),
+                    );
+                    mapped
+                })?;
             }
-            Err(_) => return Err(StagingError::UnsafePath),
+            Err(error) => return Err(unsafe_io(Boundary::PathEnsureStat, error)),
         }
     }
     inspect(path)
