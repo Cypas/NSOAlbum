@@ -293,6 +293,15 @@ async fn usb_native_owner_rejects_ambiguous_local_device_ids_from_real_child() {
 
 #[tokio::test]
 async fn usb_same_endpoint_moves_real_tls_over_129_blocks_and_acks_final_commit_before_close() {
+    real_tls_over_native_window(false).await;
+}
+
+#[tokio::test]
+async fn usb_phone_control_moves_real_tls_over_129_blocks_and_acks_final_commit_before_close() {
+    real_tls_over_native_window(true).await;
+}
+
+async fn real_tls_over_native_window(phone_controlled: bool) {
     let _serial = SERIAL.lock().await;
     let roots = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
     let libraries = roots.each_ref().map(|root| {
@@ -307,7 +316,11 @@ async fn usb_same_endpoint_moves_real_tls_over_129_blocks_and_acks_final_commit_
     api.import_local_files(vec![input.to_string_lossy().into_owned()])
         .await
         .unwrap();
-    let host = headless::host_usb_test(&libraries[0], "Desktop").unwrap();
+    let host = if phone_controlled {
+        headless::owner_test_tools::phone_usb_actions(&libraries[0], "Desktop")
+    } else {
+        headless::host_usb_test(&libraries[0], "Desktop").unwrap()
+    };
     let phone = headless::client_usb(&libraries[1], &host.invitation, "Phone").unwrap();
     let endpoints = [host.handle, phone];
     let mut boxes = [BTreeMap::<String, Vec<u8>>::new(), BTreeMap::new()];
@@ -338,7 +351,10 @@ async fn usb_same_endpoint_moves_real_tls_over_129_blocks_and_acks_final_commit_
                 boxes[1 - index]
                     .remove(action.name.as_ref().unwrap())
                     .unwrap();
-                headless::usb_complete(&endpoints[index], reply).unwrap();
+                headless::usb_complete(&endpoints[index], reply).unwrap_or_else(|error| panic!(
+                    "held ACK failed side={index} error={error:?} closed={closed:?} writes={writes:?} boxes={:?} USB={:?} {:?}",
+                    boxes.each_ref().map(|b|b.len()), headless::usb_view(&endpoints[0]), headless::usb_view(&endpoints[1])
+                ));
             }
             if held[index].is_some() {
                 continue;
@@ -411,7 +427,7 @@ async fn usb_same_endpoint_moves_real_tls_over_129_blocks_and_acks_final_commit_
                     .is_some_and(|v| v.pairing == PairingStage::AwaitingConfirmation)
             })
         {
-            for e in &endpoints {
+            for e in endpoints.iter().skip(usize::from(phone_controlled)) {
                 headless::command(e, |d| d.confirm_pairing()).await.unwrap();
             }
             confirmed = true;
@@ -420,7 +436,7 @@ async fn usb_same_endpoint_moves_real_tls_over_129_blocks_and_acks_final_commit_
             && !configured
             && headless::status(&endpoints[0]).unwrap().state == "Configuring"
         {
-            headless::command(&endpoints[0], |d| {
+            headless::command(&endpoints[usize::from(phone_controlled)], |d| {
                 d.configure(
                     super::driver::Direction::DesktopToPhone,
                     super::planner::SyncMode::Merge,
@@ -436,9 +452,16 @@ async fn usb_same_endpoint_moves_real_tls_over_129_blocks_and_acks_final_commit_
                 .list_media(Default::default())
                 .unwrap()
                 .is_empty());
-            headless::command(&endpoints[1], |d| d.approve_preview())
-                .await
-                .unwrap();
+            headless::command(&endpoints[1], move |d| {
+                if phone_controlled {
+                    let binding = d.preview_binding().unwrap().to_owned();
+                    d.approve_controlled_preview(&binding)
+                } else {
+                    d.approve_preview()
+                }
+            })
+            .await
+            .unwrap();
             approved = true;
         }
         if held.iter().any(Option::is_some) {
@@ -460,6 +483,15 @@ async fn usb_same_endpoint_moves_real_tls_over_129_blocks_and_acks_final_commit_
         .list_media(Default::default())
         .unwrap();
     assert_eq!(std::fs::read(&media[0].storage_path).unwrap(), bytes);
+    if phone_controlled {
+        // These are real one-shot handoff facts, never set by the test.
+        assert!(headless::status(&endpoints[0]).unwrap().source_grant_issued);
+        assert!(
+            headless::status(&endpoints[1])
+                .unwrap()
+                .local_apply_installed
+        );
+    }
     for endpoint in &endpoints {
         assert_eq!(
             headless::usb_closed(endpoint).await.unwrap().reason,

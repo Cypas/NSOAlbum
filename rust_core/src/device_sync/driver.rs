@@ -7,6 +7,7 @@ use super::{
     clock::{Clock, ConnectionSample},
     diagnostics::{self, Boundary as DiagnosticBoundary},
     library_guard::ExclusiveLease,
+    local_apply::{Identity as ApplyIdentity, LifecycleControl, LocalApplyAuthority},
     planner::{build_plan_controlled, SyncMode, SyncPlan},
     receiver::{
         ApplyBoundary, ApplyReceipt, ApplyState, CommitGuard, LocalAuthorization, ReceiveOperation,
@@ -270,13 +271,23 @@ struct Permit {
 impl CommitGuard for Permit {
     fn check(&self) -> CoreResult<()> {
         self.cancel.check()?;
-        if !self.active.load(Ordering::SeqCst)
-            || self.clock.monotonic_ms() >= self.until.load(Ordering::SeqCst)
-            || self.work.load(Ordering::SeqCst) > self.budget.load(Ordering::SeqCst)
-            || self.sql_work.load(Ordering::SeqCst) > MAX_SQL_WORK
-            || (self.sql_started.load(Ordering::SeqCst)
-                && self.clock.monotonic_ms() >= self.sql_until.load(Ordering::SeqCst))
+        let failure = if !self.active.load(Ordering::SeqCst) {
+            Some(DiagnosticBoundary::ApplyPermitInactive)
+        } else if self.clock.monotonic_ms() >= self.until.load(Ordering::SeqCst) {
+            Some(DiagnosticBoundary::ApplyPermitLeaseExpired)
+        } else if self.work.load(Ordering::SeqCst) > self.budget.load(Ordering::SeqCst) {
+            Some(DiagnosticBoundary::ApplyPermitPublicationBudget)
+        } else if self.sql_work.load(Ordering::SeqCst) > MAX_SQL_WORK {
+            Some(DiagnosticBoundary::ApplyPermitSqlBudget)
+        } else if self.sql_started.load(Ordering::SeqCst)
+            && self.clock.monotonic_ms() >= self.sql_until.load(Ordering::SeqCst)
         {
+            Some(DiagnosticBoundary::ApplyPermitSqlDeadline)
+        } else {
+            None
+        };
+        if let Some(boundary) = failure {
+            diagnostics::checkpoint(boundary);
             return Err(CoreError::Cancelled);
         }
         Ok(())
@@ -365,6 +376,15 @@ pub struct Driver {
     controller_account_consent: Option<bool>,
     preview_approved: bool,
     throughput: throughput::Throughput,
+    lifecycle: Arc<LifecycleControl>,
+    local_authority: Option<Arc<LocalApplyAuthority>>,
+    local_identity: Option<ApplyIdentity>,
+    receiver_binding: Option<String>,
+    pending_ready: Option<ApplyIdentity>,
+    source_ack_until: Option<u64>,
+    detached: bool,
+    #[cfg(test)]
+    fail_local_spawn: bool,
 }
 impl Driver {
     pub fn new(
@@ -382,6 +402,7 @@ impl Driver {
         }
         let now = clock.monotonic_ms();
         let cancel = CancellationToken::default();
+        let lifecycle = LifecycleControl::new(cancel.clone());
         let permit = Arc::new(Permit {
             clock: clock.clone(),
             cancel: cancel.clone(),
@@ -471,6 +492,15 @@ impl Driver {
             controller_account_consent: None,
             preview_approved: false,
             throughput: throughput::Throughput::default(),
+            lifecycle,
+            local_authority: None,
+            local_identity: None,
+            receiver_binding: None,
+            pending_ready: None,
+            source_ack_until: None,
+            detached: false,
+            #[cfg(test)]
+            fail_local_spawn: false,
         })
     }
     pub fn state(&self) -> State {
@@ -478,6 +508,18 @@ impl Driver {
     }
     pub fn progress(&self) -> &TransferProgress {
         &self.progress
+    }
+    pub fn local_apply_installed(&self) -> bool {
+        self.lifecycle.installed()
+    }
+    pub(crate) fn lifecycle_control(&self) -> Arc<LifecycleControl> {
+        self.lifecycle.clone()
+    }
+    pub fn source_grant_issued(&self) -> bool {
+        self.lifecycle.issued()
+    }
+    pub fn transport_detached(&self) -> bool {
+        self.detached
     }
     pub fn plan(&self) -> Option<&SyncPlan> {
         self.plan.as_ref()
@@ -569,6 +611,9 @@ impl Driver {
             stage: self.state,
             terminal: self.state.terminal(),
             cleanup_pending: self.cleanup_pending(),
+            local_apply_installed: self.local_apply_installed(),
+            source_grant_issued: self.source_grant_issued(),
+            transport_detached: self.transport_detached(),
             progress,
         }
     }
@@ -848,6 +893,11 @@ impl Driver {
             .as_ref()
             .map(ReceiveOperation::operation_id)
             .or_else(|| self.receipt.as_ref().map(|r| r.operation_uuid))
+            .or_else(|| {
+                self.local_identity
+                    .as_ref()
+                    .map(|identity| identity.operation)
+            })
     }
     pub fn target_library_id(&self) -> Option<&str> {
         self.target
@@ -897,6 +947,10 @@ impl Driver {
             return Err(DriverError::Protocol);
         }
         self.account_final = true;
+        if let Some(identity) = self.pending_ready.take() {
+            self.state = State::Verifying;
+            return self.issue_apply_grant(identity);
+        }
         let (binding, id, work) = self.account_request.take().ok_or(DriverError::Protocol)?;
         self.state = State::Verifying;
         self.handle(Message::LeaseRequest { binding, id, work })
@@ -913,21 +967,47 @@ impl Driver {
         self.cancel.check().map_err(|_| DriverError::Cancelled)?;
         self.step = Step::Lease;
         self.state = State::Verifying;
-        self.request_lease(ApplyWork::default())
+        self.request_apply()
     }
     pub fn check_external_commit(&self) -> Result<()> {
         if self.state != State::AwaitingExternal
             || !self.accounts_included()
             || self.source_side()
-            || self.permit.check().is_err()
+            || self.check_apply_guard().is_err()
         {
             return Err(DriverError::Cancelled);
+        }
+        if let Some(authority) = &self.local_authority {
+            let identity = self.local_identity.as_ref().ok_or(DriverError::Protocol)?;
+            if !authority.matches(
+                identity,
+                self.receiver_binding
+                    .as_deref()
+                    .ok_or(DriverError::Protocol)?,
+            ) || self
+                .receipt
+                .as_ref()
+                .is_none_or(|receipt| receipt.operation_uuid != identity.operation)
+                || self
+                    .database
+                    .device_sync_journal(identity.operation)
+                    .map_err(|_| DriverError::Library)?
+                    .is_none_or(|journal| {
+                        journal.stage != super::recovery::JournalStage::LibraryApplied
+                            || journal.external_reference != identity.external
+                    })
+            {
+                return Err(DriverError::Protocol);
+            }
         }
         Ok(())
     }
     /// Report a completed, verified secure-storage step, never a timer heartbeat.
     pub fn external_step(&mut self) -> Result<()> {
         self.check_external_commit()?;
+        if let Some(authority) = &self.local_authority {
+            authority.account_step().map_err(work_error)?;
+        }
         self.account_steps = self
             .account_steps
             .checked_add(1)
@@ -953,13 +1033,14 @@ impl Driver {
         )
         .map_err(receiver_work_error)?;
         let mut authorization = recovery.authorize().map_err(receiver_work_error)?;
-        self.permit.check().map_err(|_| DriverError::Cancelled)?;
+        self.check_apply_guard()
+            .map_err(|_| DriverError::Cancelled)?;
         recovery
             .finalize_guarded(
                 Some(&mut authorization),
                 Some(external),
                 &self.cancel,
-                Some(self.permit.clone()),
+                Some(self.apply_guard()),
             )
             .map_err(receiver_work_error)?;
         self.receipt.as_mut().ok_or(DriverError::Protocol)?.state = ApplyState::Finalized;
@@ -970,6 +1051,16 @@ impl Driver {
         self.step = Step::Done;
         self.success_until = Some(self.clock.monotonic_ms().saturating_add(LEASE_MS));
         self.import_accounts = None;
+        if self.local_apply_installed() {
+            self.lifecycle.settle();
+            if !self.detached {
+                // Durable success is independent of the best-effort receipt.
+                let _ = self.enqueue(Message::CommitAck {
+                    binding: self.binding.clone().ok_or(DriverError::Protocol)?,
+                });
+            }
+            return Ok(());
+        }
         self.enqueue(Message::CommitAck {
             binding: self.binding.clone().ok_or(DriverError::Protocol)?,
         })
@@ -1166,7 +1257,7 @@ impl Driver {
             }
             self.state = State::Verifying;
             self.step = Step::Lease;
-            self.request_lease(ApplyWork::default())?;
+            self.request_apply()?;
         }
         Ok(())
     }
@@ -1185,6 +1276,93 @@ impl Driver {
             id,
             work,
         })
+    }
+    fn request_apply(&mut self) -> Result<()> {
+        if !self.session.phone_controlled() {
+            return self.request_lease(ApplyWork::default());
+        }
+        if self.session.state() != SessionState::Confirmed
+            || !self.preview_approved
+            || self.source_side()
+            || !self.needed.is_empty()
+            || self.receiving.is_some()
+            || self.verification.is_some()
+            || self.file.is_some()
+            || (self.accounts_included() && self.external_reference.is_none())
+            || self.outbox.len() >= MAX_OUTBOX
+        {
+            return Err(DriverError::Protocol);
+        }
+        let receive = self.receive.as_ref().ok_or(DriverError::Protocol)?;
+        let receiver_binding = receive
+            .handoff_binding(self.authorization.as_ref().ok_or(DriverError::Protocol)?)
+            .map_err(receiver_work_error)?;
+        let identity = ApplyIdentity {
+            binding: self.binding.clone().ok_or(DriverError::Protocol)?,
+            operation: receive.operation_id(),
+            external: self.external_reference,
+        };
+        self.lifecycle.ready(identity.clone()).map_err(work_error)?;
+        self.receiver_binding = Some(receiver_binding);
+        self.local_identity = Some(identity.clone());
+        self.enqueue(Message::ApplyReady {
+            binding: identity.binding,
+            receiver_operation: identity.operation,
+            external_reference: identity.external,
+        })
+    }
+    fn issue_apply_grant(&mut self, identity: ApplyIdentity) -> Result<()> {
+        if self.file.is_some()
+            || self.binding.as_ref() != Some(&identity.binding)
+            || self.session.state() != SessionState::Confirmed
+            || identity.operation.is_nil()
+            || identity.external.is_some_and(|external| external.is_nil())
+            || identity.external.is_some() != self.accounts_included()
+        {
+            return Err(DriverError::Protocol);
+        }
+        let lease = self.database.device_sync_exclusive().map_err(work_error)?;
+        let source = self.source.as_ref().ok_or(DriverError::Protocol)?;
+        let current = Snapshot::read_with_header_controlled(
+            &self.database,
+            source.manifest.header.clone(),
+            Some(&self.name),
+            &self.work,
+        )
+        .map_err(work_error)?;
+        self.work
+            .checkpoint(super::work::WorkStage::FinalCheck, 0)
+            .map_err(work_error)?;
+        if current.digest_controlled(&self.work).map_err(work_error)?
+            != source.digest_controlled(&self.work).map_err(work_error)?
+        {
+            return Err(DriverError::Library);
+        }
+        let lifecycle = self.lifecycle.clone();
+        let enqueued_at = lifecycle
+            .issue(&identity, || {
+                self.enqueue(Message::ApplyGrant {
+                    binding: identity.binding.clone(),
+                    receiver_operation: identity.operation,
+                    external_reference: identity.external,
+                })
+                .map_err(|_| CoreError::Cancelled)?;
+                Ok(self.clock.monotonic_ms())
+            })
+            .map_err(work_error)?;
+        self.source_ack_until = Some(enqueued_at.saturating_add(USER_MS));
+        drop(lease);
+        self.retained = None;
+        Ok(())
+    }
+    fn apply_guard(&self) -> Arc<dyn CommitGuard> {
+        match &self.local_authority {
+            Some(authority) => authority.clone(),
+            None => self.permit.clone(),
+        }
+    }
+    fn check_apply_guard(&self) -> CoreResult<()> {
+        self.apply_guard().check()
     }
     fn apply_budget(&self) -> Result<u64> {
         let plan = self.plan.as_ref().ok_or(DriverError::Protocol)?;
@@ -1217,46 +1395,76 @@ impl Driver {
         }
     }
     fn start_apply(&mut self) -> Result<()> {
-        self.permit
-            .budget
-            .store(self.apply_budget()?, Ordering::SeqCst);
+        if !self.local_apply_installed() {
+            self.permit
+                .budget
+                .store(self.apply_budget()?, Ordering::SeqCst);
+        }
+        #[cfg(test)]
+        if self.fail_local_spawn && self.local_apply_installed() {
+            self.lifecycle.cancel();
+            self.lifecycle.settle();
+            self.receive.take();
+            self.authorization.take();
+            self.state = State::Failed;
+            return Err(DriverError::Library);
+        }
         let mut receive = self.receive.take().ok_or(DriverError::Protocol)?;
         let mut auth = self.authorization.take().ok_or(DriverError::Protocol)?;
         let permit = self.permit.clone();
         let token = self.cancel.clone();
         let observer = self.apply_observer.clone();
         let external = self.external_reference;
-        self.worker = Some(std::thread::spawn(move || {
-            let boundary_permit = permit.clone();
-            let file_permit = permit.clone();
-            let mut previous = None;
-            receive.apply_guarded(
-                Some(&mut auth),
-                external,
-                &token,
-                &mut |boundary| {
-                    let value = match boundary {
-                        ApplyBoundary::Prepared => 1,
-                        ApplyBoundary::LibraryApplied => 2,
-                        ApplyBoundary::Finalized => 3,
-                    };
-                    boundary_permit.boundary.store(value, Ordering::SeqCst);
-                    if let Some(observer) = &observer {
-                        observer(boundary);
-                    }
-                },
-                &mut |progress| {
-                    let delta = previous
-                        .as_ref()
-                        .filter(|p: &&super::staging::Progress| p.phase == progress.phase)
-                        .map(|p| progress.completed_bytes.saturating_sub(p.completed_bytes))
-                        .unwrap_or(progress.completed_bytes);
-                    file_permit.work.fetch_add(delta, Ordering::SeqCst);
-                    previous = Some(progress);
-                },
-                Some(permit),
-            )
-        }));
+        let guard = self.apply_guard();
+        self.worker = Some(
+            std::thread::Builder::new()
+                .name("device-sync-apply".into())
+                .spawn(move || {
+                    let boundary_permit = permit.clone();
+                    let file_permit = permit.clone();
+                    let mut previous = None;
+                    receive
+                        .apply_guarded(
+                            Some(&mut auth),
+                            external,
+                            &token,
+                            &mut |boundary| {
+                                let value = match boundary {
+                                    ApplyBoundary::Prepared => 1,
+                                    ApplyBoundary::LibraryApplied => 2,
+                                    ApplyBoundary::Finalized => 3,
+                                };
+                                boundary_permit.boundary.store(value, Ordering::SeqCst);
+                                if let Some(observer) = &observer {
+                                    observer(boundary);
+                                }
+                            },
+                            &mut |progress| {
+                                let delta = previous
+                                    .as_ref()
+                                    .filter(|p: &&super::staging::Progress| {
+                                        p.phase == progress.phase
+                                    })
+                                    .map(|p| {
+                                        progress.completed_bytes.saturating_sub(p.completed_bytes)
+                                    })
+                                    .unwrap_or(progress.completed_bytes);
+                                file_permit.work.fetch_add(delta, Ordering::SeqCst);
+                                previous = Some(progress);
+                            },
+                            Some(guard),
+                        )
+                        .inspect_err(|error| {
+                            diagnostics::receiver(DiagnosticBoundary::ApplyWorkerResult, error)
+                        })
+                })
+                .map_err(|_| {
+                    self.lifecycle.cancel();
+                    self.lifecycle.settle();
+                    self.state = State::Failed;
+                    DriverError::Library
+                })?,
+        );
         self.step = Step::Apply;
         self.state = State::Applying;
         Ok(())
@@ -1840,8 +2048,106 @@ impl Driver {
                 self.state = State::Verifying;
                 self.deadline = self.clock.monotonic_ms().saturating_add(USER_MS);
             }
+            Message::ApplyReady {
+                binding,
+                receiver_operation,
+                external_reference,
+            } if self.session.phone_controlled()
+                && self.source_side()
+                && self.step == Step::SourceReady
+                && self.pending_ready.is_none()
+                && !self.source_grant_issued() =>
+            {
+                let identity = ApplyIdentity {
+                    binding,
+                    operation: receiver_operation,
+                    external: external_reference,
+                };
+                if self.binding.as_ref() != Some(&identity.binding)
+                    || identity.operation.is_nil()
+                    || identity.external.is_some_and(|value| value.is_nil())
+                    || identity.external.is_some() != self.accounts_included()
+                    || (self.session.controller() && !self.preview_approved)
+                {
+                    return Err(DriverError::Protocol);
+                }
+                self.lifecycle
+                    .source_checking(identity.clone())
+                    .map_err(work_error)?;
+                if self.accounts_included() && !self.account_final {
+                    self.pending_ready = Some(identity);
+                    self.state = State::AwaitingAccountFinal;
+                    self.deadline = self.clock.monotonic_ms().saturating_add(USER_MS);
+                } else {
+                    self.issue_apply_grant(identity)?;
+                }
+            }
+            Message::ApplyGrant {
+                binding,
+                receiver_operation,
+                external_reference,
+            } if self.session.phone_controlled()
+                && !self.source_side()
+                && self.step == Step::Lease
+                && !self.local_apply_installed() =>
+            {
+                let identity = ApplyIdentity {
+                    binding,
+                    operation: receiver_operation,
+                    external: external_reference,
+                };
+                if self.local_identity.as_ref() != Some(&identity)
+                    || self.session.state() != SessionState::Confirmed
+                    || !self.preview_approved
+                    || self
+                        .receive
+                        .as_ref()
+                        .ok_or(DriverError::Protocol)?
+                        .handoff_binding(self.authorization.as_ref().ok_or(DriverError::Protocol)?)
+                        .map_err(receiver_work_error)?
+                        .as_str()
+                        != self
+                            .receiver_binding
+                            .as_deref()
+                            .ok_or(DriverError::Protocol)?
+                {
+                    return Err(DriverError::Protocol);
+                }
+                let mut publications = std::collections::BTreeMap::new();
+                for (sha, length) in self
+                    .plan
+                    .as_ref()
+                    .ok_or(DriverError::Protocol)?
+                    .media
+                    .iter()
+                    .filter(|decision| !decision.reuse_original)
+                    .filter_map(|decision| {
+                        decision
+                            .final_record
+                            .as_ref()
+                            .map(|record| (&decision.sha256, record.length))
+                    })
+                {
+                    if publications.insert(sha.clone(), length).is_some() {
+                        return Err(DriverError::Protocol);
+                    }
+                }
+                let authority = self
+                    .lifecycle
+                    .install(
+                        &identity,
+                        self.receiver_binding.clone().ok_or(DriverError::Protocol)?,
+                        publications,
+                        self.clock.clone(),
+                    )
+                    .map_err(work_error)?;
+                self.local_authority = Some(authority);
+                self.start_apply()?;
+            }
             Message::LeaseRequest { binding, id, work }
-                if self.step == Step::SourceReady && self.binding.as_ref() == Some(&binding) =>
+                if !self.session.phone_controlled()
+                    && self.step == Step::SourceReady
+                    && self.binding.as_ref() == Some(&binding) =>
             {
                 if self.accounts_included() && self.source_lease.is_none() && !self.account_final {
                     if self.account_request.is_some() {
@@ -1911,8 +2217,9 @@ impl Driver {
                 self.enqueue(Message::LeaseGranted { binding, id, work })?;
             }
             Message::LeaseGranted { binding, id, work }
-                if (matches!(self.step, Step::Lease | Step::Apply)
-                    || (self.step == Step::Done && self.receipt.is_some()))
+                if !self.session.phone_controlled()
+                    && (matches!(self.step, Step::Lease | Step::Apply)
+                        || (self.step == Step::Done && self.receipt.is_some()))
                     && self.binding.as_ref() == Some(&binding) =>
             {
                 let request = self.pending_lease.take().ok_or(DriverError::Protocol)?;
@@ -1934,7 +2241,7 @@ impl Driver {
             }
             Message::CommitAck { binding }
                 if self.step == Step::SourceReady
-                    && self.source_lease.is_some()
+                    && (self.source_lease.is_some() || self.source_grant_issued())
                     && self.binding.as_ref() == Some(&binding) =>
             {
                 self.source_lease = None;
@@ -1943,6 +2250,7 @@ impl Driver {
                 self.state = State::Completed;
                 self.stop(false);
             }
+            Message::Abort {} if self.local_apply_installed() => self.detach_transport(),
             Message::Abort {} => return Err(DriverError::Cancelled),
             _ => return Err(DriverError::Protocol),
         }
@@ -1959,6 +2267,12 @@ impl Driver {
         result
     }
     fn poll_inner(&mut self) -> Result<()> {
+        if self.detached && self.local_apply_installed() {
+            return self.poll_local();
+        }
+        // A local result must be consumed even after cancellation made the
+        // displayed state terminal. The durable journal decides the outcome.
+        self.poll_finished_local_worker()?;
         self.cleanup_pending();
         if self
             .preparation
@@ -1978,11 +2292,19 @@ impl Driver {
             return Ok(());
         }
         let now = self.clock.monotonic_ms();
+        if self.source_grant_issued()
+            && !self.state.terminal()
+            && self.source_ack_until.is_some_and(|until| now >= until)
+        {
+            self.state = State::CompletedUnconfirmed;
+            self.stop(false);
+            return Ok(());
+        }
         if self.success_until.is_some_and(|until| now >= until) {
             self.stop(false);
             return Ok(());
         }
-        if self.cancel.check().is_err() {
+        if self.cancel.check().is_err() && self.state != State::Completed {
             self.stop(true);
             return Err(DriverError::Cancelled);
         }
@@ -1997,6 +2319,11 @@ impl Driver {
         if self.source_lease.is_some()
             && (now >= self.source_until || self.source_sql_until.is_some_and(|until| now >= until))
         {
+            diagnostics::checkpoint(if now >= self.source_until {
+                DiagnosticBoundary::ApplySourceLeaseExpired
+            } else {
+                DiagnosticBoundary::ApplySourceSqlDeadline
+            });
             self.state = State::CompletedUnconfirmed;
             self.stop(false);
             return Ok(());
@@ -2004,11 +2331,13 @@ impl Driver {
         if !self.state.terminal()
             && self.step != Step::Apply
             && self.source_lease.is_none()
+            && !self.source_grant_issued()
             && now >= self.deadline
         {
             return Err(DriverError::Timeout);
         }
-        if self.step == Step::Apply && self.permit.check().is_err() {
+        if self.step == Step::Apply && !self.local_apply_installed() && self.permit.check().is_err()
+        {
             return Err(DriverError::Timeout);
         }
         if let Some(bytes) = self.session.receive_payload(self.clock.unix_ms() / 1000)? {
@@ -2059,7 +2388,9 @@ impl Driver {
                 self.deadline = now.saturating_add(DATA_MS);
             }
         }
-        if self.worker.as_ref().is_some_and(|w| w.is_finished()) {
+        if self.local_apply_installed() {
+            self.poll_finished_local_worker()?;
+        } else if self.worker.as_ref().is_some_and(|w| w.is_finished()) {
             let outcome = self
                 .worker
                 .take()
@@ -2078,7 +2409,7 @@ impl Driver {
                 }
                 Err(error) => return Err(receiver_work_error(error)),
             }
-        } else if self.step == Step::Apply {
+        } else if self.step == Step::Apply && !self.local_apply_installed() {
             let work = self.current_work();
             self.progress.apply_work = work.sql_steps;
             if work != self.last_work && self.pending_lease.is_none() {
@@ -2267,13 +2598,21 @@ impl Driver {
         Ok(())
     }
     fn stop(&mut self, cancelled: bool) {
+        if self.local_apply_installed() && !cancelled {
+            self.detach_transport();
+            return;
+        }
+        if cancelled {
+            self.lifecycle_control().cancel();
+        }
+        self.detached = true;
         self.cancel.cancel();
         if let Some(preparation) = &mut self.preparation {
             preparation.active = false;
         }
         self.permit.active.store(false, Ordering::SeqCst);
         if !self.state.terminal() {
-            self.state = if self.source_lease.is_some() {
+            self.state = if self.source_lease.is_some() || self.source_grant_issued() {
                 State::CompletedUnconfirmed
             } else if cancelled {
                 State::Cancelled
@@ -2321,6 +2660,115 @@ impl Driver {
     pub fn disconnect(&mut self) {
         self.stop(false);
     }
+    fn detach_transport(&mut self) {
+        self.detached = true;
+        self.outbox.clear();
+        self.outstanding_ciphertext = 0;
+        self.session.cancel();
+        if let Some(close) = self.transport_close.take() {
+            close();
+        }
+    }
+    pub(crate) fn poll_local(&mut self) -> Result<()> {
+        if !self.local_apply_installed() {
+            return Err(DriverError::Protocol);
+        }
+        self.poll_finished_local_worker()?;
+        let cancelled = self.cancel.check().is_err();
+        if cancelled && !self.state.terminal() {
+            self.stop(true);
+        }
+        if cancelled && self.state != State::Completed {
+            return Err(DriverError::Cancelled);
+        }
+        Ok(())
+    }
+    fn poll_finished_local_worker(&mut self) -> Result<()> {
+        if !self.local_apply_installed() {
+            return Ok(());
+        }
+        if let Some(authority) = &self.local_authority {
+            self.progress.apply_work = authority.sql_work();
+        }
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| worker.is_finished())
+        {
+            let outcome = self
+                .worker
+                .take()
+                .ok_or(DriverError::Library)?
+                .join()
+                .map_err(|_| DriverError::Library)
+                .and_then(|outcome| outcome.map_err(receiver_work_error));
+            return self.reconcile_local_worker(outcome, true);
+        }
+        Ok(())
+    }
+    fn reconcile_local_worker(
+        &mut self,
+        outcome: Result<ApplyReceipt>,
+        external_allowed: bool,
+    ) -> Result<()> {
+        use super::recovery::JournalStage;
+
+        let journal = self
+            .local_identity
+            .as_ref()
+            .ok_or(DriverError::Library)
+            .and_then(|identity| {
+                let entry = self
+                    .database
+                    .device_sync_journal(identity.operation)
+                    .map_err(|_| DriverError::Library)?;
+                if entry.as_ref().is_some_and(|entry| {
+                    entry.operation_uuid != identity.operation
+                        || entry.external_reference != identity.external
+                        || Some(entry.preview_digest.as_str()) != self.receiver_binding.as_deref()
+                }) {
+                    return Err(DriverError::Library);
+                }
+                Ok(entry)
+            });
+        let cancelled = self.cancel.check().is_err();
+        let state = match journal {
+            Ok(Some(entry)) if entry.stage == JournalStage::Finalized => {
+                // A panic/error after finalization must not erase real success.
+                self.receipt = Some(ApplyReceipt {
+                    operation_uuid: entry.operation_uuid,
+                    backup_uuid: entry.backup_uuid,
+                    state: ApplyState::Finalized,
+                });
+                return self.complete_target();
+            }
+            Ok(Some(entry)) if entry.stage == JournalStage::LibraryApplied => {
+                let pending = ApplyReceipt {
+                    operation_uuid: entry.operation_uuid,
+                    backup_uuid: entry.backup_uuid,
+                    state: ApplyState::LibraryAppliedPending,
+                };
+                if external_allowed && !cancelled && outcome.as_ref().ok() == Some(&pending) {
+                    self.receipt = Some(pending);
+                    self.state = State::AwaitingExternal;
+                    return Ok(());
+                }
+                State::RecoveryPending
+            }
+            Err(_) => State::RecoveryPending, // Unreadable ownership is not a safe failure.
+            Ok(Some(entry)) if entry.stage == JournalStage::Prepared => State::RecoveryPending,
+            Ok(_) if self.database.device_sync_recovery_pending() => State::RecoveryPending,
+            Ok(_) if cancelled || matches!(outcome, Err(DriverError::Cancelled)) => {
+                State::Cancelled
+            }
+            Ok(_) => State::Failed,
+        };
+        self.lifecycle.cancel();
+        self.lifecycle.settle();
+        self.state = state;
+        self.receipt = None;
+        Err(outcome.err().unwrap_or(DriverError::Library))
+    }
     /// Join only during explicit teardown, never from the transport pump.
     pub fn finish_shutdown(&mut self) {
         if self.preparation.is_some() {
@@ -2333,7 +2781,13 @@ impl Driver {
             let _ = worker.join();
         }
         if let Some(worker) = self.worker.take() {
-            if let Ok(Ok(receipt)) = worker.join() {
+            let outcome = worker
+                .join()
+                .map_err(|_| DriverError::Library)
+                .and_then(|outcome| outcome.map_err(receiver_work_error));
+            if self.local_apply_installed() {
+                let _ = self.reconcile_local_worker(outcome, false);
+            } else if let Ok(receipt) = outcome {
                 let pending = receipt.state == ApplyState::LibraryAppliedPending;
                 self.receipt = Some(receipt);
                 self.state = if pending {

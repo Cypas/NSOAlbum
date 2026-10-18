@@ -87,10 +87,14 @@ impl TcpDriver {
     }
     fn poll_inner(&mut self) -> Result<()> {
         if self.closed {
-            if self.driver.state() == State::Completed {
-                return Ok(());
+            if self.driver.local_apply_installed() {
+                return self.driver.poll_local();
             }
-            return Err(DriverError::Channel(SessionError::Terminal));
+            return if self.driver.state() == State::Completed {
+                Ok(())
+            } else {
+                Err(DriverError::Channel(SessionError::Terminal))
+            };
         }
         let mut input = [0; 16_384];
         let stream = self

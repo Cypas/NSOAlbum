@@ -264,6 +264,11 @@ class EndpointView {
   final State stage;
   final bool terminal;
   final bool cleanupPending;
+
+  /// Read-only facts from the same Driver lifecycle, never authorization inputs.
+  final bool localApplyInstalled;
+  final bool sourceGrantIssued;
+  final bool transportDetached;
   final ProgressView progress;
 
   const EndpointView({
@@ -283,6 +288,9 @@ class EndpointView {
     required this.stage,
     required this.terminal,
     required this.cleanupPending,
+    required this.localApplyInstalled,
+    required this.sourceGrantIssued,
+    required this.transportDetached,
     required this.progress,
   });
 
@@ -304,6 +312,9 @@ class EndpointView {
       stage.hashCode ^
       terminal.hashCode ^
       cleanupPending.hashCode ^
+      localApplyInstalled.hashCode ^
+      sourceGrantIssued.hashCode ^
+      transportDetached.hashCode ^
       progress.hashCode;
 
   @override
@@ -327,6 +338,9 @@ class EndpointView {
           stage == other.stage &&
           terminal == other.terminal &&
           cleanupPending == other.cleanupPending &&
+          localApplyInstalled == other.localApplyInstalled &&
+          sourceGrantIssued == other.sourceGrantIssued &&
+          transportDetached == other.transportDetached &&
           progress == other.progress;
 }
 

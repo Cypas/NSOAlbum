@@ -6,7 +6,6 @@ import '../../l10n/app_localizations.dart';
 import '../../rust/device_sync/driver.dart' as driver;
 import '../../rust/device_sync/planner.dart' as plan;
 import '../../rust/device_sync/read_model.dart' as read;
-import '../../rust/device_sync/runtime.dart' as runtime;
 import '../../rust/device_sync/space_budget.dart' as budget;
 import '../display_time.dart';
 import 'capacity_format.dart';
@@ -138,12 +137,23 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
       final controlling = view?.controller == true;
       final delegated = view?.phoneControlled == true;
       final mayReview = delegated ? controlling : view?.source == false;
-      final tcpFailure =
-          view?.stage == driver.State.completed &&
-              value?.tcp?.phase == runtime.TcpPhase.closed &&
-              value?.tcp?.error == read.ReadError.disconnected
+      final localContinuation =
+          view?.localApplyInstalled == true &&
+          view?.source == false &&
+          view?.transportDetached == true &&
+          view?.terminal == false;
+      final sourceWaiting =
+          view?.source == true &&
+          view?.sourceGrantIssued == true &&
+          (view?.stage == driver.State.verifying ||
+              view?.stage == driver.State.completedUnconfirmed);
+      final transportCannotUndoOutcome =
+          localContinuation ||
+          sourceWaiting ||
+          view?.stage == driver.State.completed;
+      final tcpFailure = transportCannotUndoOutcome
           ? null
-          : value?.tcp?.error;
+          : session.transportIssue ?? value?.tcp?.error;
       final readFailure = session.issue ?? value?.error ?? tcpFailure;
       final supersededBusy =
           _error is DeviceSyncBusy &&
@@ -169,7 +179,40 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
                 config.includeAccounts,
               ),
             ),
-          if (view.cleanupPending)
+          if (localContinuation)
+            Semantics(
+              key: const Key('device-local-continuation'),
+              liveRegion: true,
+              child: Text(
+                context.l10n.select(
+                  zh: '连接已断开，正在本机完成同步。请保持应用运行。',
+                  en: 'Connection closed. Finishing sync on this device. Keep the app open.',
+                ),
+              ),
+            ),
+          if (sourceWaiting && !view.terminal)
+            Semantics(
+              liveRegion: true,
+              child: Text(
+                context.l10n.select(
+                  zh: '正在等待接收设备确认结果。断开连接后，请在接收设备查看。',
+                  en: 'Waiting for the receiving device to confirm the result. If disconnected, check the receiving device.',
+                ),
+              ),
+            ),
+          if (view.stage == driver.State.completed &&
+              (view.cleanupPending || session.localCleanupPending))
+            Semantics(
+              key: const Key('device-local-cleanup'),
+              liveRegion: true,
+              child: Text(
+                context.l10n.select(
+                  zh: '同步已完成，仍需完成清理。请保持应用运行。',
+                  en: 'Sync is complete. Cleanup is still pending. Keep the app open.',
+                ),
+              ),
+            )
+          else if (view.cleanupPending)
             Text(
               context.l10n.select(
                 zh: '正在等待安全清理或补偿结束。请勿中断应用。',
@@ -178,8 +221,7 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
             ),
         ],
         if (view?.terminal == false &&
-            (view?.pairing == read.PairingStage.awaitingConfirmation ||
-                view?.pairing == read.PairingStage.confirmed) &&
+            view?.pairing == read.PairingStage.awaitingConfirmation &&
             session.confirmationCode != null) ...[
           const SizedBox(height: 12),
           Text(
@@ -326,7 +368,11 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
             ),
           ),
         if (value != null && view?.terminal != true)
-          ..._progress(value.progress, view?.stage),
+          ..._progress(
+            value.progress,
+            view?.stage,
+            preserveTransferredBytes: localContinuation,
+          ),
         if (actionError != null || readFailure != null) ...[
           const SizedBox(height: 12),
           Text(
@@ -510,7 +556,11 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
     );
   }
 
-  List<Widget> _progress(read.ProgressView progress, driver.State? stage) {
+  List<Widget> _progress(
+    read.ProgressView progress,
+    driver.State? stage, {
+    bool preserveTransferredBytes = false,
+  }) {
     double? ratio(BigInt value, BigInt? total) =>
         total != null && total > BigInt.zero
         ? (value.toDouble() / total.toDouble()).clamp(0.0, .999)
@@ -550,6 +600,15 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
           key: const Key('device-transfer-rate'),
         ),
       ],
+      if (preserveTransferredBytes &&
+          stage != driver.State.transferring &&
+          progress.transferredBytes != null)
+        Text(
+          context.l10n.select(
+            zh: '已传输 ${formatDeviceCapacity(progress.transferredBytes)} / ${formatDeviceCapacity(progress.transferTotalBytes, unknown: '未知')}',
+            en: 'Transferred ${formatDeviceCapacity(progress.transferredBytes)} / ${formatDeviceCapacity(progress.transferTotalBytes, unknown: 'Unknown')}',
+          ),
+        ),
     ];
   }
 }

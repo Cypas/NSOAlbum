@@ -58,6 +58,10 @@ abstract class DeviceSyncSessionController extends ChangeNotifier {
   DeviceSyncProposal? get proposedConfiguration;
   DeviceSyncPreviewView? get preview;
   read.ReadError? get issue;
+
+  /// Transport state is presentation-only, never local execution authority.
+  read.ReadError? get transportIssue => null;
+  bool get localCleanupPending => false;
   Future<read.EndpointRead> refresh();
   Future<void> confirmPairing();
   Future<void> configure({

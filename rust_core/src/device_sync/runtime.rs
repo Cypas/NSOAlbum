@@ -73,6 +73,27 @@ impl Owner {
 }
 pub(crate) type Job = Box<dyn FnOnce(&mut Driver) + Send>;
 
+#[derive(Clone, Copy)]
+pub(crate) enum CommandDomain {
+    Network,
+    Local,
+}
+pub(crate) fn admit_command(
+    driver: &Driver,
+    cancel: &CancellationToken,
+    domain: CommandDomain,
+) -> Result<(), DeviceCommandError> {
+    if cancel.check().is_err() {
+        return Err(DeviceCommandError::rejected(ReadError::Cancelled));
+    }
+    if driver.transport_detached()
+        && (!matches!(domain, CommandDomain::Local) || !driver.local_apply_installed())
+    {
+        return Err(DeviceCommandError::rejected(ReadError::Disconnected));
+    }
+    Ok(())
+}
+
 pub(crate) enum Start {
     Listen(TcpListener),
     Connect(SocketAddr),
@@ -80,12 +101,18 @@ pub(crate) enum Start {
 }
 pub(crate) struct Control {
     sender: SyncSender<Job>,
+    admission: Mutex<()>,
     slots: Arc<Semaphore>,
     phase: AtomicU8,
     error: Mutex<Option<ReadError>>,
     stopped: AtomicBool,
     done: Notify,
     blocking_done: (Mutex<bool>, Condvar),
+    settle_requested: AtomicBool,
+    native_settled: AtomicBool,
+    native_done: Notify,
+    blocking_native_done: (Mutex<bool>, Condvar),
+    retiring: AtomicBool,
     pub(crate) usb: Option<Arc<super::usb::Control>>,
 }
 impl Control {
@@ -94,6 +121,7 @@ impl Control {
         (
             Arc::new(Self {
                 sender,
+                admission: Mutex::new(()),
                 slots: Arc::new(Semaphore::new(COMMAND_CAPACITY)),
                 phase: AtomicU8::new(if matches!(start, Start::Listen(_)) {
                     0
@@ -104,6 +132,11 @@ impl Control {
                 stopped: AtomicBool::new(false),
                 done: Notify::new(),
                 blocking_done: (Mutex::new(false), Condvar::new()),
+                settle_requested: AtomicBool::new(false),
+                native_settled: AtomicBool::new(false),
+                native_done: Notify::new(),
+                blocking_native_done: (Mutex::new(false), Condvar::new()),
+                retiring: AtomicBool::new(false),
                 usb: match start {
                     Start::Usb(start) => Some(super::usb::Control::new(start)),
                     _ => None,
@@ -153,44 +186,95 @@ impl Control {
         self.blocking_done.1.notify_all();
         self.done.notify_waiters();
     }
-    fn fail(&self, error: ReadError) {
+    pub(crate) fn request_settle(&self) {
+        self.settle_requested.store(true, Ordering::SeqCst);
+    }
+    pub(crate) fn retire(&self) {
+        let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+        self.retiring.store(true, Ordering::SeqCst);
+        self.slots.close();
+    }
+    pub(crate) async fn settled(&self) {
+        loop {
+            let notified = self.native_done.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.native_settled.load(Ordering::SeqCst) {
+                return;
+            }
+            notified.await;
+        }
+    }
+    pub(crate) fn wait_settled(&self) {
+        let (lock, changed) = &self.blocking_native_done;
+        let mut done = lock.lock().unwrap_or_else(|error| error.into_inner());
+        while !*done {
+            done = changed
+                .wait(done)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+    }
+    fn finish_native(&self) {
+        self.native_settled.store(true, Ordering::SeqCst);
+        *self
+            .blocking_native_done
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = true;
+        self.blocking_native_done.1.notify_all();
+        self.native_done.notify_waiters();
+    }
+    pub(crate) fn transport_closed(&self) {
+        self.phase.store(3, Ordering::SeqCst);
+    }
+    pub(crate) fn fail(&self, error: ReadError) {
         *self.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
     }
     pub(crate) async fn call<T: Send + 'static>(
         &self,
         cancel: &CancellationToken,
+        domain: CommandDomain,
         action: impl FnOnce(&mut Driver) -> Result<T, DriverError> + Send + 'static,
     ) -> Result<T, DeviceCommandError> {
-        let permit = self.slots.clone().try_acquire_owned().map_err(|_| {
-            DeviceCommandError::rejected(if self.stopped.load(Ordering::SeqCst) {
-                ReadError::Disconnected
-            } else {
-                ReadError::Busy
-            })
-        })?;
-        let (reply, result) = oneshot::channel();
-        let queued = Instant::now();
-        let cancellation = cancel.clone();
-        let job: Job = Box::new(move |driver| {
-            if reply.is_closed() {
-                return;
+        let result = {
+            // Retire closes admission under this short queue-only lock. Every
+            // earlier admitted job is enqueued before the final owner drain.
+            let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+            if self.retiring.load(Ordering::SeqCst) {
+                return Err(DeviceCommandError::rejected(ReadError::Disconnected));
             }
-            let result = if queued.elapsed() >= COMMAND_TTL {
-                Err(DeviceCommandError::rejected(ReadError::Busy))
-            } else if cancellation.check().is_err() {
-                Err(DeviceCommandError::rejected(ReadError::Cancelled))
-            } else {
-                action(driver).map_err(|e| DeviceCommandError {
-                    code: ReadError::driver(&e),
-                    executed: true,
+            let permit = self.slots.clone().try_acquire_owned().map_err(|_| {
+                DeviceCommandError::rejected(if self.stopped.load(Ordering::SeqCst) {
+                    ReadError::Disconnected
+                } else {
+                    ReadError::Busy
                 })
-            };
-            // Capacity includes queued, executing and unconsumed results.
-            let _ = reply.send((result, permit));
-        });
-        self.sender
-            .try_send(job)
-            .map_err(|_| DeviceCommandError::rejected(ReadError::Disconnected))?;
+            })?;
+            let (reply, result) = oneshot::channel();
+            let queued = Instant::now();
+            let cancellation = cancel.clone();
+            let job: Job = Box::new(move |driver| {
+                if reply.is_closed() {
+                    return;
+                }
+                let result = if queued.elapsed() >= COMMAND_TTL {
+                    Err(DeviceCommandError::rejected(ReadError::Busy))
+                } else {
+                    admit_command(driver, &cancellation, domain).and_then(|()| {
+                        action(driver).map_err(|e| DeviceCommandError {
+                            code: ReadError::driver(&e),
+                            executed: true,
+                        })
+                    })
+                };
+                // Capacity includes queued, executing and unconsumed results.
+                let _ = reply.send((result, permit));
+            });
+            self.sender
+                .try_send(job)
+                .map_err(|_| DeviceCommandError::rejected(ReadError::Disconnected))?;
+            result
+        };
         let (result, _permit): (_, OwnedSemaphorePermit) =
             result.await.map_err(|_| DeviceCommandError {
                 code: ReadError::Internal,
@@ -215,7 +299,7 @@ pub(crate) fn launch(
             let control = endpoint.runtime.as_ref().expect("managed owner");
             let connected = match start {
                 Start::Listen(listener) => accept(&listener, &endpoint, &receiver),
-                Start::Connect(address) => connect(address, &endpoint.cancellation),
+                Start::Connect(address) => connect(address, &endpoint.transport_cancel),
                 Start::Usb(_) => unreachable!(),
             };
             let outcome = connected.and_then(|stream| {
@@ -241,9 +325,8 @@ pub(crate) fn launch(
                 control.phase.store(2, Ordering::SeqCst);
                 loop {
                     let mut owner = endpoint.owner.lock().unwrap_or_else(|e| e.into_inner());
-                    if endpoint.cancellation.check().is_err() && !owner.driver().state().terminal()
-                    {
-                        owner.driver_mut().cancel();
+                    if endpoint.transport_cancel.check().is_err() {
+                        owner.driver_mut().disconnect();
                     }
                     if let Ok(job) = receiver.try_recv() {
                         job(owner.driver_mut());
@@ -263,28 +346,54 @@ pub(crate) fn launch(
                     std::thread::sleep(TICK);
                 }
             }
-            {
-                let mut owner = endpoint.owner.lock().unwrap_or_else(|e| e.into_inner());
-                if !matches!(*owner, Owner::Moving) {
-                    if !owner.driver().state().terminal() {
-                        if endpoint.cancellation.check().is_err() {
-                            owner.driver_mut().cancel();
-                        } else {
-                            owner.driver_mut().disconnect();
-                        }
-                    }
-                    owner.driver_mut().finish_shutdown();
-                    endpoint.publish(owner.driver());
-                    while let Ok(job) = receiver.try_recv() {
-                        job(owner.driver_mut());
-                    }
-                }
-            }
-            // Retire every not-yet-executed job while keeping the same Driver state.
-            drop(receiver);
-            control.finish();
+            retain(endpoint, receiver);
         })
         .map(|_| ())
+}
+
+/// Transport resources have ended, but this same owner/queue remains addressable.
+/// Explicit native settle joins native work only; retirement is a later request.
+pub(crate) fn retain(endpoint: Arc<Endpoint>, receiver: Receiver<Job>) {
+    let control = endpoint.runtime.as_ref().expect("managed owner");
+    control.transport_closed();
+    {
+        let mut owner = endpoint.owner.lock().unwrap_or_else(|e| e.into_inner());
+        owner.driver_mut().disconnect();
+        endpoint.publish(owner.driver());
+    }
+    loop {
+        {
+            let mut owner = endpoint.owner.lock().unwrap_or_else(|e| e.into_inner());
+            if control.settle_requested.load(Ordering::SeqCst)
+                && !control.native_settled.load(Ordering::SeqCst)
+            {
+                owner.driver_mut().cancel();
+                owner.driver_mut().finish_shutdown();
+                endpoint.publish(owner.driver());
+                control.finish_native();
+            } else if !control.native_settled.load(Ordering::SeqCst) {
+                // Driver::poll routes detached installed work to poll_local.
+                // Its error is a local outcome, not a new transport error.
+                let _ = owner.driver_mut().poll();
+            }
+            if let Ok(job) = receiver.try_recv() {
+                job(owner.driver_mut());
+            }
+            endpoint.publish(owner.driver());
+        }
+        if control.retiring.load(Ordering::SeqCst) && control.native_settled.load(Ordering::SeqCst)
+        {
+            let mut owner = endpoint.owner.lock().unwrap_or_else(|e| e.into_inner());
+            while let Ok(job) = receiver.try_recv() {
+                job(owner.driver_mut());
+            }
+            endpoint.publish(owner.driver());
+            break;
+        }
+        std::thread::sleep(TICK);
+    }
+    drop(receiver);
+    control.finish();
 }
 
 fn accept(
@@ -297,7 +406,7 @@ fn accept(
         .map_err(|_| ReadError::Unavailable)?;
     let started = Instant::now();
     loop {
-        if endpoint.cancellation.check().is_err() {
+        if endpoint.transport_cancel.check().is_err() {
             return Err(ReadError::Cancelled);
         }
         if started.elapsed() >= Duration::from_secs(300) {

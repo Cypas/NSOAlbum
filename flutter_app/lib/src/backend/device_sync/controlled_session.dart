@@ -6,6 +6,7 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
   final String _endpoint;
   String? _invitation;
   Future<void>? _closing;
+  bool _closeRequested = false;
   Future<read.EndpointRead>? _observing;
   final _projections = <Future<void>>{};
   Future<void>? _acting;
@@ -18,6 +19,8 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
   int? _previewEpoch;
   bool _approved = false;
   read.ReadError? _issue;
+  read.ReadError? _transportIssue;
+  bool _localCleanupPending = false;
   bool _issueFromPreview = false;
   bool? _accountConsent;
   AccountPreview? _accountPreview;
@@ -37,7 +40,7 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
   final _usbChoices =
       Map<DeviceUsbStorageChoice, ({String device, String storage})>.identity();
   @override
-  bool get closed => _closing != null;
+  bool get closed => _closeRequested;
   @override
   bool get settled => _settled;
   @override
@@ -58,6 +61,10 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
   DeviceSyncPreviewView? get preview => _previewView;
   @override
   read.ReadError? get issue => _issue;
+  @override
+  read.ReadError? get transportIssue => _transportIssue;
+  @override
+  bool get localCleanupPending => _localCleanupPending;
 
   @override
   Future<read.EndpointRead> refresh() {
@@ -65,7 +72,11 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
     if (observing != null) return observing;
     _admit();
     if (_usbFailure case final failure?) {
-      Error.throwWithStackTrace(failure, _usbFailureStack!);
+      if (_usbOwner?.admitted != true) {
+        // A rejected OS runner never started a transport. Preserve its exact
+        // admission failure instead of replacing it with a native read error.
+        Error.throwWithStackTrace(failure, _usbFailureStack!);
+      }
     }
     final epoch = _epoch;
     late final Future<read.EndpointRead> flight;
@@ -77,6 +88,13 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
           );
           if (epoch != _epoch || closed) throw const DeviceSyncBusy();
           final view = value.value;
+          // Always observe the native domain first. An OS transport failure
+          // cannot decide whether the original local operation is installed.
+          if (_usbFailure case final failure?) {
+            if (view?.localApplyInstalled != true) {
+              Error.throwWithStackTrace(failure, _usbFailureStack!);
+            }
+          }
           final delegatedHostCode =
               view?.phoneControlled == true &&
               view?.host == true &&
@@ -456,13 +474,15 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
   @override
   Future<void> close() {
     if (_closing case final current?) return current;
+    _closeRequested = true;
     _invitation = null;
     _confirmationCode = null;
     _usbChoices.clear();
     _epoch++;
-    return _closing ??= () async {
+    final flight = () async {
       final errors = _DeviceCloseErrors();
       var transportDrained = _usbOwner == null;
+      var nativeSettled = false;
       await errors.wait(() async {
         if (_snapshot?.value?.stage == driver.State.completed &&
             _snapshot?.value?.transport == read.TransportKind.usb) {
@@ -484,6 +504,10 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
           () => native.deviceSyncCancelSignal(endpoint: _endpoint),
         );
         await errors.wait(() async {
+          await native.deviceSyncShutdown(endpoint: _endpoint);
+          nativeSettled = true;
+        });
+        await errors.wait(() async {
           await _usbOwner?.cancel();
         });
         await errors.wait(() async {
@@ -492,7 +516,10 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
         });
         await errors.wait(() => Future.wait(_projections.toList()));
         await errors.wait(() async => await _acting);
-        await errors.wait(() => _service._owner._coordinator!.abort(_endpoint));
+        await errors.wait(() async {
+          await _service._owner._coordinator!.abort(_endpoint);
+          nativeSettled = true;
+        });
         await errors.wait(() async {
           try {
             await _observing;
@@ -501,7 +528,10 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
           }
         });
         await errors.wait(() async => await _usbRunning);
-        _workDrained = transportDrained;
+        _workDrained =
+            transportDrained &&
+            nativeSettled &&
+            !_service._owner._coordinator!.hasEndpointWork(_endpoint);
         if (_usbFailure case final failure?) {
           await errors.wait(() {
             Error.throwWithStackTrace(failure, _usbFailureStack!);
@@ -518,6 +548,11 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
       if (errors.failure case final failure?) _service._recordFailure(failure);
       errors.rethrowFirst();
     }();
+    return _closing = flight.whenComplete(() {
+      // Logical close is monotonic. Only the same owner's unfinished cleanup
+      // may be retried; no observation, grant or account sequence is restarted.
+      if (!_workDrained) _closing = null;
+    });
   }
 
   @override

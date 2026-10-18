@@ -5,7 +5,7 @@ use crate::error::CoreError;
 
 #[derive(Clone, Copy)]
 #[cfg_attr(debug_assertions, derive(Debug))]
-pub(super) enum Boundary {
+pub(crate) enum Boundary {
     SnapshotLease,
     SnapshotHeader,
     SnapshotPage,
@@ -51,6 +51,34 @@ pub(super) enum Boundary {
     #[cfg(unix)]
     PathOpenIdentity,
     PathHeldAncestorIdentity,
+    ApplySnapshotBegin,
+    ApplySnapshotEnd,
+    ApplyBudgetBegin,
+    ApplyBudgetEnd,
+    ApplyReceiverPrepareBegin,
+    ApplyReceiverPrepareEnd,
+    BackupOriginalHashBegin,
+    BackupOriginalHashEnd,
+    ApplyWorkerResult,
+    ApplyPermitInactive,
+    ApplyPermitLeaseExpired,
+    ApplyPermitPublicationBudget,
+    ApplyPermitSqlBudget,
+    ApplyPermitSqlDeadline,
+    ApplySourceLeaseExpired,
+    ApplySourceSqlDeadline,
+}
+
+pub(crate) fn checkpoint(boundary: Boundary) {
+    #[cfg(debug_assertions)]
+    emit(&checkpoint_record(boundary));
+    #[cfg(not(debug_assertions))]
+    let _ = boundary;
+}
+
+#[cfg(debug_assertions)]
+fn checkpoint_record(boundary: Boundary) -> String {
+    format!("device_sync boundary={boundary:?} category=Checkpoint reason=none")
 }
 
 pub(super) fn core(boundary: Boundary, error: &CoreError) {
@@ -234,6 +262,26 @@ fn emit(record: &str) {
 #[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_apply_checkpoints_contain_only_fixed_phase_codes() {
+        for (boundary, expected) in [
+            (
+                Boundary::ApplySnapshotBegin,
+                "device_sync boundary=ApplySnapshotBegin category=Checkpoint reason=none",
+            ),
+            (
+                Boundary::BackupOriginalHashEnd,
+                "device_sync boundary=BackupOriginalHashEnd category=Checkpoint reason=none",
+            ),
+            (
+                Boundary::ApplyPermitLeaseExpired,
+                "device_sync boundary=ApplyPermitLeaseExpired category=Checkpoint reason=none",
+            ),
+        ] {
+            assert_eq!(checkpoint_record(boundary), expected);
+        }
+    }
 
     #[test]
     fn diagnostic_known_static_reasons_are_distinguished_without_error_payloads() {

@@ -14,6 +14,148 @@ import 'package:squid_album/src/ui/device_sync/session_panel.dart';
 
 void main() {
   testWidgets(
+    'confirmed pairing never asks for the original phone confirmation again',
+    (tester) async {
+      for (final language in ['zh', 'en']) {
+        final session = PanelSession()
+          ..state = endpoint(
+            driver.State.configuring,
+            host: true,
+            controller: false,
+          );
+        await tester.pumpWidget(panelApp(session, language: language));
+        expect(find.text('123 456'), findsNothing);
+        expect(
+          find.text(
+            language == 'zh'
+                ? '请在手机确认本次连接。'
+                : 'Confirm this connection on the phone.',
+          ),
+          findsNothing,
+        );
+        expect(
+          find.text(
+            language == 'zh'
+                ? '请在手机选择同步方向、模式和内容。'
+                : 'Choose the direction, mode and content on the phone.',
+          ),
+          findsOneWidget,
+        );
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+    },
+  );
+
+  testWidgets(
+    'detached installed receiver preserves local phase and accessible continuation without reconnect error',
+    (tester) async {
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      tester.view.physicalSize = const Size(320, 820);
+      tester.view.devicePixelRatio = 1;
+      for (final language in ['zh', 'en']) {
+        final semantics = tester.ensureSemantics();
+        final sample = endpoint(
+          driver.State.awaitingExternal,
+          source: false,
+          localApplyInstalled: true,
+          transportDetached: true,
+        );
+        final session = PanelSession()
+          ..transportFailure = read.ReadError.disconnected
+          ..state = read.EndpointRead(
+            value: sample.value,
+            progress: sample.progress,
+            tcp: const runtime.TcpView(
+              phase: runtime.TcpPhase.closed,
+              error: read.ReadError.disconnected,
+            ),
+          );
+        await tester.pumpWidget(
+          panelApp(session, language: language, scale: 2),
+        );
+        expect(
+          find.text(language == 'zh' ? '正在安全保存账号' : 'Saving accounts safely'),
+          findsOneWidget,
+        );
+        final notice = find.byKey(const Key('device-local-continuation'));
+        expect(
+          find.text(
+            language == 'zh' ? '已传输 25 B / 100 B' : 'Transferred 25 B / 100 B',
+          ),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('device-transfer-rate')), findsNothing);
+        expect(notice, findsOneWidget);
+        await tester.ensureVisible(notice);
+        expect(
+          tester
+              .getSemantics(notice)
+              .getSemanticsData()
+              .flagsCollection
+              .isLiveRegion,
+          isTrue,
+        );
+        expect(find.byKey(const Key('device-session-error')), findsNothing);
+        expect(tester.takeException(), isNull);
+        semantics.dispose();
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+    },
+  );
+
+  testWidgets(
+    'finalized receiver cleanup and sender unconfirmed remain different outcomes in both languages',
+    (tester) async {
+      for (final language in ['zh', 'en']) {
+        final session = PanelSession()
+          ..cleanup = true
+          ..transportFailure = read.ReadError.internal
+          ..state = endpoint(
+            driver.State.completed,
+            source: false,
+            localApplyInstalled: true,
+            transportDetached: true,
+          );
+        await tester.pumpWidget(
+          panelApp(session, language: language, scale: 2),
+        );
+        expect(
+          find.text(language == 'zh' ? '同步完成' : 'Sync complete'),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('device-local-cleanup')), findsOneWidget);
+        expect(find.byKey(const Key('device-session-error')), findsNothing);
+        session.cleanup = false;
+        session.update(
+          endpoint(
+            driver.State.completedUnconfirmed,
+            source: true,
+            sourceGrantIssued: true,
+            transportDetached: true,
+          ),
+        );
+        await tester.pump();
+        expect(
+          find.text(
+            language == 'zh'
+                ? '结果未确认，请在接收设备查看。'
+                : 'Result unconfirmed. Check the receiving device.',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.text(language == 'zh' ? '同步完成' : 'Sync complete'),
+          findsNothing,
+        );
+        expect(find.byKey(const Key('device-session-error')), findsNothing);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+    },
+  );
+
+  testWidgets(
     'configuration status directs both endpoints to the phone in both languages',
     (tester) async {
       for (final language in ['zh', 'en']) {
@@ -606,6 +748,9 @@ read.EndpointRead endpoint(
   bool phoneControlled = true,
   bool previewApproved = false,
   bool accountsConsentAuthorized = false,
+  bool localApplyInstalled = false,
+  bool sourceGrantIssued = false,
+  bool transportDetached = false,
   read.ProgressView? transferProgress,
   read.AgreedConfiguration? configuration,
 }) => read.EndpointRead(
@@ -633,6 +778,9 @@ read.EndpointRead endpoint(
       driver.State.recoveryPending,
     ].contains(stage),
     cleanupPending: cleanupPending,
+    localApplyInstalled: localApplyInstalled,
+    sourceGrantIssued: sourceGrantIssued,
+    transportDetached: transportDetached,
     progress: transferProgress ?? progress,
   ),
 );
@@ -650,6 +798,8 @@ class PanelSession extends DeviceSyncSessionController {
   Future<void>? closeWait;
   Object? closeFailure;
   read.ReadError? failure;
+  read.ReadError? transportFailure;
+  bool cleanup = false;
   Future<void>? _closing;
   void update(read.EndpointRead value) {
     state = value;
@@ -682,6 +832,10 @@ class PanelSession extends DeviceSyncSessionController {
   DeviceSyncPreviewView? get preview => shown;
   @override
   read.ReadError? get issue => failure;
+  @override
+  read.ReadError? get transportIssue => transportFailure;
+  @override
+  bool get localCleanupPending => cleanup;
   @override
   Future<read.EndpointRead> refresh() async => state;
   @override

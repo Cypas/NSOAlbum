@@ -342,6 +342,11 @@ Future<bool> deviceSyncFinishSuccess({required String endpoint}) =>
 Future<void> deviceSyncCancelSignal({required String endpoint}) =>
     RustLib.instance.api.crateBridgeDeviceSyncCancelSignal(endpoint: endpoint);
 
+Future<void> deviceSyncDetachTransport({required String endpoint}) => RustLib
+    .instance
+    .api
+    .crateBridgeDeviceSyncDetachTransport(endpoint: endpoint);
+
 Future<void> deviceSyncShutdown({required String endpoint}) =>
     RustLib.instance.api.crateBridgeDeviceSyncShutdown(endpoint: endpoint);
 

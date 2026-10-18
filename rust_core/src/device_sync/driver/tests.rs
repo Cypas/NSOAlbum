@@ -8,6 +8,8 @@ use crate::models::GalleryQuery;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
+#[path = "local_apply_tests.rs"]
+mod local_apply_tests;
 #[path = "phone_control_tests.rs"]
 mod phone_control_tests;
 #[path = "preparation_tests.rs"]

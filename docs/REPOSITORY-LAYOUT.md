@@ -46,6 +46,7 @@
 | Windows 单实例真实子进程回归 | `flutter_app/test/windows_native_single_instance_test.dart`、`test/fixtures/desktop_instance/native/` | 是，夹具使用独立临时目录，不启动个人图库 |
 | 跨平台账号好友、观星与内嵌网页组件 | `flutter_app/lib/src/ui/account_tools/` | 是，平台外框与原生策略分离 |
 | 跨设备同步安全会话、清单与传输 | `rust_core/src/device_sync/` | 是，数据库访问仍集中 `database.rs` |
+| 同步网络到本地应用的一次性权限和取消裁决 | `rust_core/src/device_sync/local_apply.rs`、`local_apply/`、`driver/local_apply_tests.rs` | 是，权限仅内存持有，不放入缓存或普通备份；源码存在不代表设备验收完成 |
 | 跨设备同步页面及平台目录/设备适配 | `flutter_app/lib/src/ui/device_sync/`、`lib/src/platform/` | 是，凭据不进入普通文件 |
 | Debug 内部配对输入及页面回归 | `flutter_app/lib/src/ui/device_sync/debug_pairing.dart`、`flutter_app/test/device_sync/debug_pairing*_test.dart` | 是，仅认证 VM Service 输入，不新增产品权限或外部入口 |
 | 邀请通道、网络提示及安装包版本匹配 | `rust_core/src/device_sync/connection.rs`、`flutter_app/lib/src/platform/device_sync_{network,build}.dart`、`lib/src/ui/device_sync/connection_info.dart` | 是，SSID 只作提示；版本从安装包读取，不保存网络历史 |
@@ -110,6 +111,7 @@ Android 功能测试（页面、品牌、更新、APK 契约及 Gradle 配置）
 | Windows/Android Debug 实机传输及窗口检查 | `dist/device-sync-deviceqa-20261017/round*/` | 本地忽略；按轮保留失败及复验，不以通道检查代替完整页面或 MTP 验收 |
 | 内部配对输入的失败测试、复验及调试连接记录 | `dist/device-sync-debug-pairing-20261018/` | 本地忽略；不保存邀请或 VM Service 认证 URL，不将 widget 测试当作实机成功 |
 | 自动选路、SSID 及跨版本拒绝的验证记录 | `dist/device-sync-auto-connection-20261018/` | 本地忽略，保存失败/复验与独立 Debug 构建证据，不记录邀请或凭据 |
+| 手机单端控制及本地应用交接复验 | `dist/device-sync-phone-control-20261018/`，交接分任务放 `local-apply/` | 本地忽略，区分协议测试、真实预览和完整媒体传输；不保存二维码、凭据或认证调试地址 |
 | 本地 Windows/macOS 安装包与运行目录 | 打包脚本生成的 `dist/` 子目录 | 不改成根目录散放，不提交二进制 |
 | Flutter 编译输出和 Android APK | `flutter_app/build/` | 保持工具默认路径，不手工搬动正在使用的缓存 |
 | Android Gradle 报告与测试编译输出 | `flutter_app/android/build/` | 忽略，但不忽略相邻原生源码和配置 |

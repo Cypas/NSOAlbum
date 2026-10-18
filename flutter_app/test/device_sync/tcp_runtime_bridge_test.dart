@@ -240,6 +240,9 @@ read.EndpointRead _pressureRead({
             stage: stage,
             terminal: terminal,
             cleanupPending: false,
+            localApplyInstalled: false,
+            sourceGrantIssued: false,
+            transportDetached: false,
             progress: progress,
           )
         : null,

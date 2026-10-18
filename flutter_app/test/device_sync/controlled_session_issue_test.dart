@@ -141,6 +141,9 @@ class _ProjectionBoundary extends BackupNativeBoundary {
     overwrite: false,
     session: 'synthetic-session',
     cleanupPending: false,
+    localApplyInstalled: false,
+    sourceGrantIssued: false,
+    transportDetached: false,
   );
   @override
   Future<PreviewRead> crateBridgeDeviceSyncReadPreview({

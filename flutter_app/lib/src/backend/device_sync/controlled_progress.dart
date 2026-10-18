@@ -81,8 +81,11 @@ extension _DeviceSessionProgress on DeviceSyncSession {
         await advance(() async {
           final result = await coordinator.applyPending(_endpoint);
           _applied = result.finalized;
+          _localCleanupPending = result.cleanupPending;
         });
-      } else if (view.terminal && !view.cleanupPending && !_sourceReleased) {
+      } else if (!_sourceReleased &&
+          ((view.source == true && view.sourceGrantIssued && _sourceFinal) ||
+              (view.terminal && !view.cleanupPending))) {
         await advance(() async {
           await coordinator.releaseSource(_endpoint);
           _sourceReleased = true;

@@ -250,7 +250,7 @@ pub async fn device_sync_decline_accounts(endpoint: String) -> Result<(), Device
 pub async fn device_sync_account_payload(
     endpoint: String,
 ) -> Result<Option<Vec<u8>>, DeviceCommandError> {
-    headless::command(&endpoint, |d| {
+    headless::local_command(&endpoint, |d| {
         d.accounts_payload()
             .map(|payload| payload.map(|p| p.to_vec()))
     })
@@ -308,10 +308,10 @@ pub async fn device_sync_target_final(
     .await
 }
 pub async fn device_sync_external_check(endpoint: String) -> Result<(), DeviceCommandError> {
-    headless::command(&endpoint, |d| d.check_external_commit()).await
+    headless::local_command(&endpoint, |d| d.check_external_commit()).await
 }
 pub async fn device_sync_external_step(endpoint: String) -> Result<(), DeviceCommandError> {
-    headless::command(&endpoint, |d| d.external_step()).await
+    headless::local_command(&endpoint, |d| d.external_step()).await
 }
 pub async fn device_sync_finalize_accounts(
     endpoint: String,
@@ -323,7 +323,7 @@ pub async fn device_sync_finalize_accounts(
             executed: false,
         });
     }
-    headless::command(&endpoint, move |d| {
+    headless::local_command(&endpoint, move |d| {
         d.finalize_accounts(uuid::Uuid::parse_str(&external).map_err(|_| DriverError::Protocol)?)
     })
     .await
@@ -343,10 +343,16 @@ pub fn device_sync_finish_success(endpoint: String) -> Result<bool, String> {
 pub fn device_sync_cancel_signal(endpoint: String) -> Result<(), String> {
     headless::cancel_signal(&endpoint)
 }
+pub fn device_sync_detach_transport(endpoint: String) -> Result<(), String> {
+    headless::detach_transport_signal(&endpoint)
+}
 pub async fn device_sync_shutdown(endpoint: String) -> Result<(), String> {
+    // Cancel + native settle only. The original Dart coordinator may still need
+    // this endpoint's read/journal state before it requests final retirement.
     headless::shutdown_async(&endpoint).await
 }
 pub async fn device_sync_close_endpoint(endpoint: String) -> Result<(), String> {
+    // Called after coordinator/owned I/O cleanup, not as a transport EOF handler.
     headless::close_endpoint_async(&endpoint).await
 }
 pub fn device_sync_compensate(library: String, operation: String) -> Result<JournalInfo, String> {

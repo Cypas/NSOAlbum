@@ -729,6 +729,9 @@ class _CloseNative extends BackupNativeBoundary {
           stage: driver.State.pairing,
           terminal: false,
           cleanupPending: false,
+          localApplyInstalled: false,
+          sourceGrantIssued: false,
+          transportDetached: false,
           progress: progress,
         ),
       );

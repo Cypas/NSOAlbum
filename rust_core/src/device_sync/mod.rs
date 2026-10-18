@@ -5,12 +5,13 @@ mod account_tests;
 pub mod accounts;
 pub mod clock;
 pub mod connection;
-mod diagnostics;
+pub(crate) mod diagnostics;
 pub mod driver;
 pub mod headless;
 #[cfg(test)]
 mod headless_tests;
 pub mod library_guard;
+pub(crate) mod local_apply;
 pub mod mailbox;
 pub mod manifest;
 pub mod native_io;

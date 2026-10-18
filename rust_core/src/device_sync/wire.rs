@@ -148,6 +148,16 @@ pub enum Message {
         offset: u64,
     },
     FilesComplete {},
+    ApplyReady {
+        binding: String,
+        receiver_operation: uuid::Uuid,
+        external_reference: Option<uuid::Uuid>,
+    },
+    ApplyGrant {
+        binding: String,
+        receiver_operation: uuid::Uuid,
+        external_reference: Option<uuid::Uuid>,
+    },
     LeaseRequest {
         binding: String,
         id: u64,

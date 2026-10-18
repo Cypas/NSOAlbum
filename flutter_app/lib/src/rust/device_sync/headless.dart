@@ -19,6 +19,9 @@ class EndpointStatus {
   final String? binding;
   final String? backup;
   final bool cleanupPending;
+  final bool localApplyInstalled;
+  final bool sourceGrantIssued;
+  final bool transportDetached;
 
   const EndpointStatus({
     required this.state,
@@ -32,6 +35,9 @@ class EndpointStatus {
     this.binding,
     this.backup,
     required this.cleanupPending,
+    required this.localApplyInstalled,
+    required this.sourceGrantIssued,
+    required this.transportDetached,
   });
 
   @override
@@ -46,7 +52,10 @@ class EndpointStatus {
       targetLibrary.hashCode ^
       binding.hashCode ^
       backup.hashCode ^
-      cleanupPending.hashCode;
+      cleanupPending.hashCode ^
+      localApplyInstalled.hashCode ^
+      sourceGrantIssued.hashCode ^
+      transportDetached.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -63,7 +72,10 @@ class EndpointStatus {
           targetLibrary == other.targetLibrary &&
           binding == other.binding &&
           backup == other.backup &&
-          cleanupPending == other.cleanupPending;
+          cleanupPending == other.cleanupPending &&
+          localApplyInstalled == other.localApplyInstalled &&
+          sourceGrantIssued == other.sourceGrantIssued &&
+          transportDetached == other.transportDetached;
 }
 
 class HostInfo {

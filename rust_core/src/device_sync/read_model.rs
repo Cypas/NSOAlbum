@@ -188,6 +188,10 @@ pub struct EndpointView {
     pub stage: State,
     pub terminal: bool,
     pub cleanup_pending: bool,
+    /// Read-only facts from the same Driver lifecycle, never authorization inputs.
+    pub local_apply_installed: bool,
+    pub source_grant_issued: bool,
+    pub transport_detached: bool,
     pub progress: ProgressView,
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]

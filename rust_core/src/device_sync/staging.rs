@@ -298,6 +298,48 @@ impl Drop for PublishedOriginal<'_> {
 }
 
 impl StagingOperation {
+    pub(crate) fn check_handoff_complete(&self, cancel: &CancellationToken) -> StagingResult<()> {
+        if self.state != OperationState::Active || self.receiving != 0 {
+            return Err(StagingError::InvalidState);
+        }
+        self.database
+            .validate_existing_original_root(&self.media_root)
+            .map_err(core_error)?;
+        for (sha, entry) in &self.entries {
+            check_cancel(cancel)?;
+            let file = if entry.needs_transfer {
+                if entry.state != FileState::Verified {
+                    return Err(StagingError::InvalidState);
+                }
+                entry
+                    .cached
+                    .as_ref()
+                    .ok_or(StagingError::InvalidState)?
+                    .open()?
+            } else {
+                // DB-controlled CAS reuse is not a fresh incoming-byte claim.
+                // All existing bytes are still fully SHA-checked by the local
+                // receiver_prepare backup before any formal SQL mutation.
+                let (path, length) = self
+                    .database
+                    .device_sync_original_path(sha)
+                    .map_err(core_error)?
+                    .ok_or(StagingError::CorruptOriginal)?;
+                if length != entry.record.length {
+                    return Err(StagingError::CorruptOriginal);
+                }
+                let identity = OriginalIdentity::controlled(&self.media_root, &path, sha, length)
+                    .map_err(core_error)?;
+                let file = paths::open_regular(&identity.path())?;
+                paths::require_single_link(&file)?;
+                file
+            };
+            if file.metadata().map_err(|_| StagingError::Read)?.len() != entry.record.length {
+                return Err(StagingError::CorruptOriginal);
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn budget_inputs(
         &self,
         work: &super::work::WorkControl,

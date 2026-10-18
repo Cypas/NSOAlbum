@@ -257,36 +257,41 @@ void main() {
     expect(lifecycle.ready, isTrue);
   });
 
-  test(
-    'page close waits owned byte runner even when protocol abort fails',
-    () async {
-      picker.complete(null);
-      final session = await lifecycle.service
-          .prepareUsbClient(invitation: 'synthetic-invitation', name: 'Phone')
-          .connect();
-      await native.completedOpen.future;
-      native.failShutdown = true;
-      native.retiredViewRelease = Completer<void>();
-      final closing = session.close().then<Object?>(
-        (_) => null,
-        onError: (Object failure) => failure,
+  test('page close retains failed native settle and retries owned cleanup after byte runner ends', () async {
+    picker.complete(null);
+    final session = await lifecycle.service
+        .prepareUsbClient(invitation: 'synthetic-invitation', name: 'Phone')
+        .connect();
+    await native.completedOpen.future;
+    native.failShutdown = true;
+    native.retiredViewRelease = Completer<void>();
+    final closing = session.close().then<Object?>(
+      (_) => null,
+      onError: (Object failure) => failure,
+    );
+    await native.retiredViewEntered.future;
+    await Future<void>.delayed(Duration.zero);
+    try {
+      expect(
+        native.closedEndpoints,
+        isEmpty,
+        reason: 'Endpoint close must wait for the owned byte runner on failures too.',
       );
-      await native.retiredViewEntered.future;
-      await Future<void>.delayed(Duration.zero);
-      try {
-        expect(
-          native.closedEndpoints,
-          isEmpty,
-          reason: 'Endpoint close must wait for the owned byte runner on failures too.',
-        );
-      } finally {
-        native.retiredViewRelease!.complete();
-        expect(await closing, isA<StateError>());
-      }
-      expect(native.closedEndpoints, ['owned-endpoint-1']);
-      expect(lifecycle.ready, isTrue);
-    },
-  );
+    } finally {
+      native.retiredViewRelease!.complete();
+      expect(await closing, isA<StateError>());
+      native.failShutdown = false;
+    }
+    expect(session.closed, isTrue);
+    expect(session.settled, isFalse);
+    expect(native.closedEndpoints, isEmpty);
+    expect(() => session.refresh(), throwsA(isA<DeviceSyncBusy>()));
+    await session.close();
+    expect(session.closed, isTrue);
+    expect(session.settled, isTrue);
+    expect(native.closedEndpoints, ['owned-endpoint-1']);
+    expect(lifecycle.ready, isTrue);
+  });
 }
 
 class _NativeBoundary implements RustLibApi {

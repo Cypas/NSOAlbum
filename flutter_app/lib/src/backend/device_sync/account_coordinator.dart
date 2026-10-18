@@ -125,6 +125,21 @@ class _Pending {
   bool reserved = false;
 }
 
+class _SourceHold {
+  _SourceHold(this.permit, EndpointStatus status)
+    : session = status.session,
+      operation = status.operation,
+      binding = status.binding;
+  final DeviceAccountPermit permit;
+  final String session;
+  final String? operation, binding;
+  bool matches(EndpointStatus status) =>
+      status.source &&
+      status.session == session &&
+      status.operation == operation &&
+      status.binding == binding;
+}
+
 /// The only replaceable boundary is OS secure storage. Rust calls below always
 /// use the generated FRB and its real journal/library services.
 class DeviceAccountCoordinator {
@@ -142,7 +157,7 @@ class DeviceAccountCoordinator {
   final void Function(Set<String>) publish;
   final _sources = <String, AccountSnapshot>{};
   final _targets = <String, AccountSnapshot>{};
-  final _sourcePermits = <String, DeviceAccountPermit>{};
+  final _sourcePermits = <String, _SourceHold>{};
   final _pending = <String, _Pending>{};
   final _restorePreviews = <AccountRestorePreview>{};
   // Confirmation eligibility is single-use. Retirement ownership survives
@@ -154,6 +169,10 @@ class DeviceAccountCoordinator {
   bool _restoreCancelled = false;
   Future<void>? _driving;
   final _aborting = <String, Future<void>>{};
+
+  /// Original material/permit ownership, including failed compensation.
+  bool hasEndpointWork(String endpoint) =>
+      _pending.containsKey(endpoint) || _sourcePermits.containsKey(endpoint);
   Future<T> _command<T>(String endpoint, Future<T> Function() action) =>
       admittedDeviceCommand(
         action,
@@ -359,6 +378,12 @@ class DeviceAccountCoordinator {
     final permit = gate.device();
     var retained = false;
     try {
+      final status = await native.deviceSyncStatus(endpoint: endpoint);
+      if (!status.source ||
+          status.state != 'AwaitingAccountFinal' ||
+          status.binding == null) {
+        throw AccountPreviewChanged();
+      }
       final current = rawAccountDigest(await readRawAccountKeys(storage));
       if (current != before.digest) throw AccountPreviewChanged();
       await _command(
@@ -368,7 +393,9 @@ class DeviceAccountCoordinator {
           stateDigest: current,
         ),
       );
-      _sourcePermits[endpoint] = permit;
+      // The wire binding already covers the session's operation. A source's
+      // nullable receiver-operation projection is not invented or repurposed.
+      _sourcePermits[endpoint] = _SourceHold(permit, status);
       retained = true;
     } finally {
       if (!retained) permit.release();
@@ -376,13 +403,18 @@ class DeviceAccountCoordinator {
   }
 
   Future<void> releaseSource(String endpoint) async {
+    final held = _sourcePermits[endpoint];
+    if (held == null && !_sources.containsKey(endpoint)) return;
     var status = await native.deviceSyncStatus(endpoint: endpoint);
-    if (!status.terminal) throw const DeviceSyncBusy();
-    while (status.cleanupPending) {
+    if (held != null && !held.matches(status)) throw AccountPreviewChanged();
+    final issued = held != null && status.sourceGrantIssued;
+    if (!issued && !status.terminal) throw const DeviceSyncBusy();
+    while (!issued && status.cleanupPending) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       status = await native.deviceSyncStatus(endpoint: endpoint);
+      if (held != null && !held.matches(status)) throw AccountPreviewChanged();
     }
-    _sourcePermits.remove(endpoint)?.release();
+    _sourcePermits.remove(endpoint)?.permit.release();
     _sources.remove(endpoint);
   }
 
@@ -430,22 +462,30 @@ class DeviceAccountCoordinator {
       rethrow;
     } catch (error) {
       gate.holdRecovery();
-      await native.deviceSyncCancelSignal(endpoint: endpoint);
-      await native.deviceSyncShutdown(endpoint: endpoint);
+      // An executed Finalize may have committed even when its return was lost.
+      // Read the durable fact before attempting fallible transport cleanup.
       final journal = await native.deviceSyncJournal(
         library_: library,
         operation: material.operation,
       );
-      if (journal?.stage == 'finalized') {
+      if (journal?.stage == 'finalized' &&
+          journal?.operation == material.operation &&
+          journal?.library_ == material.library &&
+          journal?.external_ == material.external &&
+          journal?.backup == material.backup) {
         publish(_ids(material.candidate));
         gate.resolveRecovery();
         return const AccountApplyResult(finalized: true, cleanupPending: true);
       }
+      // Never race compensation against a native worker whose settle has not
+      // been proven. Failure retains this exact pending permit and material.
+      await native.deviceSyncCancelSignal(endpoint: endpoint);
+      await native.deviceSyncShutdown(endpoint: endpoint);
       final state = await _recoverOwned(pending.permit!);
       if (!state.ready) throw AccountRecoveryRequired(state.status);
       rethrow;
     } finally {
-      if (!suspended) {
+      if (!suspended && !gate.recoveryRequired) {
         _pending.remove(endpoint)?.permit?.release();
         _targets.remove(endpoint);
       }
@@ -508,7 +548,11 @@ class DeviceAccountCoordinator {
       library_: library,
       operation: material.operation,
     );
-    if (committed?.stage != 'finalized') {
+    if (committed?.stage != 'finalized' ||
+        committed?.operation != material.operation ||
+        committed?.library_ != material.library ||
+        committed?.external_ != material.external ||
+        committed?.backup != backup) {
       throw AccountRecoveryRequired('not_finalized');
     }
     publish(_ids(material.candidate));
@@ -533,10 +577,12 @@ class DeviceAccountCoordinator {
 
   Future<void> _abortEndpoint(String endpoint) async {
     await native.deviceSyncCancelSignal(endpoint: endpoint);
+    // Native settle is independent of this Dart OS write/gate/drive. It must
+    // complete first; the original drive remains the sole compensation owner.
+    await native.deviceSyncShutdown(endpoint: endpoint);
     // An already admitted OS write is not cancellable. Its single driver owns
     // compensation; do not race it with a second recovery or reopen the gate.
     await _driving;
-    await native.deviceSyncShutdown(endpoint: endpoint);
     final pending = _pending[endpoint];
     if (pending != null) {
       final permit = pending.permit;

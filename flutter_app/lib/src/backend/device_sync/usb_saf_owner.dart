@@ -19,6 +19,9 @@ final class DeviceSyncUsbSafOwner {
   int _epoch = 0;
   bool _invalidated = false;
 
+  /// This OS runner's admission only; never native local-apply authority.
+  bool get admitted => _running != null;
+
   Future<UsbView> run() {
     final running = _running;
     if (running != null) return running;
@@ -145,7 +148,9 @@ final class DeviceSyncUsbSafOwner {
       return await _retiredView(observed);
     } catch (_) {
       try {
-        await native.deviceSyncCancelSignal(endpoint: endpoint);
+        // An unknown transport receipt is not an explicit user cancellation.
+        // The original native owner decides whether local authority exists.
+        await native.deviceSyncDetachTransport(endpoint: endpoint);
       } catch (_) {
         // close_library can already have retired this exact endpoint.
       }
@@ -158,7 +163,7 @@ final class DeviceSyncUsbSafOwner {
     try {
       var view = await native.deviceSyncUsbView(endpoint: endpoint);
       if (!view.closed) {
-        await native.deviceSyncShutdown(endpoint: endpoint);
+        await native.deviceSyncDetachTransport(endpoint: endpoint);
         view = await native.deviceSyncUsbView(endpoint: endpoint);
       }
       return view;

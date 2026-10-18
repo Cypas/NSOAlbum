@@ -306,6 +306,9 @@ read.EndpointRead _hostView({required int remaining}) => read.EndpointRead(
     stage: driver.State.pairing,
     terminal: false,
     cleanupPending: false,
+    localApplyInstalled: false,
+    sourceGrantIssued: false,
+    transportDetached: false,
     progress: progress,
   ),
 );

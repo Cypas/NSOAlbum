@@ -320,6 +320,9 @@ class _NativeBoundary implements RustLibApi {
         stage: stage,
         terminal: terminal,
         cleanupPending: false,
+        localApplyInstalled: false,
+        sourceGrantIssued: false,
+        transportDetached: false,
         progress: progress,
       ),
     );
@@ -342,6 +345,9 @@ class _NativeBoundary implements RustLibApi {
     overwrite: false,
     session: 'synthetic-usb-session',
     cleanupPending: false,
+    localApplyInstalled: false,
+    sourceGrantIssued: false,
+    transportDetached: false,
   );
 
   @override

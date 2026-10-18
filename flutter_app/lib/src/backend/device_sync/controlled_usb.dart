@@ -120,7 +120,7 @@ extension DeviceSyncUsbSession on DeviceSyncSession {
     _usbRunning = owner.run().then<void>(
       (view) {
         if (!closed && view.error != null) {
-          _setIssue(view.error);
+          _transportIssue = view.error;
           _publish();
         }
       },
@@ -128,7 +128,8 @@ extension DeviceSyncUsbSession on DeviceSyncSession {
         _usbFailure = failure;
         _usbFailureStack = stack;
         if (!closed) {
-          _setIssue(read.ReadError.internal);
+          _transportIssue = read.ReadError.internal;
+          if (!owner.admitted) _setIssue(read.ReadError.internal);
           _publish();
         }
       },

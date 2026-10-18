@@ -244,3 +244,11 @@
 `dist/desktop-header-overflow-20261018/`（本地、不提交）。
 正式回归用例为 `flutter_app/test/desktop_page_header_test.dart`；
 widget 通过不表示正在运行的应用包已更新。
+
+手机单端控制和后续本地交接的真实 Debug 设备证据保存在
+`dist/device-sync-phone-control-20261018/`。本地交接继续既有批准计划，
+其任务台账/brief/独立审查放在
+`.superpowers/sdd/2026-10-17-device-sync-local-apply/`，
+源码 before/after 与分任务验证放在上述设备专题的 `local-apply/`；
+均本地、不提交。旧失败和冻结快照不覆盖，真实 USB、Wi-Fi、非零媒体、
+本地应用及账号安全存储分别记录，不能相互替代验收。

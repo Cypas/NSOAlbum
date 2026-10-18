@@ -109,6 +109,7 @@ struct Pending {
 struct Exchange {
     pending: Option<Pending>,
     cancelled: bool,
+    detached: bool,
     view: UsbView,
     selected: Option<(String, String)>,
 }
@@ -127,6 +128,7 @@ impl Control {
             exchange: Mutex::new(Exchange {
                 pending: None,
                 cancelled: false,
+                detached: false,
                 selected: None,
                 view: UsbView {
                     closed: false,
@@ -171,6 +173,25 @@ impl Control {
         self.closed.notify_waiters();
         self.changed.notify_waiters();
     }
+    pub(crate) fn detach(&self) {
+        {
+            let mut exchange = self.exchange.lock().unwrap_or_else(|e| e.into_inner());
+            if exchange.view.closed {
+                return;
+            }
+            exchange.detached = true;
+            exchange.pending = None;
+        }
+        if let Some(native) = self
+            .native
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            native.cancel();
+        }
+        self.changed.notify_waiters();
+    }
     pub(crate) async fn wait_closed(&self) -> Result<UsbView, ReadError> {
         let _slot = self.closer.try_acquire().map_err(|_| ReadError::Busy)?;
         loop {
@@ -205,7 +226,7 @@ impl Control {
             notified.as_mut().enable();
             {
                 let mut exchange = self.exchange.lock().unwrap_or_else(|e| e.into_inner());
-                if exchange.cancelled || exchange.view.closed {
+                if exchange.cancelled || exchange.detached || exchange.view.closed {
                     return Ok(None);
                 }
                 if let Some(pending) = exchange.pending.as_mut() {
@@ -237,6 +258,9 @@ impl Control {
             return Err(ReadError::InvalidInput);
         }
         let mut exchange = self.exchange.lock().unwrap_or_else(|e| e.into_inner());
+        if exchange.detached {
+            return Err(ReadError::Disconnected);
+        }
         if exchange.cancelled || exchange.view.closed {
             return Err(ReadError::Cancelled);
         }
@@ -271,7 +295,7 @@ impl Control {
     }
     pub(crate) fn select(&self, device: &str, storage: &str) -> Result<(), ReadError> {
         let mut exchange = self.exchange.lock().unwrap_or_else(|e| e.into_inner());
-        if exchange.cancelled || exchange.view.closed {
+        if exchange.cancelled || exchange.detached || exchange.view.closed {
             return Err(ReadError::Cancelled);
         }
         if exchange.selected.is_some()
@@ -344,6 +368,10 @@ pub(crate) struct UsbDriver {
     success_started: Option<Instant>,
 }
 impl UsbDriver {
+    #[cfg(test)]
+    pub(crate) fn advance_for_test(&mut self, control: &Control) -> Result<bool, ReadError> {
+        self.advance(control)
+    }
     fn new(driver: Driver, start: &Start) -> Self {
         Self {
             operation: driver.channel_operation_id().into(),
@@ -373,17 +401,29 @@ impl UsbDriver {
         }
     }
     fn advance(&mut self, control: &Control) -> Result<bool, ReadError> {
-        if control
-            .exchange
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .cancelled
         {
-            return Err(ReadError::Cancelled);
+            let exchange = control.exchange.lock().unwrap_or_else(|e| e.into_inner());
+            if exchange.cancelled {
+                return Err(ReadError::Cancelled);
+            }
+            if exchange.detached {
+                return Err(ReadError::Disconnected);
+            }
         }
         // Driver completion revokes its business token. That is not an OS cancel:
         // an already accepted final CommitAck still owns a directory ACK.
         self.driver.poll().map_err(|e| ReadError::driver(&e))?;
+        if self.driver.transport_detached()
+            && self.driver.state() != State::Completed
+            && !matches!(self.stage, Stage::Close | Stage::Done)
+        {
+            // An authenticated Abort/local transport detach cannot leave this
+            // owner waiting for a future SAF receipt. But a genuine CommitAck
+            // completes/revokes the source's business token before its incoming
+            // block's owned directory ACK; Completed must finish bounded cleanup.
+            // Explicit OS detach/cancel is still rejected above in every state.
+            return Err(ReadError::Disconnected);
+        }
         if self.driver.state().terminal() && self.driver.state() != State::Completed {
             return Err(if self.driver.state() == State::Cancelled {
                 ReadError::Cancelled
@@ -484,6 +524,9 @@ impl UsbDriver {
         let mut exchange = control.exchange.lock().unwrap_or_else(|e| e.into_inner());
         if exchange.cancelled {
             return Err(ReadError::Cancelled);
+        }
+        if exchange.detached {
+            return Err(ReadError::Disconnected);
         }
         let (device, storage) = exchange
             .selected
@@ -813,13 +856,8 @@ pub(crate) fn launch(
                 } else if outcome.is_err() {
                     owner.driver_mut().disconnect();
                 }
-                owner.driver_mut().finish_shutdown();
                 endpoint.publish(owner.driver());
-                while let Ok(job) = receiver.try_recv() {
-                    job(owner.driver_mut());
-                }
             }
-            drop(receiver);
             let reason = if cancelled {
                 UsbCloseReason::Cancelled
             } else if outcome.is_ok() {
@@ -835,7 +873,7 @@ pub(crate) fn launch(
                     outcome.err()
                 },
             );
-            runtime.finish();
+            runtime::retain(endpoint, receiver);
         })
         .map(|_| ())
 }

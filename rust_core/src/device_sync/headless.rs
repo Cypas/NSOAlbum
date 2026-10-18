@@ -50,6 +50,9 @@ pub struct EndpointStatus {
     pub binding: Option<String>,
     pub backup: Option<String>,
     pub cleanup_pending: bool,
+    pub local_apply_installed: bool,
+    pub source_grant_issued: bool,
+    pub transport_detached: bool,
 }
 #[derive(Clone, Debug)]
 pub struct JournalInfo {
@@ -73,6 +76,8 @@ pub struct RestoreInfo {
 pub(crate) struct Endpoint {
     pub(crate) owner: Mutex<super::runtime::Owner>,
     pub(crate) cancellation: CancellationToken,
+    pub(crate) transport_cancel: CancellationToken,
+    lifecycle: Arc<super::local_apply::LifecycleControl>,
     work: super::work::WorkControl,
     library: Uuid,
     pub(crate) runtime: Option<Arc<super::runtime::Control>>,
@@ -152,10 +157,27 @@ pub async fn command<T: Send + 'static>(
         + Send
         + 'static,
 ) -> std::result::Result<T, super::runtime::DeviceCommandError> {
+    command_in_domain(handle, super::runtime::CommandDomain::Network, action).await
+}
+pub(crate) async fn local_command<T: Send + 'static>(
+    handle: &str,
+    action: impl FnOnce(&mut Driver) -> std::result::Result<T, super::driver::DriverError>
+        + Send
+        + 'static,
+) -> std::result::Result<T, super::runtime::DeviceCommandError> {
+    command_in_domain(handle, super::runtime::CommandDomain::Local, action).await
+}
+async fn command_in_domain<T: Send + 'static>(
+    handle: &str,
+    domain: super::runtime::CommandDomain,
+    action: impl FnOnce(&mut Driver) -> std::result::Result<T, super::driver::DriverError>
+        + Send
+        + 'static,
+) -> std::result::Result<T, super::runtime::DeviceCommandError> {
     use super::runtime::DeviceCommandError;
     let owner = read_owner(handle).map_err(DeviceCommandError::rejected)?;
     if let Some(runtime) = &owner.runtime {
-        runtime.call(&owner.cancellation, action).await
+        runtime.call(&owner.cancellation, domain, action).await
     } else {
         let permit = owner
             .command_slots
@@ -172,10 +194,13 @@ pub async fn command<T: Send + 'static>(
                     )
                 }
             };
-            let result = action(inner.driver_mut()).map_err(|error| DeviceCommandError {
-                code: ReadError::driver(&error),
-                executed: true,
-            });
+            let result = super::runtime::admit_command(inner.driver(), &owner.cancellation, domain)
+                .and_then(|()| {
+                    action(inner.driver_mut()).map_err(|error| DeviceCommandError {
+                        code: ReadError::driver(&error),
+                        executed: true,
+                    })
+                });
             owner.publish(inner.driver());
             (result, permit)
         })
@@ -322,6 +347,7 @@ fn insert_endpoint(
 ) -> Result<String> {
     let handle = Uuid::new_v4();
     let cancellation = driver.cancellation();
+    let lifecycle = driver.lifecycle_control();
     let work = driver.work_control();
     let published = driver_status(&driver);
     let (runtime, receiver) = match start.as_ref() {
@@ -334,6 +360,8 @@ fn insert_endpoint(
     let endpoint = Arc::new(Endpoint {
         owner: Mutex::new(super::runtime::Owner::Plain(driver)),
         cancellation,
+        transport_cancel: CancellationToken::default(),
+        lifecycle,
         work,
         library,
         runtime,
@@ -625,6 +653,9 @@ fn driver_status(d: &Driver) -> EndpointStatus {
         binding: d.preview_binding().map(str::to_owned),
         backup: d.receipt().map(|r| r.backup_uuid.to_string()),
         cleanup_pending: d.cleanup_pending(),
+        local_apply_installed: d.local_apply_installed(),
+        source_grant_issued: d.source_grant_issued(),
+        transport_detached: d.transport_detached(),
     }
 }
 pub fn status(handle: &str) -> Result<EndpointStatus> {
@@ -912,9 +943,30 @@ fn reject_managed_io(handle: &str) -> Result<()> {
     Ok(())
 }
 /// Independent from the Driver mutex, including a currently scanning poll.
+pub fn detach_transport_signal(handle: &str) -> Result<()> {
+    let owner = endpoint(handle)?;
+    if owner.runtime.is_none() {
+        return Err(invalid());
+    }
+    // Natural transport failure is not an operation-cancel/settle/retire signal.
+    owner.transport_cancel.cancel();
+    if let Some(usb) = owner
+        .runtime
+        .as_ref()
+        .and_then(|runtime| runtime.usb.as_ref())
+    {
+        usb.detach();
+    }
+    Ok(())
+}
+/// Independent local cancellation, including a currently scanning poll.
 pub fn cancel_signal(handle: &str) -> Result<()> {
     let owner = endpoint(handle)?;
-    owner.cancellation.cancel();
+    owner.lifecycle.cancel();
+    owner.transport_cancel.cancel();
+    if let Some(runtime) = &owner.runtime {
+        runtime.request_settle();
+    }
     if let Some(usb) = owner.runtime.as_ref().and_then(|r| r.usb.as_ref()) {
         usb.cancel();
     }
@@ -923,7 +975,7 @@ pub fn cancel_signal(handle: &str) -> Result<()> {
 pub fn shutdown(handle: &str) -> Result<()> {
     cancel_signal(handle)?;
     if let Some(runtime) = &endpoint(handle)?.runtime {
-        runtime.wait_stopped();
+        runtime.wait_settled();
     }
     with_driver(handle, |d| {
         d.cancel();
@@ -935,25 +987,47 @@ pub async fn shutdown_async(handle: &str) -> Result<()> {
     let owner = endpoint(handle)?;
     cancel_signal(handle)?;
     if let Some(runtime) = &owner.runtime {
-        runtime.stopped().await;
+        runtime.settled().await;
+        Ok(())
+    } else {
+        let handle = handle.to_owned();
+        tokio::task::spawn_blocking(move || shutdown(&handle))
+            .await
+            .map_err(failure)?
     }
-    shutdown(handle)
 }
 pub async fn close_endpoint_async(handle: &str) -> Result<()> {
     shutdown_async(handle).await?;
-    close_endpoint(handle)
+    ensure_retirable(handle)?;
+    let owner = endpoint(handle)?;
+    if let Some(runtime) = &owner.runtime {
+        runtime.retire();
+        runtime.stopped().await;
+    }
+    remove_endpoint(handle)
 }
 pub fn close_endpoint(handle: &str) -> Result<()> {
     shutdown(handle)?;
-    if status(handle)?.cleanup_pending {
-        return Err("device-sync issued lease cleanup is pending".into());
+    ensure_retirable(handle)?;
+    if let Some(runtime) = &endpoint(handle)?.runtime {
+        runtime.retire();
+        runtime.wait_stopped();
     }
+    remove_endpoint(handle)
+}
+fn remove_endpoint(handle: &str) -> Result<()> {
     services()
         .lock()
         .map_err(failure)?
         .endpoints
         .remove(&id(handle)?)
         .ok_or_else(invalid)?;
+    Ok(())
+}
+fn ensure_retirable(handle: &str) -> Result<()> {
+    if status(handle)?.cleanup_pending {
+        return Err("device-sync issued lease cleanup is pending".into());
+    }
     Ok(())
 }
 pub fn compensate(handle: &str, operation: &str) -> Result<JournalInfo> {
@@ -1119,6 +1193,21 @@ pub(crate) mod owner_test_tools {
     pub(crate) fn runtime_api(handle: &str) -> Arc<CoreApi> {
         library(handle).unwrap()
     }
+    pub(crate) fn phone_usb_actions(handle: &str, name: &str) -> HostInfo {
+        host_started_with_build(
+            handle,
+            name,
+            None,
+            Some(super::super::runtime::Start::Usb(
+                super::super::usb::Start::DesktopActions,
+            )),
+            Some(super::super::connection::ApplicationBuild {
+                version: "0.2.14".into(),
+                build_number: "47".into(),
+            }),
+        )
+        .unwrap()
+    }
 
     pub(crate) fn with_existing_restore(
         root: String,
@@ -1172,3 +1261,7 @@ pub(crate) mod owner_test_tools {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_local_apply_tests.rs"]
+mod runtime_local_apply_tests;

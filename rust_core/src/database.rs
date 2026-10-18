@@ -5710,7 +5710,13 @@ impl Database {
         ds::validate_sha(preview_digest)?;
         cancel.check()?;
         let (_, root) = self.device_sync_file_roots()?;
+        crate::device_sync::diagnostics::checkpoint(
+            crate::device_sync::diagnostics::Boundary::BackupOriginalHashBegin,
+        );
         let originals = self.controlled_originals_cancellable(&root, Some(cancel))?;
+        crate::device_sync::diagnostics::checkpoint(
+            crate::device_sync::diagnostics::Boundary::BackupOriginalHashEnd,
+        );
         cancel.check()?;
         let root = root.canonicalize()?;
         let backup = uuid::Uuid::new_v4();

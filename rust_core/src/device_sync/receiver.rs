@@ -38,6 +38,10 @@ pub trait CommitGuard: Send + Sync {
     fn check(&self) -> CoreResult<()>;
     fn sql_started(&self) {}
     fn sql_progress(&self) {}
+    fn publication_started(&self, _sha: &str, _length: u64) -> CoreResult<()> {
+        Ok(())
+    }
+    fn publication_progress(&self, _progress: &Progress) {}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -338,6 +342,23 @@ impl ReceiveOperation {
         &mut self.staging
     }
 
+    pub(crate) fn handoff_binding(
+        &self,
+        authorization: &LocalAuthorization,
+    ) -> ReceiverResult<String> {
+        if self.finished
+            || authorization.used
+            || !self.authorization_issued
+            || authorization.operation != self.operation_id()
+            || authorization.binding != self.binding()?
+        {
+            return Err(ReceiverError::AuthorizationMismatch);
+        }
+        self.staging
+            .check_handoff_complete(&self.work.cancellation())?;
+        Ok(authorization.binding.clone())
+    }
+
     fn binding(&self) -> CoreResult<String> {
         self.work.digest_json(&(
             1_u32,
@@ -420,6 +441,7 @@ impl ReceiveOperation {
         let work = self.work.with_cancellation(cancel.clone());
         let lease = database.device_sync_exclusive()?;
         // Preserve the approved clock sample; only persistent contents are reread.
+        diagnostics::checkpoint(Boundary::ApplySnapshotBegin);
         let current = Snapshot::read_with_header_controlled(
             &database,
             self.target.manifest.header.clone(),
@@ -433,6 +455,7 @@ impl ReceiveOperation {
                 ReceiverError::PlanChanged
             }
         })?;
+        diagnostics::checkpoint(Boundary::ApplySnapshotEnd);
         work.checkpoint(super::work::WorkStage::FinalCheck, 0)?;
         if current.digest_controlled(&work)? != self.target.digest_controlled(&work)? {
             return Err(ReceiverError::PlanChanged);
@@ -446,12 +469,15 @@ impl ReceiveOperation {
                     ReceiverError::PlanChanged
                 }
             })?;
+        diagnostics::checkpoint(Boundary::ApplyBudgetBegin);
         self.receiver_budget = super::space_budget::measure(
             &self.staging,
             database.device_sync_metadata_cost(&current, &self.plan, &work)?,
             &work,
         )?;
+        diagnostics::checkpoint(Boundary::ApplyBudgetEnd);
         let operation = self.operation_id();
+        diagnostics::checkpoint(Boundary::ApplyReceiverPrepareBegin);
         let backup = database.receiver_prepare(
             &lease,
             operation,
@@ -460,19 +486,32 @@ impl ReceiveOperation {
             external_reference,
             cancel,
         )?;
+        diagnostics::checkpoint(Boundary::ApplyReceiverPrepareEnd);
         self.finished = true;
         observer(ApplyBoundary::Prepared);
         let mut publications = Vec::new();
         let result = (|| -> ReceiverResult<()> {
             cancel.check()?;
             for decision in &self.plan.media {
-                if decision.final_record.is_some() && !decision.reuse_original {
+                if !decision.reuse_original {
+                    let Some(record) = &decision.final_record else {
+                        continue;
+                    };
+                    if let Some(guard) = &guard {
+                        guard.publication_started(&decision.sha256, record.length)?;
+                    }
+                    let mut guarded_observer = |progress: Progress| {
+                        if let Some(guard) = &guard {
+                            guard.publication_progress(&progress);
+                        }
+                        file_observer(progress);
+                    };
                     publications.push(self.staging.publish(
                         &lease,
                         operation,
                         &decision.sha256,
                         cancel,
-                        file_observer,
+                        &mut guarded_observer,
                     )?);
                 }
             }
