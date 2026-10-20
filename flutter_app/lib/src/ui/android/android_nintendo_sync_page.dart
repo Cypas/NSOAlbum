@@ -438,8 +438,8 @@ class _AndroidAccountStatus extends StatelessWidget {
           ),
           Text(
             context.l10n.select(
-              zh: '媒体：${attempt.downloaded} 已下载 · ${attempt.duplicates} 重复 · ${attempt.failed} 失败',
-              en: 'Media: ${attempt.downloaded} downloaded · ${attempt.duplicates} duplicate · ${attempt.failed} failed',
+              zh: '媒体：${attempt.downloaded} 已下载 · ${attempt.duplicates} 重复 · 已存在 ${attempt.skippedRemote ?? '未记录'} · ${attempt.failed} 失败',
+              en: 'Media: ${attempt.downloaded} downloaded · ${attempt.duplicates} duplicate · Existing ${attempt.skippedRemote ?? 'not recorded'} · ${attempt.failed} failed',
             ),
             softWrap: true,
           ),

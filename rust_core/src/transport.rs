@@ -162,6 +162,10 @@ struct StreamingDownloadWriter {
     completed: bool,
 }
 
+fn is_allowed_android_private_alias(path: &Path, target: &Path) -> bool {
+    path == Path::new("/data/user/0") && target == Path::new("/data/data")
+}
+
 impl StreamingDownloadWriter {
     async fn create(
         temporary_root: &Path,
@@ -182,13 +186,14 @@ impl StreamingDownloadWriter {
             ) {
                 continue;
             }
-            if std::fs::symlink_metadata(&component_path)?
-                .file_type()
-                .is_symlink()
-            {
-                return Err(CoreError::InvalidConfig(
-                    "download temporary root is a symbolic link".into(),
-                ));
+            let metadata = std::fs::symlink_metadata(&component_path)?;
+            if metadata.file_type().is_symlink() {
+                let target = std::fs::canonicalize(&component_path)?;
+                if !is_allowed_android_private_alias(&component_path, &target) {
+                    return Err(CoreError::InvalidConfig(
+                        "download temporary root is a symbolic link".into(),
+                    ));
+                }
             }
         }
         let temporary_root = temporary_root.canonicalize()?;
@@ -908,6 +913,22 @@ pub(crate) mod tests {
             b"not a transport temporary"
         );
         assert_eq!(std::fs::read_dir(&target).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn android_private_storage_alias_is_allowed_only_for_the_known_package_root() {
+        assert!(is_allowed_android_private_alias(
+            Path::new("/data/user/0"),
+            Path::new("/data/data"),
+        ));
+        assert!(!is_allowed_android_private_alias(
+            Path::new("/data/user/0"),
+            Path::new("/storage/emulated/0"),
+        ));
+        assert!(!is_allowed_android_private_alias(
+            Path::new("/tmp/link"),
+            Path::new("/tmp/target"),
+        ));
     }
 
     #[tokio::test]

@@ -218,6 +218,28 @@ impl CoreApi {
         duplicates: usize,
         failed: usize,
     ) -> CoreResult<SyncRuntimeState> {
+        self.record_sync_attempt_with_skipped_remote(
+            account_id,
+            status,
+            total_found,
+            downloaded,
+            duplicates,
+            None,
+            failed,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_sync_attempt_with_skipped_remote(
+        &self,
+        account_id: &str,
+        status: &str,
+        total_found: usize,
+        downloaded: usize,
+        duplicates: usize,
+        skipped_remote: Option<usize>,
+        failed: usize,
+    ) -> CoreResult<SyncRuntimeState> {
         let account_id = account_id.trim();
         if account_id.is_empty() {
             return Err(CoreError::InvalidConfig(
@@ -251,6 +273,7 @@ impl CoreApi {
             total_found,
             downloaded,
             duplicates,
+            skipped_remote,
             failed,
         });
         self.database.set_setting(&key, &runtime)?;

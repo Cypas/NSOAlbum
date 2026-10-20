@@ -442,15 +442,17 @@ pub fn record_sync_attempt(
     total_found: usize,
     downloaded: usize,
     duplicates: usize,
+    skipped_remote: Option<usize>,
     failed: usize,
 ) -> Result<SyncRuntimeState, String> {
     core()?
-        .record_sync_attempt(
+        .record_sync_attempt_with_skipped_remote(
             &account_id,
             &status,
             total_found,
             downloaded,
             duplicates,
+            skipped_remote,
             failed,
         )
         .map_err(error_text)

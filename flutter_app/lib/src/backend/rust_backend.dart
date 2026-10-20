@@ -1489,7 +1489,8 @@ class RustBackend
         status: failed == 0 ? 'success' : 'partial_failure',
         totalFound: summary.totalFound,
         downloaded: summary.downloaded,
-        duplicates: summary.duplicates + summary.skippedRemote,
+        duplicates: summary.duplicates,
+        skippedRemote: summary.skippedRemote,
         failed: summary.failed,
       );
     } catch (error, stackTrace) {
@@ -1528,13 +1529,19 @@ class RustBackend
       await _logger.info(
         '[sync] trigger=manual-or-scheduled account_slot=account stage=request_succeeded status=${summary.failed == BigInt.zero ? 'success' : 'partial_failure'}',
       );
+      for (final item in summary.errors) {
+        await _logger.info(
+          '[sync] trigger=manual-or-scheduled account_slot=account stage=media_download_failed failed_item=${sanitizeDiagnostic(item.message)}',
+        );
+      }
       try {
         await rust_api.recordSyncAttempt(
           accountId: accountId,
           status: summary.failed == BigInt.zero ? 'success' : 'partial_failure',
           totalFound: summary.totalFound,
           downloaded: summary.downloaded,
-          duplicates: summary.duplicates + summary.skippedRemote,
+          duplicates: summary.duplicates,
+          skippedRemote: summary.skippedRemote,
           failed: summary.failed,
         );
       } catch (historyError, stackTrace) {

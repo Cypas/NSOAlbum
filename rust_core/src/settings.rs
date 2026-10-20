@@ -40,6 +40,8 @@ pub struct SyncAttemptSummary {
     pub total_found: usize,
     pub downloaded: usize,
     pub duplicates: usize,
+    #[serde(default)]
+    pub skipped_remote: Option<usize>,
     pub failed: usize,
 }
 
@@ -236,6 +238,20 @@ mod tests {
     }
 
     #[test]
+    fn sync_attempt_keeps_remote_items_skipped_separate_from_duplicates() {
+        let library = tempfile::tempdir().unwrap();
+        let api = crate::api::CoreApi::open(library.path()).unwrap();
+        let state = api
+            .record_sync_attempt_with_skipped_remote("account-a", "success", 9, 0, 0, Some(5), 4)
+            .unwrap();
+        let attempt = state.latest_attempt.unwrap();
+        assert_eq!(attempt.downloaded, 0);
+        assert_eq!(attempt.duplicates, 0);
+        assert_eq!(attempt.skipped_remote, Some(5));
+        assert_eq!(attempt.failed, 4);
+    }
+
+    #[test]
     fn failed_attempt_anchors_retry_to_attempt_time_when_success_due_is_past() {
         let policy = SyncPolicy {
             enabled: true,
@@ -252,6 +268,7 @@ mod tests {
                 total_found: 0,
                 downloaded: 0,
                 duplicates: 0,
+                skipped_remote: None,
                 failed: 0,
             }),
         };
@@ -282,6 +299,7 @@ mod tests {
                 total_found: 3,
                 downloaded: 1,
                 duplicates: 0,
+                skipped_remote: None,
                 failed: 0,
             }),
         };
@@ -312,6 +330,7 @@ mod tests {
                 total_found: 0,
                 downloaded: 0,
                 duplicates: 0,
+                skipped_remote: None,
                 failed: 0,
             }),
         };
@@ -340,6 +359,7 @@ mod tests {
                 total_found: 0,
                 downloaded: 0,
                 duplicates: 0,
+                skipped_remote: None,
                 failed: 0,
             }),
         };
@@ -367,6 +387,7 @@ mod tests {
                 total_found: 0,
                 downloaded: 0,
                 duplicates: 0,
+                skipped_remote: None,
                 failed: 0,
             }),
         };
@@ -379,6 +400,7 @@ mod tests {
             total_found: 0,
             downloaded: 0,
             duplicates: 0,
+            skipped_remote: None,
             failed: 0,
         });
         assert!(policy

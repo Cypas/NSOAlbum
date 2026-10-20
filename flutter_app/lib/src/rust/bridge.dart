@@ -444,6 +444,7 @@ Future<SyncRuntimeState> recordSyncAttempt({
   required BigInt totalFound,
   required BigInt downloaded,
   required BigInt duplicates,
+  BigInt? skippedRemote,
   required BigInt failed,
 }) => RustLib.instance.api.crateBridgeRecordSyncAttempt(
   accountId: accountId,
@@ -451,6 +452,7 @@ Future<SyncRuntimeState> recordSyncAttempt({
   totalFound: totalFound,
   downloaded: downloaded,
   duplicates: duplicates,
+  skippedRemote: skippedRemote,
   failed: failed,
 );
 

@@ -14,7 +14,9 @@ class AppLogger {
   Future<void> error(String message, Object error, [StackTrace? stackTrace]) =>
       _write(
         'ERROR',
-        '$message: $error${stackTrace == null ? '' : '\n$stackTrace'}',
+        collapseRepeatedAsyncSuspension(
+          '$message: $error${stackTrace == null ? '' : '\n$stackTrace'}',
+        ),
       );
 
   Future<void> ensureExists() => _enqueue(() async {
@@ -86,3 +88,29 @@ String sanitizeDiagnostic(String value) => value
         RegExp(r'(cookie["\s:=]+)[^\r\n]+', caseSensitive: false),
         (match) => '${match[1]}<redacted>',
       );
+
+String collapseRepeatedAsyncSuspension(String value) {
+  final lines = value.split('\n');
+  final output = <String>[];
+  var repeated = 0;
+  void flush() {
+    if (repeated == 0) return;
+    output.add(
+      repeated == 1
+          ? '<asynchronous suspension>'
+          : '<asynchronous suspension> (repeated $repeated times)',
+    );
+    repeated = 0;
+  }
+
+  for (final line in lines) {
+    if (line.trim() == '<asynchronous suspension>') {
+      repeated += 1;
+    } else {
+      flush();
+      output.add(line);
+    }
+  }
+  flush();
+  return output.join('\n');
+}

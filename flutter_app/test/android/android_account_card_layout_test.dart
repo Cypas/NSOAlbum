@@ -44,6 +44,7 @@ void main() {
                   totalFound: BigInt.zero,
                   downloaded: BigInt.zero,
                   duplicates: BigInt.zero,
+                  skippedRemote: BigInt.from(5),
                   failed: BigInt.zero,
                 ),
               ),
@@ -57,7 +58,7 @@ void main() {
               totalFound: BigInt.zero,
               downloaded: BigInt.zero,
               duplicates: BigInt.zero,
-              skippedRemote: BigInt.zero,
+              skippedRemote: BigInt.from(5),
               failed: BigInt.zero,
               errors: const [],
             );
@@ -102,8 +103,8 @@ void main() {
           final result = tester.getRect(
             find.text(
               locale == 'zh'
-                  ? '下载 0 · 重复 0 · 失败 0'
-                  : 'Downloaded 0 · Duplicates 0 · Failed 0',
+                  ? '下载 0 · 重复 0 · 已存在 5 · 失败 0'
+                  : 'Downloaded 0 · Duplicates 0 · Existing 5 · Failed 0',
             ),
           );
           expect(status.left, greaterThan(nameRect.right));

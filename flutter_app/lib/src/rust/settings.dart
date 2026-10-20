@@ -84,6 +84,7 @@ class SyncAttemptSummary {
   final BigInt totalFound;
   final BigInt downloaded;
   final BigInt duplicates;
+  final BigInt? skippedRemote;
   final BigInt failed;
 
   const SyncAttemptSummary({
@@ -92,6 +93,7 @@ class SyncAttemptSummary {
     required this.totalFound,
     required this.downloaded,
     required this.duplicates,
+    this.skippedRemote,
     required this.failed,
   });
 
@@ -102,6 +104,7 @@ class SyncAttemptSummary {
       totalFound.hashCode ^
       downloaded.hashCode ^
       duplicates.hashCode ^
+      skippedRemote.hashCode ^
       failed.hashCode;
 
   @override
@@ -114,6 +117,7 @@ class SyncAttemptSummary {
           totalFound == other.totalFound &&
           downloaded == other.downloaded &&
           duplicates == other.duplicates &&
+          skippedRemote == other.skippedRemote &&
           failed == other.failed;
 }
 

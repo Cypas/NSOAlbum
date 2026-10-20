@@ -51,7 +51,13 @@ class _AndroidLogViewerPageState extends State<AndroidLogViewerPage> {
         }
       }
       lines.sort();
-      if (mounted) setState(() => value = lines.takeLast(300).join('\n'));
+      if (mounted) {
+        setState(
+          () => value = collapseRepeatedAsyncSuspension(
+            lines.takeLast(300).join('\n'),
+          ),
+        );
+      }
     } catch (error, stack) {
       await widget.backend.logError('Log viewer read failed', error, stack);
       if (mounted) setState(() => failed = true);
@@ -159,10 +165,12 @@ class _AndroidLogViewerPageState extends State<AndroidLogViewerPage> {
               ),
             ],
           ),
-          SelectableText(
-            shown.isEmpty
-                ? context.l10n.select(zh: '暂无日志', en: 'No logs yet')
-                : androidSafeLog(shown),
+          SelectionArea(
+            child: SelectableText(
+              shown.isEmpty
+                  ? context.l10n.select(zh: '暂无日志', en: 'No logs yet')
+                  : androidSafeLog(shown),
+            ),
           ),
         ],
       ),

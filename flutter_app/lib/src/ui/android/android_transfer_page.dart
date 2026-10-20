@@ -264,8 +264,19 @@ class _AccountStatusTile extends StatelessWidget {
         if (result != null)
           Text(
             context.l10n.select(
-              zh: '下载 ${result!.downloaded} · 重复 ${result!.duplicates} · 失败 ${result!.failed}',
-              en: 'Downloaded ${result!.downloaded} · Duplicates ${result!.duplicates} · Failed ${result!.failed}',
+              zh: '下载 ${result!.downloaded} · 重复 ${result!.duplicates} · 已存在 ${result!.skippedRemote} · 失败 ${result!.failed}',
+              en: 'Downloaded ${result!.downloaded} · Duplicates ${result!.duplicates} · Existing ${result!.skippedRemote} · Failed ${result!.failed}',
+            ),
+          ),
+        if (attempt != null)
+          Text(
+            context.l10n.select(
+              zh: attempt.skippedRemote == null
+                  ? '上次已存在：未记录'
+                  : '上次已存在：${attempt.skippedRemote}',
+              en: attempt.skippedRemote == null
+                  ? 'Existing last time: not recorded'
+                  : 'Existing last time: ${attempt.skippedRemote}',
             ),
           ),
       ],
@@ -276,6 +287,25 @@ class _AccountStatusTile extends StatelessWidget {
       details: details,
       children: [
         AccountToolsActions(backend: backend, profile: profile, mobile: true),
+        if (result?.errors.isNotEmpty == true)
+          ExpansionTile(
+            key: Key('android-account-failures-${profile.accountId}'),
+            tilePadding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
+            title: Text(
+              context.l10n.select(
+                zh: '失败明细（${result!.errors.length}）',
+                en: 'Failure details (${result!.errors.length})',
+              ),
+            ),
+            children: [
+              for (final item in result!.errors)
+                ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.error_outline),
+                  title: SelectableText(androidSafeDiagnostic(item.message)),
+                ),
+            ],
+          ),
         if (error != null)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 8, 12),

@@ -3636,6 +3636,7 @@ fn wire__crate__bridge__record_sync_attempt_impl(
             let api_total_found = <usize>::sse_decode(&mut deserializer);
             let api_downloaded = <usize>::sse_decode(&mut deserializer);
             let api_duplicates = <usize>::sse_decode(&mut deserializer);
+            let api_skipped_remote = <Option<usize>>::sse_decode(&mut deserializer);
             let api_failed = <usize>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
@@ -3646,6 +3647,7 @@ fn wire__crate__bridge__record_sync_attempt_impl(
                         api_total_found,
                         api_downloaded,
                         api_duplicates,
+                        api_skipped_remote,
                         api_failed,
                     )?;
                     std::result::Result::Ok(output_ok)
@@ -6050,6 +6052,7 @@ impl SseDecode for crate::settings::SyncAttemptSummary {
         let mut var_totalFound = <usize>::sse_decode(deserializer);
         let mut var_downloaded = <usize>::sse_decode(deserializer);
         let mut var_duplicates = <usize>::sse_decode(deserializer);
+        let mut var_skippedRemote = <Option<usize>>::sse_decode(deserializer);
         let mut var_failed = <usize>::sse_decode(deserializer);
         return crate::settings::SyncAttemptSummary {
             attempted_at: var_attemptedAt,
@@ -6057,6 +6060,7 @@ impl SseDecode for crate::settings::SyncAttemptSummary {
             total_found: var_totalFound,
             downloaded: var_downloaded,
             duplicates: var_duplicates,
+            skipped_remote: var_skippedRemote,
             failed: var_failed,
         };
     }
@@ -8091,6 +8095,7 @@ impl flutter_rust_bridge::IntoDart for crate::settings::SyncAttemptSummary {
             self.total_found.into_into_dart().into_dart(),
             self.downloaded.into_into_dart().into_dart(),
             self.duplicates.into_into_dart().into_dart(),
+            self.skipped_remote.into_into_dart().into_dart(),
             self.failed.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -9794,6 +9799,7 @@ impl SseEncode for crate::settings::SyncAttemptSummary {
         <usize>::sse_encode(self.total_found, serializer);
         <usize>::sse_encode(self.downloaded, serializer);
         <usize>::sse_encode(self.duplicates, serializer);
+        <Option<usize>>::sse_encode(self.skipped_remote, serializer);
         <usize>::sse_encode(self.failed, serializer);
     }
 }

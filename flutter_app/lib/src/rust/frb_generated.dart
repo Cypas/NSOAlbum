@@ -510,6 +510,7 @@ abstract class RustLibApi extends BaseApi {
     required BigInt totalFound,
     required BigInt downloaded,
     required BigInt duplicates,
+    BigInt? skippedRemote,
     required BigInt failed,
   });
 
@@ -3889,6 +3890,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required BigInt totalFound,
     required BigInt downloaded,
     required BigInt duplicates,
+    BigInt? skippedRemote,
     required BigInt failed,
   }) {
     return handler.executeNormal(
@@ -3900,6 +3902,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_usize(totalFound, serializer);
           sse_encode_usize(downloaded, serializer);
           sse_encode_usize(duplicates, serializer);
+          sse_encode_opt_box_autoadd_usize(skippedRemote, serializer);
           sse_encode_usize(failed, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
@@ -3919,6 +3922,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           totalFound,
           downloaded,
           duplicates,
+          skippedRemote,
           failed,
         ],
         apiImpl: this,
@@ -3935,6 +3939,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "totalFound",
           "downloaded",
           "duplicates",
+          "skippedRemote",
           "failed",
         ],
       );
@@ -5918,15 +5923,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SyncAttemptSummary dco_decode_sync_attempt_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
     return SyncAttemptSummary(
       attemptedAt: dco_decode_Chrono_Utc(arr[0]),
       status: dco_decode_String(arr[1]),
       totalFound: dco_decode_usize(arr[2]),
       downloaded: dco_decode_usize(arr[3]),
       duplicates: dco_decode_usize(arr[4]),
-      failed: dco_decode_usize(arr[5]),
+      skippedRemote: dco_decode_opt_box_autoadd_usize(arr[5]),
+      failed: dco_decode_usize(arr[6]),
     );
   }
 
@@ -7962,6 +7968,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_totalFound = sse_decode_usize(deserializer);
     var var_downloaded = sse_decode_usize(deserializer);
     var var_duplicates = sse_decode_usize(deserializer);
+    var var_skippedRemote = sse_decode_opt_box_autoadd_usize(deserializer);
     var var_failed = sse_decode_usize(deserializer);
     return SyncAttemptSummary(
       attemptedAt: var_attemptedAt,
@@ -7969,6 +7976,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       totalFound: var_totalFound,
       downloaded: var_downloaded,
       duplicates: var_duplicates,
+      skippedRemote: var_skippedRemote,
       failed: var_failed,
     );
   }
@@ -9796,6 +9804,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_usize(self.totalFound, serializer);
     sse_encode_usize(self.downloaded, serializer);
     sse_encode_usize(self.duplicates, serializer);
+    sse_encode_opt_box_autoadd_usize(self.skippedRemote, serializer);
     sse_encode_usize(self.failed, serializer);
   }
 

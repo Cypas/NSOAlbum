@@ -43,4 +43,15 @@ void main() {
     expect(contents, contains('session_token_code=<redacted>'));
     expect(contents, isNot(contains('secret-value')));
   });
+
+  test('collapses consecutive asynchronous suspension frames', () {
+    expect(
+      collapseRepeatedAsyncSuspension(
+        'first\n<asynchronous suspension>\n'
+        '<asynchronous suspension>\n'
+        '<asynchronous suspension>\nlast',
+      ),
+      'first\n<asynchronous suspension> (repeated 3 times)\nlast',
+    );
+  });
 }
