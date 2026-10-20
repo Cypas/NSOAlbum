@@ -169,14 +169,15 @@ fn phone_controller_rate_is_throttled_monotonic_and_idle_decays() {
     assert_eq!(rate.rate(0), 0);
     rate.record(0, 3000);
     assert_eq!(rate.rate(499), 0);
-    assert_eq!(rate.rate(500), 6000);
-    assert_eq!(rate.rate(100), 6000);
+    assert_eq!(rate.rate(500), 0);
+    assert_eq!(rate.rate(100), 0);
     assert_eq!(rate.rate(1000), 3000);
-    assert_eq!(rate.rate(2000), 1500);
+    assert_eq!(rate.rate(2000), 0);
     assert_eq!(rate.rate(3000), 0);
     rate.record(3000, 6000);
-    assert_eq!(rate.rate(3500), 2000);
-    assert_eq!(rate.rate(6000), 0);
+    assert_eq!(rate.rate(3500), 0);
+    assert_eq!(rate.rate(4000), 6000);
+    assert_eq!(rate.rate(5000), 0);
 }
 
 #[test]
@@ -184,10 +185,10 @@ fn phone_controller_rate_resets_for_new_session_and_is_absent_outside_transfer()
     let mut pair = Pair::new();
     pair.host.throughput.record(0, 10_000);
     pair.host.state = State::Transferring;
-    pair.hc.advance(500);
+    pair.hc.advance(1000);
     assert_eq!(
         pair.host.read_view().progress.transfer_bytes_per_second,
-        Some(20_000)
+        Some(10_000)
     );
     pair.host.state = State::Verifying;
     assert_eq!(
@@ -196,6 +197,27 @@ fn phone_controller_rate_resets_for_new_session_and_is_absent_outside_transfer()
     );
     let fresh = Pair::new();
     assert_eq!(fresh.host.throughput.rate(500), 0);
+}
+
+#[test]
+fn independent_transfer_observation_survives_owner_lock_and_expires_idle_speed() {
+    let mut pair = Pair::new();
+    let observer = pair.host.transfer_observer();
+    pair.host.state = State::Transferring;
+    pair.host.progress.transfer_total_bytes = 8192;
+    pair.host.observe_measurements();
+    pair.host.throughput.record(0, 4096);
+    let owner = std::sync::Mutex::new(&mut pair.host);
+    let _locked = owner.lock().unwrap();
+    pair.hc.advance(1000);
+    let mut progress = crate::device_sync::read_model::ProgressView::observing(&Default::default());
+    observer.project(&mut progress);
+    assert_eq!(progress.transferred_bytes, Some(4096));
+    assert_eq!(progress.transfer_total_bytes, Some(8192));
+    assert_eq!(progress.transfer_bytes_per_second, Some(4096));
+    pair.hc.advance(1000);
+    observer.project(&mut progress);
+    assert_eq!(progress.transfer_bytes_per_second, Some(0));
 }
 
 #[test]
@@ -417,7 +439,7 @@ async fn phone_controller_progress_counts_staged_and_acknowledged_media_not_meta
         let mut pair = controlled_pair();
         let input = tempfile::tempdir().unwrap();
         let path = input.path().join("synthetic.mp4");
-        std::fs::write(&path, vec![91; 256 * 1024]).unwrap();
+        std::fs::write(&path, vec![91; 8 * 1024 * 1024]).unwrap();
         let source = if direction == Direction::DesktopToPhone {
             &pair.a
         } else {
@@ -439,15 +461,15 @@ async fn phone_controller_progress_counts_staged_and_acknowledged_media_not_meta
                 break;
             }
         }
-        pair.hc.advance(500);
-        pair.pc.advance(500);
+        pair.hc.advance(1000);
+        pair.pc.advance(1000);
         for driver in [&pair.host, &pair.phone] {
             assert_eq!(driver.state(), State::Transferring);
             let progress = driver.read_view().progress;
-            assert_eq!(progress.transfer_total_bytes, Some(256 * 1024));
+            assert_eq!(progress.transfer_total_bytes, Some(8 * 1024 * 1024));
             assert_eq!(
                 progress.transfer_bytes_per_second,
-                Some(driver.progress.transferred_bytes * 2)
+                Some(driver.progress.transferred_bytes)
             );
         }
         let (source, target) = if direction == Direction::DesktopToPhone {
@@ -462,7 +484,7 @@ async fn phone_controller_progress_counts_staged_and_acknowledged_media_not_meta
             .handle(Message::FileChunk {
                 sha256: sha.clone(),
                 offset: 0,
-                data: wire::encode_chunk(&vec![91; wire::RAW_CHUNK]),
+                data: vec![91; wire::RAW_CHUNK],
             })
             .is_err());
         assert!(source
@@ -470,12 +492,12 @@ async fn phone_controller_progress_counts_staged_and_acknowledged_media_not_meta
                 sha256: sha,
                 offset: acknowledged,
             })
-            .is_err());
+            .is_ok());
         assert_eq!(target.progress.transferred_bytes, received);
         assert_eq!(source.progress.transferred_bytes, acknowledged);
         pump_until(&mut pair, State::Completed);
-        assert_eq!(pair.host.progress.transferred_bytes, 256 * 1024);
-        assert_eq!(pair.phone.progress.transferred_bytes, 256 * 1024);
+        assert_eq!(pair.host.progress.transferred_bytes, 8 * 1024 * 1024);
+        assert_eq!(pair.phone.progress.transferred_bytes, 8 * 1024 * 1024);
     }
 }
 

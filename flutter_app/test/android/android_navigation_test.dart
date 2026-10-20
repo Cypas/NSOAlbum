@@ -119,7 +119,9 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('android-media-1')));
       await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('编辑标签与备注'));
+      await tester.tap(find.byTooltip('更多'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('编辑标签与备注'));
       await tester.pumpAndSettle();
       await tester.enterText(
         find.byKey(const Key('android-metadata-note')),

@@ -431,7 +431,7 @@ fn cache_reverification_obeys_cancellation_during_streaming_and_preserves_the_ob
     let record = record.clone();
     let runtime = root.path().join("temporary/device-sync");
     paths::ensure_directory(&runtime).unwrap();
-    let cache = CacheRoot::open(&runtime).unwrap();
+    let cache = CacheRoot::open(&runtime, Default::default()).unwrap();
     let path = runtime
         .join("verified-v1")
         .join(format!("{}-67108864-image.jpg", record.sha256));

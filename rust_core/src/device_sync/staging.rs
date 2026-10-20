@@ -20,11 +20,14 @@ mod fix1_tests;
 pub(crate) mod paths;
 #[cfg(test)]
 mod retention_tests;
+#[cfg(test)]
+mod stream_hash_tests;
 mod verified_cache;
 use paths::OwnedPart;
 use verified_cache::{CacheRoot, VerifiedObject};
 
-pub const MAX_CHUNK_BYTES: usize = 65_536;
+pub const MAX_CHUNK_BYTES: usize = super::wire::MEDIA_CHUNK;
+const CHECKSUM_BUFFER_BYTES: usize = 65_536;
 pub const MAX_RECEIVING_FILES: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -164,6 +167,7 @@ pub struct StagingOperation {
     space: SpacePreflight,
     state: OperationState,
     receiving: usize,
+    validation: super::validation::ValidationMetrics,
 }
 
 pub(crate) struct BudgetInputs<'a> {
@@ -180,12 +184,14 @@ struct Entry {
     part: Option<OwnedPart>,
     cached: Option<VerifiedObject>,
     written: u64,
+    write_stamp: Option<(u64, std::time::SystemTime)>,
 }
 
 #[derive(PartialEq, Eq)]
 enum FileState {
     Pending,
     Receiving,
+    Received,
     Verified,
     Published,
 }
@@ -433,7 +439,7 @@ impl StagingOperation {
         let media_root = database
             .ensure_original_root(&media_root)
             .map_err(core_error)?;
-        let cache = CacheRoot::open(&runtime).inspect_err(|error| {
+        let cache = CacheRoot::open(&runtime, work.validation.clone()).inspect_err(|error| {
             diagnostics::receiver(
                 Boundary::StageCacheOpen,
                 &super::receiver::ReceiverError::Staging(*error),
@@ -472,6 +478,7 @@ impl StagingOperation {
                         part: None,
                         cached,
                         written: 0,
+                        write_stamp: None,
                     },
                 );
             }
@@ -521,6 +528,7 @@ impl StagingOperation {
             },
             state: OperationState::Active,
             receiving: 0,
+            validation: work.validation.clone(),
         })
     }
 
@@ -543,7 +551,7 @@ impl StagingOperation {
     pub fn requires_transfer(&self, sha: &str) -> StagingResult<bool> {
         self.check(self.id, sha)?;
         let entry = self.entries.get(sha).expect("checked SHA");
-        Ok(entry.needs_transfer && entry.cached.is_none())
+        Ok(entry.needs_transfer && entry.state == FileState::Pending)
     }
 
     /// ReceivingWindowFull leaves the operation unchanged. Retry that pending
@@ -600,6 +608,13 @@ impl StagingOperation {
             self.fail(error);
             return Err(error);
         }
+        match file_stamp(part.file_mut()) {
+            Ok(stamp) => entry.write_stamp = Some(stamp),
+            Err(error) => {
+                self.fail(error);
+                return Err(error);
+            }
+        }
         Ok(self.progress.clone())
     }
 
@@ -609,6 +624,18 @@ impl StagingOperation {
         sha: &str,
         cancel: &CancellationToken,
         observer: &mut impl FnMut(Progress),
+    ) -> StagingResult<()> {
+        self.seal_file(operation, sha, cancel)?;
+        self.verify_sealed_file(sha, cancel, observer)
+    }
+
+    /// Complete only the bounded receive. This does not verify content or
+    /// grant cache/publication authority; the driver validates the whole batch.
+    pub(crate) fn seal_file(
+        &mut self,
+        operation: uuid::Uuid,
+        sha: &str,
+        cancel: &CancellationToken,
     ) -> StagingResult<()> {
         self.check(operation, sha)?;
         let entry = self.entries.get_mut(sha).expect("checked SHA");
@@ -622,18 +649,55 @@ impl StagingOperation {
             }
             let part = entry.part.as_mut().expect("receiving owns part");
             part.inspect()?;
+            if entry.write_stamp != Some(file_stamp(part.file_mut())?) {
+                return Err(StagingError::ChecksumMismatch);
+            }
             sync_file(part.file_mut())?;
+            check_cancel(cancel)?;
+            if file_stamp(part.file_mut())?.0 != entry.record.length {
+                return Err(StagingError::LengthMismatch);
+            }
+            part.suspend()?;
+            entry.state = FileState::Received;
+            self.receiving -= 1;
+            self.progress = progress(Phase::Receiving, entry.written, Some(entry.record.length));
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.fail(error);
+        }
+        result
+    }
+
+    fn verify_sealed_file(
+        &mut self,
+        sha: &str,
+        cancel: &CancellationToken,
+        observer: &mut impl FnMut(Progress),
+    ) -> StagingResult<()> {
+        self.check(self.id, sha)?;
+        let entry = self.entries.get_mut(sha).expect("checked SHA");
+        if entry.state != FileState::Received {
+            return Err(StagingError::InvalidState);
+        }
+        let result = (|| {
+            check_cancel(cancel)?;
+            let part = entry.part.as_mut().ok_or(StagingError::InvalidState)?;
+            part.inspect()?;
+            part.resume()?;
             part.file_mut().rewind().map_err(|_| StagingError::Read)?;
-            verify_open_file(part.file_mut(), &entry.record, cancel, &mut |event| {
-                self.progress = event.clone();
-                observer(event);
-            })?;
+            verify_open_file(
+                part.file_mut(),
+                &entry.record,
+                cancel,
+                observer,
+                &self.validation,
+            )?;
             check_cancel(cancel)?;
             part.inspect()?;
-            let part = entry.part.take().expect("receiving owns part");
+            let part = entry.part.take().expect("received owns part");
             entry.cached = Some(self.cache.retain(part, &entry.record, cancel)?);
             entry.state = FileState::Verified;
-            self.receiving -= 1;
             self.progress = progress(Phase::Verified, entry.written, Some(entry.record.length));
             observer(self.progress.clone());
             Ok(())
@@ -642,6 +706,46 @@ impl StagingOperation {
             self.fail(error);
         }
         result
+    }
+
+    /// No content is examined until every required incoming file is sealed.
+    /// Validated entries alone enter the reusable cache, including on failure.
+    pub(crate) fn verify_received(
+        &mut self,
+        cancel: &CancellationToken,
+        observer: &mut impl FnMut(Progress),
+    ) -> StagingResult<()> {
+        check_cancel(cancel)?;
+        if self.state != OperationState::Active
+            || self.receiving != 0
+            || self.entries.values().any(|entry| {
+                entry.needs_transfer
+                    && !matches!(entry.state, FileState::Received | FileState::Verified)
+            })
+        {
+            return Err(StagingError::InvalidState);
+        }
+        let pending: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.state == FileState::Received)
+            .map(|(sha, entry)| (sha.clone(), entry.record.length))
+            .collect();
+        let total = pending.iter().try_fold(0_u64, |sum, (_, length)| {
+            sum.checked_add(*length).ok_or(StagingError::Overflow)
+        })?;
+        let mut completed = 0_u64;
+        for (sha, length) in pending {
+            self.verify_sealed_file(&sha, cancel, &mut |event| {
+                observer(progress(
+                    Phase::Verifying,
+                    completed + event.completed_bytes,
+                    Some(total),
+                ));
+            })?;
+            completed += length;
+        }
+        self.check_handoff_complete(cancel)
     }
 
     pub fn publish<'lease>(
@@ -732,7 +836,7 @@ impl StagingOperation {
             }
             Some(path)
         } else {
-            find_existing(&parent, record, cancel, &mut emit)?
+            find_existing(&parent, record, cancel, &mut emit, &self.validation)?
         };
         let destination =
             destination.unwrap_or_else(|| parent.join(format!("{sha}.{}", record.extension)));
@@ -755,7 +859,7 @@ impl StagingOperation {
             Err(error) => return Err(io_error(&error, StagingError::Read)),
         };
         let created = if exists {
-            verify_original(&destination, record, cancel, &mut emit)?;
+            verify_original(&destination, record, cancel, &mut emit, &self.validation)?;
             false
         } else {
             // A planned reuse is not permission to silently replace a lost original.
@@ -772,16 +876,22 @@ impl StagingOperation {
                 .ok_or(StagingError::InvalidState)?
                 .open()?;
             let mut temporary = OwnedPart::create(&parent)?;
-            copy_file(source, &mut temporary, record, cancel, &mut emit)?;
+            copy_file(
+                source,
+                &mut temporary,
+                record,
+                cancel,
+                &mut emit,
+                &self.validation,
+            )?;
             sync_file(temporary.file_mut())?;
-            verify_file(temporary.path(), record, cancel, &mut emit)?;
             emit(progress(Phase::Publishing, 0, None));
             check_cancel(cancel)?;
             paths::inspect(&parent)?;
             match temporary.publish_to(&destination) {
                 Ok(()) => true,
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    verify_original(&destination, record, cancel, &mut emit)?;
+                    verify_original(&destination, record, cancel, &mut emit, &self.validation)?;
                     false
                 }
                 Err(error) => return Err(io_error(&error, StagingError::Publish)),
@@ -875,6 +985,14 @@ fn write_counted(
     Ok(())
 }
 
+fn file_stamp(file: &File) -> StagingResult<(u64, std::time::SystemTime)> {
+    let metadata = file.metadata().map_err(|_| StagingError::Read)?;
+    Ok((
+        metadata.len(),
+        metadata.modified().map_err(|_| StagingError::Read)?,
+    ))
+}
+
 fn sync_file(file: &mut File) -> StagingResult<()> {
     #[cfg(test)]
     tests::io_fault(tests::IoPoint::Sync).map_err(|error| io_error(&error, StagingError::Sync))?;
@@ -887,6 +1005,7 @@ fn verify_file(
     record: &MediaRecord,
     cancel: &CancellationToken,
     observer: &mut impl FnMut(Progress),
+    validation: &super::validation::ValidationMetrics,
 ) -> StagingResult<()> {
     paths::inspect(path)?;
     if !std::fs::symlink_metadata(path)
@@ -896,7 +1015,7 @@ fn verify_file(
         return Err(StagingError::LengthMismatch);
     }
     let mut file = paths::open_regular(path)?;
-    verify_open_file(&mut file, record, cancel, observer)
+    verify_open_file(&mut file, record, cancel, observer, validation)
 }
 
 fn verify_open_file(
@@ -904,6 +1023,7 @@ fn verify_open_file(
     record: &MediaRecord,
     cancel: &CancellationToken,
     observer: &mut impl FnMut(Progress),
+    validation: &super::validation::ValidationMetrics,
 ) -> StagingResult<()> {
     if !file.metadata().map_err(|_| StagingError::Read)?.is_file()
         || file.metadata().map_err(|_| StagingError::Read)?.len() != record.length
@@ -911,7 +1031,7 @@ fn verify_open_file(
         return Err(StagingError::LengthMismatch);
     }
     observer(progress(Phase::Verifying, 0, Some(record.length)));
-    let mut buffer = [0_u8; MAX_CHUNK_BYTES];
+    let mut buffer = [0_u8; CHECKSUM_BUFFER_BYTES];
     let mut written = 0_u64;
     let mut digest = Sha256::new();
     loop {
@@ -922,6 +1042,7 @@ fn verify_open_file(
         if count == 0 {
             break;
         }
+        validation.checksum_read(count as u64);
         written = written
             .checked_add(count as u64)
             .ok_or(StagingError::Overflow)?;
@@ -945,8 +1066,9 @@ fn verify_original(
     record: &MediaRecord,
     cancel: &CancellationToken,
     observer: &mut impl FnMut(Progress),
+    validation: &super::validation::ValidationMetrics,
 ) -> StagingResult<()> {
-    verify_file(path, record, cancel, observer).map_err(|error| match error {
+    verify_file(path, record, cancel, observer, validation).map_err(|error| match error {
         StagingError::LengthMismatch | StagingError::ChecksumMismatch | StagingError::Read => {
             StagingError::CorruptOriginal
         }
@@ -959,13 +1081,14 @@ fn find_existing(
     record: &MediaRecord,
     cancel: &CancellationToken,
     observer: &mut impl FnMut(Progress),
+    validation: &super::validation::ValidationMetrics,
 ) -> StagingResult<Option<PathBuf>> {
     let mut found = None;
     for extension in ["jpg", "jpeg", "png", "webp", "mp4", "mov"] {
         let path = parent.join(format!("{}.{extension}", record.sha256));
         match std::fs::symlink_metadata(&path) {
             Ok(_) => {
-                verify_original(&path, record, cancel, observer)?;
+                verify_original(&path, record, cancel, observer, validation)?;
                 if found.is_none() {
                     found = Some(path);
                 }
@@ -983,9 +1106,11 @@ fn copy_file(
     record: &MediaRecord,
     cancel: &CancellationToken,
     observer: &mut impl FnMut(Progress),
+    validation: &super::validation::ValidationMetrics,
 ) -> StagingResult<()> {
-    let mut buffer = [0_u8; MAX_CHUNK_BYTES];
+    let mut buffer = [0_u8; CHECKSUM_BUFFER_BYTES];
     let mut copied = 0_u64;
+    let mut digest = Sha256::new();
     observer(progress(Phase::Copying, 0, Some(record.length)));
     loop {
         check_cancel(cancel)?;
@@ -1004,16 +1129,33 @@ fn copy_file(
         #[cfg(test)]
         tests::io_fault(tests::IoPoint::Copy)
             .map_err(|error| io_error(&error, StagingError::Write))?;
-        target
-            .file_mut()
-            .write_all(&buffer[..count])
-            .map_err(|error| io_error(&error, StagingError::Write))?;
+        let mut remaining = &buffer[..count];
+        while !remaining.is_empty() {
+            let written = target
+                .file_mut()
+                .write(remaining)
+                .map_err(|error| io_error(&error, StagingError::Write))?;
+            if written == 0 {
+                return Err(StagingError::Write);
+            }
+            digest.update(&remaining[..written]);
+            validation.copied(written as u64);
+            remaining = &remaining[written..];
+        }
         copied = next;
         observer(progress(Phase::Copying, copied, Some(record.length)));
     }
     if copied != record.length {
         return Err(StagingError::LengthMismatch);
     }
+    if hex::encode(digest.finalize()) != record.sha256 {
+        return Err(StagingError::ChecksumMismatch);
+    }
+    observer(progress(
+        Phase::Verifying,
+        record.length,
+        Some(record.length),
+    ));
     Ok(())
 }
 
@@ -2012,7 +2154,7 @@ mod tests {
         let mut status = progress(Phase::Receiving, 0, Some(3));
         let mut written = 0;
         assert_eq!(
-            write_counted(&mut writer, b"abc", &mut written, &mut status, 3),
+            write_counted(&mut writer, b"abc", &mut written, &mut status, 3,),
             Err(StagingError::Write)
         );
         assert_eq!(writer.0, b"a");
@@ -2071,11 +2213,11 @@ mod tests {
         let id = operation.operation_id();
         operation.begin_file(id, sha).unwrap();
         let chunk = [0x5a_u8; MAX_CHUNK_BYTES];
-        for index in 0..4112 {
+        for index in 0..length / MAX_CHUNK_BYTES as u64 {
             let actual = operation
-                .write_chunk(id, sha, index * 65_536, &chunk)
+                .write_chunk(id, sha, index * MAX_CHUNK_BYTES as u64, &chunk)
                 .unwrap();
-            assert_eq!(actual.completed_bytes, (index + 1) * 65_536);
+            assert_eq!(actual.completed_bytes, (index + 1) * MAX_CHUNK_BYTES as u64);
         }
         assert_eq!(
             std::fs::metadata(operation.entries[sha].part.as_ref().unwrap().path())

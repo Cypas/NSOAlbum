@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../backend/app_backend.dart';
-import '../../backend/sync_failure_status.dart';
 import '../../l10n/app_localizations.dart';
 import '../../rust/models.dart';
 import '../../rust/settings.dart';
@@ -11,6 +10,8 @@ import '../../state/transfer_controller.dart';
 import '../display_time.dart';
 import '../account_tools/account_tools_actions.dart';
 import '../device_sync/entry.dart';
+import 'android_account_expander.dart';
+import 'android_account_status.dart';
 import 'android_custom_import_page.dart';
 import 'android_nintendo_sync_page.dart';
 import 'android_page_frame.dart';
@@ -31,6 +32,7 @@ class AndroidTransferPage extends StatelessWidget {
       animation: Listenable.merge([controller, controller.sync]),
       builder: (context, _) {
         final syncing = controller.sync.running;
+        final profiles = controller.accounts;
         return AndroidPageList(
           children: [
             Card(
@@ -63,7 +65,19 @@ class AndroidTransferPage extends StatelessWidget {
                   ),
                   if (controller.accounts.isNotEmpty) ...[
                     const Divider(height: 1),
-                    for (final account in controller.accounts)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          context.l10n.select(
+                            zh: '已登录账号 ${profiles.length}',
+                            en: 'Signed-in accounts: ${profiles.length}',
+                          ),
+                        ),
+                      ),
+                    ),
+                    for (final account in profiles)
                       _AccountStatusTile(
                         backend: controller.backend,
                         profile: account,
@@ -189,21 +203,33 @@ class _AccountStatusTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final attempt = history?.latestAttempt;
-    final status = _accountStatus(context);
-    final identity = Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        CircleAvatar(
-          foregroundImage: profile.avatarBytes?.isNotEmpty == true
-              ? MemoryImage(profile.avatarBytes!)
-              : null,
-          child: profile.avatarBytes?.isNotEmpty == true
-              ? null
-              : const Icon(Icons.person_outline),
-        ),
-        const SizedBox(height: 6),
-        Text(profile.nickname, textAlign: TextAlign.center, softWrap: true),
-      ],
+    final status = androidAccountStatus(
+      context,
+      current: current,
+      cancelling: cancelling,
+      authPaused: authPaused,
+      error: error,
+      result: result,
+      history: history,
+    );
+    final identity = SizedBox(
+      // Keep identity compact; large text wraps within its own column.
+      width: 80,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircleAvatar(
+            foregroundImage: profile.avatarBytes?.isNotEmpty == true
+                ? MemoryImage(profile.avatarBytes!)
+                : null,
+            child: profile.avatarBytes?.isNotEmpty == true
+                ? null
+                : const Icon(Icons.person_outline),
+          ),
+          const SizedBox(height: 6),
+          Text(profile.nickname, textAlign: TextAlign.center, softWrap: true),
+        ],
+      ),
     );
     final details = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -231,8 +257,8 @@ class _AccountStatusTile extends StatelessWidget {
         if (attempt != null)
           Text(
             context.l10n.select(
-              zh: '上次尝试：${formatNsoAttemptTime(attempt.attemptedAt)}',
-              en: 'Last attempt: ${formatNsoAttemptTime(attempt.attemptedAt)}',
+              zh: '上次尝试：${formatNsoAttemptTime(attempt.attemptedAt, includeSeconds: false)}',
+              en: 'Last attempt: ${formatNsoAttemptTime(attempt.attemptedAt, includeSeconds: false)}',
             ),
           ),
         if (result != null)
@@ -244,29 +270,10 @@ class _AccountStatusTile extends StatelessWidget {
           ),
       ],
     );
-    return ExpansionTile(
+    return AndroidAccountExpander(
       key: PageStorageKey('android-account-${profile.accountId}'),
-      title: LayoutBuilder(
-        builder: (context, constraints) {
-          final stacked =
-              constraints.maxWidth < 250 ||
-              MediaQuery.textScalerOf(context).scale(14) > 21;
-          if (stacked) {
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [identity, const SizedBox(height: 12), details],
-            );
-          }
-          return Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SizedBox(width: 100, child: identity),
-              const SizedBox(width: 12),
-              Expanded(child: details),
-            ],
-          );
-        },
-      ),
+      identity: identity,
+      details: details,
       children: [
         AccountToolsActions(backend: backend, profile: profile, mobile: true),
         if (error != null)
@@ -300,82 +307,6 @@ class _AccountStatusTile extends StatelessWidget {
           ),
       ],
     );
-  }
-
-  ({String text, Color color}) _accountStatus(BuildContext context) {
-    ({String text, Color color}) status(String zh, String en, Color color) =>
-        (text: context.l10n.select(zh: zh, en: en), color: color);
-    final active = Colors.blue.shade600;
-    final success = Colors.green.shade600;
-    final warning = Colors.amber.shade700;
-    final failure = Colors.red.shade600;
-    final neutral = Colors.grey.shade600;
-    if (current) {
-      return cancelling
-          ? status('正在取消同步', 'Cancelling sync', active)
-          : status('正在同步', 'Syncing', active);
-    }
-    if (authPaused) {
-      return status(
-        '登录已失效，等待重新登录',
-        'Sign-in expired; waiting for sign-in',
-        failure,
-      );
-    }
-    if (error != null) {
-      switch (syncFailureStatus(error!)) {
-        case 'rate_limited':
-          return status(
-            '请求过于频繁，等待重试',
-            'Rate limited; waiting to retry',
-            warning,
-          );
-        case 'authentication_failure':
-          return status(
-            '登录已失效，等待重新登录',
-            'Sign-in expired; waiting for sign-in',
-            failure,
-          );
-        case 'cancelled':
-          return status('同步已取消', 'Sync cancelled', neutral);
-        default:
-          return (text: androidReadableError(context, error!), color: failure);
-      }
-    }
-    if (result != null) {
-      if (result!.failed > BigInt.zero) {
-        return status(
-          '同步完成但有部分项目失败',
-          'Sync completed with some failed items',
-          warning,
-        );
-      }
-      return status('同步完成', 'Sync complete', success);
-    }
-    switch (history?.latestAttempt?.status) {
-      case 'success':
-      case 'completed':
-        return status('上次同步成功', 'Last sync succeeded', success);
-      case 'rate_limited':
-        return status('请求过于频繁，等待重试', 'Rate limited; waiting to retry', warning);
-      case 'cancelled':
-        return status('上次同步已取消', 'Last sync was cancelled', neutral);
-      case 'failure':
-        return status('上次同步未完成', 'Last sync did not complete', failure);
-      case 'partial_failure':
-        return status(
-          '上次同步有部分项目失败',
-          'Last sync had some failed items',
-          warning,
-        );
-      case 'authentication_failure':
-        return status(
-          '登录已失效，等待重新登录',
-          'Sign-in expired; waiting for sign-in',
-          failure,
-        );
-    }
-    return status('等待同步', 'Waiting to sync', neutral);
   }
 }
 

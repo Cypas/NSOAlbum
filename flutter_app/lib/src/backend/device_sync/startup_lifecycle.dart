@@ -74,6 +74,7 @@ class DeviceSyncStartupLifecycle extends ChangeNotifier {
     required DeviceAccountCoordinator Function(String) coordinator,
     required Future<void> Function() initialize,
     required this.isolated,
+    this.onDiagnostic,
   }) : _gate = gate,
        // ignore: prefer_initializing_formals
        _openLibrary = openLibrary,
@@ -88,6 +89,18 @@ class DeviceSyncStartupLifecycle extends ChangeNotifier {
   final DeviceAccountCoordinator Function(String) _coordinatorFactory;
   final Future<void> Function() _initialize;
   final bool isolated;
+  final Future<void> Function(String stage, Object error)? onDiagnostic;
+
+  void _diagnostic(String stage, Object failure) {
+    final callback = onDiagnostic;
+    if (callback != null) {
+      unawaited(
+        Future<void>.sync(() => callback(stage, failure))
+            .catchError((Object _) {}),
+      );
+    }
+  }
+
   AccountStartupBarrier? _barrier;
   String? _library;
   DeviceAccountCoordinator? _coordinator;

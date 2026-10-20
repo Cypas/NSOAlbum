@@ -42,6 +42,7 @@
 │  │  ├─ device-sync-spec.md               跨设备配对、数据及恢复的批准规格
 │  │  ├─ device-sync-execution-spec.md     准入、缓存、本地交接及任务生命周期增补
 │  │  ├─ device-sync-local-apply-design.md 网络到本地应用的授权和恢复技术设计
+│  │  ├─ device-sync-throughput-design.md  同步吞吐、会话结果复用与测量的本地技术设计
 │  │  ├─ ci-gate-progress.md               历史三平台 CI 实施过程，不是现行规则
 │  │  └─ plans/
 │  │     ├─ 2026-10-13-android-ui-redesign.md
@@ -57,8 +58,12 @@
 │  │                                        本地应用交接、原生所有权及账号收尾计划
 │  │     ├─ 2026-10-17-device-sync-native-fixes.md
 │  │                                        Windows 引擎前选主、TLS 背压及 Android 目录修正
-│  │     └─ 2026-10-18-device-sync-phone-control.md
+│  │     ├─ 2026-10-18-device-sync-phone-control.md
 │  │                                        手机单端控制、预览授权及容量/速度展示实施记录
+│  │     ├─ 2026-10-18-device-sync-normal-entry.md
+│  │     │                                  普通主入口USB双向复验与配置/SAF问题定位
+│  │     └─ 2026-10-18-device-sync-usb-discovery.md
+│  │                                        USB 自动发现、WPD快照竞态、授权复用及双向账号实测计划
 │  ├─ protocol/                           [本地]
 │  │  └─ nintendo-implementacao-para-comunidade.md
 │  │                                      外部 NSO/Coral 协议研究归档
@@ -94,6 +99,28 @@
 各平台的 `CMakeLists.txt` 是构建脚本，不是文本说明，不能当文档移动或忽略。
 
 ## 3. 本地工作记录与诊断文档树
+
+本地 `docs/design/plans/2026-10-18-multiplatform-sync-experience.md` 记录多端同步、
+认证复用、日志、好友与 Android 搜索的批准行为和实施状态；执行账本位于
+`.superpowers/sdd/2026-10-18-multiplatform-sync/`，不提交或随应用分发。
+同一本地计划还记录 Android 详情页和跨平台视频首帧封面的已批准增补、测试及未验收边界。
+`docs/design/device-sync-throughput-design.md` 是后续传输优化的本地设计，
+用于区分协议边界、测量口径和分阶段验收；不提交或随应用分发，
+其存在不代表新协议已经实现或通过实机测试。对应本地实施计划为
+`docs/design/plans/2026-10-19-device-sync-throughput.md`。
+两份本地材料也记录连续传输、增量校验、业务回执与信箱回收解耦的后续设计；
+当前获准的窗口/累计回执与USB v3切面也在同两份材料中分列，明确能力协商、
+小文件批次及字节/回收硬预算，实施记录不表示已经取得新设备测速结论。
+已实现切面、候选协议及未验收项分开标记，不在公开索引复制内部方案正文。
+该专题的本地测量、RED/GREEN 与设备对照记录放在
+`dist/device-sync-throughput-20261019/RESULTS.md`（本地、不提交），
+须区分纯模型、原生通道、预热和正式三轮基准，不能以预热替代优化验收。
+二进制媒体与 USB 大载荷的后续台账另存为同目录 `BINARY-V4-RESULTS.md`，
+由上述历史入口链接；只归档实际完成的检查与设备证据，不把设计参数当作实测结果。
+SAF 合成吞吐工具与回归的位置见目录规范的“无账号设备文件通道探针”条目；
+其结果仅覆盖原生字节通道，不能替代二维码授权、图库应用或真实账号验收。
+真实同步页面的独立合成图库 QA 用法、进程级 Rust Core 的热重启边界和
+恢复普通 Debug 包的要求见 `flutter_app/README.md` 的“独立图库协议 QA”。
 
 以下目录均为 **本地、不提交**。它们保存实现证据和历史过程，
 与源码中可重复运行的正式测试不是同一种材料。

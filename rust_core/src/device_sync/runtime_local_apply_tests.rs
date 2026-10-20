@@ -179,9 +179,9 @@ impl Pair {
                                     .is_none());
                             }
                             UsbActionKind::Acknowledge => {
-                                boxes[direction]
-                                    .remove(action.name.as_ref().unwrap())
-                                    .unwrap();
+                                let through = action.name.as_ref().unwrap();
+                                assert!(boxes[direction].contains_key(through));
+                                boxes[direction].retain(|name, _| name > through);
                             }
                             UsbActionKind::Enumerate => unreachable!(),
                         }
@@ -284,7 +284,16 @@ impl Pair {
                         std::fs::rename(part, path).unwrap();
                     }
                     UsbActionKind::Acknowledge => {
-                        std::fs::remove_file(directory.join(action.name.as_ref().unwrap())).unwrap()
+                        let through = action.name.as_ref().unwrap();
+                        let names: Vec<_> = std::fs::read_dir(&directory)
+                            .unwrap()
+                            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                            .filter(|name| name.ends_with(".block") && name <= through)
+                            .collect();
+                        assert!(names.len() <= 8);
+                        for name in names {
+                            std::fs::remove_file(directory.join(name)).unwrap();
+                        }
                     }
                     UsbActionKind::Close => {}
                     UsbActionKind::Enumerate => unreachable!(),
@@ -906,7 +915,21 @@ async fn runtime_local_tcp_eof_keeps_real_external_commands_and_finalized_journa
         checked.is_ok(),
         "real ExternalCheck must still execute after peer EOF: {checked:?}"
     );
-    let observed = read_endpoint(&pair.endpoints[1]);
+    // Managed commands return independently of the owner's next publication.
+    // A real nonblocking read may be Busy while that owner is still polling.
+    // Retry only that documented transient; keep every substantive error.
+    let read_until = Instant::now() + Duration::from_secs(10);
+    let observed = loop {
+        let observed = read_endpoint(&pair.endpoints[1]);
+        if observed.error != Some(ReadError::Busy) {
+            break observed;
+        }
+        assert!(
+            Instant::now() < read_until,
+            "local read remained busy after EOF"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    };
     assert!(
         observed.error.is_none(),
         "transport error must not hide the local read model"
@@ -931,6 +954,11 @@ async fn runtime_local_tcp_eof_keeps_real_external_commands_and_finalized_journa
             .stage,
         "finalized"
     );
+    pair.wait(|| {
+        status(&pair.endpoints[1]).unwrap().state == "Completed"
+            && status(&pair.endpoints[0]).unwrap().state == "CompletedUnconfirmed"
+    })
+    .await;
     assert_eq!(status(&pair.endpoints[1]).unwrap().state, "Completed");
     assert_eq!(
         status(&pair.endpoints[0]).unwrap().state,

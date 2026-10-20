@@ -216,13 +216,16 @@ async fn usb_unknown_write_result_is_terminal_and_never_retries_or_accepts_late_
         let mobile = Mobile::new();
         let open = action(&mobile.phone).await;
         headless::usb_complete(&mobile.phone, UsbReply::empty(&open)).unwrap();
-        for _ in 0..2 {
-            let list = action(&mobile.phone).await;
-            assert_eq!(list.kind, UsbActionKind::List);
-            headless::usb_complete(&mobile.phone, UsbReply::empty(&list)).unwrap();
-        }
-        let write = action(&mobile.phone).await;
-        assert_eq!(write.kind, UsbActionKind::Write);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let write = loop {
+            assert!(std::time::Instant::now() < deadline);
+            let next = action(&mobile.phone).await;
+            if next.kind == UsbActionKind::Write {
+                break next;
+            }
+            assert_eq!(next.kind, UsbActionKind::List);
+            headless::usb_complete(&mobile.phone, UsbReply::empty(&next)).unwrap();
+        };
         assert!(!write.bytes.is_empty());
         let mut failed = UsbReply::empty(&write);
         failed.error = Some(error);
@@ -293,15 +296,21 @@ async fn usb_native_owner_rejects_ambiguous_local_device_ids_from_real_child() {
 
 #[tokio::test]
 async fn usb_same_endpoint_moves_real_tls_over_129_blocks_and_acks_final_commit_before_close() {
-    real_tls_over_native_window(false).await;
+    real_tls_over_native_window(false, false).await;
 }
 
 #[tokio::test]
 async fn usb_phone_control_moves_real_tls_over_129_blocks_and_acks_final_commit_before_close() {
-    real_tls_over_native_window(true).await;
+    real_tls_over_native_window(true, false).await;
 }
 
-async fn real_tls_over_native_window(phone_controlled: bool) {
+#[tokio::test]
+async fn usb_small_file_bundle_keeps_sending_receipts_while_input_is_backpressured() {
+    real_tls_over_native_window(true, true).await;
+}
+
+async fn real_tls_over_native_window(phone_controlled: bool, small_files: bool) {
+    use sha2::Digest;
     let _serial = SERIAL.lock().await;
     let roots = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
     let libraries = roots.each_ref().map(|root| {
@@ -310,12 +319,23 @@ async fn real_tls_over_native_window(phone_controlled: bool) {
             .handle
     });
     let api = headless::owner_test_tools::runtime_api(&libraries[0]);
-    let input = roots[0].path().join("stream.jpg");
-    let bytes = vec![0x53; 9 * 1024 * 1024 + 1];
-    std::fs::write(&input, &bytes).unwrap();
-    api.import_local_files(vec![input.to_string_lossy().into_owned()])
-        .await
-        .unwrap();
+    let mut expected = BTreeMap::new();
+    let mut inputs = vec![];
+    for index in 0..if small_files { 8 } else { 1 } {
+        let input = roots[0].path().join(format!("stream-{index}.jpg"));
+        let bytes = vec![
+            index as u8;
+            if small_files {
+                256 * 1024
+            } else {
+                9 * 1024 * 1024 + 1
+            }
+        ];
+        std::fs::write(&input, &bytes).unwrap();
+        expected.insert(hex::encode(sha2::Sha256::digest(&bytes)), bytes);
+        inputs.push(input.to_string_lossy().into_owned());
+    }
+    api.import_local_files(inputs).await.unwrap();
     let host = if phone_controlled {
         headless::owner_test_tools::phone_usb_actions(&libraries[0], "Desktop")
     } else {
@@ -331,10 +351,28 @@ async fn real_tls_over_native_window(phone_controlled: bool) {
     let mut configured = false;
     let mut approved = false;
     let mut closed = [false, false];
-    let deadline = std::time::Instant::now() + Duration::from_secs(45);
+    // Functional streaming/commit checks, not a host-throughput benchmark.
+    // Only actual media/work or stage progress resets the idle watchdog.
+    let deadline = std::time::Instant::now() + Duration::from_secs(180);
+    let idle_limit = Duration::from_secs(if small_files { 5 } else { 45 });
+    let mut idle_until = std::time::Instant::now() + idle_limit;
+    let mut previous = None;
     while !closed.iter().all(|v| *v) {
+        let progress = endpoints.each_ref().map(|endpoint| {
+            headless::read_endpoint(endpoint).value.map(|view| {
+                (
+                    view.stage,
+                    view.progress.transferred_bytes,
+                    view.progress.scanned_items,
+                )
+            })
+        });
+        if previous != Some(progress) {
+            previous = Some(progress);
+            idle_until = std::time::Instant::now() + idle_limit;
+        }
         assert!(
-            std::time::Instant::now() < deadline,
+            std::time::Instant::now() < deadline && std::time::Instant::now() < idle_until,
             "{:?} {:?}",
             headless::status(&endpoints[0]),
             headless::status(&endpoints[1])
@@ -348,9 +386,15 @@ async fn real_tls_over_native_window(phone_controlled: bool) {
                 .is_some_and(|(_, _, until)| std::time::Instant::now() >= *until)
             {
                 let (action, reply, _) = held[index].take().unwrap();
-                boxes[1 - index]
-                    .remove(action.name.as_ref().unwrap())
-                    .unwrap();
+                if action.kind == UsbActionKind::Acknowledge {
+                    let through = action.name.as_ref().unwrap();
+                    assert!(boxes[1 - index].contains_key(through));
+                    boxes[1 - index].retain(|name, _| name > through);
+                } else {
+                    assert_eq!(action.kind, UsbActionKind::Write);
+                    boxes[index].insert(action.name.clone().unwrap(), action.bytes.clone());
+                    writes[index] += 1;
+                }
                 headless::usb_complete(&endpoints[index], reply).unwrap_or_else(|error| panic!(
                     "held ACK failed side={index} error={error:?} closed={closed:?} writes={writes:?} boxes={:?} USB={:?} {:?}",
                     boxes.each_ref().map(|b|b.len()), headless::usb_view(&endpoints[0]), headless::usb_view(&endpoints[1])
@@ -394,11 +438,25 @@ async fn real_tls_over_native_window(phone_controlled: bool) {
                         continue;
                     }
                     UsbActionKind::Write => {
+                        assert!(
+                            action.bytes.starts_with(b"NSOUSB4\0"),
+                            "negotiated v3 must never publish a legacy carrier"
+                        );
                         // A real, deliberately small OS window produces backpressure
                         // while both owners keep reading and acknowledging.
-                        if !boxes[index].is_empty() {
+                        if boxes[index].len() >= if small_files { 16 } else { 1 } {
                             reply.error = Some(super::read_model::ReadError::WindowFull);
                             full[index] += 1;
+                        } else if small_files && index == 1 {
+                            // SAF publication/rename completes asynchronously;
+                            // the managed owner must keep its bounded protocol
+                            // queues live while this successful write is pending.
+                            held[index] = Some((
+                                action,
+                                reply,
+                                std::time::Instant::now() + Duration::from_millis(100),
+                            ));
+                            continue;
                         } else {
                             boxes[index].insert(action.name.clone().unwrap(), action.bytes.clone());
                             writes[index] += 1;
@@ -435,6 +493,11 @@ async fn real_tls_over_native_window(phone_controlled: bool) {
         if confirmed
             && !configured
             && headless::status(&endpoints[0]).unwrap().state == "Configuring"
+            && endpoints.iter().all(|endpoint| {
+                headless::read_endpoint(endpoint)
+                    .value
+                    .is_some_and(|view| view.pairing == PairingStage::Confirmed)
+            })
         {
             headless::command(&endpoints[usize::from(phone_controlled)], |d| {
                 d.configure(
@@ -444,7 +507,21 @@ async fn real_tls_over_native_window(phone_controlled: bool) {
                 )
             })
             .await
-            .unwrap();
+            .unwrap_or_else(|error| {
+                panic!(
+                    "synthetic configure failed: {error:?}; views={:?}",
+                    endpoints.each_ref().map(|endpoint| {
+                        headless::read_endpoint(endpoint).value.map(|view| {
+                            (
+                                view.pairing,
+                                view.stage,
+                                view.controller,
+                                view.configuration,
+                            )
+                        })
+                    })
+                )
+            });
             configured = true;
         }
         if !approved && headless::status(&endpoints[1]).unwrap().state == "AwaitingApproval" {
@@ -470,19 +547,29 @@ async fn real_tls_over_native_window(phone_controlled: bool) {
             tokio::task::yield_now().await;
         }
     }
-    assert!(
-        writes[0] >= 129,
-        "real TLS stream must cross the fixed native window size"
-    );
+    if !small_files {
+        assert!(
+            writes[0] > 16 && writes[0] < 129,
+            "large carriers must stream many logical chunks through multiple bounded windows"
+        );
+    }
     println!("USB synthetic writes={writes:?} WindowFull={full:?}");
-    assert!(
-        full.iter().all(|count| *count > 0),
-        "both owners must preserve inbound liveness while their own OS window is full"
-    );
+    if !small_files {
+        assert!(
+            full.iter().all(|count| *count > 0),
+            "both owners must preserve inbound liveness while their own OS window is full"
+        );
+    }
     let media = headless::owner_test_tools::runtime_api(&libraries[1])
         .list_media(Default::default())
         .unwrap();
-    assert_eq!(std::fs::read(&media[0].storage_path).unwrap(), bytes);
+    assert_eq!(media.len(), expected.len());
+    for item in media {
+        assert_eq!(
+            std::fs::read(&item.storage_path).unwrap(),
+            expected[&item.sha256]
+        );
+    }
     if phone_controlled {
         // These are real one-shot handoff facts, never set by the test.
         assert!(headless::status(&endpoints[0]).unwrap().source_grant_issued);
@@ -674,7 +761,8 @@ async fn usb_frb_peer() {
                 UsbActionKind::Read => {
                     reply.bytes =
                         std::fs::read(directory.join(action.name.as_ref().unwrap())).unwrap();
-                    assert!(reply.bytes.len() <= 65548);
+                    assert!((29..=8 * 1024 * 1024).contains(&reply.bytes.len()));
+                    assert!(reply.bytes.starts_with(b"NSOUSB4\0"));
                 }
                 UsbActionKind::Write => {
                     let target = directory.join(action.name.as_ref().unwrap());
@@ -696,8 +784,16 @@ async fn usb_frb_peer() {
                         reply.error = Some(super::read_model::ReadError::PermissionDenied);
                         final_ack_failed = true;
                     } else {
-                        std::fs::remove_file(directory.join(action.name.as_ref().unwrap()))
-                            .unwrap();
+                        let through = action.name.as_ref().unwrap();
+                        let names: Vec<_> = std::fs::read_dir(&directory)
+                            .unwrap()
+                            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                            .filter(|name| name.ends_with(".block") && name <= through)
+                            .collect();
+                        assert!(names.len() <= 8);
+                        for name in names {
+                            std::fs::remove_file(directory.join(name)).unwrap();
+                        }
                     }
                 }
                 UsbActionKind::Close => {}

@@ -1,4 +1,4 @@
-use super::session::AuthenticatedCoralSession;
+use super::session::{AuthenticatedCoralSession, CachedNintendoIdentity};
 use super::splatnet::{self, SplatNetSession};
 use super::{
     AttestationService, CoralSession, CoralSessionClient, NxapiAttestationClient, NxapiConfig,
@@ -53,6 +53,11 @@ fn parse_friends(value: &Value) -> CoreResult<(Vec<NintendoFriend>, HashMap<Stri
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .into(),
+            avatar_url: node
+                .get("imageUri")
+                .and_then(Value::as_str)
+                .filter(|url| !url.is_empty())
+                .map(str::to_owned),
             note: node
                 .get("note")
                 .and_then(Value::as_str)
@@ -138,6 +143,15 @@ fn friend_activity(node: &Value) -> Option<&'static str> {
 
 #[async_trait]
 pub(crate) trait AccountAuthenticator: Send + Sync {
+    async fn login_cached(
+        &self,
+        transport: HttpTransport,
+        attestation: NxapiAttestationClient,
+        token: &str,
+        _cache: &mut Option<CachedNintendoIdentity>,
+    ) -> CoreResult<AuthenticatedCoralSession> {
+        self.login(transport, attestation, token).await
+    }
     async fn login(
         &self,
         transport: HttpTransport,
@@ -148,6 +162,17 @@ pub(crate) trait AccountAuthenticator: Send + Sync {
 struct ProtocolAuthenticator;
 #[async_trait]
 impl AccountAuthenticator for ProtocolAuthenticator {
+    async fn login_cached(
+        &self,
+        transport: HttpTransport,
+        attestation: NxapiAttestationClient,
+        token: &str,
+        cache: &mut Option<CachedNintendoIdentity>,
+    ) -> CoreResult<AuthenticatedCoralSession> {
+        CoralSessionClient::new(transport, attestation)
+            .login_with_identity_cache(token, cache)
+            .await
+    }
     async fn login(
         &self,
         transport: HttpTransport,
@@ -162,22 +187,62 @@ impl AccountAuthenticator for ProtocolAuthenticator {
 
 #[derive(Default)]
 struct AccountCache {
+    nintendo: Option<CachedNintendoIdentity>,
     auth: Option<AuthenticatedCoralSession>,
     splatnet: Option<SplatNetSession>,
     avatars: HashMap<String, String>,
+    avatar_bytes: HashMap<String, (String, Vec<u8>)>,
+}
+
+impl AccountCache {
+    fn cached_avatar(&self, id: &str, url: &str) -> Option<Vec<u8>> {
+        self.avatar_bytes
+            .get(id)
+            .filter(|(cached, _)| cached == url)
+            .map(|(_, bytes)| bytes.clone())
+    }
+    fn remember_avatar(&mut self, id: &str, url: &str, bytes: &[u8]) {
+        const MAX_BYTES: usize = 16 * 1024 * 1024;
+        if self.avatar_bytes.len() >= 128
+            || self
+                .avatar_bytes
+                .values()
+                .map(|(_, data)| data.len())
+                .sum::<usize>()
+                + bytes.len()
+                > MAX_BYTES
+        {
+            self.avatar_bytes.clear();
+        }
+        if !bytes.is_empty() && bytes.len() <= 4 * 1024 * 1024 {
+            self.avatar_bytes
+                .insert(id.into(), (url.into(), bytes.to_vec()));
+        }
+    }
 }
 struct AuthenticationInput<'a> {
     token: &'a str,
     account: Option<&'a str>,
     transport: &'a HttpTransport,
     client: &'a NxapiAttestationClient,
+    proxy: Option<&'a str>,
     generation: u64,
 }
-#[derive(Default)]
 struct AccountEntry {
+    client: NxapiAttestationClient,
     identities: Mutex<BTreeSet<String>>,
     removed: CancellationToken,
     cache: tokio::sync::Mutex<AccountCache>,
+}
+impl AccountEntry {
+    fn new(client: NxapiAttestationClient) -> Self {
+        Self {
+            client,
+            identities: Default::default(),
+            removed: Default::default(),
+            cache: Default::default(),
+        }
+    }
 }
 struct RegisteredOperation {
     account: Option<String>,
@@ -190,6 +255,7 @@ struct Registry {
     cleared_accounts: HashMap<String, u64>,
     entries: HashMap<String, Arc<AccountEntry>>,
     clients: HashMap<String, NxapiAttestationClient>,
+    client_accounts: HashMap<String, BTreeSet<String>>,
     operations: HashMap<String, RegisteredOperation>,
     retired: VecDeque<String>,
 }
@@ -358,18 +424,30 @@ impl AccountTools {
         {
             op.token.cancel();
         }
+        let mut removed_identities = BTreeSet::from([account.to_owned()]);
         registry.entries.retain(|_, entry| {
             let identities = entry
                 .identities
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             if identities.contains(account) {
+                removed_identities.extend(identities.iter().cloned());
                 entry.removed.cancel();
                 false
             } else {
                 true
             }
         });
+        let removed_keys: Vec<_> = registry
+            .client_accounts
+            .iter()
+            .filter(|(_, identities)| !identities.is_disjoint(&removed_identities))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in removed_keys {
+            registry.clients.remove(&key);
+            registry.client_accounts.remove(&key);
+        }
         Ok(())
     }
 
@@ -395,7 +473,21 @@ impl AccountTools {
             .entries
             .retain(|_, entry| entry.removed.check().is_ok());
         let generation = registry.generation;
-        let entry = Arc::clone(registry.entries.entry(key).or_default());
+        let template = shared_attestation(&mut registry, proxy_key, transport)?;
+        let client = account
+            .and_then(|id| {
+                registry
+                    .clients
+                    .get(&account_attestation_key(id, &template.service_key(), proxy))
+                    .cloned()
+            })
+            .unwrap_or_else(|| template.isolated_credentials());
+        let entry = Arc::clone(
+            registry
+                .entries
+                .entry(key)
+                .or_insert_with(|| Arc::new(AccountEntry::new(client))),
+        );
         if let Some(account) = account {
             let identities = entry.identities.lock().map_err(|_| poisoned())?;
             if !identities.is_empty() && !identities.contains(account) {
@@ -404,7 +496,7 @@ impl AccountTools {
                 ));
             }
         }
-        let client = shared_attestation(&mut registry, proxy_key, transport)?;
+        let client = entry.client.clone();
         Ok((entry, client, generation))
     }
 
@@ -419,6 +511,7 @@ impl AccountTools {
         if force {
             cache.auth = None;
             cache.splatnet = None;
+            cache.nintendo = None;
         }
         let valid = cache.auth.as_ref().is_some_and(|auth| {
             auth.session
@@ -428,7 +521,12 @@ impl AccountTools {
         if !valid {
             let auth = self
                 .authenticator
-                .login(input.transport.clone(), input.client.clone(), input.token)
+                .login_cached(
+                    input.transport.clone(),
+                    input.client.clone(),
+                    input.token,
+                    &mut cache.nintendo,
+                )
                 .await?;
             entry.removed.check()?;
             verify_identity(&auth.session, input.account)?;
@@ -440,7 +538,7 @@ impl AccountTools {
             }
             // Serialize the identity/cache commit with account removal, including
             // authentication that started before its Nintendo identity was known.
-            let registry = self.registry.lock().map_err(|_| poisoned())?;
+            let mut registry = self.registry.lock().map_err(|_| poisoned())?;
             if actual_ids.iter().any(|id| {
                 registry
                     .cleared_accounts
@@ -458,6 +556,12 @@ impl AccountTools {
                     "Nintendo session does not belong to this account".into(),
                 ));
             }
+            let service = input.client.service_key();
+            for id in &actual_ids {
+                let key = account_attestation_key(id, &service, input.proxy);
+                registry.clients.insert(key.clone(), input.client.clone());
+                registry.client_accounts.insert(key, actual_ids.clone());
+            }
             *identities = actual_ids;
             cache.auth = Some(auth);
             cache.splatnet = None;
@@ -473,12 +577,35 @@ impl AccountTools {
 
     pub(crate) fn attestation(
         &self,
+        session: &CoralSession,
         proxy: Option<&str>,
         transport: &HttpTransport,
     ) -> CoreResult<NxapiAttestationClient> {
-        let key = hex::encode(Sha256::digest(proxy.unwrap_or("").as_bytes()));
+        let identities = session_identities(session);
+        if identities.is_empty() {
+            return Err(CoreError::Authentication(
+                "Nintendo account identity is missing".into(),
+            ));
+        }
         let mut registry = self.registry.lock().map_err(|_| poisoned())?;
-        shared_attestation(&mut registry, key, transport)
+        let proxy_key = hex::encode(Sha256::digest(proxy.unwrap_or("").as_bytes()));
+        let template = shared_attestation(&mut registry, proxy_key, transport)?;
+        let service = template.service_key();
+        for id in &identities {
+            if let Some(client) = registry
+                .clients
+                .get(&account_attestation_key(id, &service, proxy))
+            {
+                return Ok(client.clone());
+            }
+        }
+        let client = template.isolated_credentials();
+        for id in &identities {
+            let key = account_attestation_key(id, &service, proxy);
+            registry.clients.insert(key.clone(), client.clone());
+            registry.client_accounts.insert(key, identities.clone());
+        }
+        Ok(client)
     }
 
     pub(crate) async fn authenticate(
@@ -511,7 +638,7 @@ impl AccountTools {
             result = async {
                 let mut cache = entry.cache.lock().await;
                 self.authenticate_locked(&mut cache, &entry, AuthenticationInput {
-                    token, account, transport: &transport, client: &client, generation,
+                    token, account, transport: &transport, client: &client, proxy, generation,
                 }, force_refresh)
                     .await.map(|auth| auth.session)
             } => result,
@@ -538,7 +665,7 @@ impl AccountTools {
                     let force = matches!(request, ToolRequest::Web { force_refresh: true });
                     for attempt in 0..2 {
                         let auth = self.authenticate_locked(&mut cache, &entry, AuthenticationInput {
-                            token, account: Some(account), transport: &transport, client: &client, generation,
+                            token, account: Some(account), transport: &transport, client: &client, proxy, generation,
                         }, force || attempt > 0).await?;
                         let result = self.protocol.execute(&transport, &client, &auth, &mut cache, &request).await;
                         entry.removed.check()?;
@@ -553,6 +680,15 @@ impl AccountTools {
             }
         }).await
     }
+}
+
+fn account_attestation_key(account: &str, service: &str, proxy: Option<&str>) -> String {
+    format!(
+        "account:{}:service:{}:proxy:{}",
+        hex::encode(Sha256::digest(account.as_bytes())),
+        service,
+        hex::encode(Sha256::digest(proxy.unwrap_or("").as_bytes()))
+    )
 }
 
 fn shared_attestation(
@@ -677,6 +813,9 @@ async fn execute_tool(
             )
             .await?;
             let (friends, avatars) = parse_friends(&raw)?;
+            cache
+                .avatar_bytes
+                .retain(|id, (url, _)| avatars.get(id) == Some(url));
             cache.avatars = avatars;
             let activity = async {
                 for attempt in 0..2 {
@@ -697,17 +836,26 @@ async fn execute_tool(
             Ok(ToolResponse::Friends(finish_friends(friends, activity)?))
         }
         ToolRequest::Avatar(id) => {
-            let url = cache.avatars.get(id).ok_or_else(|| {
-                CoreError::InvalidConfig("Load the friend list before opening this avatar".into())
-            })?;
+            let url = cache
+                .avatars
+                .get(id)
+                .ok_or_else(|| {
+                    CoreError::InvalidConfig(
+                        "Load the friend list before opening this avatar".into(),
+                    )
+                })?
+                .clone();
+            if let Some(bytes) = cache.cached_avatar(id, &url) {
+                return Ok(ToolResponse::Avatar(bytes));
+            }
             let version = client.nso_version().await?;
-            Ok(ToolResponse::Avatar(
-                transport
-                    .clone()
-                    .with_nso_downloads(&version)
-                    .download_avatar(url)
-                    .await?,
-            ))
+            let bytes = transport
+                .clone()
+                .with_nso_downloads(&version)
+                .download_avatar(&url)
+                .await?;
+            cache.remember_avatar(id, &url, &bytes);
+            Ok(ToolResponse::Avatar(bytes))
         }
         ToolRequest::Web { .. } => {
             let session =
@@ -779,6 +927,339 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn avatar_cache_matches_download_url_and_is_account_owned_and_bounded() {
+        let mut first = AccountCache::default();
+        let second = AccountCache::default();
+        first.remember_avatar("friend", "https://example.com/a.png", &[1, 2]);
+        assert_eq!(
+            first.cached_avatar("friend", "https://example.com/a.png"),
+            Some(vec![1, 2])
+        );
+        assert_eq!(
+            first.cached_avatar("friend", "https://example.com/b.png"),
+            None
+        );
+        assert_eq!(
+            second.cached_avatar("friend", "https://example.com/a.png"),
+            None
+        );
+        for id in 0..256 {
+            first.remember_avatar(&id.to_string(), "https://example.com/a.png", &[1]);
+        }
+        assert!(first.avatar_bytes.len() <= 128);
+    }
+
+    struct OAuthProbe {
+        url: String,
+        issued: Arc<std::sync::atomic::AtomicUsize>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl OAuthProbe {
+        fn new() -> Self {
+            use std::io::{Read, Write};
+            use std::sync::atomic::Ordering;
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let issued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let thread_issued = Arc::clone(&issued);
+            let thread_stop = Arc::clone(&stop);
+            let worker = std::thread::spawn(move || {
+                let mut bindings = HashMap::<String, String>::new();
+                while !thread_stop.load(Ordering::SeqCst) {
+                    let mut connection = match listener.accept() {
+                        Ok((connection, _)) => connection,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                            continue;
+                        }
+                        Err(error) => panic!("test listener failed: {error}"),
+                    };
+                    connection.set_nonblocking(false).unwrap();
+                    connection
+                        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                        .unwrap();
+                    let mut request = Vec::new();
+                    let mut buffer = [0; 1024];
+                    let header_end = loop {
+                        let count = connection.read(&mut buffer).unwrap();
+                        assert!(count > 0);
+                        request.extend_from_slice(&buffer[..count]);
+                        assert!(request.len() <= 64 * 1024);
+                        if let Some(end) = request.windows(4).position(|v| v == b"\r\n\r\n") {
+                            break end + 4;
+                        }
+                    };
+                    let headers = String::from_utf8(request[..header_end].to_vec()).unwrap();
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    while request.len() < header_end + length {
+                        let count = connection.read(&mut buffer).unwrap();
+                        assert!(count > 0);
+                        request.extend_from_slice(&buffer[..count]);
+                    }
+                    let path = headers.split_whitespace().nth(1).unwrap();
+                    let (status, body) = match path {
+                        "/config" => (200, json!({"nso_version": "3.9.9"})),
+                        "/oauth" => {
+                            let number = thread_issued.fetch_add(1, Ordering::SeqCst) + 1;
+                            (
+                                200,
+                                json!({"access_token": format!("synthetic-oauth-{number}"), "expires_in": 3600}),
+                            )
+                        }
+                        "/f" => {
+                            let parameter: Value =
+                                serde_json::from_slice(&request[header_end..header_end + length])
+                                    .unwrap();
+                            let account = parameter["na_id"].as_str().unwrap();
+                            let bearer = headers
+                                .lines()
+                                .find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("authorization")
+                                        .then(|| value.trim().to_owned())
+                                })
+                                .unwrap();
+                            let owner = bindings.entry(bearer).or_insert_with(|| account.into());
+                            if owner == account {
+                                (200, json!({"encrypted_token_request": "dGVzdA=="}))
+                            } else {
+                                (
+                                    400,
+                                    json!({"error": "invalid_request", "error_description": "synthetic token belongs to another user"}),
+                                )
+                            }
+                        }
+                        _ => panic!("unexpected synthetic request: {path}"),
+                    };
+                    let body = body.to_string();
+                    write!(
+                        connection,
+                        "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .unwrap();
+                }
+            });
+            Self {
+                url,
+                issued,
+                stop,
+                worker: Some(worker),
+            }
+        }
+    }
+
+    impl Drop for OAuthProbe {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.worker.take().unwrap().join().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn second_account_gets_its_own_nxapi_oauth_token_and_first_keeps_reusing_its_token() {
+        let probe = OAuthProbe::new();
+        let transport = HttpTransport::new(Default::default()).unwrap();
+        let client = NxapiAttestationClient::new(
+            transport.clone(),
+            NxapiConfig {
+                znca_base_url: probe.url.clone(),
+                oauth_url: format!("{}/oauth", probe.url),
+                ..Default::default()
+            },
+        );
+        let (mut service, _) = test_service(None);
+        service
+            .registry
+            .get_mut()
+            .unwrap()
+            .clients
+            .insert(hex::encode(Sha256::digest(b"")), client);
+        for (token, account) in [
+            ("session-a", "account-a"),
+            ("session-b", "account-b"),
+            ("session-a", "account-a"),
+        ] {
+            let (_, client, _) = service.context(token, None, None, &transport).unwrap();
+            client
+                .encrypt_request(
+                    "https://example.invalid/login",
+                    "synthetic-id-token",
+                    json!({}),
+                    1,
+                    Some(account),
+                    None,
+                )
+                .await
+                .expect("NXAPI credentials must never be reused for a different account");
+        }
+        assert_eq!(probe.issued.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // Authentication and later album sync must use the same account scope.
+        let session = service
+            .authenticate(
+                "session-a",
+                Some("account-a"),
+                None,
+                transport.clone(),
+                &CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        service
+            .attestation(&session, None, &transport)
+            .unwrap()
+            .encrypt_request(
+                "https://example.invalid/login",
+                "synthetic-id-token",
+                json!({}),
+                1,
+                Some("account-a"),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(probe.issued.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        // Removing A invalidates its aliases/credential without clearing B.
+        service.clear("account-a").unwrap();
+        for (token, account) in [("session-b", "account-b"), ("session-a", "account-a")] {
+            let (_, client, _) = service.context(token, None, None, &transport).unwrap();
+            client
+                .encrypt_request(
+                    "https://example.invalid/login",
+                    "synthetic-id-token",
+                    json!({}),
+                    1,
+                    Some(account),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(probe.issued.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn same_account_reuses_nxapi_oauth_token_across_session_credentials() {
+        let probe = OAuthProbe::new();
+        let transport = HttpTransport::new(Default::default()).unwrap();
+        let client = NxapiAttestationClient::new(
+            transport.clone(),
+            NxapiConfig {
+                znca_base_url: probe.url.clone(),
+                oauth_url: format!("{}/oauth", probe.url),
+                ..Default::default()
+            },
+        );
+        let (mut service, _) = test_service(None);
+        service
+            .registry
+            .get_mut()
+            .unwrap()
+            .clients
+            .insert(hex::encode(Sha256::digest(b"")), client);
+        let cancellation = CancellationToken::default();
+        for token in ["session-a", "session-c"] {
+            service
+                .authenticate(
+                    token,
+                    Some("account-a"),
+                    None,
+                    transport.clone(),
+                    &cancellation,
+                )
+                .await
+                .unwrap();
+            let (_, client, _) = service
+                .context(token, Some("account-a"), None, &transport)
+                .unwrap();
+            client
+                .encrypt_request(
+                    "https://example.invalid/login",
+                    "synthetic-id-token",
+                    json!({}),
+                    1,
+                    Some("account-a"),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            probe.issued.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "same account/service/proxy must share one OAuth token cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_sync_scopes_tokens_and_account_removal_revokes_all_identity_aliases() {
+        let probe = OAuthProbe::new();
+        let transport = HttpTransport::new(Default::default()).unwrap();
+        let client = NxapiAttestationClient::new(
+            transport.clone(),
+            NxapiConfig {
+                znca_base_url: probe.url.clone(),
+                oauth_url: format!("{}/oauth", probe.url),
+                ..Default::default()
+            },
+        );
+        let (mut service, _) = test_service(None);
+        service
+            .registry
+            .get_mut()
+            .unwrap()
+            .clients
+            .insert(hex::encode(Sha256::digest(b"")), client);
+        let first = test_auth().session;
+        let mut second = first.clone();
+        second.na_id = Some("account-b".into());
+        second.coral_user_id = Some("999999".into());
+        for session in [&first, &second, &first] {
+            service
+                .attestation(session, None, &transport)
+                .unwrap()
+                .encrypt_request(
+                    "https://example.invalid/login",
+                    "synthetic-id-token",
+                    json!({}),
+                    1,
+                    session.na_id.as_deref(),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(probe.issued.load(std::sync::atomic::Ordering::SeqCst), 2);
+        service.clear("account-a").unwrap();
+        service
+            .attestation(&first, None, &transport)
+            .unwrap()
+            .encrypt_request(
+                "https://example.invalid/login",
+                "synthetic-id-token",
+                json!({}),
+                1,
+                first.na_id.as_deref(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(probe.issued.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[test]
     fn friend_mapping_keeps_unknown_presence_and_does_not_match_names() {
         let (mut friends, avatars) = parse_friends(&json!({"result":{"friends":[
             {"nsaId":"a","name":"same","note":"one","isFavoriteFriend":true,
@@ -798,6 +1279,28 @@ mod tests {
         assert_eq!(friends[1].presence, "UNKNOWN");
         assert_eq!(friends[0].total_play_time_minutes, Some(123));
         assert_eq!(avatars["a"], "https://example.com/a.png");
+        assert_eq!(
+            friends[0].avatar_url.as_deref(),
+            Some("https://example.com/a.png")
+        );
+        assert_eq!(friends[1].avatar_url, None);
+    }
+
+    #[test]
+    fn account_attestation_cache_key_separates_account_service_and_proxy() {
+        let base = account_attestation_key("account-a", "service-a", None);
+        assert_ne!(
+            base,
+            account_attestation_key("account-b", "service-a", None)
+        );
+        assert_ne!(
+            base,
+            account_attestation_key("account-a", "service-b", None)
+        );
+        assert_ne!(
+            base,
+            account_attestation_key("account-a", "service-a", Some("http://proxy"))
+        );
     }
 
     #[tokio::test]

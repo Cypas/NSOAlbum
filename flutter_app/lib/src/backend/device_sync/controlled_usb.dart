@@ -114,12 +114,20 @@ extension DeviceSyncUsbSession on DeviceSyncSession {
     final owner = _usbOwner = DeviceSyncUsbSafOwner(
       endpoint: _endpoint,
       saf: saf,
+      onFailure: _service._owner._diagnostic,
     );
     // Consume both branches immediately, retain unknown failure and its stack,
     // and still let the native runtime decide durable completion.
     _usbRunning = owner.run().then<void>(
       (view) {
         if (!closed && view.error != null) {
+          _service._owner._diagnostic(
+            'usb_transport',
+            DeviceSyncReadFailure(
+              view.error!,
+              stage: 'USB channel operation',
+            ),
+          );
           _transportIssue = view.error;
           _publish();
         }

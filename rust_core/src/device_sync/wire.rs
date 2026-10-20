@@ -11,9 +11,12 @@ use super::receiver::Snapshot;
 use super::source_names::{
     SourceDescriptionPage, SourceDescriptions, MAX_SOURCES, MAX_SOURCE_BYTES,
 };
-use super::{SessionError, MAX_PAYLOAD};
+use super::SessionError;
 
 pub const RAW_CHUNK: usize = 32_768;
+pub const MEDIA_CHUNK: usize = 256 * 1024;
+const MAX_JSON: usize = 65_536;
+mod media;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -46,6 +49,13 @@ pub struct ApplyWork {
     pub publication_bytes: u64,
     pub sql_steps: u64,
     pub account_steps: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileReceipt {
+    pub sha256: String,
+    pub offset: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -134,10 +144,13 @@ pub enum Message {
     FileRequest {
         sha256: String,
     },
+    FileRequestBatch {
+        sha256: Vec<String>,
+    },
     FileChunk {
         sha256: String,
         offset: u64,
-        data: String,
+        data: Vec<u8>,
     },
     FileVerification {
         sha256: String,
@@ -146,6 +159,9 @@ pub enum Message {
     ChunkAccepted {
         sha256: String,
         offset: u64,
+    },
+    ChunksAccepted {
+        files: Vec<FileReceipt>,
     },
     FilesComplete {},
     ApplyReady {
@@ -182,14 +198,25 @@ impl std::fmt::Debug for Message {
 
 impl Envelope {
     pub fn encode(&self) -> Result<Vec<u8>, SessionError> {
+        if let Message::FileChunk {
+            sha256,
+            offset,
+            data,
+        } = &self.message
+        {
+            return media::encode(self, sha256, *offset, data);
+        }
         let bytes = serde_json::to_vec(self).map_err(|_| SessionError::Protocol)?;
-        if bytes.len() > MAX_PAYLOAD {
+        if bytes.len() > MAX_JSON {
             return Err(SessionError::Bounds);
         }
         Ok(bytes)
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, SessionError> {
-        if bytes.is_empty() || bytes.len() > MAX_PAYLOAD {
+        if Self::is_media(bytes) {
+            return media::decode(bytes);
+        }
+        if bytes.is_empty() || bytes.len() > MAX_JSON {
             return Err(SessionError::Bounds);
         }
         let envelope: Self = serde_json::from_slice(bytes).map_err(|_| SessionError::Protocol)?;
@@ -197,10 +224,15 @@ impl Envelope {
             || !super::qr::valid_hex(&envelope.session, 32)
             || !super::qr::valid_hex(&envelope.operation, 32)
             || envelope.generation != 1
+            || matches!(envelope.message, Message::FileChunk { .. })
         {
             return Err(SessionError::Protocol);
         }
         Ok(envelope)
+    }
+
+    pub(crate) fn is_media(bytes: &[u8]) -> bool {
+        bytes.starts_with(media::MAGIC)
     }
 }
 
@@ -471,6 +503,48 @@ mod tests {
     use super::*;
     use crate::device_sync::manifest::{ManifestRecord, MediaRecord};
     use crate::models::MediaKind;
+
+    #[test]
+    fn binary_media_frame_preserves_raw_bytes_binding_and_sequence() {
+        let data = vec![0xF3; 256 * 1024];
+        let envelope = Envelope {
+            version: 1,
+            session: "a".repeat(32),
+            operation: "b".repeat(32),
+            generation: 1,
+            sequence: 42,
+            message: Message::FileChunk {
+                sha256: "c".repeat(64),
+                offset: 8192,
+                data: data.clone(),
+            },
+        };
+        let bytes = envelope.encode().expect("full-size binary frame");
+        assert_eq!(&bytes[..8], b"NSOMED2\0");
+        assert_eq!(bytes.len(), 262244);
+        assert_eq!(&bytes[100..], data.as_slice());
+        let decoded = Envelope::decode(&bytes).unwrap();
+        assert_eq!(decoded.session, "a".repeat(32));
+        assert_eq!(decoded.operation, "b".repeat(32));
+        assert_eq!(decoded.sequence, 42);
+        let Message::FileChunk {
+            offset, data: raw, ..
+        } = decoded.message
+        else {
+            panic!("binary media decoded as control");
+        };
+        assert_eq!(offset, 8192);
+        assert_eq!(raw, data);
+        for corrupt in [&bytes[..99], &bytes[..bytes.len() - 1]] {
+            assert!(Envelope::decode(corrupt).is_err());
+        }
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(Envelope::decode(&trailing).is_err());
+        let mut zero_generation = bytes;
+        zero_generation[40..48].fill(0);
+        assert!(Envelope::decode(&zero_generation).is_err());
+    }
 
     fn snapshot() -> Snapshot {
         let root = tempfile::tempdir().unwrap();

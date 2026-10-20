@@ -3,11 +3,13 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:ffmpeg_kit_flutter_new_video/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new_video/ffmpeg_session.dart';
 import 'package:ffmpeg_kit_flutter_new_video/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_video/return_code.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../rust/models.dart';
+import 'video_preview_cache.dart';
 
 class VideoThumbnailData {
   const VideoThumbnailData({this.bytes, this.duration = Duration.zero});
@@ -17,9 +19,32 @@ class VideoThumbnailData {
 }
 
 class VideoThumbnailCache {
-  static final Map<String, Future<VideoThumbnailData>> _cache = {};
-  static Future<void> _queue = Future.value();
+  static final _memory = PreviewCache<VideoThumbnailData>(
+    maxEntries: 80,
+    maxBytes: 32 * 1024 * 1024,
+    sizeOf: (data) => data.bytes?.length ?? 0,
+  );
   static String? _cacheRootOverride;
+
+  /// Cache-only neighbor warming: no FFmpeg jobs or original video reads.
+  /// Active file reads are bounded and their callers can stop scheduling more.
+  static Future<void> warmCached(MediaAsset asset) async {
+    if (_memory.peek(asset.sha256) != null) return;
+    final data = await readExisting(asset);
+    // A cover-only warm must not suppress the first real duration probe.
+    if (data.bytes?.isNotEmpty == true && data.duration > Duration.zero) {
+      _memory.seed(asset.sha256, data);
+    }
+  }
+
+  static Future<VideoThumbnailData> readExisting(MediaAsset asset) async {
+    if (_memory.peek(asset.sha256) case final cached?) return cached;
+    final root =
+        _cacheRootOverride ??
+        '${(await getApplicationCacheDirectory()).path}'
+            '${Platform.pathSeparator}squid_album${Platform.pathSeparator}video_thumbnails';
+    return readCachedFiles(cacheRoot: root, sha256: asset.sha256);
+  }
 
   static void configureCacheRoot(String root) {
     _cacheRootOverride =
@@ -59,35 +84,62 @@ class VideoThumbnailCache {
     MediaAsset asset, {
     required Future<void> Function(Object error, StackTrace stackTrace) onError,
   }) {
-    final key = asset.sha256;
-    final existing = _cache[key];
-    if (existing != null) return existing;
-    if (_cache.length >= 80) _cache.remove(_cache.keys.first);
-    return _cache.putIfAbsent(key, () {
-      final completer = Completer<VideoThumbnailData>();
-      _queue = _queue.catchError((_) {}).then((_) async {
-        try {
-          final data = await _loadOrCreate(asset);
-          if (data.bytes == null || data.bytes!.isEmpty) {
-            _cache.remove(key);
-          }
-          completer.complete(data);
-        } catch (error, stackTrace) {
-          _cache.remove(key);
-          try {
-            await onError(error, stackTrace);
-          } catch (_) {
-            // Logging must not block the remaining thumbnail queue.
-          }
-          completer.complete(const VideoThumbnailData());
-        }
-      });
-      return completer.future;
-    });
+    final pending = request(asset, onError: onError);
+    return pending.future
+        .then((data) => data ?? const VideoThumbnailData())
+        .whenComplete(pending.cancel);
   }
 
-  static Future<VideoThumbnailData> _loadOrCreate(MediaAsset asset) async {
-    if (!File(asset.storagePath).existsSync()) {
+  static PreviewRequest<VideoThumbnailData> request(
+    MediaAsset asset, {
+    required Future<void> Function(Object, StackTrace) onError,
+    bool urgent = false,
+  }) => _memory.request(
+    asset.sha256,
+    urgent: urgent,
+    load: (work) async {
+      try {
+        final data = await _loadOrCreate(asset, work);
+        return data.bytes?.isNotEmpty == true || data.duration > Duration.zero
+            ? data
+            : null;
+      } catch (error, stack) {
+        if (!work.cancelled) {
+          try {
+            await onError(error, stack);
+          } catch (_) {}
+        }
+        return null;
+      }
+    },
+  );
+
+  static Future<FFmpegSession> _extract(
+    List<String> arguments,
+    PreviewWork work,
+  ) async {
+    final done = Completer<FFmpegSession>();
+    final session = await FFmpegKit.executeWithArgumentsAsync(
+      arguments,
+      (session) => done.complete(session),
+    );
+    final id = session.getSessionId();
+    // Never call the plugin's global cancel: other editing tasks may be active.
+    if (id != null) {
+      work.onCancel = () => unawaited(FFmpegKit.cancel(id).catchError((_) {}));
+    }
+    try {
+      return await done.future;
+    } finally {
+      work.onCancel = null;
+    }
+  }
+
+  static Future<VideoThumbnailData> _loadOrCreate(
+    MediaAsset asset,
+    PreviewWork work,
+  ) async {
+    if (work.cancelled || !File(asset.storagePath).existsSync()) {
       return const VideoThumbnailData();
     }
     final separator = Platform.pathSeparator;
@@ -108,6 +160,7 @@ class VideoThumbnailCache {
       cacheRoot: cacheRoot.path,
       sha256: asset.sha256,
     );
+    if (work.cancelled) return cached;
     if (cached.bytes != null && cached.duration > Duration.zero) {
       return cached;
     }
@@ -138,15 +191,17 @@ class VideoThumbnailCache {
           // Frame extraction below may still succeed without metadata.
         }
       }
+      if (work.cancelled) return cached;
       Uint8List? bytes = cached.bytes;
       if (bytes == null || bytes.isEmpty) {
         final positions = _thumbnailPositions(duration);
         for (final position in positions) {
+          if (work.cancelled) return cached;
           final candidate = File(
             '${thumbnail.path}.${DateTime.now().microsecondsSinceEpoch}.part.jpg',
           );
           try {
-            final session = await FFmpegKit.executeWithArguments([
+            final session = await _extract([
               '-hide_banner',
               '-loglevel',
               'error',
@@ -157,10 +212,13 @@ class VideoThumbnailCache {
               asset.storagePath,
               '-frames:v',
               '1',
+              '-vf',
+              'scale=1280:1280:force_original_aspect_ratio=decrease',
               '-q:v',
               '3',
               candidate.path,
-            ]);
+            ], work);
+            if (work.cancelled) return cached;
             final returnCode = await session.getReturnCode();
             if (ReturnCode.isSuccess(returnCode) && await candidate.exists()) {
               final next = await candidate.readAsBytes();
@@ -174,6 +232,7 @@ class VideoThumbnailCache {
           }
         }
       }
+      if (work.cancelled) return cached;
       if (bytes != null && bytes.isNotEmpty) {
         await _writeAtomic(thumbnail, bytes);
         if (await failedFile.exists()) await failedFile.delete();
@@ -193,6 +252,7 @@ class VideoThumbnailCache {
       }
       return VideoThumbnailData(bytes: bytes, duration: duration);
     } catch (error) {
+      if (work.cancelled) return cached;
       await _writeAtomic(
         failedFile,
         Uint8List.fromList('v2:ffmpeg:$error'.codeUnits),

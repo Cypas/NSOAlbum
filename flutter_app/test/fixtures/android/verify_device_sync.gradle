@@ -10,7 +10,9 @@ gradle.projectsEvaluated {
             app.file("src/main/kotlin/io/github/cypas/nsoalbum/DeviceSyncMailbox.kt"),
             app.file("src/main/kotlin/io/github/cypas/nsoalbum/DeviceSyncPicker.kt"),
             app.file("src/main/kotlin/io/github/cypas/nsoalbum/DeviceSyncSafDirectory.kt"),
+            app.file("src/main/kotlin/io/github/cypas/nsoalbum/DeviceSyncProviderMetrics.kt"),
             app.file("src/test/kotlin/io/github/cypas/nsoalbum/DeviceSyncPolicyTest.kt"),
+            app.file("src/test/kotlin/io/github/cypas/nsoalbum/DeviceSyncProviderMetricsTest.kt"),
         ]
         sources += root.fileTree("../test/fixtures/android/device_sync_directory") {
             include("*.kt")
@@ -29,12 +31,18 @@ gradle.projectsEvaluated {
     root.tasks.register("verifyDeviceSyncPolicy", JavaExec) {
         dependsOn(compile)
         finalizedBy("verifyDeviceSyncSafDirectory")
+        finalizedBy("verifyDeviceSyncProviderMetrics")
         mainClass.set("io.github.cypas.nsoalbum.DeviceSyncPolicyTest")
         classpath = root.files(output, compiler.resolve())
     }
     root.tasks.register("verifyDeviceSyncSafDirectory", JavaExec) {
         dependsOn(compile)
         mainClass.set("io.github.cypas.nsoalbum.DeviceSyncSafDirectoryTest")
+        classpath = root.files(output, compiler.resolve())
+    }
+    root.tasks.register("verifyDeviceSyncProviderMetrics", JavaExec) {
+        dependsOn(compile)
+        mainClass.set("io.github.cypas.nsoalbum.DeviceSyncProviderMetricsTest")
         classpath = root.files(output, compiler.resolve())
     }
 }

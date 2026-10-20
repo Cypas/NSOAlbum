@@ -32,7 +32,7 @@ import 'account_tools/account_tools_expander.dart';
 import 'nxapi_disclosure_card.dart';
 import 'macos_update_dialog.dart';
 import 'device_sync/album_source_label.dart';
-import 'device_sync/entry.dart';
+import 'device_sync/multi_device_sync_page.dart';
 
 Future<void> showLatestReleaseUpdate(
   BuildContext context, {
@@ -4714,7 +4714,7 @@ class TransferPage extends StatefulWidget {
 
 class _TransferPageState extends State<TransferPage>
     with SingleTickerProviderStateMixin {
-  late final TabController tabs = TabController(length: 3, vsync: this);
+  late final TabController tabs = TabController(length: 4, vsync: this);
   final TextEditingController callbackUrl = TextEditingController();
   final TextEditingController customGameName = TextEditingController();
   bool importing = false;
@@ -5041,23 +5041,10 @@ class _TransferPageState extends State<TransferPage>
     ),
     child: Column(
       children: [
-        DeviceSyncEntry(
-          backend: widget.backend,
-          mobile: false,
-          onLibraryChanged: () async {
-            await _loadAccountState();
-            await _loadCustomGameTags();
-            if (widget.onDeviceSyncChanged case final changed?) {
-              await changed();
-            } else {
-              widget.onImportComplete();
-            }
-            // No accountChanged callback: this must not start NSO sync.
-          },
-        ),
-        const SizedBox(height: 12),
         TabBar(
           controller: tabs,
+          isScrollable: true,
+          tabAlignment: TabAlignment.start,
           tabs: [
             Tab(
               text: context.l10n.select(zh: 'Nintendo 同步', en: 'Nintendo Sync'),
@@ -5067,6 +5054,9 @@ class _TransferPageState extends State<TransferPage>
             ),
             Tab(
               text: context.l10n.select(zh: '自定义导入', en: 'Custom Import'),
+            ),
+            Tab(
+              text: context.l10n.select(zh: '多设备同步', en: 'Multi-device sync'),
             ),
           ],
         ),
@@ -5761,6 +5751,19 @@ class _TransferPageState extends State<TransferPage>
                     ],
                   ),
                 ),
+              ),
+              MultiDeviceSyncPage(
+                backend: widget.backend,
+                embedded: true,
+                onLibraryChanged: () async {
+                  await _loadAccountState();
+                  await _loadCustomGameTags();
+                  if (widget.onDeviceSyncChanged case final changed?) {
+                    await changed();
+                  } else {
+                    widget.onImportComplete();
+                  }
+                },
               ),
             ],
           ),

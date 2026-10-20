@@ -29,12 +29,14 @@ Future<T> readDeviceProjection<T>(
   Future<T> Function() observe, {
   required ReadError? Function(T) errorOf,
   required bool Function() cancelled,
+  void Function(T)? onBusy,
 }) async {
   for (var attempt = 0; attempt < 40; attempt++) {
     if (cancelled()) throw const DeviceCommandBusy();
     final value = await observe();
     if (cancelled()) throw const DeviceCommandBusy();
     if (errorOf(value) != ReadError.busy) return value;
+    onBusy?.call(value);
     if (attempt < 39) {
       await Future<void>.delayed(const Duration(milliseconds: 25));
     }

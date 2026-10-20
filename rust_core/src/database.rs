@@ -5370,10 +5370,20 @@ fn backup_metadata_sql(saved: &str, ownership: bool, exact: bool) -> String {
     } else {
         "NULL"
     };
-    let predicate = if exact {
-        "b.backup_uuid=?2"
+    let cursor_saved = if saved == "NULL" {
+        "NULL"
     } else {
-        "b.rowid>=?1"
+        "c.created_at"
+    };
+    let predicate = if exact {
+        "b.backup_uuid=?2".to_owned()
+    } else {
+        format!(
+            "(?1 IS NULL OR
+              (COALESCE(julianday({saved}),-1.0),b.backup_uuid,b.rowid) <
+              (SELECT COALESCE(julianday({cursor_saved}),-1.0),c.backup_uuid,c.rowid
+               FROM device_sync_backup c WHERE c.rowid=?1))"
+        )
     };
     format!(
         "SELECT b.rowid,b.backup_uuid,b.library_uuid,{saved},n.display_name,b.version,
@@ -5388,7 +5398,11 @@ fn backup_metadata_sql(saved: &str, ownership: bool, exact: bool) -> String {
            SELECT x.rowid FROM device_sync_apply_journal x WHERE x.backup_uuid=b.backup_uuid LIMIT 1)
          {ownership_join}
          WHERE {predicate}
-         ORDER BY b.rowid LIMIT ?3"
+         ORDER BY
+           COALESCE(julianday({saved}),-1.0) DESC,
+           b.backup_uuid DESC,
+           b.rowid DESC
+         LIMIT ?3"
     )
 }
 
@@ -6753,11 +6767,6 @@ impl Database {
         let interrupt = ScanSqlInterrupt::bounded(&mut connection, 16_000_000);
         let connection = &*interrupt.connection;
         let library = device_sync_header(connection)?.library_uuid;
-        let start = match after {
-            Some(i64::MAX) => return Ok(Vec::new()),
-            Some(value) => value + 1,
-            None => i64::MIN,
-        };
         let saved = if backup_has_created_at(connection)? {
             "b.created_at"
         } else {
@@ -6765,7 +6774,7 @@ impl Database {
         };
         let sql = backup_metadata_sql(saved, backup_has_ownership(connection)?, exact.is_some());
         let mut statement = connection.prepare(&sql)?;
-        let mut rows = statement.query(params![start, exact, limit as i64])?;
+        let mut rows = statement.query(params![after, exact, limit as i64])?;
         let mut result = Vec::new();
         while let Some(row) = rows.next()? {
             let text = |index, maximum| -> Result<Option<String>, Reason> {

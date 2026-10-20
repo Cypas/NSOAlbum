@@ -87,16 +87,34 @@ fn answer(root: &Path, request: &str) -> String {
                     assert!(name.len() == 22 && name.ends_with(".block") && name[..16].bytes().all(|byte| byte.is_ascii_hexdigit()));
                     let path = directory.join(name);
                     match method {
-                        "read" => format!("\"{}\"", encode(&std::fs::read(path).unwrap())),
+                        "read" => {
+                            let bytes = std::fs::read(path).unwrap();
+                            if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+                                return r#"{"value":{"Err":"Bounds"}}"#.into();
+                            }
+                            format!("\"{}\"", encode(&bytes))
+                        }
                         "write" => {
                             let bytes = decode(field(request, "bytes"));
-                            assert!(bytes.len() <= 65548 && !path.exists());
+                            if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+                                return r#"{"value":{"Err":"Bounds"}}"#.into();
+                            }
+                            assert!(!path.exists());
                             let part = path.with_extension("part");
                             std::fs::write(&part, bytes).unwrap();
                             std::fs::rename(part, path).unwrap();
                             "null".into()
                         }
-                        _ => { std::fs::remove_file(path).unwrap(); "null".into() }
+                        _ => {
+                            let mut names: Vec<_> = std::fs::read_dir(&directory).unwrap()
+                                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                                .filter(|entry| entry.ends_with(".block") && entry.as_str() <= name)
+                                .collect();
+                            names.sort();
+                            assert!(names.len() <= 8);
+                            for entry in names { std::fs::remove_file(directory.join(entry)).unwrap(); }
+                            "null".into()
+                        }
                     }
                 }
                 _ => panic!("unsupported synthetic request"),
@@ -116,7 +134,7 @@ fn main() {
             break;
         }
         let length = u32::from_be_bytes(header) as usize;
-        assert!((1..=196608).contains(&length));
+        assert!((1..=12 * 1024 * 1024).contains(&length));
         let mut bytes = vec![0; length];
         input.read_exact(&mut bytes).unwrap();
         let response = answer(root, std::str::from_utf8(&bytes).unwrap());

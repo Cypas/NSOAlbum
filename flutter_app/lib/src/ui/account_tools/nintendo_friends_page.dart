@@ -32,6 +32,7 @@ class _NintendoFriendsPageState extends State<NintendoFriendsPage> {
   String? operationId;
   bool onlineExpanded = true;
   bool offlineExpanded = false;
+  bool favoritesExpanded = true;
 
   @override
   void initState() {
@@ -53,6 +54,13 @@ class _NintendoFriendsPageState extends State<NintendoFriendsPage> {
       );
       if (mounted && operationId == id) setState(() => snapshot = result);
     } catch (failure) {
+      if (widget.backend case final AppBackend logging) {
+        unawaited(
+          logging
+              .logError('[friends] Snapshot failed', failure)
+              .catchError((Object _) {}),
+        );
+      }
       if (mounted && operationId == id) setState(() => error = failure);
     } finally {
       if (mounted && operationId == id) setState(() => operationId = null);
@@ -80,6 +88,7 @@ class _NintendoFriendsPageState extends State<NintendoFriendsPage> {
       });
     final online = friends.where((f) => f.presence == 'ONLINE').toList();
     final offline = friends.where((f) => f.presence != 'ONLINE').toList();
+    final favorites = friends.where((f) => f.isFavorite).toList();
     final list = CustomScrollView(
       physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
@@ -114,39 +123,79 @@ class _NintendoFriendsPageState extends State<NintendoFriendsPage> {
           ),
         ),
         for (final group in [
-          (online, onlineExpanded, true),
-          (offline, offlineExpanded, false),
+          (
+            favorites,
+            favoritesExpanded,
+            context.l10n.select(zh: '特别关注', en: 'Favorites'),
+            'favorites',
+          ),
+          (
+            online.where((f) => !f.isFavorite).toList(),
+            onlineExpanded,
+            context.l10n.select(zh: '在线好友', en: 'Online friends'),
+            'online',
+          ),
+          (
+            offline.where((f) => !f.isFavorite).toList(),
+            offlineExpanded,
+            context.l10n.select(zh: '离线好友', en: 'Offline friends'),
+            'offline',
+          ),
         ]) ...[
           SliverToBoxAdapter(
             child: ListTile(
               title: Text(
-                group.$3
-                    ? context.l10n.select(zh: '在线好友', en: 'Online friends')
-                    : context.l10n.select(zh: '离线好友', en: 'Offline friends'),
+                group.$3,
                 style: Theme.of(context).textTheme.titleLarge,
               ),
               trailing: Icon(group.$2 ? Icons.expand_less : Icons.expand_more),
               onTap: () => setState(() {
-                if (group.$3) {
+                if (group.$4 == 'favorites') {
+                  favoritesExpanded = !favoritesExpanded;
+                } else if (group.$4 == 'online') {
                   onlineExpanded = !onlineExpanded;
-                } else {
+                } else if (group.$4 == 'offline') {
                   offlineExpanded = !offlineExpanded;
                 }
               }),
             ),
           ),
           if (group.$2)
-            SliverList.builder(
-              itemCount: group.$1.length,
-              itemBuilder: (context, index) {
-                final friend = group.$1[index];
-                return _FriendTile(
-                  key: ValueKey(
-                    '${widget.profile.accountId}:${friend.friendId}',
+            SliverLayoutBuilder(
+              builder: (context, constraints) {
+                final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
+                final columns =
+                    (constraints.crossAxisExtent / (160 * scale.clamp(1, 2)))
+                        .floor()
+                        .clamp(1, 8);
+                return SliverList.builder(
+                  itemCount: (group.$1.length / columns).ceil(),
+                  itemBuilder: (context, row) => Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 4,
+                      vertical: 4,
+                    ),
+                    child: IntrinsicHeight(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          for (var column = 0; column < columns; column++)
+                            Expanded(
+                              child: row * columns + column < group.$1.length
+                                  ? _FriendTile(
+                                      key: ValueKey(
+                                        '${widget.profile.accountId}:${group.$1[row * columns + column].friendId}',
+                                      ),
+                                      friend: group.$1[row * columns + column],
+                                      accountId: widget.profile.accountId,
+                                      backend: widget.backend,
+                                    )
+                                  : const SizedBox.shrink(),
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
-                  friend: friend,
-                  accountId: widget.profile.accountId,
-                  backend: widget.backend,
                 );
               },
             ),
@@ -205,40 +254,75 @@ class _FriendTile extends StatelessWidget {
       'EVENT' => context.l10n.select(zh: '活动比赛', en: 'Challenge'),
       _ => null,
     };
-    return ListTile(
-      isThreeLine: false,
-      leading: _FriendAvatar(
-        backend: backend,
-        accountId: accountId,
-        friendId: friend.friendId,
-      ),
-      title: Text(friend.nickname),
-      trailing: friend.isFavorite
-          ? Icon(
-              Icons.star,
-              semanticLabel: context.l10n.select(zh: '星标好友', en: 'Best friend'),
-            )
-          : null,
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text([status, ?friend.gameName, ?activity].join(' · ')),
-          if (friend.note.isNotEmpty) Text(friend.note),
-          if (friend.totalPlayTimeMinutes != null)
-            Text(
-              context.l10n.select(
-                zh: '游玩时间：${friend.totalPlayTimeMinutes! ~/ 60} 小时',
-                en: 'Play time: ${friend.totalPlayTimeMinutes! ~/ 60} hours',
-              ),
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                _FriendAvatar(
+                  key: ValueKey('${friend.friendId}:${friend.avatarUrl ?? ''}'),
+                  backend: backend,
+                  accountId: accountId,
+                  friendId: friend.friendId,
+                  avatarUrl: friend.avatarUrl,
+                ),
+                Positioned(
+                  right: -1,
+                  bottom: -1,
+                  child: Container(
+                    key: Key('android-friend-status-${friend.friendId}'),
+                    width: 12,
+                    height: 12,
+                    decoration: BoxDecoration(
+                      color: friend.presence == 'ONLINE'
+                          ? Colors.green
+                          : Colors.grey,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: Theme.of(context).scaffoldBackgroundColor,
+                        width: 2,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
-          if (friend.logoutAt != null && friend.presence == 'OFFLINE')
+            const SizedBox(height: 8),
             Text(
-              context.l10n.select(
-                zh: '上次在线：${formatUserDateTime(friend.logoutAt!)}',
-                en: 'Last online: ${formatUserDateTime(friend.logoutAt!)}',
-              ),
+              friend.nickname,
+              style: Theme.of(context).textTheme.titleMedium,
             ),
-        ],
+            if (friend.isFavorite)
+              Icon(
+                Icons.star,
+                size: 16,
+                semanticLabel: context.l10n.select(
+                  zh: '星标好友',
+                  en: 'Best friend',
+                ),
+              ),
+            Text([status, ?friend.gameName, ?activity].join(' · ')),
+            if (friend.note.isNotEmpty) Text(friend.note),
+            if (friend.totalPlayTimeMinutes != null)
+              Text(
+                context.l10n.select(
+                  zh: '游玩时间：${friend.totalPlayTimeMinutes! ~/ 60} 小时',
+                  en: 'Play time: ${friend.totalPlayTimeMinutes! ~/ 60} hours',
+                ),
+              ),
+            if (friend.logoutAt != null && friend.presence == 'OFFLINE')
+              Text(
+                context.l10n.select(
+                  zh: '上次在线：${formatUserDateTime(friend.logoutAt!)}',
+                  en: 'Last online: ${formatUserDateTime(friend.logoutAt!)}',
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -246,13 +330,16 @@ class _FriendTile extends StatelessWidget {
 
 class _FriendAvatar extends StatefulWidget {
   const _FriendAvatar({
+    super.key,
     required this.backend,
     required this.accountId,
     required this.friendId,
+    required this.avatarUrl,
   });
   final NintendoAccountToolsBackend backend;
   final String accountId;
   final String friendId;
+  final String? avatarUrl;
   @override
   State<_FriendAvatar> createState() => _FriendAvatarState();
 }
@@ -267,14 +354,24 @@ class _FriendAvatarState extends State<_FriendAvatar> {
   }
 
   Future<void> load() async {
+    if (bytes != null) return;
     try {
       final value = await widget.backend.loadNintendoFriendAvatar(
         widget.accountId,
         widget.friendId,
         id,
       );
-      if (mounted && value.isNotEmpty) setState(() => bytes = value);
-    } catch (_) {
+      if (value.isNotEmpty) {
+        if (mounted) setState(() => bytes = value);
+      }
+    } catch (failure) {
+      if (widget.backend case final AppBackend logging) {
+        unawaited(
+          logging
+              .logError('[friends] Avatar failed', failure)
+              .catchError((Object _) {}),
+        );
+      }
       // Avatars are optional; keep the friend and their presence visible.
     }
   }

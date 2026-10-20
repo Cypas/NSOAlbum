@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
+import 'direction.dart';
 
 /// Explicit alternatives, independent of transport roles or native authority.
 class DeviceSyncModeSelector extends StatelessWidget {
@@ -30,8 +31,8 @@ class DeviceSyncModeSelector extends StatelessWidget {
         title: context.l10n.select(zh: '同步方向', en: 'Direction'),
         value: phoneToDesktop,
         options: (
-          context.l10n.select(zh: '电脑 → 手机', en: 'Desktop → Phone'),
-          context.l10n.select(zh: '手机 → 电脑', en: 'Phone → Desktop'),
+          const DeviceSyncDirectionLabel(phoneToDesktop: false),
+          const DeviceSyncDirectionLabel(phoneToDesktop: true),
         ),
         keys: ('device-desktop-to-phone', 'device-phone-to-desktop'),
         onChanged: onDirectionChanged,
@@ -42,8 +43,8 @@ class DeviceSyncModeSelector extends StatelessWidget {
         title: context.l10n.select(zh: '同步模式', en: 'Sync mode'),
         value: overwrite,
         options: (
-          context.l10n.select(zh: '融合', en: 'Merge'),
-          context.l10n.select(zh: '覆盖', en: 'Overwrite'),
+          Text(context.l10n.select(zh: '融合', en: 'Merge'), softWrap: true),
+          Text(context.l10n.select(zh: '覆盖', en: 'Overwrite'), softWrap: true),
         ),
         keys: ('device-mode-merge', 'device-mode-overwrite'),
         onChanged: onOverwriteChanged,
@@ -65,8 +66,14 @@ class DeviceSyncModeSelector extends StatelessWidget {
         title: context.l10n.select(zh: '账号范围', en: 'Accounts'),
         value: includeAccounts,
         options: (
-          context.l10n.select(zh: '不传输账号', en: 'Exclude accounts'),
-          context.l10n.select(zh: '包含全部账号', en: 'Include all accounts'),
+          Text(
+            context.l10n.select(zh: '不传输账号', en: 'Exclude accounts'),
+            softWrap: true,
+          ),
+          Text(
+            context.l10n.select(zh: '包含全部账号', en: 'Include all accounts'),
+            softWrap: true,
+          ),
         ),
         keys: ('device-library-only', 'device-with-accounts'),
         onChanged: onAccountsChanged,
@@ -87,7 +94,7 @@ class DeviceSyncModeSelector extends StatelessWidget {
     required String key,
     required String title,
     required bool value,
-    required (String, String) options,
+    required (Widget, Widget) options,
     required (String, String) keys,
     required ValueChanged<bool> onChanged,
   }) => Padding(
@@ -107,13 +114,13 @@ class DeviceSyncModeSelector extends StatelessWidget {
           children: [
             ChoiceChip(
               key: Key(keys.$1),
-              label: Text(options.$1, softWrap: true),
+              label: options.$1,
               selected: !value,
               onSelected: enabled ? (_) => onChanged(false) : null,
             ),
             ChoiceChip(
               key: Key(keys.$2),
-              label: Text(options.$2, softWrap: true),
+              label: options.$2,
               selected: value,
               onSelected: enabled ? (_) => onChanged(true) : null,
             ),

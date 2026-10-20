@@ -12,6 +12,8 @@ pub(super) const SERVER_NAME: &str = "nsoalbum-sync.local";
 pub(super) const MIN_TIME: i64 = 946_684_800;
 pub(super) const MAX_TIME: i64 = 4_102_444_800;
 pub(super) const TTL: i64 = 300;
+pub(super) const USB_PROFILE: &str = "usb-mailbox-v4";
+pub(super) const FLOW_PROFILE: &str = "binary-media-v2";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,6 +40,10 @@ pub(super) struct QrWire {
     pub issued_at: i64,
     pub expires_at: i64,
     pub transport: Transport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usb_profile: Option<String>,
+    #[serde(default)]
+    pub flow_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wifi_ssid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -95,6 +101,9 @@ impl Qr {
 
     pub(super) fn validate(&self, now: i64) -> Result<(), SessionError> {
         let w = &self.wire;
+        if w.flow_profile.as_deref() != Some(FLOW_PROFILE) {
+            return Err(SessionError::VersionMismatch);
+        }
         if w.version != 1
             || !valid_hex(&w.session_id, 32)
             || !valid_hex(&w.operation_id, 32)
@@ -107,6 +116,11 @@ impl Qr {
             return Err(SessionError::InvalidQr);
         }
         validate_transport(&w.transport)?;
+        match (&w.transport, w.usb_profile.as_deref()) {
+            (Transport::Usb, Some(USB_PROFILE)) | (Transport::Tcp(_), None) => {}
+            (Transport::Usb, _) => return Err(SessionError::VersionMismatch),
+            (Transport::Tcp(_), Some(_)) => return Err(SessionError::InvalidQr),
+        }
         validate_wifi_ssid(&w.transport, w.wifi_ssid.as_deref())?;
         if let Some(build) = &w.app_build {
             build.validate()?;
@@ -227,6 +241,7 @@ impl Invitation {
         rand::rngs::OsRng
             .try_fill_bytes(&mut random)
             .map_err(|_| SessionError::Tls)?;
+        let usb_profile = matches!(&transport, Transport::Usb).then(|| USB_PROFILE.to_owned());
         let wire = QrWire {
             version: 1,
             control: ControlPolicy::DualLocal,
@@ -236,6 +251,8 @@ impl Invitation {
             issued_at: now,
             expires_at: now + TTL,
             transport,
+            usb_profile,
+            flow_profile: Some(FLOW_PROFILE.into()),
             wifi_ssid: None,
             app_build: None,
             root_der: STANDARD.encode(root.der()),

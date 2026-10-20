@@ -55,6 +55,9 @@ abstract class DeviceSyncSessionController extends ChangeNotifier {
   String? get invitation;
   String? get confirmationCode;
   read.EndpointRead? get snapshot;
+
+  /// Live, read-only work observation; never a replacement for session authority.
+  read.ProgressView? get presentationProgress => snapshot?.progress;
   DeviceSyncProposal? get proposedConfiguration;
   DeviceSyncPreviewView? get preview;
   read.ReadError? get issue;
@@ -118,10 +121,18 @@ final class DeviceBackupUnavailable implements Exception {
 }
 
 final class DeviceSyncReadFailure implements Exception {
-  const DeviceSyncReadFailure(this.code);
+  const DeviceSyncReadFailure(this.code, {this.stage});
   final read.ReadError code;
+  final String? stage;
   @override
   String toString() => 'Device synchronization read failed (${code.name})';
+}
+
+/// Invitation parsing context, distinct from invalid in-session transfer data.
+final class DeviceInvitationFailure implements Exception {
+  const DeviceInvitationFailure();
+  @override
+  String toString() => 'Device sync invitation is invalid';
 }
 
 abstract class DeviceBackupBrowserController extends ChangeNotifier {

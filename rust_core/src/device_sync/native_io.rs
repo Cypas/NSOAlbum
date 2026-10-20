@@ -1,9 +1,47 @@
 //! Restricted ciphertext mailbox policy shared by the isolated native worker.
 use std::collections::HashSet;
 
-pub const MAX_BLOCK: usize = super::MAX_CIPHERTEXT + 12;
+/// Physical USB carrier only; TLS drain and logical message limits are unchanged.
+pub const MAX_BLOCK: usize = 8 * 1024 * 1024;
 pub const MAX_ENTRIES: usize = 128;
-pub const MAX_IPC: usize = 196_608;
+/// JSON payload, excluding its four-byte framing prefix.
+pub const MAX_IPC: usize = 12 * 1024 * 1024;
+
+/// One serialized native operation, not permission to parallelize device I/O.
+#[derive(Default)]
+pub struct BatchBudget {
+    names: HashSet<String>,
+    bytes: usize,
+}
+impl BatchBudget {
+    pub fn reserve(&mut self, name: &str, bytes: usize) -> Result<(), NativeError> {
+        if !block_name(name) {
+            return Err(NativeError::InvalidBlock);
+        }
+        if self.names.contains(name) {
+            return Err(NativeError::Duplicate);
+        }
+        let total = self.bytes.checked_add(bytes).ok_or(NativeError::Bounds)?;
+        if bytes == 0 || self.names.len() >= 4 || total > MAX_BLOCK {
+            return Err(NativeError::Bounds);
+        }
+        self.names.insert(name.into());
+        self.bytes = total;
+        Ok(())
+    }
+}
+
+/// Backend-opaque tokens valid only within this worker's open device session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockIdentity {
+    pub object: u64,
+    pub parent: u64,
+    pub storage: u64,
+}
+
+#[cfg(test)]
+#[path = "native_io/v2_bounds_tests.rs"]
+mod v2_bounds_tests;
 
 pub fn reserve_block_entry(current_entries: usize) -> Result<(), NativeError> {
     if current_entries >= MAX_ENTRIES {
@@ -97,7 +135,7 @@ pub fn validate_entries(entries: &[(String, u64, bool)]) -> Result<Vec<String>, 
         if name.ends_with(".part") {
             continue;
         }
-        if !block_name(name) || *directory || !(1..=MAX_BLOCK as u64).contains(size) {
+        if !block_name(name) || *directory || *size > MAX_BLOCK as u64 {
             return Err(NativeError::InvalidBlock);
         }
         complete.push(name.clone());
@@ -124,6 +162,10 @@ pub struct NativeDevice {
 #[serde(deny_unknown_fields, tag = "method", rename_all = "snake_case")]
 pub enum NativeRequest {
     Enumerate,
+    Discover {
+        operation: String,
+        session: String,
+    },
     Open {
         device: String,
         storage: String,
@@ -187,10 +229,74 @@ pub fn write_packet(writer: &mut impl std::io::Write, bytes: &[u8]) -> Result<()
 
 #[derive(Default)]
 pub struct BlockReceipts {
-    hashes: std::collections::HashMap<(Direction, String), [u8; 32]>,
+    lengths: std::collections::HashMap<(Direction, String), usize>,
+    identities: std::collections::HashMap<(Direction, String), BlockIdentity>,
     next: [u64; 2],
 }
 impl BlockReceipts {
+    /// Preflight a bounded, already-read contiguous prefix. No deletion or
+    /// receipt mutation happens if any sequence is missing.
+    pub fn retirement_prefix(
+        &self,
+        direction: Direction,
+        through: &str,
+    ) -> Result<Vec<(String, usize, BlockIdentity)>, NativeError> {
+        let end = Self::sequence(through)?;
+        let next = self.next(direction);
+        if end < next {
+            return Ok(vec![]);
+        }
+        if end == u64::MAX || end - next >= 8 {
+            return Err(NativeError::InvalidBlock);
+        }
+        (next..=end)
+            .map(|sequence| {
+                let name = format!("{sequence:016x}.block");
+                let key = (direction, name.clone());
+                let length = *self.lengths.get(&key).ok_or(NativeError::InvalidBlock)?;
+                let identity = *self.identities.get(&key).ok_or(NativeError::InvalidBlock)?;
+                Ok((name, length, identity))
+            })
+            .collect()
+    }
+    pub fn record_identified(
+        &mut self,
+        direction: Direction,
+        name: &str,
+        bytes: &[u8],
+        identity: BlockIdentity,
+    ) -> Result<(), NativeError> {
+        if bytes.is_empty() || bytes.len() > MAX_BLOCK {
+            return Err(NativeError::Bounds);
+        }
+        let key = (direction, name.to_owned());
+        if self
+            .identities
+            .get(&key)
+            .is_some_and(|saved| *saved != identity)
+            || self
+                .lengths
+                .get(&key)
+                .is_some_and(|saved| *saved != bytes.len())
+        {
+            return Err(NativeError::InvalidBlock);
+        }
+        self.record(direction, name, bytes)?;
+        self.identities.insert(key, identity);
+        Ok(())
+    }
+    pub fn require_identity(
+        &self,
+        direction: Direction,
+        name: &str,
+        identity: BlockIdentity,
+    ) -> Result<(), NativeError> {
+        if self.identities.get(&(direction, name.into())) == Some(&identity) {
+            Ok(())
+        } else {
+            Err(NativeError::InvalidBlock)
+        }
+    }
     fn sequence(name: &str) -> Result<u64, NativeError> {
         if !block_name(name) {
             return Err(NativeError::InvalidBlock);
@@ -210,23 +316,18 @@ impl BlockReceipts {
         name: &str,
         bytes: &[u8],
     ) -> Result<(), NativeError> {
-        use sha2::Digest;
         Self::sequence(name)?;
         if bytes.is_empty() || bytes.len() > MAX_BLOCK {
             return Err(NativeError::Bounds);
         }
         let key = (direction, name.to_owned());
-        if !self.hashes.contains_key(&key) && self.hashes.len() >= MAX_ENTRIES {
+        if !self.lengths.contains_key(&key) && self.lengths.len() >= MAX_ENTRIES {
             return Err(NativeError::Bounds);
         }
-        self.hashes.insert(key, sha2::Sha256::digest(bytes).into());
+        self.lengths.insert(key, bytes.len());
         Ok(())
     }
-    pub fn receipt(
-        &self,
-        direction: Direction,
-        name: &str,
-    ) -> Result<Option<[u8; 32]>, NativeError> {
+    pub fn receipt(&self, direction: Direction, name: &str) -> Result<Option<usize>, NativeError> {
         let sequence = Self::sequence(name)?;
         if sequence < self.next(direction) {
             return Ok(None);
@@ -234,7 +335,7 @@ impl BlockReceipts {
         if sequence != self.next(direction) || sequence == u64::MAX {
             return Err(NativeError::InvalidBlock);
         }
-        self.hashes
+        self.lengths
             .get(&(direction, name.into()))
             .copied()
             .map(Some)
@@ -242,7 +343,8 @@ impl BlockReceipts {
     }
     pub fn retired(&mut self, direction: Direction, name: &str) -> Result<(), NativeError> {
         if self.receipt(direction, name)?.is_some() {
-            self.hashes.remove(&(direction, name.into()));
+            self.lengths.remove(&(direction, name.into()));
+            self.identities.remove(&(direction, name.into()));
             self.next[if direction == Direction::Desktop {
                 0
             } else {
@@ -270,10 +372,7 @@ mod retirement_tests {
                 .unwrap();
             assert_eq!(
                 receipts.receipt(Direction::Mobile, &name).unwrap().unwrap(),
-                [
-                    3, 144, 88, 198, 242, 192, 203, 73, 44, 83, 59, 10, 77, 20, 239, 119, 204, 15,
-                    120, 171, 204, 206, 213, 40, 125, 132, 161, 162, 1, 28, 251, 129
-                ]
+                3
             );
             receipts.retired(Direction::Mobile, &name).unwrap();
             assert_eq!(receipts.receipt(Direction::Mobile, &name).unwrap(), None);
@@ -319,11 +418,12 @@ mod tests {
         }
         let entries = vec![
             ("0000000000000001.block.part".into(), 0, false),
+            ("0000000000000002.block".into(), 0, false),
             ("0000000000000000.block".into(), 123, false),
         ];
         assert_eq!(
             validate_entries(&entries).unwrap(),
-            ["0000000000000000.block"]
+            ["0000000000000000.block", "0000000000000002.block"]
         );
         assert_eq!(
             validate_entries(&[
@@ -334,13 +434,20 @@ mod tests {
         );
         for (name, size, folder) in [
             ("bad", 3, false),
-            ("0000000000000000.block", 0, false),
-            ("0000000000000000.block", 65549, false),
+            ("0000000000000000.block", MAX_BLOCK as u64 + 1, false),
             ("0000000000000000.block", 1, true),
         ] {
             assert_eq!(
                 validate_entries(&[(name.into(), size, folder)]),
                 Err(NativeError::InvalidBlock)
+            );
+        }
+        // OS metadata may lag behind a completed MTP rename. Ciphertext
+        // framing/authentication is validated after actual bounded reads.
+        for size in [0, 1, 3, 12, MAX_BLOCK as u64] {
+            assert_eq!(
+                validate_entries(&[("0000000000000000.block".into(), size, false)]),
+                Ok(vec!["0000000000000000.block".into()])
             );
         }
         assert_eq!(

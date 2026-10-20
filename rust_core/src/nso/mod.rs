@@ -9,3 +9,4 @@ pub use attestation::{AttestationService, EncryptedRequest, NxapiAttestationClie
 pub use auth::{NintendoAuthClient, NintendoProfile, NintendoTokens};
 pub use provider::{CoralAlbumProvider, CoralSession, MediaProvider};
 pub use session::CoralSessionClient;
+pub(crate) mod token_expiry;

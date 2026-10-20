@@ -72,3 +72,8 @@ read/acknowledgement cycles without an ever-growing live directory. From
 This does not prove Android document-provider consent, persistence or hardware
 I/O. The standalone native probe and its limitations are documented in the
 Flutter README. Never run simultaneous native builds in the same checkout.
+
+The same harness also runs `verifyDeviceSyncProviderMetrics`: bounded numeric
+timings, cancellation while a provider operation is active, frozen summaries,
+clock regression and overflow. This JVM result does not exercise the Android
+MethodChannel or real document provider; those require rebuilding and device QA.

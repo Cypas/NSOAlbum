@@ -1,4 +1,5 @@
 //! Parent-side native I/O isolation. The child owns all MTP handles.
+use super::io_metrics::{IoMetrics, IoStep};
 use super::native_io::{read_packet, write_packet, NativeError, NativeRequest, NativeResponse};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -9,18 +10,24 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 type Reply = Result<serde_json::Value, NativeError>;
-type CommandPacket = (Vec<u8>, mpsc::SyncSender<Reply>);
+type ReceivedReply = (Reply, Instant);
+fn terminal_error(error: NativeError, discovery: bool) -> bool {
+    error != NativeError::WindowFull && !(discovery && error == NativeError::Unavailable)
+}
+type CommandPacket = (Vec<u8>, mpsc::SyncSender<ReceivedReply>, bool);
 struct PendingRequest {
-    response: mpsc::Receiver<Reply>,
+    response: mpsc::Receiver<ReceivedReply>,
     started: Instant,
     deadline: Duration,
     closing: bool,
+    discovery: bool,
 }
 pub struct NativeProcess {
     child: Arc<Mutex<Child>>,
     terminal: Arc<AtomicBool>,
     commands: mpsc::SyncSender<CommandPacket>,
     pending: Option<PendingRequest>,
+    timings: Arc<Mutex<IoMetrics>>,
 }
 pub struct NativeCancellation {
     terminal: Arc<AtomicBool>,
@@ -54,23 +61,37 @@ impl NativeProcess {
         let (commands, incoming) = mpsc::sync_channel::<CommandPacket>(1);
         let ended = terminal.clone();
         let io_child = child.clone();
+        let timings = Arc::new(Mutex::new(IoMetrics::default()));
+        let io_timings = timings.clone();
         std::thread::spawn(move || {
-            while let Ok((request, reply)) = incoming.recv() {
+            while let Ok((request, reply, discovery)) = incoming.recv() {
                 if ended.load(Ordering::Acquire) {
                     break;
                 }
+                let started = Instant::now();
                 let answer = write_packet(&mut input, &request)
                     .and_then(|_| read_packet(&mut output))
                     .and_then(|bytes| {
-                        serde_json::from_slice::<NativeResponse>(&bytes)
-                            .map_err(|_| NativeError::Io)
+                        let decoding = Instant::now();
+                        let answer = serde_json::from_slice::<NativeResponse>(&bytes)
+                            .map_err(|_| NativeError::Io);
+                        io_timings
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .elapsed(IoStep::IpcDecode, decoding, bytes.len() as u64);
+                        answer
                     })
                     .and_then(|reply| reply.value);
+                let received_at = Instant::now();
+                io_timings
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .elapsed(IoStep::IpcRoundtrip, started, request.len() as u64);
                 let failed = answer
                     .as_ref()
-                    .is_err_and(|error| *error != NativeError::WindowFull);
+                    .is_err_and(|error| terminal_error(*error, discovery));
                 if !ended.load(Ordering::Acquire) {
-                    let _ = reply.try_send(answer);
+                    let _ = reply.try_send((answer, received_at));
                 }
                 if failed {
                     break;
@@ -86,6 +107,7 @@ impl NativeProcess {
             terminal,
             commands,
             pending: None,
+            timings,
         })
     }
     pub fn cancellation(&self) -> NativeCancellation {
@@ -120,19 +142,27 @@ impl NativeProcess {
             return Err(NativeError::Closed);
         }
         let closing = matches!(request, NativeRequest::Close);
+        let discovery = matches!(request, NativeRequest::Discover { .. });
+        let encoding = Instant::now();
         let request = serde_json::to_vec(&request).map_err(|_| NativeError::Bounds)?;
+        self.timings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .elapsed(IoStep::IpcEncode, encoding, request.len() as u64);
         if request.len() > super::native_io::MAX_IPC {
             return Err(NativeError::Bounds);
         }
         let (reply, response) = mpsc::sync_channel(1);
+        let started = Instant::now();
         self.commands
-            .try_send((request, reply))
+            .try_send((request, reply, discovery))
             .map_err(|_| NativeError::Closed)?;
         self.pending = Some(PendingRequest {
             response,
-            started: Instant::now(),
+            started,
             deadline,
             closing,
+            discovery,
         });
         Ok(())
     }
@@ -140,20 +170,34 @@ impl NativeProcess {
         let pending = self.pending.as_ref()?;
         let answer = if self.terminal.load(Ordering::Acquire) {
             Err(NativeError::Closed)
-        } else if pending.started.elapsed() >= pending.deadline {
-            Err(NativeError::Timeout)
         } else {
             match pending.response.try_recv() {
-                Ok(answer) => answer,
-                Err(mpsc::TryRecvError::Empty) => return None,
+                Ok((answer, received_at)) => {
+                    if received_at.saturating_duration_since(pending.started) >= pending.deadline {
+                        Err(NativeError::Timeout)
+                    } else {
+                        answer
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    if pending.started.elapsed() >= pending.deadline {
+                        Err(NativeError::Timeout)
+                    } else {
+                        return None;
+                    }
+                }
                 Err(mpsc::TryRecvError::Disconnected) => Err(NativeError::Io),
             }
         };
         let pending = self.pending.take().expect("one native request");
+        self.timings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .elapsed(IoStep::ReceiptWait, pending.started, 0);
         if pending.closing
             || answer
                 .as_ref()
-                .is_err_and(|e| *e != NativeError::WindowFull)
+                .is_err_and(|e| terminal_error(*e, pending.discovery))
         {
             self.cancel();
         }
@@ -166,6 +210,10 @@ impl NativeProcess {
 impl Drop for NativeProcess {
     fn drop(&mut self) {
         self.cancel();
+        eprintln!(
+            "{} site=parent",
+            self.timings.lock().unwrap_or_else(|e| e.into_inner())
+        );
         // Never join the pipe thread or wait synchronously for native teardown.
         // A private bounded reaper observes only the child this instance spawned.
         let child = self.child.clone();
@@ -186,6 +234,173 @@ impl Drop for NativeProcess {
 mod tests {
     use super::*;
     use std::sync::OnceLock;
+
+    fn response_fixture(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join(if cfg!(windows) {
+            "response.exe"
+        } else {
+            "response"
+        });
+        assert!(std::process::Command::new("rustc")
+            .arg(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures")
+                    .join(source),
+            )
+            .arg("-o")
+            .arg(&executable)
+            .status()
+            .unwrap()
+            .success());
+        (directory, executable)
+    }
+
+    // Hold an actual child-process reply without altering its value or receipt
+    // timestamp. This models an owner busy doing local work, not slow native I/O.
+    fn hold_completed_reply(process: &mut NativeProcess, wait: Duration) {
+        let pending = process.pending.as_mut().unwrap();
+        let received = pending.response.recv_timeout(wait).unwrap();
+        let (send, replacement) = mpsc::sync_channel(1);
+        send.send(received).unwrap();
+        pending.response = replacement;
+    }
+
+    #[test]
+    fn native_timely_reply_is_not_timed_out_when_the_owner_polls_after_the_deadline() {
+        let (_directory, executable) = response_fixture("device_sync_reply_worker.rs");
+        let mut process = NativeProcess::spawn(&executable).unwrap();
+        process
+            .begin_request(NativeRequest::Enumerate, Duration::from_secs(2))
+            .unwrap();
+        hold_completed_reply(&mut process, Duration::from_secs(1));
+        std::thread::sleep(Duration::from_millis(2100));
+        assert_eq!(process.poll_response(), Some(Ok(serde_json::json!(123))));
+        assert_eq!(
+            process.request(NativeRequest::Enumerate, Duration::from_secs(2)),
+            Ok(serde_json::json!(123)),
+            "a timely native reply must not kill the reusable worker"
+        );
+    }
+
+    #[test]
+    fn native_late_reply_is_rejected_even_when_already_buffered_at_owner_poll() {
+        let (_directory, executable) = response_fixture("device_sync_timed_reply_worker.rs");
+        let mut process = NativeProcess::spawn(&executable).unwrap();
+        process
+            .begin_request(NativeRequest::Enumerate, Duration::from_millis(50))
+            .unwrap();
+        hold_completed_reply(&mut process, Duration::from_secs(2));
+        assert_eq!(process.poll_response(), Some(Err(NativeError::Timeout)));
+        assert_eq!(
+            process.request(NativeRequest::Enumerate, Duration::from_secs(1)),
+            Err(NativeError::Closed)
+        );
+    }
+
+    #[test]
+    fn native_cancel_revokes_a_timely_buffered_reply_before_owner_consumption() {
+        let (_directory, executable) = response_fixture("device_sync_reply_worker.rs");
+        let mut process = NativeProcess::spawn(&executable).unwrap();
+        process
+            .begin_request(NativeRequest::Enumerate, Duration::from_secs(2))
+            .unwrap();
+        hold_completed_reply(&mut process, Duration::from_secs(1));
+        process.cancel();
+        assert_eq!(process.poll_response(), Some(Err(NativeError::Closed)));
+    }
+
+    #[test]
+    fn v4_carrier_crosses_real_worker_ipc_and_oversize_cannot_publish_a_partial() {
+        use crate::device_sync::native_io::Direction;
+        use base64::{engine::general_purpose::STANDARD, Engine};
+
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join(if cfg!(windows) {
+            "v2-mailbox.exe"
+        } else {
+            "v2-mailbox"
+        });
+        assert!(std::process::Command::new("rustc")
+            .arg(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/device_sync_local_mailbox_worker.rs")
+            )
+            .arg("-o")
+            .arg(&executable)
+            .status()
+            .unwrap()
+            .success());
+        let mut worker = NativeProcess::spawn(&executable).unwrap();
+        let deadline = Duration::from_secs(5);
+        worker
+            .request(
+                NativeRequest::Open {
+                    device: "synthetic".into(),
+                    storage: "storage".into(),
+                    operation: "a".repeat(32),
+                    session: "b".repeat(32),
+                },
+                deadline,
+            )
+            .unwrap();
+        let name = "0000000000000000.block";
+        let payload = vec![0x53; super::super::native_io::MAX_BLOCK];
+        assert_eq!(
+            worker.request(
+                NativeRequest::Write {
+                    operation: "a".repeat(32),
+                    session: "b".repeat(32),
+                    name: name.into(),
+                    bytes: STANDARD.encode(&payload),
+                },
+                deadline
+            ),
+            Ok(serde_json::Value::Null)
+        );
+        let value = worker
+            .request(
+                NativeRequest::Read {
+                    operation: "a".repeat(32),
+                    session: "b".repeat(32),
+                    direction: Direction::Desktop,
+                    name: name.into(),
+                },
+                deadline,
+            )
+            .unwrap();
+        assert_eq!(STANDARD.decode(value.as_str().unwrap()).unwrap(), payload);
+        worker
+            .request(
+                NativeRequest::Acknowledge {
+                    operation: "a".repeat(32),
+                    session: "b".repeat(32),
+                    direction: Direction::Desktop,
+                    name: name.into(),
+                },
+                deadline,
+            )
+            .unwrap();
+        assert_eq!(
+            worker.request(
+                NativeRequest::Write {
+                    operation: "a".repeat(32),
+                    session: "b".repeat(32),
+                    name: "0000000000000001.block".into(),
+                    bytes: STANDARD.encode(vec![0x53; super::super::native_io::MAX_BLOCK + 1]),
+                },
+                deadline
+            ),
+            Err(NativeError::Bounds)
+        );
+        let folder = directory
+            .path()
+            .join("exchange")
+            .join(format!("s-{}", "b".repeat(32)))
+            .join("desktop");
+        assert_eq!(std::fs::read_dir(folder).unwrap().count(), 0);
+    }
+
     fn fixture() -> &'static Path {
         static FILE: OnceLock<std::path::PathBuf> = OnceLock::new();
         FILE.get_or_init(|| {
@@ -367,6 +582,52 @@ mod tests {
                 Duration::from_secs(2)
             ),
             Ok(serde_json::Value::Null)
+        );
+    }
+    #[test]
+    fn temporary_discovery_unavailability_preserves_worker_but_open_failure_is_terminal() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory
+            .path()
+            .join(if cfg!(windows) { "reply.exe" } else { "reply" });
+        assert!(std::process::Command::new("rustc")
+            .arg(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/device_sync_reply_worker.rs")
+            )
+            .arg("-o")
+            .arg(&executable)
+            .status()
+            .unwrap()
+            .success());
+        let mut process = NativeProcess::spawn(&executable).unwrap();
+        let discovery = || NativeRequest::Discover {
+            operation: "a".repeat(32),
+            session: "b".repeat(32),
+        };
+        assert_eq!(
+            process.request(discovery(), Duration::from_secs(2)),
+            Err(NativeError::Unavailable)
+        );
+        assert_eq!(
+            process.request(discovery(), Duration::from_secs(2)),
+            Ok(serde_json::json!(false))
+        );
+        assert_eq!(
+            process.request(
+                NativeRequest::Open {
+                    operation: "a".repeat(32),
+                    session: "b".repeat(32),
+                    device: "candidate".into(),
+                    storage: "storage".into(),
+                },
+                Duration::from_secs(2)
+            ),
+            Err(NativeError::Unavailable)
+        );
+        assert_eq!(
+            process.request(NativeRequest::Enumerate, Duration::from_secs(2)),
+            Err(NativeError::Closed)
         );
     }
 }

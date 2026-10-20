@@ -3,6 +3,8 @@ use super::*;
 use std::io::{ErrorKind, Write};
 use std::net::{Shutdown, TcpStream};
 
+pub(crate) mod bundle;
+
 pub struct TcpDriver {
     driver: Driver,
     stream: Option<TcpStream>,
@@ -139,6 +141,12 @@ impl TcpDriver {
             let _ = stream.shutdown(Shutdown::Both);
         }
         self.closed = true;
+        // CommitAck can make Session terminal before flush_output is reached.
+        // Freeze terminal TCP timings at transport retirement, not a later UI drop.
+        // A detached receiver still applying locally must keep measuring instead.
+        if self.driver.state().terminal() {
+            self.driver.publish_measurements();
+        }
     }
 }
 impl Drop for TcpDriver {
@@ -206,21 +214,9 @@ impl MailboxPump {
         result
     }
     pub fn outgoing(&mut self, driver: &mut Driver) -> Result<Option<(&str, &[u8])>> {
-        self.outgoing_inner(driver, true)
+        self.outgoing_inner(driver)
     }
-    /// Managed directory owners must retire their actually published blocks
-    /// before explicitly consuming finish_success; a local write is not a peer ACK.
-    pub(crate) fn outgoing_without_finish(
-        &mut self,
-        driver: &mut Driver,
-    ) -> Result<Option<(&str, &[u8])>> {
-        self.outgoing_inner(driver, false)
-    }
-    fn outgoing_inner(
-        &mut self,
-        driver: &mut Driver,
-        finish: bool,
-    ) -> Result<Option<(&str, &[u8])>> {
+    fn outgoing_inner(&mut self, driver: &mut Driver) -> Result<Option<(&str, &[u8])>> {
         if driver.state() == State::Completed && driver.session.state() == SessionState::Terminal {
             self.pending = None;
             self.blocked = false;
@@ -244,7 +240,7 @@ impl MailboxPump {
                     return Err(DriverError::Bounds);
                 }
                 self.pending = Some(self.order.encode(&ciphertext)?);
-            } else if finish {
+            } else {
                 self.finish_success(driver);
             }
         }

@@ -124,6 +124,7 @@ class _AndroidVideoMergePageState extends State<AndroidVideoMergePage> {
               child: AndroidVideoSurface(
                 key: preview,
                 path: editor.previewPath!,
+                cover: videos.first,
                 autoPlay: true,
               ),
             ),

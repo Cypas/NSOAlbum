@@ -37,20 +37,34 @@ class AndroidLibraryPage extends StatefulWidget {
 class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
   final search = TextEditingController();
   final selected = <int>{};
-  Timer? debounce;
   bool selecting = false;
   bool busy = false;
+  bool searchExpanded = false;
   AppBackend get backend => widget.controller.backend;
 
   @override
   void initState() {
     super.initState();
+    search.text = widget.controller.search;
     unawaited(widget.controller.reload());
+  }
+
+  void applySearch() {
+    FocusManager.instance.primaryFocus?.unfocus();
+    widget.controller.searchFor(search.text);
+    setState(() => searchExpanded = false);
+  }
+
+  void cancelSearch() {
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() {
+      search.text = widget.controller.search;
+      searchExpanded = false;
+    });
   }
 
   @override
   void dispose() {
-    debounce?.cancel();
     search.dispose();
     super.dispose();
   }
@@ -177,6 +191,7 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
           zh: '已复制到相册；当前列表没有可移出的普通相册。',
           en: 'Copied to the album; this view has no regular source album.',
         ),
+        isError: false,
       );
     }
   }
@@ -205,6 +220,7 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
               zh: '已导出 ${result.exported} · 失败 ${result.failed}',
               en: 'Exported ${result.exported} · Failed ${result.failed}',
             ),
+            isError: result.failed > BigInt.zero,
           );
         }
       });
@@ -448,16 +464,25 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
           .toList();
       return PopScope<Object?>(
         canPop:
-            !selecting && !busy && MediaQuery.viewInsetsOf(context).bottom == 0,
+            !selecting &&
+            !busy &&
+            !searchExpanded &&
+            MediaQuery.viewInsetsOf(context).bottom == 0,
         onPopInvokedWithResult: (didPop, _) {
           if (didPop) return;
           if (MediaQuery.viewInsetsOf(context).bottom > 0) {
             FocusManager.instance.primaryFocus?.unfocus();
             return;
           }
+          if (searchExpanded && !selecting && !busy) {
+            // Back only collapses the panel. A draft is not an applied query.
+            setState(() => searchExpanded = false);
+            return;
+          }
           if (!didPop && selecting && !busy) {
             setState(() {
               selecting = false;
+              searchExpanded = false;
               selected.clear();
             });
           }
@@ -480,6 +505,7 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                   }
                   setState(() {
                     selecting = false;
+                    searchExpanded = false;
                     selected.clear();
                   });
                 }
@@ -488,6 +514,15 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
               : () => Navigator.of(context).maybePop(),
           actions: [
             if (!selecting) ...[
+              IconButton(
+                key: const Key('android-library-search-toggle'),
+                tooltip: context.l10n.select(zh: '展开搜索', en: 'Expand search'),
+                onPressed: () {
+                  FocusManager.instance.primaryFocus?.unfocus();
+                  setState(() => searchExpanded = !searchExpanded);
+                },
+                icon: Icon(searchExpanded ? Icons.close : Icons.search),
+              ),
               IconButton(
                 tooltip: context.l10n.select(zh: '筛选', en: 'Filter'),
                 onPressed: filters,
@@ -563,29 +598,96 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                             ),
                             const SizedBox(height: 8),
                           ],
-                          TextField(
-                            key: const Key('android-library-search'),
-                            controller: search,
-                            decoration: InputDecoration(
-                              prefixIcon: const Icon(Icons.search),
-                              hintText: context.l10n.select(
-                                zh: '搜索游戏、标签、备注',
-                                en: 'Search games, tags, notes',
+                          KeyedSubtree(
+                            key: const Key('android-library-search-input'),
+                            child: TextField(
+                              key: const Key('android-library-search'),
+                              controller: search,
+                              readOnly: !searchExpanded,
+                              decoration: InputDecoration(
+                                prefixIcon: const Icon(Icons.search),
+                                hintText: context.l10n.select(
+                                  zh: '搜索游戏、标签、备注',
+                                  en: 'Search games, tags, notes',
+                                ),
+                              ),
+                              onTap: () {
+                                if (!searchExpanded) {
+                                  setState(() => searchExpanded = true);
+                                }
+                              },
+                              onSubmitted: (_) => applySearch(),
+                            ),
+                          ),
+                          if (searchExpanded) ...[
+                            const SizedBox(height: 8),
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                context.l10n.select(
+                                  zh: '搜索范围：文件名、游戏、标签和备注',
+                                  en: 'Search in filenames, games, tags and notes',
+                                ),
                               ),
                             ),
-                            onChanged: (value) {
-                              debounce?.cancel();
-                              if (search.value.composing.isValid &&
-                                  !search.value.composing.isCollapsed) {
-                                return;
-                              }
-                              debounce = Timer(
-                                const Duration(milliseconds: 600),
-                                () => state.searchFor(value),
-                              );
-                            },
-                            onSubmitted: state.searchFor,
-                          ),
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                [
+                                  widget.album?.name ??
+                                      context.l10n.select(
+                                        zh: '全部图库',
+                                        en: 'Entire library',
+                                      ),
+                                  if (state.favoriteOnly)
+                                    context.l10n.select(
+                                      zh: '仅收藏',
+                                      en: 'Favorites only',
+                                    ),
+                                  ...state.gameNames,
+                                  if (state.capturedFrom != null ||
+                                      state.capturedUntil != null)
+                                    context.l10n.select(
+                                      zh: '拍摄日期筛选',
+                                      en: 'Capture date filter',
+                                    ),
+                                ].join(' · '),
+                              ),
+                            ),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: Wrap(
+                                spacing: 8,
+                                children: [
+                                  TextButton(
+                                    key: const Key(
+                                      'android-library-search-cancel',
+                                    ),
+                                    onPressed: cancelSearch,
+                                    child: Text(
+                                      context.l10n.select(
+                                        zh: '取消',
+                                        en: 'Cancel',
+                                      ),
+                                    ),
+                                  ),
+                                  FilledButton.icon(
+                                    key: const Key(
+                                      'android-library-search-confirm',
+                                    ),
+                                    onPressed: applySearch,
+                                    icon: const Icon(Icons.check),
+                                    label: Text(
+                                      context.l10n.select(
+                                        zh: '应用搜索',
+                                        en: 'Apply search',
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                           const SizedBox(height: 8),
                           SegmentedButton<GalleryKindFilter>(
                             key: const Key('android-kind-filter'),

@@ -11,6 +11,7 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
   final _projections = <Future<void>>{};
   Future<void>? _acting;
   read.EndpointRead? _snapshot;
+  read.ProgressView? _presentationProgress;
   String? _confirmationCode;
   int _epoch = 0;
   bool _confirmedLocally = false;
@@ -33,6 +34,9 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
   bool _advanceBlocked = false;
   bool _settled = false;
   bool _workDrained = false;
+  DeviceTransferPermit? _transferPermit;
+  Timer? _transferObserver;
+  bool _observerFailureReported = false;
   DeviceSyncUsbSafOwner? _usbOwner;
   Future<void>? _usbRunning;
   Object? _usbFailure;
@@ -51,6 +55,9 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
   String? get invitation => _invitation;
   @override
   read.EndpointRead? get snapshot => _snapshot;
+  @override
+  read.ProgressView? get presentationProgress =>
+      _presentationProgress ?? _snapshot?.progress;
   @override
   String? get confirmationCode => _confirmationCode;
   @override
@@ -85,9 +92,23 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
           final value = await _project(
             () => native.deviceSyncReadEndpoint(endpoint: _endpoint),
             (value) => value.error,
+            onBusy: (value) {
+              // Busy has no endpoint authority. Only its atomic work counters
+              // may replace presentation while the owner checks originals.
+              _presentationProgress = value.progress;
+              notifyListeners();
+            },
           );
           if (epoch != _epoch || closed) throw const DeviceSyncBusy();
           final view = value.value;
+          if (view?.host == true && view?.transport == read.TransportKind.usb) {
+            final usb = await _project(
+              () => native.deviceSyncUsbView(endpoint: _endpoint),
+              (value) => value.error,
+            );
+            if (epoch != _epoch || closed) throw const DeviceSyncBusy();
+            _transportIssue = usb.error;
+          }
           // Always observe the native domain first. An OS transport failure
           // cannot decide whether the original local operation is installed.
           if (_usbFailure case final failure?) {
@@ -134,7 +155,11 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
             }
           }
           if (epoch != _epoch || closed) throw const DeviceSyncBusy();
+          if (view?.configuration != null && view?.terminal == false) {
+            _holdTransfer();
+          }
           _snapshot = value;
+          _presentationProgress = value.progress;
           _confirmationCode = code;
           if (view?.terminal == true) _usbChoices.clear();
           if (view?.pairing == read.PairingStage.awaitingConfirmation ||
@@ -143,13 +168,62 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
             _invitation = null;
           }
           notifyListeners();
-          await _advance(view);
-          return value;
+          final advanced = await _advance(view);
+          // Account application/compensation can finish inside _advance.
+          // Never use its pre-action sample to decide whether the task ended.
+          if (advanced && !closed) {
+            final latest = await _project(
+              () => native.deviceSyncReadEndpoint(endpoint: _endpoint),
+              (value) => value.error,
+            );
+            _snapshot = latest;
+            _presentationProgress = latest.progress;
+            notifyListeners();
+          }
+          final settledView = _snapshot?.value;
+          if (settledView?.terminal == true &&
+              settledView?.cleanupPending == false &&
+              !_service._owner._coordinator!.hasEndpointWork(_endpoint)) {
+            _releaseTransfer();
+          }
+          return _snapshot ?? value;
         }().whenComplete(() {
           if (identical(_observing, flight)) _observing = null;
         });
     _observing = flight;
     return flight;
+  }
+
+  void _holdTransfer() {
+    _transferPermit ??= _service._owner._gate.holdTransfer();
+    _observeTask();
+  }
+
+  void _observeTask() {
+    // Once a task starts its lifetime cannot depend on a mounted sync page.
+    _transferObserver ??= Timer.periodic(const Duration(milliseconds: 500), (
+      _,
+    ) {
+      if (closed) return;
+      unawaited(
+        refresh().then<void>(
+          (_) {},
+          onError: (Object failure) {
+            if (failure is! DeviceSyncBusy && !_observerFailureReported) {
+              _observerFailureReported = true;
+              _service._recordFailure(failure);
+            }
+          },
+        ),
+      );
+    });
+  }
+
+  void _releaseTransfer() {
+    _transferObserver?.cancel();
+    _transferObserver = null;
+    _transferPermit?.release();
+    _transferPermit = null;
   }
 
   void _admit() {
@@ -165,7 +239,7 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
     final done = Completer<void>();
     _acting = done.future;
     notifyListeners();
-    return Future<T>.sync(action)
+    return Future<T>.sync(() => _transferPermit?.run(action) ?? action())
         .catchError((Object failure, StackTrace stack) {
           _service._recordFailure(failure);
           Error.throwWithStackTrace(failure, stack);
@@ -187,8 +261,9 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
 
   Future<T> _project<T>(
     Future<T> Function() observe,
-    read.ReadError? Function(T) error,
-  ) async {
+    read.ReadError? Function(T) error, {
+    void Function(T)? onBusy,
+  }) async {
     _admit();
     final epoch = _epoch;
     final done = Completer<void>();
@@ -198,6 +273,7 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
         observe,
         errorOf: error,
         cancelled: () => closed || epoch != _epoch || !_service._owner.ready,
+        onBusy: onBusy,
       );
     } finally {
       _projections.remove(done.future);
@@ -239,6 +315,7 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
         view?.configuration != null) {
       throw const DeviceSyncBusy();
     }
+    _holdTransfer();
     await _command(
       () => native.deviceSyncConfigure(
         endpoint: _endpoint,
@@ -475,11 +552,13 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
   Future<void> close() {
     if (_closing case final current?) return current;
     _closeRequested = true;
+    _transferObserver?.cancel();
+    _transferObserver = null;
     _invitation = null;
     _confirmationCode = null;
     _usbChoices.clear();
     _epoch++;
-    final flight = () async {
+    Future<void> settle() async {
       final errors = _DeviceCloseErrors();
       var transportDrained = _usbOwner == null;
       var nativeSettled = false;
@@ -496,6 +575,7 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
                 ended.error != null) {
               throw DeviceSyncReadFailure(
                 ended.error ?? read.ReadError.unavailable,
+                stage: 'USB teardown receipt',
               );
             }
           });
@@ -545,9 +625,12 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
         });
       });
       if (_workDrained) _service._sessions.remove(this);
+      if (_workDrained) _releaseTransfer();
       if (errors.failure case final failure?) _service._recordFailure(failure);
       errors.rethrowFirst();
-    }();
+    }
+
+    final flight = _transferPermit?.run(settle) ?? settle();
     return _closing = flight.whenComplete(() {
       // Logical close is monotonic. Only the same owner's unfinished cleanup
       // may be retried; no observation, grant or account sequence is restarted.

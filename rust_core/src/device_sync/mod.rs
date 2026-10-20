@@ -10,10 +10,12 @@ pub mod driver;
 pub mod headless;
 #[cfg(test)]
 mod headless_tests;
+pub(crate) mod io_metrics;
 pub mod library_guard;
 pub(crate) mod local_apply;
 pub mod mailbox;
 pub mod manifest;
+pub(crate) mod metrics;
 pub mod native_io;
 #[cfg(any(windows, target_os = "macos"))]
 pub mod native_mtp;
@@ -36,6 +38,7 @@ mod tests;
 pub mod usb;
 #[cfg(test)]
 mod usb_tests;
+pub(crate) mod validation;
 pub mod wire;
 pub mod work;
 pub use qr::{Invitation, Qr};
@@ -76,6 +79,6 @@ pub enum Transport {
 }
 
 pub const MAX_CIPHERTEXT: usize = 65_536;
-pub const MAX_PAYLOAD: usize = 65_536;
-pub const MAX_BUFFER: usize = 262_144;
+pub const MAX_PAYLOAD: usize = wire::MEDIA_CHUNK + 100;
+pub const MAX_BUFFER: usize = 1024 * 1024;
 pub const MAX_CONTROL: usize = 4_096;

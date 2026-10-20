@@ -44,7 +44,7 @@ impl FileIdentity {
 pub(crate) struct HeldDirectory {
     path: std::path::PathBuf,
     // One directory handle, not one handle per cached object.
-    _file: std::fs::File,
+    _file: Option<std::fs::File>,
     ancestors: Vec<(std::path::PathBuf, FileIdentity)>,
 }
 
@@ -59,7 +59,7 @@ impl HeldDirectory {
         }
         let held = Self {
             path: path.to_path_buf(),
-            _file: file,
+            _file: Some(file),
             ancestors,
         };
         held.inspect()?;
@@ -82,7 +82,7 @@ impl HeldDirectory {
 
     pub(crate) fn volume_id(&self) -> StagingResult<u64> {
         self.inspect()?;
-        Ok(FileIdentity::of(&self._file)?.0)
+        Ok(FileIdentity::of(self._file.as_ref().ok_or(StagingError::UnsafePath)?)?.0)
     }
 }
 
@@ -194,6 +194,7 @@ impl OwnedPart {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
@@ -207,12 +208,47 @@ impl OwnedPart {
         {
             return Err(StagingError::UnsafePath);
         }
+        let current = FileIdentity::of(&open_regular(&self.path)?)?;
+        if current != self.identity {
+            return Err(StagingError::UnsafePath);
+        }
         if let Some(file) = &self.file {
-            if FileIdentity::of(file.as_file())? != FileIdentity::of(&open_regular(&self.path)?)? {
+            if FileIdentity::of(file.as_file())? != current {
                 return Err(StagingError::UnsafePath);
             }
         }
         Ok(())
+    }
+
+    /// Keep only identity/path metadata for sealed files; no OS handle per
+    /// incoming media item survives until the final batch.
+    pub(super) fn suspend(&mut self) -> StagingResult<()> {
+        self.inspect()?;
+        let owned = self.file.take().ok_or(StagingError::InvalidState)?;
+        match owned.keep() {
+            Ok((file, _)) => drop(file),
+            Err(error) => {
+                self.file = Some(error.file);
+                return Err(StagingError::Publish);
+            }
+        }
+        self.directory._file.take();
+        Ok(())
+    }
+
+    pub(super) fn resume(&mut self) -> StagingResult<()> {
+        self.inspect()?;
+        if self.file.is_some() {
+            return Err(StagingError::InvalidState);
+        }
+        let mut file = tempfile::NamedTempFile::from_parts(
+            open_regular(&self.path)?,
+            tempfile::TempPath::try_from_path(self.path.clone())
+                .map_err(|_| StagingError::UnsafePath)?,
+        );
+        file.disable_cleanup(true);
+        self.file = Some(file);
+        self.inspect()
     }
 
     pub(super) fn file_mut(&mut self) -> &mut std::fs::File {
@@ -413,5 +449,55 @@ mod directory_permission_tests {
         std::fs::rename(&ancestor, ancestor.with_extension("retained")).unwrap();
         std::fs::create_dir_all(&child).unwrap();
         assert!(matches!(held.inspect(), Err(StagingError::UnsafePath)));
+    }
+}
+
+#[cfg(test)]
+mod sealed_part_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    #[test]
+    fn sealed_parts_release_both_handles_and_reopen_only_the_current_file() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().canonicalize().unwrap();
+        let mut parts = Vec::new();
+        for _ in 0..32 {
+            let mut part = OwnedPart::create(&parent).unwrap();
+            part.file_mut().write_all(b"abc").unwrap();
+            part.file_mut().sync_all().unwrap();
+            part.suspend().unwrap();
+            parts.push(part);
+        }
+        assert!(parts
+            .iter()
+            .all(|part| part.file.is_none() && part.directory._file.is_none()));
+        for part in &mut parts {
+            part.resume().unwrap();
+            let mut bytes = Vec::new();
+            part.file_mut().read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"abc");
+            part.suspend().unwrap();
+        }
+        let paths: Vec<_> = parts.iter().map(|part| part.path.clone()).collect();
+        drop(parts);
+        assert!(paths.iter().all(|path| !path.exists()));
+    }
+
+    #[test]
+    fn a_sealed_path_replacement_is_not_reopened_or_deleted() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().canonicalize().unwrap();
+        let mut part = OwnedPart::create(&parent).unwrap();
+        part.file_mut().write_all(b"abc").unwrap();
+        part.suspend().unwrap();
+        let path = part.path.clone();
+        let old = path.with_extension("retained");
+        std::fs::rename(&path, &old).unwrap();
+        std::fs::write(&path, b"abc").unwrap();
+        assert!(matches!(part.resume(), Err(StagingError::UnsafePath)));
+        drop(part);
+        assert_eq!(std::fs::read(&path).unwrap(), b"abc");
+        assert_eq!(std::fs::read(&old).unwrap(), b"abc");
     }
 }

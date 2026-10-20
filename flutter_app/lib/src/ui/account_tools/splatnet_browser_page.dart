@@ -334,6 +334,11 @@ class _SplatNetBrowserPageState extends State<SplatNetBrowserPage> {
       ready = false;
       error = failure;
     });
+    unawaited(
+      widget.backend
+          .logError('[splatnet] WebView operation failed', failure)
+          .catchError((Object _) {}),
+    );
     try {
       await closeResources();
     } catch (_) {
@@ -529,6 +534,23 @@ class _SplatNetBrowserPageState extends State<SplatNetBrowserPage> {
                         },
                         onProgressChanged: (_, value) {
                           if (currentValid()) setState(() => progress = value);
+                        },
+                        onConsoleMessage: (_, message) {
+                          if (currentValid() &&
+                              (message.messageLevel ==
+                                      ConsoleMessageLevel.ERROR ||
+                                  message.messageLevel ==
+                                      ConsoleMessageLevel.WARNING)) {
+                            // Never persist arbitrary JS output, which can contain credentials.
+                            unawaited(
+                              widget.backend
+                                  .logError(
+                                    '[splatnet] JavaScript console error',
+                                    StateError('javascript_console_error'),
+                                  )
+                                  .catchError((Object _) {}),
+                            );
+                          }
                         },
                         shouldOverrideUrlLoading: (_, action) async {
                           if (!currentValid()) {

@@ -5495,18 +5495,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   NintendoFriend dco_decode_nintendo_friend(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 9)
-      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
     return NintendoFriend(
       friendId: dco_decode_String(arr[0]),
       nickname: dco_decode_String(arr[1]),
-      note: dco_decode_String(arr[2]),
-      isFavorite: dco_decode_bool(arr[3]),
-      presence: dco_decode_String(arr[4]),
-      gameName: dco_decode_opt_String(arr[5]),
-      totalPlayTimeMinutes: dco_decode_opt_box_autoadd_u_32(arr[6]),
-      logoutAt: dco_decode_opt_box_autoadd_Chrono_Utc(arr[7]),
-      activity: dco_decode_opt_String(arr[8]),
+      avatarUrl: dco_decode_opt_String(arr[2]),
+      note: dco_decode_String(arr[3]),
+      isFavorite: dco_decode_bool(arr[4]),
+      presence: dco_decode_String(arr[5]),
+      gameName: dco_decode_opt_String(arr[6]),
+      totalPlayTimeMinutes: dco_decode_opt_box_autoadd_u_32(arr[7]),
+      logoutAt: dco_decode_opt_box_autoadd_Chrono_Utc(arr[8]),
+      activity: dco_decode_opt_String(arr[9]),
     );
   }
 
@@ -7324,6 +7325,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_friendId = sse_decode_String(deserializer);
     var var_nickname = sse_decode_String(deserializer);
+    var var_avatarUrl = sse_decode_opt_String(deserializer);
     var var_note = sse_decode_String(deserializer);
     var var_isFavorite = sse_decode_bool(deserializer);
     var var_presence = sse_decode_String(deserializer);
@@ -7336,6 +7338,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return NintendoFriend(
       friendId: var_friendId,
       nickname: var_nickname,
+      avatarUrl: var_avatarUrl,
       note: var_note,
       isFavorite: var_isFavorite,
       presence: var_presence,
@@ -9237,6 +9240,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.friendId, serializer);
     sse_encode_String(self.nickname, serializer);
+    sse_encode_opt_String(self.avatarUrl, serializer);
     sse_encode_String(self.note, serializer);
     sse_encode_bool(self.isFavorite, serializer);
     sse_encode_String(self.presence, serializer);

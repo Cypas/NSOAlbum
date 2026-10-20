@@ -77,7 +77,7 @@ pub(crate) async fn web_session<A: AttestationService>(
         .clamp(1, 10800);
     let web = SplatNetWebSession {
         game_web_token: token.into(),
-        expires_at: Utc::now() + Duration::seconds(expires),
+        expires_at: super::token_expiry::expires_at(token, Some(expires), Utc::now()),
         language: auth.language.clone(),
         country: auth.country.clone(),
     };
@@ -132,7 +132,10 @@ pub(crate) async fn session<A: AttestationService>(
         )
         .await?,
     );
-    session.bullet_expires_at = Some(Utc::now() + Duration::hours(2));
+    session.bullet_expires_at = session
+        .bullet
+        .as_deref()
+        .map(|token| super::token_expiry::expires_at(token, Some(7200), Utc::now()));
     session.version = Some(version);
     Ok(session.clone())
 }

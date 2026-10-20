@@ -7,11 +7,17 @@ import 'settings_controller.dart';
 import 'sync_controller.dart';
 
 class AutomaticSyncCoordinator {
-  AutomaticSyncCoordinator(this._backend, this._settings, this._sync);
+  AutomaticSyncCoordinator(
+    this._backend,
+    this._settings,
+    this._sync, {
+    DateTime Function()? now,
+  }) : _now = now ?? DateTime.now;
 
   final AppBackend _backend;
   final SettingsController _settings;
   final SyncController _sync;
+  final DateTime Function() _now;
   Timer? _timer;
   SyncState? _lastSyncState;
   int _generation = 0;
@@ -19,6 +25,10 @@ class AutomaticSyncCoordinator {
   bool _disposed = false;
   DateTime? _deadline;
   DateTime? _pausedDeadline;
+  bool _transferWasActive = false;
+  DateTime? _lastTransferEnd;
+  final _slots = <String, _ScheduledSlot>{};
+  final _skipFloors = <String, DateTime>{};
   AccountWorkGate? get _accountGate => _backend is AccountWorkBackend
       ? (_backend as AccountWorkBackend).accountWorkGate
       : null;
@@ -26,6 +36,7 @@ class AutomaticSyncCoordinator {
   Future<void> start() async {
     if (_started || _disposed) return;
     _started = true;
+    _transferWasActive = _accountGate?.transferActive == true;
     _lastSyncState = _sync.state;
     _settings.addListener(_settingsChanged);
     _sync.addListener(_syncChanged);
@@ -39,8 +50,36 @@ class AutomaticSyncCoordinator {
     _generation++;
     _timer?.cancel();
     _timer = null;
+    final transferring = _accountGate?.transferActive == true;
+    if (transferring) {
+      _transferWasActive = true;
+      _pausedDeadline = null;
+    } else if (_transferWasActive) {
+      _transferWasActive = false;
+      final now = _now().toUtc();
+      _lastTransferEnd = now;
+      for (final entry in _slots.entries) {
+        final slot = entry.value;
+        if (!slot.due.isAfter(now)) {
+          final normalDue = slot.rateLimitedAt?.add(slot.interval) ?? slot.due;
+          slot.due = normalDue.isAfter(now)
+              ? normalDue
+              : _nextSlot(normalDue, slot.interval, now);
+          _skipFloors[entry.key] = slot.due;
+        }
+      }
+      _pausedDeadline = null;
+    }
     if (_accountGate?.busy == true) {
-      _pausedDeadline ??= _deadline;
+      final due = _deadline;
+      final cutoff = _lastTransferEnd;
+      // A longer-lived startup/recovery barrier must not resurrect a slot
+      // that the just-finished transfer has already skipped.
+      if (!transferring &&
+          due != null &&
+          (cutoff == null || due.isAfter(cutoff))) {
+        _pausedDeadline ??= due;
+      }
     } else {
       unawaited(reschedule());
     }
@@ -110,8 +149,9 @@ class AutomaticSyncCoordinator {
       return;
     }
 
+    final selected = await _backend.selectedNintendoAccountId;
+    if (_disposed || generation != _generation) return;
     if (_backend case final AccountScheduleAdmissionBackend admission) {
-      final selected = await _backend.selectedNintendoAccountId;
       if (_disposed || generation != _generation) return;
       if (selected == null ||
           !await admission.automaticAccountHasLocalHistory(selected)) {
@@ -122,14 +162,22 @@ class AutomaticSyncCoordinator {
 
     final SyncScheduleStatus? status = await _sync.refreshScheduleStatus();
     if (_disposed || generation != _generation) return;
-    final now = DateTime.now().toUtc();
+    final now = _now().toUtc();
     final retryDelay = _sync.automaticRetryDelay;
-    var due =
-        _pausedDeadline ??
-        (retryDelay == null
-            ? status?.nextSyncAt?.toUtc() ??
-                  now.add(Duration(minutes: policy.activeIntervalMinutes))
-            : now.add(retryDelay));
+    final key = selected ?? '';
+    final retryDue = retryDelay == null || _skipFloors.containsKey(key)
+        ? status?.nextSyncAt?.toUtc() ??
+              now.add(Duration(minutes: policy.activeIntervalMinutes))
+        : now.add(retryDelay);
+    final scheduled = await _rememberSlot(
+      key,
+      status,
+      now,
+      generation,
+      fallbackDue: retryDue,
+    );
+    if (_disposed || generation != _generation) return;
+    var due = _pausedDeadline ?? scheduled;
     if (notBefore != null) {
       final floor = now.add(notBefore);
       if (due.isBefore(floor)) due = floor;
@@ -146,21 +194,30 @@ class AutomaticSyncCoordinator {
   }) async {
     await _sync.refreshAccountScheduleStatuses();
     if (_disposed || generation != _generation) return;
-    final now = DateTime.now().toUtc();
-    final dueIds = await _sync.dueAccountIds(now: now);
-    if (_disposed || generation != _generation) return;
-    if (dueIds.isEmpty &&
-        _sync.nextAccountSyncAt == null &&
-        _backend is AccountScheduleAdmissionBackend) {
+    final now = _now().toUtc();
+    final known = _sync.accountSchedules;
+    _slots.removeWhere((id, _) => !known.containsKey(id));
+    _skipFloors.removeWhere((id, _) => !known.containsKey(id));
+    DateTime? earliest;
+    for (final entry in known.entries.toList()) {
+      if (_sync.authPausedAccountIds.contains(entry.key) ||
+          entry.value?.nextSyncAt == null) {
+        _slots.remove(entry.key);
+        _skipFloors.remove(entry.key);
+        continue;
+      }
+      final due = await _rememberSlot(entry.key, entry.value, now, generation);
+      if (_disposed || generation != _generation) return;
+      if (earliest == null || due.isBefore(earliest)) earliest = due;
+    }
+    if (earliest == null && _backend is AccountScheduleAdmissionBackend) {
       _pausedDeadline = null;
       return;
     }
     var due =
         _pausedDeadline ??
-        (dueIds.isNotEmpty
-            ? now
-            : _sync.nextAccountSyncAt ??
-                  now.add(Duration(minutes: policy.activeIntervalMinutes)));
+        earliest ??
+        now.add(Duration(minutes: policy.activeIntervalMinutes));
     if (notBefore != null) {
       final floor = now.add(notBefore);
       if (due.isBefore(floor)) due = floor;
@@ -173,20 +230,127 @@ class AutomaticSyncCoordinator {
   Duration _delayUntil(DateTime due, DateTime now) =>
       due.isAfter(now) ? due.difference(now) : Duration.zero;
 
+  Future<DateTime> _rememberSlot(
+    String id,
+    SyncScheduleStatus? status,
+    DateTime now,
+    int generation, {
+    DateTime? fallbackDue,
+  }) async {
+    final interval = Duration(
+      minutes:
+          status?.intervalMinutes ??
+          (status?.sleeping == true
+              ? 1440
+              : _settings.value.syncPolicy.activeIntervalMinutes),
+    );
+    var due = fallbackDue ?? status?.nextSyncAt?.toUtc() ?? now.add(interval);
+    final previous = _slots[id];
+    if (previous != null &&
+        previous.lastSuccess != status?.lastSuccessfulSyncAt) {
+      _skipFloors.remove(id);
+    }
+    // A task may start before the first async schedule read has completed.
+    // Recover its unclamped anchor from existing local history, never by
+    // writing a synthetic attempt or calling Nintendo.
+    final cutoff = _lastTransferEnd;
+    SyncRuntimeState? history;
+    if (_backend case final SyncHistoryBackend histories) {
+      try {
+        history = await histories.loadSyncAccountHistory(id);
+      } on DeviceSyncBusy {
+        rethrow;
+      } catch (error, stackTrace) {
+        // History refines a retry anchor; it is not permission to discard
+        // already captured deadlines or leave an unhandled timer future.
+        await _backend.logError(
+          '[sync] trigger=automatic stage=local_schedule_history_read_failed',
+          error,
+          stackTrace,
+        );
+      }
+      if (_disposed ||
+          generation != _generation ||
+          _accountGate?.busy == true) {
+        throw const DeviceSyncBusy();
+      }
+    }
+    final attempt = history?.latestAttempt;
+    final rateLimitedAt = attempt != null && attempt.status == 'rate_limited'
+        ? attempt.attemptedAt.toUtc()
+        : null;
+    if (previous == null && cutoff != null) {
+      final anchor =
+          attempt != null &&
+              (attempt.status == 'failure' ||
+                  attempt.status == 'cancelled' ||
+                  attempt.status == 'rate_limited')
+          ? attempt.attemptedAt.toUtc()
+          : history?.lastSuccessfulSyncAt?.toUtc();
+      if (anchor != null) {
+        due = anchor.add(
+          attempt?.status == 'rate_limited'
+              ? const Duration(minutes: 1)
+              : interval,
+        );
+      }
+      if (!due.isAfter(cutoff)) {
+        final normalDue = rateLimitedAt?.add(interval) ?? due;
+        _skipFloors[id] = normalDue.isAfter(cutoff)
+            ? normalDue
+            : _nextSlot(normalDue, interval, cutoff);
+      }
+    }
+    final floor = _skipFloors[id];
+    if (floor != null && due.isBefore(floor)) due = floor;
+    _slots[id] = _ScheduledSlot(
+      due,
+      interval,
+      status?.lastSuccessfulSyncAt,
+      rateLimitedAt,
+    );
+    return due;
+  }
+
+  DateTime _nextSlot(DateTime due, Duration interval, DateTime cutoff) {
+    final missed =
+        cutoff.difference(due).inMicroseconds ~/ interval.inMicroseconds + 1;
+    return due.add(Duration(microseconds: interval.inMicroseconds * missed));
+  }
+
   Future<void> _runLegacy(int generation) async {
     if (!await _canRun(generation)) return;
+    _slots.clear();
+    _skipFloors.clear();
+    _lastTransferEnd = null;
     await _sync.run(automatic: true);
   }
 
   Future<void> _runAccounts(int generation) async {
     try {
       if (!await _canRun(generation)) return;
-      final dueIds = await _sync.dueAccountIds();
+      final dueIds = await _sync.dueAccountIds(now: _now());
       if (_disposed || generation != _generation || dueIds.isEmpty) {
         await reschedule();
         return;
       }
-      await _sync.run(automatic: true, accountIds: dueIds);
+      final now = _now().toUtc();
+      final admitted = dueIds
+          .where((id) => _skipFloors[id]?.isAfter(now) != true)
+          .toList();
+      if (admitted.isEmpty) {
+        await reschedule();
+        return;
+      }
+      if (generation != _generation || _accountGate?.busy == true) return;
+      for (final id in admitted) {
+        _slots.remove(id);
+        _skipFloors.remove(id);
+      }
+      // Existing accounts keep their independent floors; a completed run
+      // obtains a new local schedule, not another transfer-skip decision.
+      _lastTransferEnd = null;
+      await _sync.run(automatic: true, accountIds: admitted);
     } on DeviceSyncBusy {
       // No visible result or persisted schedule belongs to a rejected attempt.
     }
@@ -204,7 +368,9 @@ class AutomaticSyncCoordinator {
     } on DeviceSyncBusy {
       return false;
     }
-    return !_disposed && generation == _generation;
+    return !_disposed &&
+        generation == _generation &&
+        _accountGate?.busy != true;
   }
 
   void dispose() {
@@ -216,4 +382,12 @@ class AutomaticSyncCoordinator {
     _sync.removeListener(_syncChanged);
     _accountGate?.removeListener(_accountGateChanged);
   }
+}
+
+class _ScheduledSlot {
+  _ScheduledSlot(this.due, this.interval, this.lastSuccess, this.rateLimitedAt);
+  DateTime due;
+  final Duration interval;
+  final DateTime? lastSuccess;
+  final DateTime? rateLimitedAt;
 }

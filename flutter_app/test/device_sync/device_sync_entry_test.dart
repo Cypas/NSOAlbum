@@ -6,6 +6,7 @@ import 'package:squid_album/src/backend/device_sync/startup_lifecycle.dart';
 import 'package:squid_album/src/ui/desktop_window_drag_area.dart';
 import 'package:squid_album/src/ui/device_sync/device_sync_page.dart';
 import 'package:squid_album/src/ui/device_sync/entry.dart';
+import 'package:squid_album/src/ui/device_sync/multi_device_sync_page.dart';
 
 import '../home_shell_test.dart' show FakeBackend;
 import 'device_sync_page_test.dart' show pageApp;
@@ -18,8 +19,12 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('导入与同步').last);
     await tester.pumpAndSettle();
+    await tester.tap(find.text('多设备同步'));
+    await tester.pumpAndSettle();
+    expect(find.byType(MultiDeviceSyncPage), findsOneWidget);
     final entry = find.byKey(const Key('device-sync-entry'));
     expect(entry, findsOneWidget);
+    expect(find.byKey(const Key('device-sync-backup-entry')), findsOneWidget);
     await tester.ensureVisible(entry);
     await tester.tap(entry);
     await tester.pumpAndSettle();
@@ -49,6 +54,10 @@ void main() {
       await tester.tap(find.byKey(const Key('open-page')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('device-sync-entry')));
+      await tester.pumpAndSettle();
+      // Desktop entry owns a landing route; the protected pairing route is
+      // opened from its independent device card.
+      await tester.tap(find.byKey(const Key('device-sync-entry')).last);
       await tester.pumpAndSettle();
       expect(backend.startup.listeners.length, 1);
       final route = ModalRoute.of(tester.element(find.byType(DeviceSyncPage)))!;

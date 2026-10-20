@@ -6,7 +6,6 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../../l10n/app_localizations.dart';
 import 'frame.dart';
-import 'scanner_notice.dart';
 
 abstract interface class DeviceQrCamera {
   Future<void> start();
@@ -264,7 +263,6 @@ class _DeviceSyncScannerPageState extends State<DeviceSyncScannerPage>
               en: 'Open Device sync on the desktop and choose the same connection method. Enable the camera and place its code in the viewfinder. The code is used only for this connection and is not saved.',
             ),
           ),
-          const DeviceScannerNotice(),
           const SizedBox(height: 16),
           if (lease != null)
             AspectRatio(

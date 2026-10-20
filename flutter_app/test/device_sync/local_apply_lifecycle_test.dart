@@ -144,6 +144,12 @@ void main() {
       expect(native.libraryRecords, ['incoming media']);
       expect(storage.values[accountTokensKey], contains('synthetic-new'));
       expect(native.compensations, 0);
+      expect(
+        gate.transferActive,
+        isTrue,
+        reason: 'The session has not observed its terminal state yet.',
+      );
+      await session.refresh();
       expect(gate.busy, isFalse);
     } finally {
       native.failShutdown = false;
@@ -246,6 +252,7 @@ void main() {
     await coordinator.abort('local-endpoint');
     expect(native.journalStage, 'rolled_back');
     expect(native.compensations, 1);
+    await session.refresh();
     expect(gate.busy, isFalse);
     await session.close();
   });

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../l10n/app_localizations.dart';
+import '../../backend/app_logger.dart';
 import 'android_back_guard.dart';
 import 'android_layout.dart';
 
@@ -58,24 +59,12 @@ class AndroidPageList extends StatelessWidget {
   );
 }
 
-String androidSafeDiagnostic(Object error) => error
-    .toString()
-    .replaceAll(
-      RegExp(r'(https?://[^\s?#)]+)[?#][^\s)]*'),
-      r'[URL parameters redacted]',
-    )
-    .replaceAll(RegExp(r'npf[^:\s]+://[^\s]+'), '[callback redacted]')
-    .replaceAll(
-      RegExp(
-        r'(?:session|access|id|refresh)[_-]?token["\s:=]+[^\s,&}\]]+',
-        caseSensitive: false,
-      ),
-      '[credential redacted]',
-    )
-    .replaceAll(
-      RegExp(r'(?:authorization|cookie)["\s:=]+[^\r\n]+', caseSensitive: false),
-      '[credential redacted]',
-    );
+String androidSafeDiagnostic(Object error) => sanitizeDiagnostic(
+  error.toString().replaceAll(
+    RegExp(r'npf[^:\s]+://[^\s]+'),
+    '[callback redacted]',
+  ),
+);
 
 String androidReadableError(BuildContext context, Object error) {
   final value = error.toString().toLowerCase();
@@ -109,6 +98,19 @@ String androidReadableError(BuildContext context, Object error) {
       en: 'Open the sign-in page before entering the callback URL.',
     );
   }
+  if (value.contains('nxapi')) {
+    if (value.contains('incompatible_client') ||
+        value.contains('compatibility identifier is outdated')) {
+      return context.l10n.select(
+        zh: 'Nintendo 登录服务协议已更新，请更新应用后重试。',
+        en: 'The Nintendo sign-in service protocol has changed. Update the app and try again.',
+      );
+    }
+    return context.l10n.select(
+      zh: 'Nintendo 登录服务请求失败，请稍后重试。',
+      en: 'The Nintendo sign-in service request failed. Please try again later.',
+    );
+  }
   if (value.contains('authentication') ||
       value.contains('sign in') ||
       value.contains('token')) {
@@ -128,8 +130,10 @@ final _androidNoticeMessages = <OverlayState, String>{};
 
 void androidMessage(BuildContext context, Object error, {bool? isError}) {
   if (!context.mounted) return;
-  final failed = isError ?? error is! String;
-  final message = failed && error is! String
+  // flutter_rust_bridge returns Rust errors as strings. Success must be explicit;
+  // an explicit severity also allows callers to supply already localized text.
+  final failed = isError ?? true;
+  final message = failed && (error is! String || isError == null)
       ? androidReadableError(context, error)
       : androidSafeDiagnostic(error);
   final diagnostic = failed ? androidSafeDiagnostic(error) : null;

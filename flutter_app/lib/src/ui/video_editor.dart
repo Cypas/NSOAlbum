@@ -1,5 +1,7 @@
 import 'dart:async';
+
 import '../state/media_edit_controller.dart';
+
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
@@ -13,6 +15,7 @@ import '../l10n/app_localizations.dart';
 import '../rust/models.dart';
 import 'desktop_window_drag_area.dart';
 import 'video_runtime.dart';
+import 'video_preview.dart';
 import 'font_families.dart';
 
 class VideoEditorResult {
@@ -70,7 +73,9 @@ class VideoEditorPage extends StatefulWidget {
 }
 
 class _VideoEditorPageState extends State<VideoEditorPage> {
-  late final MediaEditController mediaEditor = MediaEditController(widget.backend);
+  late final MediaEditController mediaEditor = MediaEditController(
+    widget.backend,
+  );
   late final Player player = _createPlayer();
   late final VideoController controller = VideoController(player);
 
@@ -342,8 +347,9 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
                         ? Center(
                             child: AspectRatio(
                               aspectRatio: 16 / 9,
-                              child: Video(
+                              child: VideoPreview(
                                 controller: controller,
+                                cover: widget.source,
                                 controls: NoVideoControls,
                               ),
                             ),

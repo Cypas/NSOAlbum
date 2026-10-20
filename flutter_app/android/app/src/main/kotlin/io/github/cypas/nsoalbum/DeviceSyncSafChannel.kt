@@ -28,6 +28,7 @@ internal class DeviceSyncSafChannel(
     private val operation get() = owners.operation
     private var pickerToken: String? = null
     private var mailbox: DeviceSyncMailbox? = null
+    private var providerMetrics: DeviceSyncProviderMetrics? = null
     private var pending: MethodChannel.Result? = null
     private var destroyed = false
     private var epoch = 0L
@@ -44,7 +45,13 @@ internal class DeviceSyncSafChannel(
                     if (picker.outstanding || pending != null || operation != null) throw DeviceSyncIoBusy()
                     val token = call.argument<String>("pickerToken") ?: error("INVALID_SCOPE")
                     DeviceSyncPolicy.sessionDirectory(token)
-                    picker.begin(result)
+                    val reusable = try { authorizedTree(); true }
+                        catch (_: DeviceSyncDirectoryDenied) { false }
+                        catch (_: SecurityException) { false }
+                    if (!picker.beginIfNeeded(result, reusable)) {
+                        result.success(true)
+                        return
+                    }
                     pickerToken = token
                     val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
                         Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
@@ -85,17 +92,19 @@ internal class DeviceSyncSafChannel(
                     if (picker.outstanding) throw DeviceSyncIoBusy()
                     val args = call.arguments as? Map<*, *> ?: error("INVALID_SCOPE")
                     val owner = owners.open(ownerScope(args))
+                    providerMetrics = DeviceSyncProviderMetrics()
                     execute(owner, result, call.method) {
                         val tree = authorizedTree()
                         mailbox = DeviceSyncMailbox(AndroidDocuments(tree, owner),
-                            DocumentsContract.getTreeDocumentId(tree), owner)
+                            DocumentsContract.getTreeDocumentId(tree), owner, providerMetrics)
                         true
                     }
                 }
                 "listBlocks", "readBlock", "writeCiphertextBlock", "acknowledgeBlock" -> {
                     val args = call.arguments as? Map<*, *> ?: error("INVALID_SCOPE")
                     val owner = owners.requireActive(ownerScope(args))
-                    execute(owner, result, call.method) {
+                    val inputBytes = (args["bytes"] as? ByteArray)?.size ?: 0
+                    execute(owner, result, call.method, inputBytes) {
                         authorizedTree()
                         val box = mailbox ?: error("OPERATION_CLOSED")
                         when (call.method) {
@@ -132,19 +141,54 @@ internal class DeviceSyncSafChannel(
         args["ownerToken"] as? String ?: throw IllegalArgumentException("INVALID_SCOPE"),
     )
 
-    private fun execute(owner: DeviceSyncOperation, result: MethodChannel.Result, method: String, action: () -> Any?) {
+    private fun execute(
+        owner: DeviceSyncOperation,
+        result: MethodChannel.Result,
+        method: String,
+        inputBytes: Int = 0,
+        action: () -> Any?,
+    ) {
         check(pending == null) { "BUSY" }
         ioSlot.begin()
         pending = result
         val generation = epoch
+        // Capture the exact owner instance. A retired worker must not mutate the next session.
+        val timing = providerMetrics
+        val kind = when (method) {
+            "listBlocks" -> DeviceSyncProviderMetrics.Kind.List
+            "readBlock" -> DeviceSyncProviderMetrics.Kind.Read
+            "writeCiphertextBlock" -> DeviceSyncProviderMetrics.Kind.Write
+            "acknowledgeBlock" -> DeviceSyncProviderMetrics.Kind.Acknowledge
+            else -> null
+        }
         val deadline = Runnable {
             if (pending === result && operation === owner && epoch == generation) {
+                if ((activity.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+                    Log.e("NSOAlbumDeviceSync", "device_sync_saf method=$method category=Deadline reason=TIMEOUT code=TIMEOUT")
+                }
                 invalidate("TIMEOUT")
             }
         }
         main.postDelayed(deadline, 30_000)
         io.execute {
+            kind?.let { timing?.begin(it, System.nanoTime()) }
+            if (method == "acknowledgeBlock" &&
+                (activity.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+                Log.e("NSOAlbumDeviceSync", "device_sync_ack phase=workerBegin")
+            }
             val answer = runCatching { owner.check(); action().also { owner.check() } }
+            if (kind != null) {
+                val bytes = if (answer.isFailure) 0 else when (kind) {
+                    DeviceSyncProviderMetrics.Kind.Read -> (answer.getOrNull() as? ByteArray)?.size ?: 0
+                    DeviceSyncProviderMetrics.Kind.Write -> inputBytes
+                    else -> 0
+                }
+                timing?.end(System.nanoTime(), answer.isFailure, bytes)
+            }
+            if (method == "acknowledgeBlock" &&
+                (activity.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+                Log.e("NSOAlbumDeviceSync", "device_sync_ack phase=workerEnd")
+            }
             main.post {
                 ioSlot.finished()
                 main.removeCallbacks(deadline)
@@ -206,6 +250,10 @@ internal class DeviceSyncSafChannel(
         }
         epoch++
         mailbox = null
+        providerMetrics?.let {
+            Log.i("NSOAlbumDeviceSync", it.finish(System.nanoTime()))
+        }
+        providerMetrics = null
         // Closing a provider pipe can block; invalidate on main, close native handles off main.
         owner?.let {
             ioSlot.beginClose()
@@ -232,6 +280,27 @@ internal class DeviceSyncSafChannel(
         private fun uri(id: String) = DocumentsContract.buildDocumentUriUsingTree(tree, id)
         override fun findDirectory(parent: String, name: String): SyncDocument? =
             DeviceSyncSafDirectory(resolver, tree, owner).find(parent, name)
+        override fun stat(id: String): SyncDocument? {
+            owner.check()
+            val signal = CancellationSignal()
+            val closing = Closeable { signal.cancel() }
+            owner.track(closing)
+            try {
+                return resolver.query(uri(id), arrayOf(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE,
+                    DocumentsContract.Document.COLUMN_SIZE,
+                    DocumentsContract.Document.COLUMN_FLAGS), null, null, null, signal)?.use { cursor ->
+                    if (!cursor.moveToFirst()) return@use null
+                    require(cursor.getInt(4) and DocumentsContract.Document.FLAG_VIRTUAL_DOCUMENT == 0)
+                    val node = SyncDocument(cursor.getString(0), cursor.getString(1),
+                        cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR, cursor.getLong(3))
+                    require(!cursor.moveToNext()) { "DUPLICATE_DOCUMENT" }
+                    node
+                }
+            } finally { owner.untrack(closing) }
+        }
         override fun children(parent: String): List<SyncDocument> {
             val signal = CancellationSignal()
             val closing = Closeable { signal.cancel() }

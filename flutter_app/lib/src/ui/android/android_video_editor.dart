@@ -9,6 +9,7 @@ import '../../l10n/app_localizations.dart';
 import '../../rust/models.dart';
 import '../../state/media_edit_controller.dart';
 import '../video_runtime.dart';
+import '../video_preview.dart';
 import 'android_back_guard.dart';
 import 'android_page_frame.dart';
 import 'android_media_card.dart' show androidDuration;
@@ -135,7 +136,7 @@ class _AndroidVideoEditorState extends State<AndroidVideoEditor> {
         children: [
           AspectRatio(
             aspectRatio: 16 / 9,
-            child: Video(controller: video),
+            child: VideoPreview(controller: video, cover: widget.source),
           ),
           Wrap(
             spacing: 8,

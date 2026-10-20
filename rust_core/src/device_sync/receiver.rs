@@ -194,6 +194,8 @@ impl Snapshot {
         self.digest_controlled(&super::work::WorkControl::default())
     }
     pub(crate) fn digest_controlled(&self, work: &super::work::WorkControl) -> CoreResult<String> {
+        work.check()?;
+        work.validation.snapshot_digest();
         Ok(hex::encode(Sha256::digest(
             format!(
                 "{}:{}",
@@ -243,6 +245,9 @@ pub struct ReceiveOperation {
     finished: bool,
     work: super::work::WorkControl,
     receiver_budget: super::space_budget::ReceiverBudgetView,
+    source_digest: String,
+    target_digest: String,
+    prepared_binding: String,
 }
 
 impl ReceiveOperation {
@@ -312,6 +317,16 @@ impl ReceiveOperation {
             })?;
         work.check()
             .inspect_err(|error| diagnostics::core(Boundary::ReceiverFinalCheck, error))?;
+        let source_digest = source.digest_controlled(work)?;
+        let target_digest = target.digest_controlled(work)?;
+        work.validation.binding_digest();
+        let prepared_binding = work.digest_json(&(
+            1_u32,
+            staging.operation_id(),
+            &source_digest,
+            &target_digest,
+            &plan,
+        ))?;
         Ok(Self {
             database,
             source,
@@ -323,6 +338,9 @@ impl ReceiveOperation {
             finished: false,
             work: work.clone(),
             receiver_budget,
+            source_digest,
+            target_digest,
+            prepared_binding,
         })
     }
 
@@ -334,6 +352,9 @@ impl ReceiveOperation {
     }
     pub fn target(&self) -> &Snapshot {
         &self.target
+    }
+    pub(crate) fn snapshot_digests(&self) -> (&str, &str) {
+        (&self.source_digest, &self.target_digest)
     }
     pub fn receiver_budget(&self) -> &super::space_budget::ReceiverBudgetView {
         &self.receiver_budget
@@ -360,13 +381,10 @@ impl ReceiveOperation {
     }
 
     fn binding(&self) -> CoreResult<String> {
-        self.work.digest_json(&(
-            1_u32,
-            self.operation_id(),
-            self.source.digest_controlled(&self.work)?,
-            self.target.digest_controlled(&self.work)?,
-            &self.plan,
-        ))
+        // The snapshots and plan are immutable and privately owned. Current
+        // library contents are still reread under the final exclusive lease.
+        self.work.check()?;
+        Ok(self.prepared_binding.clone())
     }
 
     pub fn authorize(&mut self) -> ReceiverResult<LocalAuthorization> {
@@ -433,6 +451,21 @@ impl ReceiveOperation {
         if self.finished || authorization.binding != self.binding()? {
             return Err(ReceiverError::AuthorizationMismatch);
         }
+        // Recheck the complete authorization once at commit, not at every
+        // transport round trip. Cached preview lookups must not authorize
+        // changed source contents or a changed plan.
+        let source_digest = self.source.digest_controlled(&self.work)?;
+        self.work.validation.binding_digest();
+        let final_binding = self.work.digest_json(&(
+            1_u32,
+            self.operation_id(),
+            &source_digest,
+            &self.target_digest,
+            &self.plan,
+        ))?;
+        if final_binding != authorization.binding {
+            return Err(ReceiverError::AuthorizationMismatch);
+        }
         cancel.check()?;
         if let Some(guard) = &guard {
             guard.check()?;
@@ -457,7 +490,7 @@ impl ReceiveOperation {
         })?;
         diagnostics::checkpoint(Boundary::ApplySnapshotEnd);
         work.checkpoint(super::work::WorkStage::FinalCheck, 0)?;
-        if current.digest_controlled(&work)? != self.target.digest_controlled(&work)? {
+        if current.digest_controlled(&work)? != self.target_digest {
             return Err(ReceiverError::PlanChanged);
         }
         self.plan
@@ -559,6 +592,8 @@ impl ReceiveOperation {
     }
 }
 
+#[cfg(test)]
+mod digest_cache_tests;
 #[cfg(test)]
 #[path = "../../tests/fixtures/receiver_process.rs"]
 mod process_tests;

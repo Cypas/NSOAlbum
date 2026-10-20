@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::{Client, Method, Proxy, Response};
@@ -90,7 +91,7 @@ impl Default for TransportConfig {
 
 #[derive(Clone)]
 pub struct HttpTransport {
-    client: Client,
+    client: Arc<Client>,
     config: TransportConfig,
     download_user_agent: Option<String>,
 }
@@ -305,6 +306,10 @@ impl Drop for StreamingDownloadWriter {
 }
 
 impl HttpTransport {
+    #[cfg(test)]
+    pub(crate) fn shares_client(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.client, &other.client)
+    }
     pub fn new(config: TransportConfig) -> CoreResult<Self> {
         Self::configured(config, reqwest::redirect::Policy::limited(10))
     }
@@ -336,7 +341,7 @@ impl HttpTransport {
             builder = builder.proxy(Proxy::all(proxy_url)?);
         }
         Ok(Self {
-            client: builder.build()?,
+            client: Arc::new(builder.build()?),
             config,
             download_user_agent: None,
         })
@@ -412,7 +417,7 @@ impl HttpTransport {
         for (name, value) in headers {
             request = request.header(*name, value);
         }
-        collect_response(request.send().await?).await
+        collect_response(self.execute(request).await?).await
     }
 
     pub async fn post_form_raw<B: Serialize + ?Sized>(
@@ -425,7 +430,7 @@ impl HttpTransport {
         for (name, value) in headers {
             request = request.header(*name, value);
         }
-        collect_response(request.send().await?).await
+        collect_response(self.execute(request).await?).await
     }
 
     pub async fn post_bytes_raw(
@@ -438,7 +443,7 @@ impl HttpTransport {
         for (name, value) in headers {
             request = request.header(*name, value);
         }
-        collect_response(request.send().await?).await
+        collect_response(self.execute(request).await?).await
     }
 
     pub async fn get_raw(
@@ -450,7 +455,7 @@ impl HttpTransport {
         for (name, value) in headers {
             request = request.header(*name, value);
         }
-        collect_response(request.send().await?).await
+        collect_response(self.execute(request).await?).await
     }
 
     pub async fn download_media(
@@ -472,7 +477,7 @@ impl HttpTransport {
         let request = self.public_download_request(url)?;
         let mut response = tokio::select! {
             _ = cancellation.cancelled() => return Err(CoreError::Cancelled),
-            result = request.send() => result?,
+            result = self.execute(request) => result?,
         };
         if response.status().as_u16() == 429 {
             return Err(CoreError::RateLimited {
@@ -515,8 +520,7 @@ impl HttpTransport {
         limit: u64,
     ) -> CoreResult<Vec<u8>> {
         let mut response = self
-            .public_download_request(url)?
-            .send()
+            .execute(self.public_download_request(url)?)
             .await?
             .error_for_status()?;
         if let Some(length) = response.content_length() {
@@ -552,7 +556,48 @@ impl HttpTransport {
         if let Some(body) = body {
             request = request.body(body);
         }
-        Ok(request.send().await?)
+        self.execute(request).await
+    }
+
+    async fn execute(&self, request: reqwest::RequestBuilder) -> CoreResult<Response> {
+        let request = request.build()?;
+        let stage = request_stage(request.url());
+        match self.client.execute(request).await {
+            Ok(response) => {
+                if !response.status().is_success() {
+                    crate::diagnostics::event("network", stage, Some(response.status().as_u16()));
+                }
+                Ok(response)
+            }
+            Err(error) => {
+                crate::diagnostics::event(
+                    "network",
+                    if error.is_timeout() {
+                        "timeout"
+                    } else if error.is_connect() {
+                        "connect_failed"
+                    } else {
+                        stage
+                    },
+                    error.status().map(|status| status.as_u16()),
+                );
+                Err(error.without_url().into())
+            }
+        }
+    }
+}
+
+fn request_stage(url: &Url) -> &'static str {
+    match (url.host_str(), url.path()) {
+        (Some("nxapi-auth.fancy.org.uk"), _) => "nxapi_oauth",
+        (Some("nxapi-znca-api.fancy.org.uk"), "/api/znca/config") => "nxapi_config",
+        (Some("nxapi-znca-api.fancy.org.uk"), "/api/znca/f") => "nxapi_attestation",
+        (Some("nxapi-znca-api.fancy.org.uk"), _) => "nxapi",
+        (Some("accounts.nintendo.com"), _) => "nintendo_oauth",
+        (Some("api.accounts.nintendo.com"), _) => "nintendo_profile",
+        (Some("api-lp1.znc.srv.nintendo.net"), _) => "coral",
+        (Some("api.lp1.av5ja.srv.nintendo.net"), _) => "splatnet",
+        _ => "http_request",
     }
 }
 
@@ -625,6 +670,13 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::sync::CancellationToken;
+
+    #[test]
+    fn transport_clones_reuse_the_same_http_client_lifetime() {
+        let transport = HttpTransport::new(Default::default()).unwrap();
+        let clone = transport.clone();
+        assert!(Arc::ptr_eq(&transport.client, &clone.client));
+    }
 
     pub(crate) fn capture_request(body: &'static str) -> (String, std::thread::JoinHandle<String>) {
         capture_response(200, body, &[])

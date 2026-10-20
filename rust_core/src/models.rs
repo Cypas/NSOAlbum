@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct NintendoFriend {
     pub friend_id: String,
     pub nickname: String,
+    pub avatar_url: Option<String>,
     pub note: String,
     pub is_favorite: bool,
     pub presence: String,

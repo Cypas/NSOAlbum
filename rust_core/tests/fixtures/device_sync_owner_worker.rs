@@ -7,7 +7,7 @@ fn main() {
         let mut length = [0; 4];
         if input.read_exact(&mut length).is_err() { break; }
         let length = u32::from_be_bytes(length) as usize;
-        if length == 0 || length > 196608 { break; }
+        if length == 0 || length > 524288 { break; }
         let mut command = vec![0; length];
         if input.read_exact(&mut command).is_err() { break; }
         let response = if command.windows(9).any(|v| v == b"enumerate") {

@@ -71,11 +71,14 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        final imported = find.text(
-          locale == 'zh' ? '导入时间：未知' : 'Imported: Unknown',
-        );
+        final imported = find.byKey(const Key('android-detail-imported'));
         await tester.ensureVisible(imported);
         expect(imported, findsOneWidget);
+        final unknownImported = find.descendant(
+          of: imported,
+          matching: find.textContaining(locale == 'zh' ? '未知' : 'Unknown'),
+        );
+        expect(unknownImported, findsOneWidget);
         final add = find.byKey(const Key('android-inline-add-tag'));
         await tester.ensureVisible(add);
         await tester.tap(add);
@@ -99,26 +102,27 @@ void main() {
         await tester.tap(save);
         await tester.pumpAndSettle();
         await tester.ensureVisible(imported);
-        expect(imported, findsOneWidget);
+        expect(unknownImported, findsOneWidget);
         expect(find.text('Updated note'), findsOneWidget);
         expect(find.text('New'), findsOneWidget);
-        final next = find.byTooltip(locale == 'zh' ? '下一个' : 'Next');
-        await tester.ensureVisible(next);
-        await tester.tap(next);
-        await tester.pumpAndSettle();
-        final known = find.text(
-          locale == 'zh'
-              ? '导入时间：2026-10-14 09:08:07'
-              : 'Imported: 2026-10-14 09:08:07',
+        await tester.drag(
+          find.byKey(const Key('android-detail-media')),
+          const Offset(-250, 0),
         );
-        await tester.ensureVisible(known);
+        await tester.pumpAndSettle();
+        final known = find.descendant(
+          of: imported,
+          matching: find.textContaining('2026-10-14 09:08:07'),
+        );
+        await tester.ensureVisible(imported);
         expect(known, findsOneWidget);
-        final previous = find.byTooltip(locale == 'zh' ? '上一个' : 'Previous');
-        await tester.ensureVisible(previous);
-        await tester.tap(previous);
+        await tester.drag(
+          find.byKey(const Key('android-detail-media')),
+          const Offset(250, 0),
+        );
         await tester.pumpAndSettle();
         await tester.ensureVisible(imported);
-        expect(imported, findsOneWidget);
+        expect(unknownImported, findsOneWidget);
         expect(find.text('Updated note'), findsOneWidget);
         expect(find.text('New'), findsOneWidget);
         expect(find.text('private-file-1.png'), findsWidgets);
@@ -303,13 +307,11 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('android-media-1')));
       await tester.pumpAndSettle();
       expect(find.text('private-file-1.png'), findsWidgets);
-      await tester.scrollUntilVisible(
-        find.text('拍摄/创建时间：2026-10-13 01:02:03'),
-        180,
-        scrollable: find.byType(Scrollable).last,
+      await tester.ensureVisible(
+        find.byKey(const Key('android-detail-captured')),
       );
-      expect(find.text('拍摄/创建时间：2026-10-13 01:02:03'), findsOneWidget);
-      expect(find.text('导入时间：2026-10-14 09:08:07'), findsOneWidget);
+      expect(find.textContaining('2026-10-13 01:02:03'), findsOneWidget);
+      expect(find.textContaining('2026-10-14 09:08:07'), findsOneWidget);
       final add = find.byKey(const Key('android-inline-add-tag'));
       await tester.ensureVisible(add);
       await tester.tap(add);

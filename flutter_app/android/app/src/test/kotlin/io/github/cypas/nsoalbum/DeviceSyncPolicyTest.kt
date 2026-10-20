@@ -6,6 +6,19 @@ import java.io.ByteArrayOutputStream
 object DeviceSyncPolicyTest {
     @JvmStatic
     fun main(args: Array<String>) {
+        v3CumulativeRetirement()
+        v2CarrierBounds()
+        val reused = DeviceSyncPicker<String>()
+        check(!reused.beginIfNeeded("authorized", true))
+        check(!reused.outstanding)
+        check(reused.complete() == null)
+        check(reused.beginIfNeeded("revoked", false))
+        check(reused.outstanding)
+        check(runCatching { reused.beginIfNeeded("stale", true) }.isFailure)
+        check(reused.cancel() == "revoked")
+        check(runCatching { reused.beginIfNeeded("cancelled", true) }.isFailure)
+        check(reused.complete() == null)
+        check(!reused.beginIfNeeded("authorized-again", true))
         var regressionsFailed = 0
         for ((name, regression) in listOf(
             "full window rejection preserves readable and acknowledgeable blocks" to ::fullWindow,
@@ -18,6 +31,8 @@ object DeviceSyncPolicyTest {
         }
         check(regressionsFailed == 0) { "$regressionsFailed capacity regressions failed" }
         diagnosticPrivacy()
+        invalidBlockDiagnostics()
+        staleSizeAndBoundedReads()
         var checks = 0
         fun verify(value: Boolean) { check(value); checks++ }
         fun rejects(action: () -> Unit) = verify(runCatching(action).isFailure)
@@ -85,7 +100,7 @@ object DeviceSyncPolicyTest {
         val output = ByteArrayOutputStream()
         DeviceSyncPolicy.copyBounded(ByteArrayInputStream(byteArrayOf(1, 2, 3)), output, operation)
         verify(output.toByteArray().contentEquals(byteArrayOf(1, 2, 3)))
-        rejects { DeviceSyncPolicy.copyBounded(ByteArrayInputStream(ByteArray(65549)),
+        rejects { DeviceSyncPolicy.copyBounded(ByteArrayInputStream(ByteArray(DeviceSyncPolicy.MAX_BLOCK + 1)),
             ByteArrayOutputStream(), operation) }
         rejects { DeviceSyncPolicy.copyBounded(ByteArrayInputStream(byteArrayOf()),
             ByteArrayOutputStream(), operation) }
@@ -142,6 +157,120 @@ object DeviceSyncPolicyTest {
         streamingOwner.cancel()
         rejects { streaming.acknowledge("mobile", "0000000000000000.block") }
         println("DeviceSyncPolicyTest PASS $checks checks")
+    }
+
+    private fun v3CumulativeRetirement() {
+        val owner = DeviceSyncOperation("1".repeat(32), "2".repeat(32))
+        val documents = MemoryDocuments()
+        val mailbox = DeviceSyncMailbox(documents, "primary:Documents/NSOAlbumSync", owner)
+        val content = ByteArray(8 * 1024 * 1024) { (it * 13).toByte() }
+        mailbox.write("0000000000000000.block", content)
+        mailbox.write("0000000000000001.block", byteArrayOf(1, 2))
+        mailbox.list("mobile")
+        documents.childQueries = 0
+        check(mailbox.read("mobile", "0000000000000000.block").contentEquals(content))
+        check(mailbox.read("mobile", "0000000000000001.block").contentEquals(byteArrayOf(1, 2)))
+        mailbox.acknowledge("mobile", "0000000000000001.block")
+        check(documents.childQueries == 0) { "Listed reads or consumed-prefix ACK repeated directory enumeration" }
+        check(documents.reads == 2) { "Cumulative retirement reread payloads" }
+        check(mailbox.list("mobile").isEmpty())
+        mailbox.acknowledge("mobile", "0000000000000001.block")
+        mailbox.write("0000000000000002.block", byteArrayOf(3))
+        mailbox.write("0000000000000003.block", byteArrayOf(4))
+        mailbox.read("mobile", "0000000000000003.block")
+        check(runCatching { mailbox.acknowledge("mobile", "0000000000000003.block") }.isFailure)
+        check(mailbox.list("mobile").size == 2) { "A missing read receipt allowed partial prefix deletion" }
+        check(runCatching { mailbox.write("0000000000000004.block", ByteArray(8 * 1024 * 1024 + 1)) }.isFailure)
+        println("V4 CARRIER PASS 8MiB/cached-read/cumulative-ACK/gap-preflight")
+    }
+
+    private fun v2CarrierBounds() {
+        val operation = DeviceSyncOperation("1".repeat(32), "2".repeat(32))
+        val content = ByteArray(262_144) { (it * 13).toByte() }
+        val copied = ByteArrayOutputStream()
+        DeviceSyncPolicy.copyBounded(ByteArrayInputStream(content), copied, operation)
+        check(copied.toByteArray().contentEquals(content))
+        check(runCatching {
+            DeviceSyncPolicy.copyBounded(
+                ByteArrayInputStream(ByteArray(DeviceSyncPolicy.MAX_BLOCK + 1)), ByteArrayOutputStream(), operation)
+        }.isFailure)
+        val documents = MemoryDocuments()
+        val mailbox = DeviceSyncMailbox(documents, "primary:Documents/NSOAlbumSync", operation)
+        val name = "0000000000000000.block"
+        mailbox.write(name, content)
+        check(mailbox.read("mobile", name).contentEquals(content))
+        check(runCatching { mailbox.write("0000000000000001.block", ByteArray(DeviceSyncPolicy.MAX_BLOCK + 1)) }.isFailure)
+        check(mailbox.list("mobile") == listOf(name))
+        val nodeIndex = documents.nodes.indexOfFirst { it.name == name }
+        val consumedNode = documents.nodes[nodeIndex]
+        documents.nodes[nodeIndex] = consumedNode.copy(size = content.size.toLong() - 1)
+        check(runCatching { mailbox.acknowledge("mobile", name) }.isFailure) {
+            "A changed known length was retired"
+        }
+        check(documents.nodes.any { it.id == consumedNode.id })
+        check(documents.reads == 1) { "Rejected acknowledgement reopened its payload" }
+        documents.nodes[nodeIndex] = consumedNode
+        mailbox.acknowledge("mobile", name)
+        check(documents.reads == 1) { "Acknowledging already-consumed ciphertext reopened its payload" }
+        check(mailbox.list("mobile").isEmpty())
+        println("CARRIER PASS legacy256KiB/v4-oversize/atomic-publish/read-before-ack")
+    }
+
+    private fun invalidBlockDiagnostics() {
+        for ((name, directory, size, expected) in listOf(
+            InvalidEntryCase("unexpected", false, 3, "INVALID_BLOCK_NAME"),
+            InvalidEntryCase("0000000000000000.block", true, 0, "INVALID_BLOCK_TYPE"),
+            InvalidEntryCase("0000000000000000.block", false, 0, "INVALID_BLOCK_SIZE"),
+        )) {
+            val documents = MemoryDocuments()
+            val session = "1".repeat(32)
+            val owner = DeviceSyncOperation("2".repeat(32), session)
+            val mailbox = DeviceSyncMailbox(documents, "primary:Documents/NSOAlbumSync", owner)
+            val parent = "primary:Documents/NSOAlbumSync/s-$session/desktop"
+            documents.create("primary:Documents/NSOAlbumSync/s-$session", "desktop", true)
+            documents.nodes.add(SyncDocument("$parent/$name", name, directory, size))
+            documents.bytes["$parent/$name"] = byteArrayOf()
+            val failure = runCatching {
+                mailbox.list("desktop")
+                if (expected == "INVALID_BLOCK_SIZE") mailbox.read("desktop", name)
+            }.exceptionOrNull()
+                ?: error("Invalid mailbox entry was accepted")
+            check(DeviceSyncPolicy.errorCode(failure) == "INVALID_BLOCK")
+            check(DeviceSyncPolicy.diagnostic("listBlocks", failure).contains("reason=$expected ")) {
+                "Missing fixed diagnostic classification: $expected"
+            }
+        }
+        println("DIAGNOSTIC PASS invalid block name/type/size remain rejected and distinguished")
+    }
+    private data class InvalidEntryCase(val name: String, val directory: Boolean, val size: Long, val reason: String)
+
+    private fun staleSizeAndBoundedReads() {
+        val documents = MemoryDocuments()
+        documents.reads = 0
+        val session = "4".repeat(32)
+        val owner = DeviceSyncOperation("5".repeat(32), session)
+        val mailbox = DeviceSyncMailbox(documents, "primary:Documents/NSOAlbumSync", owner)
+        val name = "0000000000000000.block"
+        mailbox.write(name, byteArrayOf(7, 8, 9))
+        val index = documents.nodes.indexOfFirst { it.name == name }
+        // ExternalStorageProvider may still report the pre-write MTP size.
+        documents.nodes[index] = documents.nodes[index].copy(size = 0)
+        check(mailbox.list("mobile") == listOf(name))
+        check(documents.reads == 0) { "Directory listing read block content" }
+        documents.childQueries = 0
+        check(mailbox.read("mobile", name).contentEquals(byteArrayOf(7, 8, 9)))
+        check(documents.childQueries <= 1) { "Reading one block rescanned its directory" }
+        check(documents.reads == 1) { "Reading one block opened the same stream twice" }
+        mailbox.acknowledge("mobile", name)
+        check(mailbox.list("mobile").isEmpty())
+        mailbox.write("0000000000000001.block", byteArrayOf(1))
+        val next = documents.nodes.single { it.name == "0000000000000001.block" }
+        documents.bytes[next.id] = ByteArray(DeviceSyncPolicy.MAX_BLOCK + 1)
+        documents.nodes[documents.nodes.indexOf(next)] = next.copy(size = 0)
+        check(runCatching {
+            mailbox.read("mobile", "0000000000000001.block")
+        }.isFailure) { "Unknown metadata bypassed the stream limit" }
+        println("MAILBOX PASS stale size uses bounded bytes; one-query reads; oversized stream rejected")
     }
 
     private fun diagnosticPrivacy() {
@@ -207,14 +336,23 @@ private class MemoryDocuments : SyncDocuments {
     val nodes = mutableListOf<SyncDocument>()
     val bytes = mutableMapOf<String, ByteArray>()
     var injectOutside = false
-    override fun children(parent: String) = nodes.filter {
+    var childQueries = 0
+    var reads = 0
+    override fun stat(id: String): SyncDocument? = nodes.singleOrNull { it.id == id }
+    override fun children(parent: String): List<SyncDocument> {
+        childQueries++
+        return nodes.filter {
         it.id.substringBeforeLast('/') == parent || (injectOutside && it.id == "outside")
+        }
     }
     override fun findDirectory(parent: String, name: String) =
         nodes.filter { it.id == "$parent/$name" }.singleOrNull()
     override fun create(parent: String, name: String, directory: Boolean): SyncDocument =
         SyncDocument("$parent/$name", name, directory, 0).also { nodes.add(it) }
-    override fun read(id: String) = ByteArrayInputStream(bytes.getValue(id))
+    override fun read(id: String): ByteArrayInputStream {
+        reads++
+        return ByteArrayInputStream(bytes.getValue(id))
+    }
     override fun write(id: String) = object : ByteArrayOutputStream() {
         override fun close() {
             bytes[id] = toByteArray()

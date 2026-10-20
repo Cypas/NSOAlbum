@@ -4,6 +4,33 @@
 `flutter test` 不等于真实桌面窗口、播放器、FFmpeg 或 USB 设备已通过验收。
 所有测试均使用合成数据，不需要真实 Nintendo 账号或个人媒体。
 
+## 本地构建空间约定
+
+本地 Windows、Android 和 macOS Debug/原生验证优先在 C 盘独立构建副本中执行，
+不要把大型 Rust target、Flutter build、Gradle 中间目录长期写入 F 盘源码工作区。
+当前约定的本地副本位于 `C:\Users\cypas\.codex\tmp\` 下，按专题创建独立目录；
+测试完成后只保留仍在使用的 Debug 副本，旧构建缓存按确认后的清单清理。
+
+Flutter 构建和测试在 C 盘构建副本的 `flutter_app` 下运行；不要使用
+`flutter --build-dir …`，该全局参数并不适用于当前工具链。源码修改后用
+非删除式复制更新副本，不用镜像删除覆盖其中保留的验收资料。例如：
+
+```powershell
+Set-Location <C盘构建副本>\flutter_app
+flutter build windows --debug
+flutter build apk --debug --target-platform android-arm64
+flutter test
+cargo test --manifest-path F:\PycharmProjects\nso_photo\rust_core\Cargo.toml `
+  --target-dir C:\Users\cypas\.codex\tmp\nsoalbum-local-build\rust-target --lib
+```
+
+Rust 可从源码目录运行并使用 C 盘 `--target-dir`。不要为单次测试改写全局
+Flutter 配置或并行启动争用同一构建目录的原生构建。
+
+路径仅为本机示例，不写入应用配置、发布包或 CI。CI runner 使用工作流自己的
+临时构建目录和缓存；仓库中的 `flutter_app/build/`、`.dart_tool/`、
+`rust_core/target/`、Android/Gradle 输出仍是可重建的忽略目录。
+
 ## 分支与触发规则
 
 | 事件 | 工作流与检查 | 可下载产物 | 正式发布 |

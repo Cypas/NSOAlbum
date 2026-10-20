@@ -104,18 +104,14 @@ void main() {
                 );
                 expect(desktopStorage.activeReads, 0);
                 expect(phoneStorage.activeReads, 0);
-                final normal = desktopGate.normalPermit();
-                try {
-                  await phone.consentAccounts(accepted: true);
-                  await _until(
-                    host,
-                    phone,
-                    () => host!.issue == read.ReadError.busy,
-                  );
-                  expect(desktopStorage.activeReads, 0);
-                } finally {
-                  normal.release();
-                }
+                expect(
+                  desktopGate.normalPermit,
+                  throwsA(isA<DeviceSyncBusy>()),
+                  reason:
+                      'An active transfer also excludes ordinary account '
+                      'work while waiting for separate account consent.',
+                );
+                await phone.consentAccounts(accepted: true);
               }
               await _until(
                 host,

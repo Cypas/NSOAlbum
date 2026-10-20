@@ -16,9 +16,14 @@ Duration? automaticSyncRetryDelayForError(Object error) =>
     : null;
 
 class SyncController extends ChangeNotifier {
-  SyncController(this._backend, {this.allAccounts = false});
+  SyncController(
+    this._backend, {
+    this.allAccounts = false,
+    DateTime Function()? now,
+  }) : _now = now ?? DateTime.now;
 
   final AppBackend _backend;
+  final DateTime Function() _now;
   final bool allAccounts;
   SyncState state = SyncState.idle;
   SyncSummary? summary;
@@ -105,7 +110,7 @@ class SyncController extends ChangeNotifier {
         automaticRetryDelay = automaticSyncRetryDelayForError(exception);
         state = SyncState.failed;
         await _backend.logError(
-          'Nintendo album synchronization failed',
+          '[sync] trigger=${automatic ? 'automatic' : 'manual'} stage=queue_failed',
           exception,
           stackTrace,
         );
@@ -171,7 +176,7 @@ class SyncController extends ChangeNotifier {
         )
         .toList();
     if (automatic) {
-      final now = DateTime.now().toUtc();
+      final now = _now().toUtc();
       queue = queue.where((id) {
         if (authPausedAccountIds.contains(id)) return false;
         final due = accountSchedules[id]?.nextSyncAt?.toUtc();
@@ -231,7 +236,7 @@ class SyncController extends ChangeNotifier {
         }
         completedAccounts += 1;
         await _backend.logError(
-          'Nintendo account synchronization failed',
+          '[sync] trigger=${automatic ? 'automatic' : 'manual'} account_slot=${queue.indexOf(accountId) + 1} stage=account_failed',
           exception,
           stackTrace,
         );
@@ -328,7 +333,7 @@ class SyncController extends ChangeNotifier {
     final ids = profiles.map((profile) => profile.accountId).toList();
     accountSchedules.removeWhere((id, _) => !ids.contains(id));
     await refreshAccountScheduleStatuses(accountIds: ids);
-    final instant = (now ?? DateTime.now()).toUtc();
+    final instant = (now ?? _now()).toUtc();
     return ids.where((id) {
       if (authPausedAccountIds.contains(id)) return false;
       final due = accountSchedules[id]?.nextSyncAt?.toUtc();

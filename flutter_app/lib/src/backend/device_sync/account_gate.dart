@@ -19,11 +19,18 @@ abstract interface class AccountScheduleAdmissionBackend {
 /// A synchronous, non-waiting admission decision spans the whole async job.
 class AccountWorkGate extends ChangeNotifier {
   final Object _zoneKey = Object();
+  final Object _transferZoneKey = Object();
   int _normal = 0;
   DeviceAccountPermit? _device;
+  DeviceTransferPermit? _transfer;
   bool _recovery = false;
   final _startupBarriers = <AccountStartupBarrier>{};
-  bool get busy => _device != null || _recovery || _startupBarriers.isNotEmpty;
+  bool get busy =>
+      transferActive ||
+      _device != null ||
+      _recovery ||
+      _startupBarriers.isNotEmpty;
+  bool get transferActive => _transfer != null;
   bool get recoveryRequired => _recovery;
 
   /// A lifecycle owner retains this independently of coordinator compensation.
@@ -53,8 +60,24 @@ class AccountWorkGate extends ChangeNotifier {
   }
 
   DeviceAccountPermit device() {
-    if (busy || _normal != 0) throw const DeviceSyncBusy();
+    // Account steps of the owning transfer still need their existing permit.
+    if (_device != null ||
+        _recovery ||
+        _startupBarriers.isNotEmpty ||
+        _normal != 0 ||
+        (transferActive &&
+            !identical(Zone.current[_transferZoneKey], _transfer))) {
+      throw const DeviceSyncBusy();
+    }
     return _admitDevice();
+  }
+
+  DeviceTransferPermit holdTransfer() {
+    if (busy || _normal != 0) throw const DeviceSyncBusy();
+    final permit = DeviceTransferPermit._(this);
+    _transfer = permit;
+    notifyListeners();
+    return permit;
   }
 
   DeviceAccountPermit recoveryPermit() {
@@ -92,6 +115,23 @@ class AccountWorkGate extends ChangeNotifier {
   void _releaseStartup(AccountStartupBarrier barrier) {
     if (_startupBarriers.remove(barrier)) notifyListeners();
   }
+
+  void _releaseTransfer(DeviceTransferPermit permit) {
+    if (!identical(_transfer, permit)) return;
+    _transfer = null;
+    notifyListeners();
+  }
+}
+
+class DeviceTransferPermit {
+  DeviceTransferPermit._(this._gate);
+  final AccountWorkGate _gate;
+  Future<T> run<T>(Future<T> Function() action) {
+    if (!identical(_gate._transfer, this)) throw const DeviceSyncBusy();
+    return runZoned(action, zoneValues: {_gate._transferZoneKey: this});
+  }
+
+  void release() => _gate._releaseTransfer(this);
 }
 
 class AccountStartupBarrier {

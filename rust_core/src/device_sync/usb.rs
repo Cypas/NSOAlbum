@@ -7,8 +7,9 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use tokio::sync::{Notify, Semaphore};
 use uuid::Uuid;
 
-use super::driver::{pump::MailboxPump, Driver, State};
+use super::driver::{pump::bundle::BundlePump, Driver, State};
 use super::headless::Endpoint;
+use super::metrics::IoKind;
 use super::native_io::{self, Direction, NativeDevice, NativeError, NativeRequest};
 use super::native_process::{NativeCancellation, NativeProcess};
 use super::read_model::ReadError;
@@ -16,6 +17,8 @@ use super::runtime::{self, Owner};
 
 const IO_DEADLINE: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(2);
+const DIRECTORY_BYTES: usize = 32 * 1024 * 1024;
+const DATA_DIRECTORY_BYTES: usize = DIRECTORY_BYTES - 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UsbActionKind {
@@ -275,6 +278,11 @@ impl Control {
         {
             return Err(ReadError::PreviewChanged);
         }
+        // Judge OS completion at receipt, not when the owner eventually
+        // consumes it after synchronous source integrity work.
+        if pending.started.elapsed() >= IO_DEADLINE {
+            return Err(ReadError::Timeout);
+        }
         let valid_payload = if reply.error.is_some() {
             reply.bytes.is_empty() && reply.names.is_empty() && reply.devices.is_empty()
         } else {
@@ -347,6 +355,7 @@ enum Stage {
     Open,
     Receive,
     Read(String),
+    DrainInput,
     Ack(String),
     Retire,
     Send,
@@ -355,10 +364,13 @@ enum Stage {
 }
 pub(crate) struct UsbDriver {
     pub(crate) driver: Driver,
-    pump: MailboxPump,
+    pump: BundlePump,
     stage: Stage,
     incoming: VecDeque<String>,
+    cleanup: VecDeque<String>,
+    cleanup_since: Option<Instant>,
     outstanding: VecDeque<String>,
+    outstanding_sizes: std::collections::HashMap<String, usize>,
     blocked: bool,
     operation: String,
     session: String,
@@ -366,6 +378,11 @@ pub(crate) struct UsbDriver {
     outgoing: Direction,
     incoming_direction: Direction,
     success_started: Option<Instant>,
+    discovering: bool,
+    discovery_after: Option<Instant>,
+    retire_after: Instant,
+    poll_after: Instant,
+    idle_ms: u64,
 }
 impl UsbDriver {
     #[cfg(test)]
@@ -377,14 +394,17 @@ impl UsbDriver {
             operation: driver.channel_operation_id().into(),
             session: driver.session_id().into(),
             driver,
-            pump: MailboxPump::default(),
-            stage: if start.external() {
+            pump: BundlePump::default(),
+            stage: if start.external() || matches!(start, Start::Native) {
                 Stage::Open
             } else {
                 Stage::Enumerate
             },
             incoming: VecDeque::new(),
+            cleanup: VecDeque::new(),
+            cleanup_since: None,
             outstanding: VecDeque::new(),
+            outstanding_sizes: std::collections::HashMap::new(),
             blocked: false,
             generation: Uuid::new_v4().simple().to_string(),
             outgoing: if start.desktop() {
@@ -398,6 +418,11 @@ impl UsbDriver {
                 Direction::Desktop
             },
             success_started: None,
+            discovering: matches!(start, Start::Native),
+            discovery_after: None,
+            retire_after: Instant::now(),
+            poll_after: Instant::now(),
+            idle_ms: 2,
         }
     }
     fn advance(&mut self, control: &Control) -> Result<bool, ReadError> {
@@ -412,7 +437,15 @@ impl UsbDriver {
         }
         // Driver completion revokes its business token. That is not an OS cancel:
         // an already accepted final CommitAck still owns a directory ACK.
-        self.driver.poll().map_err(|e| ReadError::driver(&e))?;
+        self.driver
+            .poll()
+            .inspect_err(|error| {
+                super::diagnostics::driver(super::diagnostics::Boundary::UsbPoll, error)
+            })
+            .map_err(|e| ReadError::driver(&e))?;
+        if self.pump.buffered_bytes() > 16 * 1024 * 1024 {
+            return Err(ReadError::InvalidInput);
+        }
         if self.driver.transport_detached()
             && self.driver.state() != State::Completed
             && !matches!(self.stage, Stage::Close | Stage::Done)
@@ -440,24 +473,95 @@ impl UsbDriver {
         let completed = {
             let mut exchange = control.exchange.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(pending) = &mut exchange.pending {
-                if pending.started.elapsed() >= IO_DEADLINE {
+                if pending.reply.is_none() && pending.started.elapsed() >= IO_DEADLINE {
+                    if let Some(kind) = io_kind(pending.action.kind) {
+                        self.driver.record_usb_io(
+                            kind,
+                            pending.started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                            0,
+                            true,
+                        );
+                    }
+                    super::diagnostics::usb(pending.action.kind, &ReadError::Timeout);
                     return Err(ReadError::Timeout);
                 }
                 if pending.reply.is_none() {
+                    let writing = pending.action.kind == UsbActionKind::Write;
+                    drop(exchange);
+                    if writing {
+                        // Overlap only CPU/file preparation with the one native
+                        // transaction; do not submit another MTP operation.
+                        self.pump
+                            .outgoing_without_finish(&mut self.driver)
+                            .inspect_err(|error| {
+                                super::diagnostics::driver(
+                                    super::diagnostics::Boundary::UsbOutput,
+                                    error,
+                                )
+                            })
+                            .map_err(|error| ReadError::driver(&error))?;
+                    }
                     return Ok(false);
                 }
                 let pending = exchange.pending.take().expect("checked pending");
-                Some((pending.action, pending.reply.expect("checked reply")))
+                Some((
+                    pending.action,
+                    pending.reply.expect("checked reply"),
+                    pending.started.elapsed(),
+                ))
             } else {
                 None
             }
         };
-        if let Some((action, reply)) = completed {
+        if let Some((action, reply, elapsed)) = completed {
+            if let Some(kind) = io_kind(action.kind) {
+                let bytes = if reply.error.is_some() {
+                    0
+                } else {
+                    match action.kind {
+                        UsbActionKind::Read => reply.bytes.len(),
+                        UsbActionKind::Write => action.bytes.len(),
+                        _ => 0,
+                    }
+                };
+                self.driver.record_usb_io(
+                    kind,
+                    elapsed.as_millis().min(u64::MAX as u128) as u64,
+                    bytes as u64,
+                    reply.error.is_some(),
+                );
+            }
             self.accept_completion(control, &action, reply)
                 .inspect_err(|error| super::diagnostics::usb(action.kind, error))?;
         }
+        if matches!(self.stage, Stage::DrainInput) {
+            let accepted = self
+                .pump
+                .resume_input(&mut self.driver)
+                .inspect_err(|error| {
+                    super::diagnostics::driver(super::diagnostics::Boundary::UsbDrainInput, error)
+                })
+                .map_err(|error| ReadError::driver(&error))?;
+            if let Some(name) = accepted {
+                self.consumed(name)?;
+            } else {
+                // Input and output are independent TLS directions. A retained
+                // large bundle may need an outgoing receipt to release its
+                // consumer window. Keep its tail, but let that receipt publish.
+                self.stage = Stage::Send;
+            }
+        }
         if matches!(self.stage, Stage::Done) {
             return Ok(true);
+        }
+        if self
+            .discovery_after
+            .is_some_and(|after| Instant::now() < after)
+        {
+            return Ok(false);
+        }
+        if matches!(self.stage, Stage::Receive) && Instant::now() < self.poll_after {
+            return Ok(false);
         }
         if matches!(self.stage, Stage::Select) {
             let selection = control
@@ -475,7 +579,23 @@ impl UsbDriver {
         // has space. advance() still polls the driver above, so it can drain
         // retained TLS frames and continue outgoing work without dropping data.
         if matches!(self.stage, Stage::Receive | Stage::Read(_)) && !self.driver.ready_for_input() {
-            return Ok(false);
+            if let Stage::Read(name) = &self.stage {
+                self.incoming.push_front(name.clone());
+            }
+            self.stage = Stage::Send;
+        }
+        if (self.cleanup.len() >= 8
+            || self
+                .cleanup_since
+                .is_some_and(|since| since.elapsed() >= Duration::from_millis(50)))
+            && matches!(self.stage, Stage::Receive | Stage::Read(_))
+        {
+            // Read's name has already been removed from the directory queue.
+            // Cleanup only preempts it; preserve it ahead of later entries.
+            if let Stage::Read(name) = &self.stage {
+                self.incoming.push_front(name.clone());
+            }
+            self.stage = Stage::Ack(self.cleanup.back().cloned().ok_or(ReadError::Internal)?);
         }
         let (kind, direction, name, bytes) = match &self.stage {
             Stage::Enumerate => (UsbActionKind::Enumerate, self.outgoing, None, vec![]),
@@ -495,23 +615,61 @@ impl UsbDriver {
             ),
             Stage::Retire => (UsbActionKind::List, self.outgoing, None, vec![]),
             Stage::Send => {
+                // Media credits use authenticated cumulative byte receipts.
+                // This separate hard disk budget is not per-carrier stop/wait.
+                if self.outstanding.len() >= 16 {
+                    self.stage = if Instant::now() >= self.retire_after {
+                        Stage::Retire
+                    } else if self.pump.has_pending_input() {
+                        Stage::DrainInput
+                    } else {
+                        Stage::Receive
+                    };
+                    return Ok(false);
+                }
                 if let Some((name, bytes)) = self
                     .pump
                     .outgoing_without_finish(&mut self.driver)
+                    .inspect_err(|error| {
+                        super::diagnostics::driver(super::diagnostics::Boundary::UsbOutput, error)
+                    })
                     .map_err(|e| ReadError::driver(&e))?
                 {
-                    (
-                        UsbActionKind::Write,
-                        self.outgoing,
-                        Some(name.into()),
-                        bytes.to_vec(),
-                    )
+                    let name = name.to_owned();
+                    let bytes = bytes.to_vec();
+                    let used: usize = self
+                        .outstanding
+                        .iter()
+                        .map(|name| self.outstanding_sizes.get(name).copied().unwrap_or(65_536))
+                        .sum();
+                    let limit = if self.pump.pending_is_control() {
+                        DIRECTORY_BYTES
+                    } else {
+                        DATA_DIRECTORY_BYTES
+                    };
+                    if used.saturating_add(bytes.len()) > limit {
+                        self.stage = if Instant::now() >= self.retire_after {
+                            Stage::Retire
+                        } else if self.pump.has_pending_input() {
+                            Stage::DrainInput
+                        } else {
+                            Stage::Receive
+                        };
+                        return Ok(false);
+                    }
+                    (UsbActionKind::Write, self.outgoing, Some(name), bytes)
                 } else {
-                    self.stage = if self.driver.state() == State::Completed
+                    self.stage = if let Some(name) = self.cleanup.back() {
+                        Stage::Ack(name.clone())
+                    } else if self.driver.state() == State::Completed
                         && self.outstanding.is_empty()
                         && self.pump.finish_success(&mut self.driver)
                     {
                         Stage::Close
+                    } else if !self.outstanding.is_empty() && Instant::now() >= self.retire_after {
+                        Stage::Retire
+                    } else if self.pump.has_pending_input() {
+                        Stage::DrainInput
                     } else {
                         Stage::Receive
                     };
@@ -519,7 +677,7 @@ impl UsbDriver {
                 }
             }
             Stage::Close => (UsbActionKind::Close, self.outgoing, None, vec![]),
-            Stage::Done | Stage::Select => return Ok(false),
+            Stage::Done | Stage::Select | Stage::DrainInput => return Ok(false),
         };
         let mut exchange = control.exchange.lock().unwrap_or_else(|e| e.into_inner());
         if exchange.cancelled {
@@ -560,6 +718,20 @@ impl UsbDriver {
         reply: UsbReply,
     ) -> Result<(), ReadError> {
         if let Some(error) = reply.error {
+            if self.discovering
+                && action.kind == UsbActionKind::Open
+                && matches!(error, ReadError::Busy | ReadError::Unavailable)
+            {
+                control
+                    .exchange
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .view
+                    .error = (error == ReadError::Unavailable).then_some(error);
+                self.discovery_after = Some(Instant::now() + Duration::from_millis(500));
+                self.stage = Stage::Open;
+                return Ok(());
+            }
             if error == ReadError::WindowFull
                 && action.kind == UsbActionKind::Write
                 && !self.outstanding.is_empty()
@@ -581,8 +753,19 @@ impl UsbDriver {
                     .devices = reply.devices;
                 Stage::Select
             }
-            UsbActionKind::Open => Stage::Receive,
+            UsbActionKind::Open => {
+                control
+                    .exchange
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .view
+                    .error = None;
+                self.discovering = false;
+                self.discovery_after = None;
+                Stage::Receive
+            }
             UsbActionKind::Read => {
+                self.idle_ms = 2;
                 let accepted = self
                     .pump
                     .accept(
@@ -591,10 +774,37 @@ impl UsbDriver {
                         &reply.bytes,
                     )
                     .map_err(|e| ReadError::driver(&e))?;
-                Stage::Ack(accepted)
+                if let Some(name) = accepted {
+                    self.consumed(name)?;
+                    return Ok(());
+                }
+                Stage::DrainInput
             }
             UsbActionKind::Acknowledge => {
-                self.incoming.pop_front().map_or(Stage::Retire, Stage::Read)
+                let through = action.name.as_deref().ok_or(ReadError::Internal)?;
+                while self
+                    .cleanup
+                    .front()
+                    .is_some_and(|name| name.as_str() <= through)
+                {
+                    self.cleanup.pop_front();
+                }
+                if self.cleanup.is_empty() {
+                    self.cleanup_since = None;
+                }
+                if self.blocked || self.outstanding.len() >= 16 {
+                    // An inbound exchange was actually consumed, so the peer
+                    // has made progress. Recheck capacity once under pressure;
+                    // do not wait for the idle scan or assume any file retired.
+                    self.retire_after = Instant::now();
+                }
+                if self.pump.has_pending_input() {
+                    Stage::DrainInput
+                } else if let Some(name) = self.incoming.pop_front() {
+                    Stage::Read(name)
+                } else {
+                    Stage::Send
+                }
             }
             UsbActionKind::Write => {
                 if self.outstanding.len() >= native_io::MAX_ENTRIES {
@@ -605,12 +815,35 @@ impl UsbDriver {
                     .map_err(|e| ReadError::driver(&e))?;
                 self.outstanding
                     .push_back(action.name.clone().ok_or(ReadError::Internal)?);
-                Stage::Receive
+                self.outstanding_sizes.insert(
+                    action.name.clone().ok_or(ReadError::Internal)?,
+                    action.bytes.len(),
+                );
+                self.idle_ms = 2;
+                if self.pump.has_pending_input() {
+                    Stage::DrainInput
+                } else if self.driver.state() == State::Transferring && self.outstanding.len() < 16
+                {
+                    Stage::Send
+                } else {
+                    Stage::Receive
+                }
             }
             UsbActionKind::List if action.direction == self.incoming_direction => {
                 check_names(&reply.names)?;
-                self.incoming = reply.names.into();
-                self.incoming.pop_front().map_or(Stage::Retire, Stage::Read)
+                self.incoming = reply
+                    .names
+                    .into_iter()
+                    .filter(|name| !self.cleanup.contains(name))
+                    .collect();
+                if self.incoming.is_empty() {
+                    self.poll_after = Instant::now() + Duration::from_millis(self.idle_ms);
+                    self.idle_ms = (self.idle_ms * 2).min(50);
+                    Stage::Send
+                } else {
+                    self.idle_ms = 2;
+                    self.incoming.pop_front().map_or(Stage::Send, Stage::Read)
+                }
             }
             UsbActionKind::List => {
                 check_names(&reply.names)?;
@@ -625,18 +858,28 @@ impl UsbDriver {
                 if !self.outstanding.iter().skip(retired).eq(reply.names.iter()) {
                     return Err(ReadError::InvalidInput);
                 }
-                self.outstanding.drain(..retired);
+                for name in self.outstanding.drain(..retired) {
+                    self.outstanding_sizes.remove(&name);
+                }
+                self.retire_after = Instant::now() + Duration::from_millis(250);
                 if retired > 0 && self.blocked {
                     self.blocked = false;
                     self.pump.capacity_released();
                 }
-                if retired > 0
+                if self.pump.has_pending_input() {
+                    Stage::DrainInput
+                } else if retired > 0
                     && self.driver.state() == State::Completed
                     && self.outstanding.is_empty()
                 {
                     // The previous incoming snapshot preceded the peer's final
                     // ACK. Read again after that real retirement, so its already
                     // published ordered tail is accepted/ACKed before TLS close.
+                    Stage::Receive
+                } else if self.blocked || self.outstanding.len() >= 16 {
+                    // Even a full outbound directory must service inbound
+                    // receipts and the peer's own cleanup. Polling only our
+                    // directory here deadlocks two bounded carriers.
                     Stage::Receive
                 } else {
                     Stage::Send
@@ -645,6 +888,24 @@ impl UsbDriver {
             UsbActionKind::Close => Stage::Done,
         };
         Ok(())
+    }
+    fn consumed(&mut self, name: String) -> Result<(), ReadError> {
+        if self.cleanup.len() >= 8 {
+            return Err(ReadError::InvalidInput);
+        }
+        self.cleanup.push_back(name);
+        self.cleanup_since.get_or_insert_with(Instant::now);
+        self.stage = self.incoming.pop_front().map_or(Stage::Send, Stage::Read);
+        Ok(())
+    }
+}
+fn io_kind(kind: UsbActionKind) -> Option<IoKind> {
+    match kind {
+        UsbActionKind::List => Some(IoKind::List),
+        UsbActionKind::Read => Some(IoKind::Read),
+        UsbActionKind::Write => Some(IoKind::Write),
+        UsbActionKind::Acknowledge => Some(IoKind::Acknowledge),
+        _ => None,
     }
 }
 fn check_names(names: &[String]) -> Result<(), ReadError> {
@@ -676,6 +937,9 @@ fn native_request(action: &UsbAction) -> Result<NativeRequest, ReadError> {
     let name = action.name.clone().unwrap_or_default();
     Ok(match action.kind {
         UsbActionKind::Enumerate => NativeRequest::Enumerate,
+        UsbActionKind::Open if action.device.is_none() && action.storage.is_none() => {
+            NativeRequest::Discover { operation, session }
+        }
         UsbActionKind::Open => NativeRequest::Open {
             device: action.device.clone().ok_or(ReadError::InvalidInput)?,
             storage: action.storage.clone().ok_or(ReadError::InvalidInput)?,
@@ -713,6 +977,13 @@ fn native_reply(response: Result<serde_json::Value, NativeError>, action: &UsbAc
     let result = (|| {
         let value = response.map_err(native_error)?;
         match action.kind {
+            UsbActionKind::Open if action.device.is_none() && action.storage.is_none() => {
+                match value.as_bool() {
+                    Some(true) => {}
+                    Some(false) => return Err(ReadError::Busy),
+                    None => return Err(ReadError::InvalidInput),
+                }
+            }
             UsbActionKind::Enumerate => {
                 reply.devices =
                     serde_json::from_value(value).map_err(|_| ReadError::InvalidInput)?
@@ -888,6 +1159,86 @@ mod completion_tests {
     };
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    fn discovery_action() -> UsbAction {
+        UsbAction {
+            token: "a".repeat(32),
+            generation: "b".repeat(32),
+            operation: "c".repeat(32),
+            session: "d".repeat(32),
+            kind: UsbActionKind::Open,
+            direction: Direction::Desktop,
+            name: None,
+            bytes: vec![],
+            device: None,
+            storage: None,
+        }
+    }
+
+    #[test]
+    fn desktop_discovery_open_needs_no_user_selected_device() {
+        let request = native_request(&discovery_action());
+        assert!(
+            request.is_ok(),
+            "Desktop must discover the scanned session without a selected device"
+        );
+        let value = serde_json::to_value(request.unwrap()).unwrap();
+        assert_eq!(value["method"], "discover");
+        assert_eq!(value["session"], "d".repeat(32));
+        assert!(value.get("device").is_none());
+    }
+
+    #[test]
+    fn desktop_discovery_absent_session_is_pending_not_a_transport_failure() {
+        let reply = native_reply(Ok(serde_json::json!(false)), &discovery_action());
+        assert_eq!(reply.error, Some(ReadError::Busy));
+        assert!(reply.bytes.is_empty());
+        let ready = native_reply(Ok(serde_json::json!(true)), &discovery_action());
+        assert_eq!(ready.error, None);
+        let malformed = native_reply(Ok(serde_json::json!("true")), &discovery_action());
+        assert_eq!(malformed.error, Some(ReadError::InvalidInput));
+    }
+
+    #[tokio::test]
+    async fn desktop_discovery_wait_is_bounded_and_cancel_does_not_need_os_completion() {
+        let root = tempfile::tempdir().unwrap();
+        let api = CoreApi::open(root.path()).unwrap();
+        let (session, _, _) = confirmed(Role::Sender);
+        let driver = Driver::new(
+            session,
+            api.database(),
+            "Desktop",
+            Arc::new(SystemClock::default()),
+        )
+        .unwrap();
+        let mut usb = UsbDriver::new(driver, &Start::Native);
+        // Only the OS boundary is external; the production desktop state
+        // machine must discover without a call to select().
+        let control = Control::new(&Start::DesktopActions);
+        let first = take(&mut usb, &control).await;
+        assert_eq!(first.kind, UsbActionKind::Open);
+        assert!(first.device.is_none() && first.storage.is_none());
+        control
+            .complete(native_reply(Ok(serde_json::json!(false)), &first))
+            .unwrap();
+        usb.advance(&control).unwrap();
+        assert!(control.exchange.lock().unwrap().pending.is_none());
+        tokio::time::sleep(Duration::from_millis(510)).await;
+        let second = take(&mut usb, &control).await;
+        assert_ne!(second.token, first.token);
+        control
+            .complete(native_reply(Err(NativeError::Unavailable), &second))
+            .unwrap();
+        usb.advance(&control).unwrap();
+        assert_eq!(control.view().error, Some(ReadError::Unavailable));
+        assert!(!control.view().closed);
+        tokio::time::sleep(Duration::from_millis(510)).await;
+        let third = take(&mut usb, &control).await;
+        control.cancel();
+        assert_eq!(usb.advance(&control), Err(ReadError::Cancelled));
+        assert!(control.complete(UsbReply::empty(&third)).is_err());
+        assert!(api.list_media(Default::default()).unwrap().is_empty());
+    }
+
     async fn take(usb: &mut UsbDriver, control: &Control) -> UsbAction {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
@@ -905,6 +1256,259 @@ mod completion_tests {
             }
             tokio::task::yield_now().await;
         }
+    }
+
+    fn ack_driver(api: &CoreApi) -> (UsbDriver, Arc<Control>) {
+        let (session, _, _) = confirmed(Role::Sender);
+        let driver = Driver::new(
+            session,
+            api.database(),
+            "Phone",
+            Arc::new(SystemClock::default()),
+        )
+        .unwrap();
+        let mut usb = UsbDriver::new(driver, &Start::Saf);
+        usb.stage = Stage::Ack("0000000000000000.block".into());
+        (usb, Control::new(&Start::Saf))
+    }
+
+    #[tokio::test]
+    async fn cleanup_deadline_preserves_the_already_selected_read_before_later_entries() {
+        let root = tempfile::tempdir().unwrap();
+        let api = CoreApi::open(root.path()).unwrap();
+        let (mut usb, control) = ack_driver(&api);
+        usb.stage = Stage::Read("0000000000000001.block".into());
+        usb.incoming = [
+            "0000000000000002.block".into(),
+            "0000000000000003.block".into(),
+        ]
+        .into();
+        usb.cleanup.push_back("0000000000000000.block".into());
+        usb.cleanup_since = Some(Instant::now() - Duration::from_millis(51));
+        let ack = take(&mut usb, &control).await;
+        assert_eq!(ack.kind, UsbActionKind::Acknowledge);
+        assert_eq!(ack.name.as_deref(), Some("0000000000000000.block"));
+        control.complete(UsbReply::empty(&ack)).unwrap();
+
+        let read = take(&mut usb, &control).await;
+        assert_eq!(read.kind, UsbActionKind::Read);
+        assert_eq!(
+            read.name.as_deref(),
+            Some("0000000000000001.block"),
+            "cleanup must resume the selected read, not skip to a later directory entry"
+        );
+        assert_eq!(
+            usb.incoming.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["0000000000000002.block", "0000000000000003.block"]
+        );
+        control.cancel();
+        assert_eq!(usb.advance(&control), Err(ReadError::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn cleanup_full_batch_resumes_the_selected_read_without_consuming_a_later_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let api = CoreApi::open(root.path()).unwrap();
+        let (mut usb, control) = ack_driver(&api);
+        usb.stage = Stage::Read("0000000000000008.block".into());
+        usb.incoming.push_back("0000000000000009.block".into());
+        usb.cleanup = (0..8).map(|n| format!("{n:016x}.block")).collect();
+        let ack = take(&mut usb, &control).await;
+        assert_eq!(ack.kind, UsbActionKind::Acknowledge);
+        assert_eq!(ack.name.as_deref(), Some("0000000000000007.block"));
+        control.complete(UsbReply::empty(&ack)).unwrap();
+
+        let read = take(&mut usb, &control).await;
+        assert_eq!(read.kind, UsbActionKind::Read);
+        assert_eq!(
+            read.name.as_deref(),
+            Some("0000000000000008.block"),
+            "a full cleanup batch must not discard a preselected ciphertext block"
+        );
+        assert_eq!(
+            usb.incoming.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["0000000000000009.block"]
+        );
+        control.cancel();
+        assert!(control.complete(UsbReply::empty(&read)).is_err());
+    }
+
+    #[tokio::test]
+    async fn full_publication_budget_still_polls_incoming_business_receipts() {
+        let root = tempfile::tempdir().unwrap();
+        let api = CoreApi::open(root.path()).unwrap();
+        let (mut usb, control) = ack_driver(&api);
+        usb.stage = Stage::Send;
+        usb.outstanding = (0..16).map(|n| format!("{n:016x}.block")).collect();
+        // Nothing was retired yet. This must not turn into an endless sequence
+        // of outgoing-directory scans that starves the peer's media receipts.
+        for _ in 0..4 {
+            let next = take(&mut usb, &control).await;
+            assert_eq!(next.kind, UsbActionKind::List);
+            if next.direction == usb.incoming_direction {
+                return;
+            }
+            let mut reply = UsbReply::empty(&next);
+            reply.names = usb.outstanding.iter().cloned().collect();
+            control.complete(reply).unwrap();
+        }
+        panic!("full publication budget starved the inbound channel");
+    }
+
+    #[tokio::test]
+    async fn directory_byte_budget_blocks_media_but_preserves_independent_control_capacity() {
+        for media in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let api = CoreApi::open(root.path()).unwrap();
+            let (mut session, _, now) = confirmed(Role::Sender);
+            if media {
+                session
+                    .send_media_payload(&vec![1; 256 * 1024], now)
+                    .unwrap();
+            } else {
+                session.send_payload(b"control", now).unwrap();
+            }
+            let driver = Driver::new(
+                session,
+                api.database(),
+                "Phone",
+                Arc::new(SystemClock::default()),
+            )
+            .unwrap();
+            let mut usb = UsbDriver::new(driver, &Start::Saf);
+            let control = Control::new(&Start::Saf);
+            usb.stage = Stage::Send;
+            usb.retire_after = Instant::now() + Duration::from_secs(1);
+            for (index, size) in [8, 8, 8, 7].into_iter().enumerate() {
+                let name = format!("{index:016x}.block");
+                usb.outstanding.push_back(name.clone());
+                usb.outstanding_sizes.insert(name, size * 1024 * 1024);
+            }
+            let next = take(&mut usb, &control).await;
+            if media {
+                assert_eq!(
+                    next.kind,
+                    UsbActionKind::List,
+                    "31MiB of media must leave control reserve, not publish another data carrier"
+                );
+                assert_eq!(next.direction, usb.incoming_direction);
+            } else {
+                assert_eq!(next.kind, UsbActionKind::Write);
+                assert!(next.bytes.len() < 1024 * 1024);
+                assert!(31 * 1024 * 1024 + next.bytes.len() <= 32 * 1024 * 1024);
+            }
+            control.cancel();
+            assert_eq!(usb.advance(&control), Err(ReadError::Cancelled));
+            assert!(control.complete(UsbReply::empty(&next)).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn consumed_peer_traffic_rechecks_blocked_publication_before_the_idle_scan() {
+        let root = tempfile::tempdir().unwrap();
+        let api = CoreApi::open(root.path()).unwrap();
+        let (mut usb, control) = ack_driver(&api);
+        usb.cleanup.push_back("0000000000000000.block".into());
+        usb.outstanding.push_back("0000000000000000.block".into());
+        usb.blocked = true;
+        usb.pump.window_full();
+        usb.retire_after = Instant::now() + Duration::from_secs(1);
+        let ack = take(&mut usb, &control).await;
+        assert_eq!(ack.kind, UsbActionKind::Acknowledge);
+        control.complete(UsbReply::empty(&ack)).unwrap();
+        let next = take(&mut usb, &control).await;
+        assert_eq!(next.kind, UsbActionKind::List);
+        assert_eq!(
+            next.direction, usb.outgoing,
+            "real consumed peer traffic must trigger one pressure scan before idle polling"
+        );
+    }
+
+    #[tokio::test]
+    async fn timely_usb_receipt_survives_owner_consuming_after_io_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let api = CoreApi::open(root.path()).unwrap();
+        let (mut usb, control) = ack_driver(&api);
+        let action = take(&mut usb, &control).await;
+        assert_eq!(action.kind, UsbActionKind::Acknowledge);
+        control.complete(UsbReply::empty(&action)).unwrap();
+        // Receipt already arrived. Simulate snapshot hashing delaying only its
+        // consumption, not a genuinely slow OS operation.
+        control
+            .exchange
+            .lock()
+            .unwrap()
+            .pending
+            .as_mut()
+            .unwrap()
+            .started = Instant::now() - IO_DEADLINE - Duration::from_secs(1);
+        assert_eq!(usb.advance(&control), Ok(false));
+        let next = take(&mut usb, &control).await;
+        assert_eq!(next.kind, UsbActionKind::List);
+        assert_ne!(next.token, action.token);
+    }
+
+    #[tokio::test]
+    async fn usb_receipt_arriving_after_io_deadline_is_rejected_before_consumption() {
+        let root = tempfile::tempdir().unwrap();
+        let api = CoreApi::open(root.path()).unwrap();
+        let (mut usb, control) = ack_driver(&api);
+        let action = take(&mut usb, &control).await;
+        control
+            .exchange
+            .lock()
+            .unwrap()
+            .pending
+            .as_mut()
+            .unwrap()
+            .started = Instant::now() - IO_DEADLINE - Duration::from_secs(1);
+        assert_eq!(
+            control.complete(UsbReply::empty(&action)),
+            Err(ReadError::Timeout)
+        );
+        assert!(control
+            .exchange
+            .lock()
+            .unwrap()
+            .pending
+            .as_ref()
+            .unwrap()
+            .reply
+            .is_none());
+        assert_eq!(usb.advance(&control), Err(ReadError::Timeout));
+    }
+
+    #[tokio::test]
+    async fn missing_usb_receipt_still_times_out_and_cancel_revokes_timely_receipt() {
+        let root = tempfile::tempdir().unwrap();
+        let api = CoreApi::open(root.path()).unwrap();
+        let (mut usb, control) = ack_driver(&api);
+        let action = take(&mut usb, &control).await;
+        control
+            .exchange
+            .lock()
+            .unwrap()
+            .pending
+            .as_mut()
+            .unwrap()
+            .started = Instant::now() - IO_DEADLINE - Duration::from_secs(1);
+        assert_eq!(usb.advance(&control), Err(ReadError::Timeout));
+        control.cancel();
+        assert_eq!(
+            control.complete(UsbReply::empty(&action)),
+            Err(ReadError::Cancelled)
+        );
+        assert_eq!(usb.advance(&control), Err(ReadError::Cancelled));
+
+        let (mut usb, control) = ack_driver(&api);
+        let action = take(&mut usb, &control).await;
+        control.complete(UsbReply::empty(&action)).unwrap();
+        control.cancel();
+        assert_eq!(usb.advance(&control), Err(ReadError::Cancelled));
+        assert_eq!(
+            control.complete(UsbReply::empty(&action)),
+            Err(ReadError::Cancelled)
+        );
     }
 
     async fn late_real_lease_grant(retire_before_final_receive: bool) {
@@ -994,33 +1598,43 @@ mod completion_tests {
         assert_eq!(target_api.list_tags().unwrap(), vec!["committed"]);
         let control = Control::new(&Start::Saf);
         let mut usb = UsbDriver::new(target, &Start::Saf);
-        // Open, receive-empty, retire-empty, then the real final CommitAck.
-        for kind in [
-            UsbActionKind::Open,
-            UsbActionKind::List,
-            UsbActionKind::List,
-        ] {
+        // Directory polling is adaptive. Consume only empty setup listings
+        // until the actual final CommitAck is atomically published.
+        let final_ack = loop {
             let action = take(&mut usb, &control).await;
-            assert_eq!(action.kind, kind);
+            if action.kind == UsbActionKind::Write {
+                break action;
+            }
+            assert!(matches!(
+                action.kind,
+                UsbActionKind::Open | UsbActionKind::List
+            ));
             control.complete(UsbReply::empty(&action)).unwrap();
-        }
-        let final_ack = take(&mut usb, &control).await;
-        assert_eq!(final_ack.kind, UsbActionKind::Write);
+        };
         control.complete(UsbReply::empty(&final_ack)).unwrap();
-        let receive = take(&mut usb, &control).await;
-        control.complete(UsbReply::empty(&receive)).unwrap();
-        let retire = take(&mut usb, &control).await;
+        let retire = loop {
+            let action = take(&mut usb, &control).await;
+            assert_eq!(action.kind, UsbActionKind::List);
+            if action.direction == usb.outgoing {
+                break action;
+            }
+            control.complete(UsbReply::empty(&action)).unwrap();
+        };
         source.ciphertext_written(late_grant.len()).unwrap();
-        let mut order = super::super::mailbox::OrderedCiphertext::default();
-        let (name, bytes) = order.encode(&late_grant).unwrap();
-        let mut source_order = super::super::mailbox::OrderedCiphertext::default();
-        let ciphertext = source_order
+        let mut order = super::super::mailbox::bundle::BundleEncoder::default();
+        let bundle = order.encode(&[late_grant]).unwrap();
+        let name = bundle.name;
+        let bytes = bundle.bytes;
+        let mut source_order = super::super::mailbox::bundle::BundleDecoder::default();
+        let drains = source_order
             .decode(final_ack.name.as_ref().unwrap(), &final_ack.bytes)
             .unwrap();
         if retire_before_final_receive {
             // The preceding incoming List really was empty. The source then
             // publishes its held grant before consuming/ACKing final_ack.
-            source.ingest_ciphertext(&ciphertext).unwrap();
+            for ciphertext in &drains {
+                source.ingest_ciphertext(ciphertext).unwrap();
+            }
             source.poll().unwrap();
             assert_eq!(source.state(), State::Completed);
         }
@@ -1056,11 +1670,13 @@ mod completion_tests {
             accepted.is_ok() && !tls_closed_before_directory_ack,
             "unretired final CommitAck must preserve TLS for the real late grant"
         );
-        let acknowledge = control.next().await.unwrap().unwrap();
+        let acknowledge = take(&mut usb, &control).await;
         assert_eq!(acknowledge.kind, UsbActionKind::Acknowledge);
         control.complete(UsbReply::empty(&acknowledge)).unwrap();
         if !retire_before_final_receive {
-            source.ingest_ciphertext(&ciphertext).unwrap();
+            for ciphertext in &drains {
+                source.ingest_ciphertext(ciphertext).unwrap();
+            }
             source.poll().unwrap();
         }
         assert_eq!(source.state(), State::Completed);

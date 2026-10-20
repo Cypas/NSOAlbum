@@ -4,7 +4,6 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/src/l10n/app_localizations.dart';
@@ -13,54 +12,32 @@ import 'package:squid_album/src/ui/device_sync/scanner_page.dart';
 import '../device_sync/device_sync_page_test.dart' show reveal;
 
 void main() {
-  testWidgets(
-    'ML Kit notice precedes enable and browser failure does not block',
-    (tester) async {
-      const channel = MethodChannel('plugins.flutter.io/url_launcher');
-      final calls = <MethodCall>[];
-      final messenger =
-          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-      messenger.setMockMethodCallHandler(channel, (call) async {
-        calls.add(call);
-        return false;
-      });
-      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
-      for (final language in ['zh', 'en']) {
-        var creations = 0;
-        final camera = TestCamera();
-        await tester.pumpWidget(
-          scannerApp(() {
-            creations++;
-            return camera;
-          }, language: language),
-        );
-        await tester.tap(find.byKey(const Key('open-scanner')));
-        await tester.pumpAndSettle();
-        expect(
-          find.textContaining(
-            language == 'zh' ? '安装标识' : 'installation identifiers',
-          ),
-          findsOneWidget,
-        );
-        expect(creations, 0);
-        await reveal(tester, find.byKey(const Key('device-scanner-terms')));
-        await tester.tap(find.byKey(const Key('device-scanner-terms')));
-        await tester.pumpAndSettle();
-        expect(calls.last.method, 'launch');
-        final arguments = calls.last.arguments as Map;
-        expect(arguments['url'], 'https://developers.google.com/ml-kit/terms');
-        expect(arguments['useWebView'], isFalse);
-        expect(creations, 0);
-        await reveal(tester, find.byKey(const Key('device-enable-camera')));
-        await tester.tap(find.byKey(const Key('device-enable-camera')));
-        await tester.pumpAndSettle();
-        expect(camera.starts, 1);
-        await tester.tap(find.byKey(const Key('android-page-back')));
-        await tester.pumpAndSettle();
-        await tester.pumpWidget(const SizedBox.shrink());
-      }
-    },
-  );
+  testWidgets('scanner page keeps camera controls free of vendor notices', (
+    tester,
+  ) async {
+    for (final language in ['zh', 'en']) {
+      var creations = 0;
+      final camera = TestCamera();
+      await tester.pumpWidget(
+        scannerApp(() {
+          creations++;
+          return camera;
+        }, language: language),
+      );
+      await tester.tap(find.byKey(const Key('open-scanner')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Google ML Kit'), findsNothing);
+      expect(find.byKey(const Key('device-scanner-terms')), findsNothing);
+      expect(creations, 0);
+      await reveal(tester, find.byKey(const Key('device-enable-camera')));
+      await tester.tap(find.byKey(const Key('device-enable-camera')));
+      await tester.pumpAndSettle();
+      expect(camera.starts, 1);
+      await tester.tap(find.byKey(const Key('android-page-back')));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox.shrink());
+    }
+  });
 
   testWidgets('camera needs explicit enable and denied access has a retry', (
     tester,

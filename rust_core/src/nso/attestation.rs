@@ -6,6 +6,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::Digest;
 use tokio::sync::Mutex;
 
 use crate::error::{CoreError, CoreResult};
@@ -41,14 +42,49 @@ fn oauth_client_authentication_error(response: &HttpResponseData) -> Option<Stri
     if value.get("error").and_then(Value::as_str) != Some("invalid_client") {
         return None;
     }
-    let description = value
-        .get("error_description")
-        .and_then(Value::as_str)
-        .unwrap_or("client authentication was rejected");
     Some(format!(
-        "NXAPI OAuth client authentication is required for client id {}: {description}. Configure the matching nxapi-auth client secret/client assertion; it must not be bundled in the app.",
+        "NXAPI OAuth client authentication is required for client id {}. Configure the matching nxapi-auth client secret/client assertion; it must not be bundled in the app. NXAPI code: invalid_client",
         DEFAULT_CLIENT_ID
     ))
+}
+
+fn ensure_nxapi_success(response: &HttpResponseData, operation: &str) -> CoreResult<()> {
+    // Never echo remote descriptions, unknown error strings, IDs or bodies.
+    let value = response.json::<Value>().ok();
+    let code = value
+        .as_ref()
+        .and_then(|value| value.get("error"))
+        .and_then(Value::as_str);
+    let safe_code = match code {
+        Some("invalid_request") => "invalid_request",
+        Some("request_parameter_not_set") => "request_parameter_not_set",
+        Some("unsupported_platform") => "unsupported_platform",
+        Some("unsupported_version") => "unsupported_version",
+        Some("incompatible_client") => "incompatible_client",
+        Some("unauthorised") => "unauthorised",
+        Some("invalid_token") => "invalid_token",
+        Some("insufficient_scope") => "insufficient_scope",
+        Some("rate_limit") => "rate_limit",
+        Some("unknown_error") => "unknown_error",
+        Some("service_unavailable") => "service_unavailable",
+        Some("invalid_client") => "invalid_client",
+        Some("invalid_grant") => "invalid_grant",
+        Some("invalid_scope") => "invalid_scope",
+        Some("unauthorized_client") => "unauthorized_client",
+        Some("unsupported_grant_type") => "unsupported_grant_type",
+        _ => return response.ensure_success_redacted(operation),
+    };
+    response
+        .ensure_success_redacted(operation)
+        .map_err(|error| match error {
+            CoreError::Provider(message) => {
+                CoreError::Provider(format!("{message}; NXAPI code: {safe_code}"))
+            }
+            CoreError::Authentication(message) => {
+                CoreError::Authentication(format!("{message}; NXAPI code: {safe_code}"))
+            }
+            other => other,
+        })
 }
 
 fn build_f_request_body(
@@ -163,6 +199,25 @@ impl NxapiAttestationClient {
         }
     }
 
+    /// Keep public version metadata and serialization, but never another user's
+    /// OAuth credentials. Clones of this account client still reuse its token.
+    pub(crate) fn isolated_credentials(&self) -> Self {
+        Self {
+            token: Arc::new(Mutex::new(None)),
+            ..self.clone()
+        }
+    }
+
+    pub(crate) fn service_key(&self) -> String {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(self.config.znca_base_url.as_bytes());
+        hasher.update([0]);
+        hasher.update(self.config.oauth_url.as_bytes());
+        hasher.update([0]);
+        hasher.update(self.config.client_id.as_bytes());
+        hex::encode(hasher.finalize())
+    }
+
     async fn oauth_token(&self) -> CoreResult<String> {
         let now = Instant::now();
         let cached = self.token.lock().await.clone();
@@ -183,7 +238,7 @@ impl NxapiAttestationClient {
         if let Some(message) = oauth_client_authentication_error(&response) {
             return Err(CoreError::Authentication(message));
         }
-        response.ensure_success_redacted("NXAPI OAuth token request")?;
+        ensure_nxapi_success(&response, "NXAPI OAuth token request")?;
         let value: Value = response.json()?;
         let access_token = value
             .get("access_token")
@@ -204,7 +259,16 @@ impl NxapiAttestationClient {
         *self.token.lock().await = Some(OAuthToken {
             access_token: access_token.clone(),
             refresh_token,
-            expires_at: Instant::now() + Duration::from_secs(expires_in.saturating_sub(30).max(1)),
+            expires_at: Instant::now()
+                + super::token_expiry::expires_at(
+                    &access_token,
+                    Some(expires_in.min(i64::MAX as u64) as i64),
+                    chrono::Utc::now(),
+                )
+                .signed_duration_since(chrono::Utc::now())
+                .to_std()
+                .unwrap_or_default()
+                .saturating_sub(Duration::from_secs(30)),
         });
         Ok(access_token)
     }
@@ -256,7 +320,7 @@ impl NxapiAttestationClient {
                 "NXAPI client compatibility identifier is outdated; update NSOAlbum".into(),
             ));
         }
-        response.ensure_success_redacted(&format!("NXAPI {path}"))?;
+        ensure_nxapi_success(&response, &format!("NXAPI {path}"))?;
         Ok(response)
     }
 
@@ -308,7 +372,7 @@ impl NxapiAttestationClient {
         let response = self
             .znca_request_once("/config", &Value::Null, "application/json", None)
             .await?;
-        response.ensure_success_redacted("NXAPI /config")?;
+        ensure_nxapi_success(&response, "NXAPI /config")?;
         let value: Value = response.json()?;
         let version = value
             .get("nso_version")
@@ -415,6 +479,77 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+
+    #[tokio::test]
+    async fn nxapi_error_keeps_only_a_known_code_and_not_remote_response_details() {
+        let (base, server) = crate::transport::tests::capture_response(
+            400,
+            r#"{"error":"invalid_request","error_description":"session_token=PRIVATE","debug_id":"PRIVATE-ID","token":"PRIVATE-TOKEN"}"#,
+            &[],
+        );
+        let client = NxapiAttestationClient::new(
+            HttpTransport::new(Default::default()).unwrap(),
+            NxapiConfig {
+                znca_base_url: base,
+                ..Default::default()
+            },
+        );
+        let error = client.nso_version().await.unwrap_err().to_string();
+        server.join().unwrap();
+        assert!(error.contains("HTTP 400"));
+        assert!(error.contains("NXAPI code: invalid_request"));
+        assert!(!error.contains("PRIVATE"));
+    }
+
+    #[test]
+    fn oauth_client_error_does_not_echo_untrusted_description() {
+        let response = HttpResponseData {
+            status: 401,
+            headers: HashMap::new(),
+            body: br#"{"error":"invalid_client","error_description":"access_token=PRIVATE"}"#
+                .to_vec(),
+        };
+        let message = oauth_client_authentication_error(&response).unwrap();
+        assert!(!message.contains("PRIVATE"));
+        assert!(message.contains("invalid_client"));
+    }
+
+    #[test]
+    fn safe_error_codes_keep_error_categories_and_never_echo_unknown_values() {
+        for body in [
+            br#"{"error":"session_token_PRIVATE","error_description":"PRIVATE"}"#.to_vec(),
+            b"PRIVATE HTML response".to_vec(),
+            br#"{"error":{"token":"PRIVATE"}}"#.to_vec(),
+        ] {
+            let response = HttpResponseData {
+                status: 400,
+                headers: HashMap::new(),
+                body,
+            };
+            let error = ensure_nxapi_success(&response, "NXAPI /f")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("HTTP 400"));
+            assert!(!error.contains("PRIVATE"));
+            assert!(!error.contains("NXAPI code:"));
+        }
+        let mut response = HttpResponseData {
+            status: 401,
+            headers: HashMap::new(),
+            body: br#"{"error":"invalid_token","token":"PRIVATE"}"#.to_vec(),
+        };
+        let error = ensure_nxapi_success(&response, "NXAPI /f").unwrap_err();
+        assert!(matches!(error, CoreError::Authentication(_)));
+        assert!(error.to_string().contains("NXAPI code: invalid_token"));
+        assert!(!error.to_string().contains("PRIVATE"));
+        response.status = 429;
+        assert!(matches!(
+            ensure_nxapi_success(&response, "NXAPI /f"),
+            Err(CoreError::RateLimited {
+                retry_after_seconds: 60
+            })
+        ));
+    }
 
     #[tokio::test]
     async fn oauth_and_znca_config_send_the_application_user_agent() {

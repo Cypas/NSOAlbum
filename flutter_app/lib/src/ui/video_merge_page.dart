@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import '../state/media_edit_controller.dart';
 
 import 'package:flutter/material.dart';
@@ -11,6 +12,7 @@ import '../rust/models.dart';
 import 'desktop_window_drag_area.dart';
 import 'video_runtime.dart';
 import 'video_thumbnail.dart';
+import 'video_preview.dart';
 
 class VideoMergePage extends StatefulWidget {
   const VideoMergePage({
@@ -53,7 +55,9 @@ class VideoMergePage extends StatefulWidget {
 }
 
 class _VideoMergePageState extends State<VideoMergePage> {
-  late final MediaEditController mediaEditor = MediaEditController(widget.backend);
+  late final MediaEditController mediaEditor = MediaEditController(
+    widget.backend,
+  );
   late final List<MediaAsset> videos = List.of(widget.videos);
   Player? previewPlayer;
   VideoController? previewController;
@@ -159,10 +163,7 @@ class _VideoMergePageState extends State<VideoMergePage> {
     previewController = null;
     previewPath = null;
     try {
-      final asset = await mediaEditor.merge(
-        videos,
-        preparedPath: path,
-      );
+      final asset = await mediaEditor.merge(videos, preparedPath: path);
       if (!mounted) return;
       Navigator.of(context).pop(asset);
     } catch (error, stackTrace) {
@@ -378,8 +379,9 @@ class _VideoMergePageState extends State<VideoMergePage> {
         child: Center(
           child: AspectRatio(
             aspectRatio: 16 / 9,
-            child: Video(
+            child: VideoPreview(
               controller: controller,
+              cover: videos.first,
               controls: AdaptiveVideoControls,
             ),
           ),
@@ -518,7 +520,6 @@ class _SourceVideoPreviewState extends State<_SourceVideoPreview> {
   late final VideoController controller = VideoController(player);
 
   Object? error;
-  bool _firstFrameRendered = false;
 
   @override
   void initState() {
@@ -535,10 +536,6 @@ class _SourceVideoPreviewState extends State<_SourceVideoPreview> {
         open: () => player.open(Media(widget.video.storagePath), play: false),
         play: player.play,
       );
-      await controller.waitUntilFirstFrameRendered.timeout(
-        const Duration(seconds: 15),
-      );
-      if (mounted) setState(() => _firstFrameRendered = true);
     } catch (value) {
       if (mounted) setState(() => error = value);
     }
@@ -597,15 +594,12 @@ class _SourceVideoPreviewState extends State<_SourceVideoPreview> {
                       children: [
                         AspectRatio(
                           aspectRatio: 16 / 9,
-                          child: Video(
+                          child: VideoPreview(
                             controller: controller,
+                            cover: widget.video,
                             controls: AdaptiveVideoControls,
                           ),
                         ),
-                        if (!_firstFrameRendered)
-                          const IgnorePointer(
-                            child: CircularProgressIndicator(),
-                          ),
                       ],
                     ),
                   )

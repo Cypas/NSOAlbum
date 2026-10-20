@@ -1,5 +1,5 @@
-import 'dart:io';
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
@@ -9,13 +9,15 @@ import '../../l10n/app_localizations.dart';
 import '../../rust/models.dart';
 import '../../rust/settings.dart';
 import '../../state/media_edit_controller.dart';
-import '../display_time.dart';
+import '../video_preview_prefetch.dart';
+import '../video_thumbnail.dart';
 import 'android_back_guard.dart';
+import 'android_media_information.dart';
+import 'android_media_swipe_region.dart';
 import 'android_metadata_editor.dart';
 import 'android_page_frame.dart';
 import 'android_video_editor.dart';
 import 'android_video_surface.dart';
-import 'android_tag.dart';
 
 class AndroidMediaViewer extends StatefulWidget {
   const AndroidMediaViewer({
@@ -38,17 +40,48 @@ class AndroidMediaViewer extends StatefulWidget {
 class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
   late List<MediaAsset> items = List.of(widget.items);
   late int index = widget.initialIndex;
+  GlobalKey<AndroidVideoSurfaceState> video = GlobalKey();
+  final transform = TransformationController();
+  late final prefetch = MediaPreviewPrefetch(warm: _warm);
   Player? player;
-  bool busy = false;
+  bool busy = false, switching = false, controlsVisible = true;
   final tagInput = TextEditingController();
   final noteInput = TextEditingController();
-  bool addingTag = false;
-  bool editingNote = false;
+  bool addingTag = false, editingNote = false;
   bool get dirty =>
       editingNote || (addingTag && tagInput.text.trim().isNotEmpty);
 
   @override
+  void initState() {
+    super.initState();
+    transform.addListener(_zoomChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) prefetch.around(items, index);
+    });
+  }
+
+  void _zoomChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _warm(MediaAsset item) async {
+    if (item.kind == MediaKind.video) {
+      await VideoThumbnailCache.warmCached(item);
+    } else if (mounted) {
+      await precacheImage(
+        mediaPreviewImage(item.storagePath),
+        context,
+        onError: (_, _) {},
+      );
+    }
+  }
+
+  @override
   void dispose() {
+    prefetch.dispose();
+    // The surface owns its player; do not dispose that player twice here.
+    transform.removeListener(_zoomChanged);
+    transform.dispose();
     tagInput.dispose();
     noteInput.dispose();
     super.dispose();
@@ -74,7 +107,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
   );
 
   Future<void> addTag() async {
-    if (busy || !addingTag) return;
+    if (busy || switching || !addingTag) return;
     final value = tagInput.text.trim();
     if (value.isEmpty) {
       setState(() => addingTag = false);
@@ -87,9 +120,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
     final next = duplicate ? item.tags : [...item.tags, value];
     setState(() => busy = true);
     try {
-      if (next.length != item.tags.length) {
-        await widget.backend.replaceTags(item.id, next);
-      }
+      if (!duplicate) await widget.backend.replaceTags(item.id, next);
       if (!mounted) return;
       setState(() {
         items[index] = withMetadata(item, tags: next);
@@ -104,7 +135,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
   }
 
   Future<void> saveNote() async {
-    if (busy) return;
+    if (busy || switching) return;
     final item = items[index];
     final value = noteInput.text;
     setState(() => busy = true);
@@ -123,12 +154,32 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
     }
   }
 
-  void navigate(int next) {
-    player?.pause();
-    setState(() {
-      index = next;
-      player = null;
-    });
+  Future<void> navigate(int delta) async {
+    final next = index + delta;
+    if (busy || switching || next < 0 || next >= items.length) return;
+    setState(() => switching = true);
+    try {
+      if (dirty && !await confirmAndroidDiscard(context)) return;
+      if (!mounted) return;
+      await video.currentState?.release();
+      if (!mounted) return;
+      setState(() {
+        player = null;
+        video = GlobalKey();
+        index = next;
+        controlsVisible = true;
+        addingTag = false;
+        editingNote = false;
+        tagInput.clear();
+        noteInput.clear();
+        transform.value = Matrix4.identity();
+      });
+      prefetch.around(items, index);
+    } catch (error) {
+      if (mounted) androidMessage(context, error);
+    } finally {
+      if (mounted) setState(() => switching = false);
+    }
   }
 
   Future<void> edit() async {
@@ -155,12 +206,13 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
   }
 
   Future<void> frame() async {
-    if (player == null) return;
+    final current = player;
+    if (current == null || busy || switching) return;
     setState(() => busy = true);
     try {
-      final bytes = await player!.screenshot(format: 'image/jpeg');
+      final bytes = await current.screenshot(format: 'image/jpeg');
       if (bytes == null || bytes.isEmpty) {
-        throw StateError('Unable to capture this frame.');
+        throw StateError('Frame capture unavailable');
       }
       final editor = MediaEditController(widget.backend);
       try {
@@ -172,6 +224,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
         androidMessage(
           context,
           context.l10n.select(zh: '帧图已保存', en: 'Frame saved'),
+          isError: false,
         );
       }
     } catch (error) {
@@ -181,253 +234,221 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
     }
   }
 
+  Future<void> trim() async {
+    await player?.pause();
+    if (!mounted) return;
+    final item = items[index];
+    final result = await Navigator.of(context).push<MediaAsset>(
+      MaterialPageRoute(
+        builder: (_) =>
+            AndroidVideoEditor(backend: widget.backend, source: item),
+      ),
+    );
+    if (result == null || !mounted || result.id != item.id) return;
+    await video.currentState?.release();
+    if (mounted) {
+      setState(() {
+        items[index] = result;
+        player = null;
+        video = GlobalKey();
+      });
+    }
+  }
+
+  void beginNote() => setState(() {
+    noteInput.text = items[index].note ?? '';
+    editingNote = true;
+  });
+
+  Widget _picture(MediaAsset item) => AndroidMediaSwipeRegion(
+    enabled: !busy && !switching && transform.value.getMaxScaleOnAxis() <= 1.01,
+    onSwipe: (delta) => unawaited(navigate(delta)),
+    child: GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {
+        if (!dirty) setState(() => controlsVisible = !controlsVisible);
+      },
+      child: InteractiveViewer(
+        key: ValueKey(item.sha256),
+        transformationController: transform,
+        minScale: .75,
+        maxScale: 5,
+        child: Center(
+          child: Image.file(
+            File(item.storagePath),
+            fit: BoxFit.contain,
+            errorBuilder: (_, _, _) => Semantics(
+              label: context.l10n.select(
+                zh: '无法读取这张图片',
+                en: 'Unable to load this image',
+              ),
+              child: const Icon(Icons.broken_image_outlined, size: 36),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  Widget _media(MediaAsset item) {
+    final settings = widget.settings ?? widget.backend.settings;
+    return ColoredBox(
+      key: const Key('android-detail-media'),
+      color: Theme.of(context).colorScheme.surfaceContainerLow,
+      child: item.kind == MediaKind.image
+          ? _picture(item)
+          : KeyedSubtree(
+              key: ValueKey((item.sha256, index)),
+              child: AndroidVideoSurface(
+                key: video,
+                path: item.storagePath,
+                cover: item,
+                autoPlay: widget.autoPlay ?? settings.autoPlayVideo,
+                onReady: (value) {
+                  if (mounted) setState(() => player = value);
+                },
+                onSwipe: (delta) => unawaited(navigate(delta)),
+              ),
+            ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final item = items[index];
-    final importedAt = item.importedAt;
-    final imported = importedAt == null
-        ? context.l10n.select(zh: '未知', en: 'Unknown')
-        : formatUserDateTime(importedAt);
-    final settings = widget.settings ?? widget.backend.settings;
+    final blocked = busy || switching;
+    final info = AndroidMediaInformation(
+      key: ValueKey('information-${item.id}'),
+      item: item,
+      busy: blocked,
+      addingTag: addingTag,
+      editingNote: editingNote,
+      tagInput: tagInput,
+      noteInput: noteInput,
+      onAddTag: addTag,
+      onBeginTag: () => setState(() => addingTag = true),
+      onEditNote: beginNote,
+      onSaveNote: saveNote,
+      onCancelNote: () => setState(() => editingNote = false),
+    );
     return AndroidBackGuard(
-      busy: busy,
+      busy: blocked,
       dirty: dirty,
-      child: AndroidPageFrame(
-        title: item.originalName,
-        secondary: true,
-        actions: [
-          IconButton(
-            tooltip: context.l10n.select(
-              zh: '编辑标签与备注',
-              en: 'Edit tags and note',
-            ),
-            onPressed: busy ? null : edit,
-            icon: const Icon(Icons.edit_note),
-          ),
-          if (item.kind == MediaKind.video)
-            PopupMenuButton<String>(
-              tooltip: context.l10n.select(zh: '更多', en: 'More'),
-              enabled: !busy,
-              itemBuilder: (_) => [
-                PopupMenuItem(
-                  value: 'trim',
-                  child: Text(
-                    context.l10n.select(zh: '剪辑视频', en: 'Trim video'),
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 'frame',
-                  child: Text(
-                    context.l10n.select(zh: '截取帧图', en: 'Capture frame'),
-                  ),
-                ),
-              ],
-              onSelected: (value) async {
-                if (value == 'frame') {
-                  await frame();
-                  return;
-                }
-                await player?.pause();
-                if (!context.mounted) return;
-                final result = await Navigator.of(context).push<MediaAsset>(
-                  MaterialPageRoute(
-                    builder: (_) => AndroidVideoEditor(
-                      backend: widget.backend,
-                      source: item,
-                    ),
-                  ),
-                );
-                if (result != null && mounted && result.id == item.id) {
-                  setState(() {
-                    items[index] = result;
-                    player = null;
-                  });
-                }
-              },
-            ),
-        ],
-        child: AndroidPageList(
-          children: [
-            SizedBox(
-              height: (MediaQuery.sizeOf(context).height * .36).clamp(150, 360),
-              child: ClipRect(
-                child: item.kind == MediaKind.image
-                    ? InteractiveViewer(
-                        minScale: 0.75,
-                        maxScale: 5,
-                        child: Center(
-                          child: Image.file(
-                            File(item.storagePath),
-                            errorBuilder: (_, _, _) =>
-                                const Icon(Icons.broken_image_outlined),
-                          ),
-                        ),
-                      )
-                    : Stack(
-                        children: [
-                          Positioned.fill(
-                            child: AndroidVideoSurface(
-                              key: ValueKey('${item.sha256}-$index'),
-                              path: item.storagePath,
-                              autoPlay:
-                                  widget.autoPlay ?? settings.autoPlayVideo,
-                              onReady: (value) => player = value,
-                            ),
-                          ),
-                          Positioned(
-                            top: 4,
-                            right: 4,
-                            child: IconButton.filledTonal(
-                              key: const Key('android-capture-frame'),
-                              tooltip: context.l10n.select(
-                                zh: '截取帧图',
-                                en: 'Capture frame',
-                              ),
-                              onPressed: busy ? null : frame,
-                              icon: const Icon(Icons.screenshot),
-                            ),
-                          ),
-                        ],
-                      ),
-              ),
-            ),
-            SelectableText(
-              item.originalName,
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            Text(
-              context.l10n.select(zh: '游戏标签', en: 'Game tag'),
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            Wrap(children: [AndroidTag(label: item.gameName, game: true)]),
-            Text(
-              context.l10n.select(zh: '自定义标签', en: 'Custom tags'),
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                for (final tag in item.tags) AndroidTag(label: tag),
-                if (!addingTag)
-                  ActionChip(
-                    key: const Key('android-inline-add-tag'),
-                    label: const Icon(Icons.add, size: 20),
-                    tooltip: context.l10n.select(zh: '新增标签', en: 'Add tag'),
-                    onPressed: busy
-                        ? null
-                        : () => setState(() => addingTag = true),
-                  ),
-              ],
-            ),
-            if (addingTag)
-              Focus(
-                onFocusChange: (focused) {
-                  if (!focused && addingTag && !busy) unawaited(addTag());
-                },
-                child: TextField(
-                  key: const Key('android-inline-tag-input'),
-                  controller: tagInput,
-                  autofocus: true,
-                  enabled: !busy,
-                  textInputAction: TextInputAction.done,
-                  decoration: InputDecoration(
-                    labelText: context.l10n.select(zh: '新标签', en: 'New tag'),
-                  ),
-                  onSubmitted: (_) => addTag(),
-                  onTapOutside: (_) {
-                    FocusManager.instance.primaryFocus?.unfocus();
-                  },
-                ),
-              ),
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    context.l10n.select(zh: '备注', en: 'Note'),
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                ),
-                if (!editingNote)
-                  IconButton(
-                    key: const Key('android-inline-edit-note'),
-                    tooltip: context.l10n.select(zh: '编辑备注', en: 'Edit note'),
-                    onPressed: busy
-                        ? null
-                        : () => setState(() {
-                            noteInput.text = item.note ?? '';
-                            editingNote = true;
-                          }),
-                    icon: const Icon(Icons.edit_outlined),
-                  ),
-              ],
-            ),
-            if (editingNote) ...[
-              TextField(
-                key: const Key('android-inline-note-input'),
-                controller: noteInput,
-                minLines: 2,
-                maxLines: 5,
-                enabled: !busy,
-                decoration: InputDecoration(
-                  labelText: context.l10n.select(zh: '备注', en: 'Note'),
-                ),
-              ),
-              Wrap(
-                spacing: 8,
+      child: Scaffold(
+        body: SafeArea(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final showInfo = controlsVisible || dirty;
+              final landscape =
+                  constraints.maxWidth > constraints.maxHeight * 1.2;
+              final media = Stack(
+                fit: StackFit.expand,
                 children: [
-                  FilledButton(
-                    key: const Key('android-inline-save-note'),
-                    onPressed: busy ? null : saveNote,
-                    child: Text(context.l10n.select(zh: '保存', en: 'Save')),
-                  ),
-                  TextButton(
-                    onPressed: busy
-                        ? null
-                        : () => setState(() => editingNote = false),
-                    child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
+                  _media(item),
+                  if (controlsVisible)
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: Material(
+                        key: const Key('android-detail-overlay'),
+                        color: Theme.of(context).colorScheme.surface
+                            .withValues(alpha: .85),
+                        child: Row(
+                          children: [
+                            Builder(
+                              builder: (context) => IconButton(
+                                key: const Key('android-page-back'),
+                                tooltip: context.l10n.select(
+                                  zh: '返回',
+                                  en: 'Back',
+                                ),
+                                onPressed: () => AndroidBackGuard.back(context),
+                                icon: const Icon(Icons.arrow_back),
+                              ),
+                            ),
+                            Expanded(
+                              child: Semantics(
+                                label: context.l10n.select(
+                                  zh: '第 ${index + 1} 项，共 ${items.length} 项',
+                                  en: 'Item ${index + 1} of ${items.length}',
+                                ),
+                                child: ExcludeSemantics(
+                                  child: Text(
+                                    '${index + 1} / ${items.length}',
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            if (item.kind == MediaKind.video)
+                              IconButton(
+                                key: const Key('android-capture-frame'),
+                                tooltip: context.l10n.select(
+                                  zh: '截取帧图',
+                                  en: 'Capture frame',
+                                ),
+                                onPressed: blocked || player == null
+                                    ? null
+                                    : frame,
+                                icon: const Icon(Icons.screenshot, size: 20),
+                              ),
+                            PopupMenuButton<String>(
+                              tooltip: context.l10n.select(
+                                zh: '更多',
+                                en: 'More',
+                              ),
+                              enabled: !blocked && !dirty,
+                              itemBuilder: (_) => [
+                                PopupMenuItem(
+                                  value: 'edit',
+                                  child: Text(
+                                    context.l10n.select(
+                                      zh: '编辑标签与备注',
+                                      en: 'Edit tags and note',
+                                    ),
+                                  ),
+                                ),
+                                if (item.kind == MediaKind.video)
+                                  PopupMenuItem(
+                                    value: 'trim',
+                                    child: Text(
+                                      context.l10n.select(
+                                        zh: '剪辑视频',
+                                        en: 'Trim video',
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                              onSelected: (value) =>
+                                  value == 'edit' ? edit() : trim(),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              );
+              if (!showInfo) return media;
+              if (landscape) {
+                return Row(
+                  children: [
+                    Expanded(flex: 3, child: media),
+                    Expanded(flex: 2, child: info),
+                  ],
+                );
+              }
+              return Column(
+                children: [
+                  Expanded(child: media),
+                  SizedBox(
+                    height: constraints.maxHeight * (editingNote ? .52 : .38),
+                    child: info,
                   ),
                 ],
-              ),
-            ] else
-              SelectableText(
-                item.note ?? context.l10n.select(zh: '暂无备注', en: 'No note'),
-              ),
-            if (item.capturedAt != null)
-              Text(
-                context.l10n.select(
-                  zh: '拍摄/创建时间：${formatUserDateTime(item.capturedAt!)}',
-                  en: 'Captured/created: ${formatUserDateTime(item.capturedAt!)}',
-                ),
-              ),
-            Text(
-              context.l10n.select(
-                zh: '导入时间：$imported',
-                en: 'Imported: $imported',
-              ),
-            ),
-            Wrap(
-              alignment: WrapAlignment.center,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                IconButton(
-                  tooltip: context.l10n.select(zh: '上一个', en: 'Previous'),
-                  onPressed: busy || dirty || index == 0
-                      ? null
-                      : () => navigate(index - 1),
-                  icon: const Icon(Icons.chevron_left),
-                ),
-                Text('${index + 1} / ${items.length}'),
-                IconButton(
-                  tooltip: context.l10n.select(zh: '下一个', en: 'Next'),
-                  onPressed: busy || dirty || index + 1 == items.length
-                      ? null
-                      : () => navigate(index + 1),
-                  icon: const Icon(Icons.chevron_right),
-                ),
-              ],
-            ),
-          ],
+              );
+            },
+          ),
         ),
       ),
     );

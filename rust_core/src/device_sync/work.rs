@@ -115,6 +115,7 @@ pub struct WorkControl {
     cancel: CancellationToken,
     counters: Arc<Counters>,
     preparation: Option<Arc<PreparationBytes>>,
+    pub(crate) validation: super::validation::ValidationMetrics,
 }
 
 impl WorkControl {
@@ -123,16 +124,21 @@ impl WorkControl {
             cancel,
             counters: Arc::default(),
             preparation: None,
+            validation: Default::default(),
         }
     }
     pub fn cancellation(&self) -> CancellationToken {
         self.cancel.clone()
+    }
+    pub(crate) fn validation_metrics(&self) -> super::validation::ValidationObservation {
+        self.validation.observe()
     }
     pub fn with_cancellation(&self, cancel: CancellationToken) -> Self {
         Self {
             cancel,
             counters: self.counters.clone(),
             preparation: self.preparation.clone(),
+            validation: self.validation.clone(),
         }
     }
     pub(crate) fn with_preparation(&self, progress: Arc<PreparationBytes>) -> Self {

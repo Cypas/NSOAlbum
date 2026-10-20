@@ -81,6 +81,7 @@ final class DeviceSyncService {
           opened.invitation,
         );
         _sessions.add(session);
+        session._observeTask();
         return session;
       } finally {
         _openings.remove(done.future);
@@ -99,6 +100,9 @@ final class DeviceSyncService {
   }
 
   void _recordFailure(Object failure) {
+    if (failure is! DeviceSyncBusy) {
+      _owner._diagnostic('operation_failed', failure);
+    }
     if (_owner._gate.recoveryRequired) _owner._requireRecovery(failure);
   }
 

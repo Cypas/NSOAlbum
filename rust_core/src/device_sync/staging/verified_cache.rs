@@ -7,6 +7,7 @@ use crate::device_sync::work::{WorkControl, WorkStage};
 
 pub(super) struct CacheRoot {
     directory: paths::HeldDirectory,
+    validation: crate::device_sync::validation::ValidationMetrics,
 }
 
 pub(super) struct VerifiedObject {
@@ -16,11 +17,15 @@ pub(super) struct VerifiedObject {
 }
 
 impl CacheRoot {
-    pub(super) fn open(runtime: &Path) -> StagingResult<Arc<Self>> {
+    pub(super) fn open(
+        runtime: &Path,
+        validation: crate::device_sync::validation::ValidationMetrics,
+    ) -> StagingResult<Arc<Self>> {
         let path = runtime.join("verified-v1");
         paths::ensure_directory(&path)?;
         Ok(Arc::new(Self {
             directory: paths::HeldDirectory::open(&path)?,
+            validation,
         }))
     }
 
@@ -55,20 +60,29 @@ impl CacheRoot {
         paths::require_single_link(&file)?;
         let mut work_result = Ok(());
         let mut previous = 0_u64;
-        verify_open_file(&mut file, record, &work.cancellation(), &mut |event| {
-            if work_result.is_ok() {
-                work_result = (|| {
-                    let delta = event.completed_bytes.checked_sub(previous).ok_or_else(|| {
-                        crate::error::CoreError::InvalidConfig("preparation bytes regressed".into())
-                    })?;
-                    work.preparation_read(delta)?;
-                    previous = event.completed_bytes;
-                    work.checkpoint(WorkStage::Validating, 1)
-                })();
-            }
-            #[cfg(test)]
-            crate::device_sync::work::test_observer::cache_read(work, event.completed_bytes);
-        })?;
+        verify_open_file(
+            &mut file,
+            record,
+            &work.cancellation(),
+            &mut |event| {
+                if work_result.is_ok() {
+                    work_result = (|| {
+                        let delta =
+                            event.completed_bytes.checked_sub(previous).ok_or_else(|| {
+                                crate::error::CoreError::InvalidConfig(
+                                    "preparation bytes regressed".into(),
+                                )
+                            })?;
+                        work.preparation_read(delta)?;
+                        previous = event.completed_bytes;
+                        work.checkpoint(WorkStage::Validating, 1)
+                    })();
+                }
+                #[cfg(test)]
+                crate::device_sync::work::test_observer::cache_read(work, event.completed_bytes);
+            },
+            &self.validation,
+        )?;
         work_result.map_err(super::core_error)?;
         work.check().map_err(super::core_error)?;
         self.directory.inspect()?;
@@ -116,7 +130,7 @@ impl CacheRoot {
                 return Err(StagingError::UnsafePath);
             }
         } else {
-            verify_open_file(&mut file, record, cancel, &mut |_| {})?;
+            verify_open_file(&mut file, record, cancel, &mut |_| {}, &self.validation)?;
         }
         self.directory.inspect()?;
         Ok(VerifiedObject {

@@ -74,6 +74,62 @@ fn task5a4_missing_ownership_is_local_to_one_backup_and_cursor_advances() {
 }
 
 #[test]
+fn backup_metadata_scan_orders_real_created_at_newest_first() {
+    let source_root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let source = CoreApi::open(source_root.path()).unwrap();
+    let api = CoreApi::open(root.path()).unwrap();
+    let mut backups = Vec::new();
+    for label in ["old", "new"] {
+        api.create_tag(label.into()).unwrap();
+        let mut receive = ReceiveOperation::prepare(
+            api.database(),
+            Snapshot::read(&source.database(), "Source").unwrap(),
+            "Target",
+            SyncMode::Overwrite,
+        )
+        .unwrap();
+        let mut authorization = receive.authorize().unwrap();
+        backups.push(
+            receive
+                .apply(
+                    Some(&mut authorization),
+                    None,
+                    &CancellationToken::default(),
+                    &mut |_| {},
+                )
+                .unwrap()
+                .backup_uuid,
+        );
+    }
+    let database = api.database();
+    let connection = database.connection.lock().unwrap();
+    connection
+        .execute(
+            "UPDATE device_sync_backup SET created_at=?1 WHERE backup_uuid=?2",
+            rusqlite::params!["2026-01-01T00:00:00Z", backups[0].to_string()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE device_sync_backup SET created_at=?1 WHERE backup_uuid=?2",
+            rusqlite::params!["2026-02-01T00:00:00Z", backups[1].to_string()],
+        )
+        .unwrap();
+    drop(connection);
+    let page = api
+        .database()
+        .device_sync_backup_metadata_scan(None, 2)
+        .unwrap();
+    assert_eq!(
+        page.iter()
+            .map(|(_, item)| item.created_at.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("2026-02-01T00:00:00Z"), Some("2026-01-01T00:00:00Z")]
+    );
+}
+
+#[test]
 fn task5a4_internal_compensation_cannot_be_manually_restored() {
     let source_root = tempfile::tempdir().unwrap();
     let root = tempfile::tempdir().unwrap();
@@ -341,24 +397,26 @@ fn task5a4_mixed_bad_rows_are_bounded_local_and_do_not_expose_unknown_scope() {
         .filter(|item| item.unavailable_reason.is_none())
         .map(|item| item.backup.clone().unwrap())
         .collect();
-    assert_eq!(available, [backups[0].clone(), backups[11].clone()]);
-    for (index, reason) in [
-        (1, Reason::OwnershipUnknown),
-        (2, Reason::InvalidPayload),
-        (3, Reason::InvalidIdentity),
-        (4, Reason::InvalidIdentity),
-        (5, Reason::InvalidIdentity),
-        (6, Reason::InvalidMetadata),
-        (7, Reason::OwnershipInvalid),
-        (8, Reason::JournalInvalid),
-        (9, Reason::JournalInvalid),
-        (10, Reason::InvalidIdentity),
+    assert_eq!(available, [backups[11].clone(), backups[0].clone()]);
+    let reasons: Vec<_> = items
+        .iter()
+        .filter_map(|item| item.unavailable_reason)
+        .collect();
+    for reason in [
+        Reason::InvalidIdentity,
+        Reason::JournalInvalid,
+        Reason::OwnershipInvalid,
+        Reason::InvalidMetadata,
+        Reason::InvalidPayload,
+        Reason::OwnershipUnknown,
     ] {
-        assert_eq!(items[index].unavailable_reason, Some(reason), "row {index}");
-        assert_eq!(items[index].includes_accounts, None);
+        assert!(reasons.contains(&reason));
     }
-    assert!(items[3].backup.is_none());
-    assert!(items[10].backup.is_none());
+    assert_eq!(items.iter().filter(|item| item.backup.is_none()).count(), 2);
+    assert!(items
+        .iter()
+        .filter(|item| item.unavailable_reason.is_some())
+        .all(|item| item.includes_accounts.is_none()));
     for _ in 0..3 {
         assert!(headless::read_backups(&opened.handle, None, 128)
             .error
@@ -851,7 +909,7 @@ fn metadata_read_vm_budget_prevents_large_scan_and_removes_handler() {
             let sql = backup_metadata_sql("b.created_at", true, false);
             let mut statement = connection.prepare(&sql).unwrap();
             let mut rows = statement
-                .query(params![i64::MIN, None::<String>, 129])
+                .query(params![None::<i64>, None::<String>, 129])
                 .unwrap();
             let mut count = 0;
             while rows.next().unwrap().is_some() {
@@ -1082,13 +1140,21 @@ fn backup_read_metadata_pages_bound_small_payload_checks_and_fail_closed_per_ite
         headless::read_backups(&other.handle, first.next.as_deref(), 1).error,
         Some(ReadError::PreviewChanged)
     );
+    let visible_backup = headless::read_backups(&opened.handle, None, 1)
+        .value
+        .unwrap()
+        .items
+        .into_iter()
+        .next()
+        .and_then(|item| item.backup)
+        .unwrap();
     database
         .connection
         .lock()
         .unwrap()
         .execute(
             "DELETE FROM device_sync_apply_journal WHERE backup_uuid=?1",
-            [ids.first().unwrap()],
+            [visible_backup],
         )
         .unwrap();
     let local_failure = headless::read_backups(&opened.handle, None, 128);

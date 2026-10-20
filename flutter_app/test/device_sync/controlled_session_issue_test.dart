@@ -19,10 +19,11 @@ void main() {
   late _ProjectionBoundary boundary;
   late DeviceSyncStartupLifecycle lifecycle;
   late _FaultStorage storage;
+  late AccountWorkGate gate;
   setUp(() async {
     boundary = _ProjectionBoundary();
     RustLib.initMock(api: boundary);
-    final gate = AccountWorkGate();
+    gate = AccountWorkGate();
     storage = _FaultStorage();
     lifecycle = DeviceSyncStartupLifecycle(
       gate: gate,
@@ -43,6 +44,60 @@ void main() {
     await lifecycle.close();
     RustLib.dispose();
   });
+
+  test(
+    'waiting for a QR does not pause normal work even with owner observation',
+    () async {
+      boundary.stage = driver.State.configuring;
+      final session = await lifecycle.service.hostWifi(
+        address: '192.168.1.2',
+        name: 'Synthetic',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 650));
+      expect(gate.transferActive, isFalse);
+      final normal = gate.normalPermit();
+      normal.release();
+      await session.close();
+    },
+  );
+
+  test('media-only session holds the shared gate until its task finishes without a page poll', () async {
+    final session = await lifecycle.service.hostWifi(
+      address: '192.168.1.2',
+      name: 'Synthetic',
+    );
+    expect(
+      gate.transferActive,
+      isFalse,
+      reason: 'An unscanned QR is not a transfer.',
+    );
+    boundary.stage = driver.State.transferring;
+    await Future<void>.delayed(const Duration(milliseconds: 650));
+    expect(gate.transferActive, isTrue);
+    expect(() => gate.normalPermit(), throwsA(isA<DeviceSyncBusy>()));
+    boundary.stage = driver.State.completed;
+    await Future<void>.delayed(const Duration(milliseconds: 650));
+    expect(
+      gate.transferActive,
+      isFalse,
+      reason: 'The session owner must settle without a widget.',
+    );
+    await session.close();
+  });
+
+  test(
+    'closing a media-only session releases the transfer gate after settlement',
+    () async {
+      final session = await lifecycle.service.hostWifi(
+        address: '192.168.1.2',
+        name: 'Synthetic',
+      );
+      await session.refresh();
+      expect(gate.transferActive, isTrue);
+      await session.close();
+      expect(gate.transferActive, isFalse);
+    },
+  );
 
   test('successful preview refresh clears an earlier failed read', () async {
     final session = await lifecycle.service.hostWifi(
@@ -122,11 +177,14 @@ class _ProjectionBoundary extends BackupNativeBoundary {
     stage,
     source: stage == driver.State.awaitingAccountConsent,
     accountsConsentAuthorized: stage == driver.State.awaitingAccountConsent,
-    configuration: AgreedConfiguration(
-      phoneToDesktop: stage == driver.State.awaitingAccountConsent,
-      mode: samePreview.library.mode,
-      includeAccounts: stage == driver.State.awaitingAccountConsent,
-    ),
+    configuration:
+        stage == driver.State.configuring || stage == driver.State.pairing
+        ? null
+        : AgreedConfiguration(
+            phoneToDesktop: stage == driver.State.awaitingAccountConsent,
+            mode: samePreview.library.mode,
+            includeAccounts: stage == driver.State.awaitingAccountConsent,
+          ),
   );
   @override
   Future<EndpointStatus> crateBridgeDeviceSyncStatus({

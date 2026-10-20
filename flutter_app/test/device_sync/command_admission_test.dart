@@ -5,8 +5,55 @@ import 'package:squid_album/src/backend/device_sync/account_gate.dart';
 import 'package:squid_album/src/backend/device_sync/command_admission.dart';
 import 'package:squid_album/src/rust/device_sync/read_model.dart';
 import 'package:squid_album/src/rust/device_sync/runtime.dart';
+import 'package:squid_album/src/rust/device_sync/work.dart';
 
 void main() {
+  test(
+    'Busy exposes only live work and never an authoritative endpoint',
+    () async {
+      var calls = 0;
+      final observations = <EndpointRead>[];
+      final result = await readDeviceProjection(
+        () async {
+          calls++;
+          return EndpointRead(
+            progress: ProgressView(
+              workStage: calls == 1 ? WorkStage.pinning : WorkStage.idle,
+              workActive: calls == 1,
+              scannedItems: BigInt.from(4),
+            ),
+            error: calls == 1 ? ReadError.busy : null,
+          );
+        },
+        errorOf: (value) => value.error,
+        cancelled: () => false,
+        onBusy: observations.add,
+      );
+      expect(observations, hasLength(1));
+      expect(observations.single.value, isNull);
+      expect(observations.single.progress.workStage, WorkStage.pinning);
+      expect(result.error, isNull);
+      expect(result.progress.workActive, isFalse);
+    },
+  );
+
+  test('cancelled Busy observation is not published', () async {
+    var cancelled = false;
+    final observations = <PreviewRead>[];
+    await expectLater(
+      readDeviceProjection(
+        () async {
+          cancelled = true;
+          return const PreviewRead(error: ReadError.busy);
+        },
+        errorOf: (value) => value.error,
+        cancelled: () => cancelled,
+        onBusy: observations.add,
+      ),
+      throwsA(isA<DeviceCommandBusy>()),
+    );
+    expect(observations, isEmpty);
+  });
   test(
     'typed read Busy retries only the projection then returns real page',
     () async {

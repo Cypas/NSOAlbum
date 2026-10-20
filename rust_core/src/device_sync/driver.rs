@@ -1,4 +1,6 @@
 //! Single-session, locally authorized library-transfer driver.
+mod files;
+mod flow;
 pub mod pump;
 mod throughput;
 
@@ -8,6 +10,7 @@ use super::{
     diagnostics::{self, Boundary as DiagnosticBoundary},
     library_guard::ExclusiveLease,
     local_apply::{Identity as ApplyIdentity, LifecycleControl, LocalApplyAuthority},
+    metrics::{IoKind, Metrics, Phase},
     planner::{build_plan_controlled, SyncMode, SyncPlan},
     receiver::{
         ApplyBoundary, ApplyReceipt, ApplyState, CommitGuard, LocalAuthorization, ReceiveOperation,
@@ -39,6 +42,7 @@ pub const LEASE_MS: u64 = 30_000;
 const MAX_SQL_WORK: u64 = 512_000_000;
 const SQL_MS: u64 = 300_000;
 const MAX_OUTBOX: usize = 4;
+const MAX_INFLIGHT_CHUNKS: usize = (flow::WINDOW_BYTES as usize) / wire::MEDIA_CHUNK;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum State {
@@ -166,7 +170,8 @@ struct SendingFile {
     length: u64,
     offset: u64,
     awaiting: bool,
-    chunk_bytes: u64,
+    pending_chunks: VecDeque<(u64, u64)>,
+    acknowledged: u64,
 }
 struct PendingLease {
     id: u64,
@@ -304,6 +309,16 @@ impl CommitGuard for Permit {
     }
 }
 
+pub(crate) struct TransferObserver {
+    throughput: throughput::Throughput,
+    clock: Arc<dyn Clock>,
+}
+impl TransferObserver {
+    pub(crate) fn project(&self, progress: &mut super::read_model::ProgressView) {
+        self.throughput.project(self.clock.monotonic_ms(), progress);
+    }
+}
+
 pub struct Driver {
     session: Session,
     database: Arc<Database>,
@@ -326,6 +341,8 @@ pub struct Driver {
     retained: Option<RetainedSourceSnapshot>,
     source: Option<Snapshot>,
     target: Option<Snapshot>,
+    source_digest: Option<String>,
+    target_digest: Option<String>,
     plan: Option<SyncPlan>,
     binding: Option<String>,
     receive: Option<ReceiveOperation>,
@@ -333,7 +350,13 @@ pub struct Driver {
     needed: VecDeque<String>,
     served: BTreeSet<String>,
     file: Option<SendingFile>,
+    pending_files: VecDeque<SendingFile>,
+    awaiting_files: VecDeque<SendingFile>,
+    requested_files: VecDeque<String>,
     receiving: Option<(String, u64, u64)>,
+    receive_ack: flow::CumulativeAck,
+    last_ack: Option<(String, u64)>,
+    recent_acks: VecDeque<(String, u64)>,
     cancel: CancellationToken,
     permit: Arc<Permit>,
     work: super::work::WorkControl,
@@ -376,6 +399,8 @@ pub struct Driver {
     controller_account_consent: Option<bool>,
     preview_approved: bool,
     throughput: throughput::Throughput,
+    metrics: Metrics,
+    metrics_reported: bool,
     lifecycle: Arc<LifecycleControl>,
     local_authority: Option<Arc<LocalApplyAuthority>>,
     local_identity: Option<ApplyIdentity>,
@@ -442,6 +467,8 @@ impl Driver {
             retained: None,
             source: None,
             target: None,
+            source_digest: None,
+            target_digest: None,
             plan: None,
             binding: None,
             receive: None,
@@ -449,7 +476,13 @@ impl Driver {
             needed: VecDeque::new(),
             served: BTreeSet::new(),
             file: None,
+            pending_files: VecDeque::new(),
+            awaiting_files: VecDeque::new(),
+            requested_files: VecDeque::new(),
             receiving: None,
+            receive_ack: Default::default(),
+            last_ack: None,
+            recent_acks: VecDeque::new(),
             work: super::work::WorkControl::new(cancel.clone()),
             preview_summary: None,
             cancel,
@@ -492,6 +525,8 @@ impl Driver {
             controller_account_consent: None,
             preview_approved: false,
             throughput: throughput::Throughput::default(),
+            metrics: Metrics::new(now),
+            metrics_reported: false,
             lifecycle,
             local_authority: None,
             local_identity: None,
@@ -641,6 +676,12 @@ impl Driver {
     pub fn work_control(&self) -> super::work::WorkControl {
         self.work.clone()
     }
+    pub(crate) fn transfer_observer(&self) -> TransferObserver {
+        TransferObserver {
+            throughput: self.throughput.clone(),
+            clock: self.clock.clone(),
+        }
+    }
     /// Local I/O owners install one prompt, idempotent resource close action.
     /// A rejected late/duplicate registration closes its supplied resource too.
     pub fn set_transport_close(&mut self, close: impl FnOnce() + Send + 'static) -> Result<()> {
@@ -680,6 +721,41 @@ impl Driver {
         })
     }
     fn enqueue(&mut self, message: Message) -> Result<()> {
+        if let Message::ChunkAccepted { sha256, offset } = &message {
+            if let Some(previous) = self.outbox.back_mut() {
+                match previous {
+                    Message::ChunkAccepted {
+                        sha256: previous_sha,
+                        offset: previous_offset,
+                    } if previous_sha != sha256 => {
+                        *previous = Message::ChunksAccepted {
+                            files: vec![
+                                wire::FileReceipt {
+                                    sha256: previous_sha.clone(),
+                                    offset: *previous_offset,
+                                },
+                                wire::FileReceipt {
+                                    sha256: sha256.clone(),
+                                    offset: *offset,
+                                },
+                            ],
+                        };
+                        return Ok(());
+                    }
+                    Message::ChunksAccepted { files }
+                        if files.len() < flow::BATCH_FILES
+                            && !files.iter().any(|file| &file.sha256 == sha256) =>
+                    {
+                        files.push(wire::FileReceipt {
+                            sha256: sha256.clone(),
+                            offset: *offset,
+                        });
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            }
+        }
         if self.outbox.len() >= MAX_OUTBOX {
             return Err(DriverError::Bounds);
         }
@@ -723,6 +799,14 @@ impl Driver {
             let retained = Snapshot::retain_controlled(&self.database, &self.name, &self.work)
                 .map_err(work_error)?;
             let snapshot = retained.snapshot().clone();
+            self.source_digest = Some(
+                snapshot
+                    .digest_controlled(&self.work)
+                    .inspect_err(|error| {
+                        diagnostics::core(DiagnosticBoundary::PreviewSourceDigest, error)
+                    })
+                    .map_err(work_error)?,
+            );
             self.source = Some(snapshot.clone());
             self.retained = Some(retained);
             self.begin_send(snapshot, Step::SendSource)?;
@@ -1074,6 +1158,7 @@ impl Driver {
         Ok(())
     }
     fn compute_binding(&self, plan: &SyncPlan) -> Result<String> {
+        self.work.check().map_err(work_error)?;
         let config = self.config.ok_or(DriverError::Protocol)?;
         let value = (
             1u8,
@@ -1088,24 +1173,11 @@ impl Driver {
                 &self.source_account_state,
                 &self.target_account_state,
             ),
-            self.source
-                .as_ref()
-                .ok_or(DriverError::Protocol)?
-                .digest_controlled(&self.work)
-                .inspect_err(|error| {
-                    diagnostics::core(DiagnosticBoundary::PreviewSourceDigest, error)
-                })
-                .map_err(work_error)?,
-            self.target
-                .as_ref()
-                .ok_or(DriverError::Protocol)?
-                .digest_controlled(&self.work)
-                .inspect_err(|error| {
-                    diagnostics::core(DiagnosticBoundary::PreviewTargetDigest, error)
-                })
-                .map_err(work_error)?,
+            self.source_digest.as_ref().ok_or(DriverError::Protocol)?,
+            self.target_digest.as_ref().ok_or(DriverError::Protocol)?,
             plan,
         );
+        self.work.validation.binding_digest();
         self.work
             .digest_json(&value)
             .inspect_err(|error| diagnostics::core(DiagnosticBoundary::PreviewBinding, error))
@@ -1135,6 +1207,7 @@ impl Driver {
             self.enqueue(Message::Approved {
                 binding: self.binding.clone().ok_or(DriverError::Protocol)?,
             })?;
+            self.throughput.reset();
             self.state = State::Transferring;
             self.step = Step::Receiving;
             self.deadline = self.clock.monotonic_ms().saturating_add(DATA_MS);
@@ -1229,7 +1302,8 @@ impl Driver {
                 <= (super::accounts::MAX_ACCOUNTS * 2) as u64
     }
     fn next_file(&mut self) -> Result<()> {
-        if let Some(sha) = self.needed.pop_front() {
+        self.receive_ack = Default::default();
+        if let Some(sha) = self.next_requested_file()? {
             let receive = self.receive.as_mut().ok_or(DriverError::Protocol)?;
             let length = receive
                 .plan()
@@ -1246,7 +1320,6 @@ impl Driver {
                 .map_err(|_| DriverError::Library)?;
             self.receiving = Some((sha.clone(), 0, length));
             self.progress.peak_receiving_files = 1;
-            self.enqueue(Message::FileRequest { sha256: sha })?;
         } else {
             self.enqueue(Message::FilesComplete {})?;
             if self.accounts_included() {
@@ -1334,7 +1407,7 @@ impl Driver {
             .checkpoint(super::work::WorkStage::FinalCheck, 0)
             .map_err(work_error)?;
         if current.digest_controlled(&self.work).map_err(work_error)?
-            != source.digest_controlled(&self.work).map_err(work_error)?
+            != *self.source_digest.as_ref().ok_or(DriverError::Protocol)?
         {
             return Err(DriverError::Library);
         }
@@ -1470,7 +1543,12 @@ impl Driver {
         Ok(())
     }
     fn received_snapshot(&mut self, snapshot: Snapshot, digest: String) -> Result<()> {
+        if !super::qr::valid_hex(&digest, 64) {
+            diagnostics::checkpoint(DiagnosticBoundary::PreviewTargetDigest);
+            return Err(DriverError::Protocol);
+        }
         if self.source_side() {
+            self.target_digest = Some(digest);
             self.target = Some(snapshot);
             let config = self.config.ok_or(DriverError::Protocol)?;
             let plan = build_plan_controlled(
@@ -1488,6 +1566,7 @@ impl Driver {
             self.step = Step::Preview;
             self.state = State::Comparing;
         } else {
+            self.source_digest = Some(digest.clone());
             self.source = Some(snapshot.clone());
             if self.preparation.is_some() {
                 return Err(DriverError::Protocol);
@@ -1518,6 +1597,9 @@ impl Driver {
         Ok(())
     }
     fn prepared_target(&mut self, mut receive: ReceiveOperation) -> Result<()> {
+        let (source_digest, target_digest) = receive.snapshot_digests();
+        self.source_digest = Some(source_digest.into());
+        self.target_digest = Some(target_digest.into());
         self.target = Some(receive.target().clone());
         self.plan = Some(receive.plan().clone());
         self.binding = Some(self.compute_binding(receive.plan())?);
@@ -1907,56 +1989,25 @@ impl Driver {
                         || self.preview_approved) =>
             {
                 self.step = Step::Sending;
+                self.throughput.reset();
                 self.state = State::Transferring;
                 self.deadline = self.clock.monotonic_ms().saturating_add(DATA_MS);
             }
             Message::FileRequest { sha256 }
-                if self.step == Step::Sending && self.file.is_none() =>
+                if self.step == Step::Sending
+                    && self.file.is_none()
+                    && self.pending_files.is_empty()
+                    && self.awaiting_files.is_empty() =>
             {
-                if self.served.contains(&sha256)
-                    || !self
-                        .plan
-                        .as_ref()
-                        .ok_or(DriverError::Protocol)?
-                        .media
-                        .iter()
-                        .any(|d| {
-                            d.sha256 == sha256 && !d.reuse_original && d.final_record.is_some()
-                        })
-                {
-                    return Err(DriverError::Protocol);
-                }
-                let identity = self
-                    .retained
-                    .as_ref()
-                    .ok_or(DriverError::Protocol)?
-                    .originals()
-                    .iter()
-                    .find(|i| i.sha256() == sha256)
-                    .ok_or(DriverError::Library)?;
-                let checked = super::library_guard::OriginalIdentity::controlled(
-                    &identity.root,
-                    &identity.path(),
-                    identity.sha256(),
-                    identity.length(),
-                )
-                .map_err(|_| DriverError::Library)?;
-                if checked != *identity {
-                    return Err(DriverError::Library);
-                }
-                let file = File::open(identity.path()).map_err(|_| DriverError::Library)?;
-                if file.metadata().map_err(|_| DriverError::Library)?.len() != identity.length() {
-                    return Err(DriverError::Library);
-                }
-                self.served.insert(sha256.clone());
-                self.file = Some(SendingFile {
-                    sha: sha256,
-                    file,
-                    length: identity.length(),
-                    offset: 0,
-                    awaiting: false,
-                    chunk_bytes: 0,
-                });
+                self.start_stream_file(sha256)?;
+            }
+            Message::FileRequestBatch { sha256 }
+                if self.step == Step::Sending
+                    && self.file.is_none()
+                    && self.pending_files.is_empty()
+                    && self.awaiting_files.is_empty() =>
+            {
+                self.start_stream_batch(sha256)?;
             }
             Message::FileChunk {
                 sha256,
@@ -1971,7 +2022,10 @@ impl Driver {
                 if sha != &sha256 || *received != offset {
                     return Err(DriverError::Protocol);
                 }
-                let bytes = wire::decode_chunk(&data)?;
+                let bytes = data;
+                if bytes.is_empty() || bytes.len() > wire::MEDIA_CHUNK {
+                    return Err(DriverError::Bounds);
+                }
                 let receive = self.receive.as_mut().ok_or(DriverError::Protocol)?;
                 let id = receive.operation_id();
                 receive
@@ -1985,7 +2039,16 @@ impl Driver {
                 let new_offset = *received;
                 let finished = *received == *length;
                 if finished {
-                    self.state = State::Verifying;
+                    // The tail is acknowledged after seal/whole-batch verification,
+                    // never by an earlier partial-ACK timer.
+                    self.receive_ack = Default::default();
+                    let final_file = self.needed.is_empty() && self.requested_files.is_empty();
+                    self.state = if final_file {
+                        State::Verifying
+                    } else {
+                        State::Transferring
+                    };
+                    let last_length = *length;
                     let mut receive = self.receive.take().ok_or(DriverError::Protocol)?;
                     let sha = sha256.clone();
                     let cancel = self.cancel.clone();
@@ -1996,16 +2059,31 @@ impl Driver {
                         let result =
                             receive
                                 .staging_mut()
-                                .finish_file(id, &sha, &cancel, &mut |p| {
-                                    verified.fetch_max(p.completed_bytes, Ordering::SeqCst);
+                                .seal_file(id, &sha, &cancel)
+                                .and_then(|()| {
+                                    if !final_file {
+                                        return Ok(());
+                                    }
+                                    receive.staging_mut().verify_received(&cancel, &mut |p| {
+                                        // Existing wire progress is bounded by the last file.
+                                        // Scale the true batch progress, never pretend it is done.
+                                        let total = p.total_bytes.unwrap_or(0);
+                                        let scaled = if total == 0 {
+                                            0
+                                        } else {
+                                            (u128::from(p.completed_bytes)
+                                                * u128::from(last_length)
+                                                / u128::from(total))
+                                                as u64
+                                        };
+                                        verified.fetch_max(scaled, Ordering::SeqCst);
+                                    })
                                 });
                         (receive, result)
                     }));
                 } else {
-                    self.enqueue(Message::ChunkAccepted {
-                        sha256,
-                        offset: new_offset,
-                    })?;
+                    self.receive_ack
+                        .observe(&sha256, new_offset, self.clock.monotonic_ms());
                 }
                 self.deadline = self.clock.monotonic_ms().saturating_add(DATA_MS);
             }
@@ -2020,28 +2098,21 @@ impl Driver {
                     return Err(DriverError::Protocol);
                 }
                 self.verification_sent = completed;
+                self.state = State::Verifying;
                 self.deadline = self.clock.monotonic_ms().saturating_add(DATA_MS);
             }
             Message::ChunkAccepted { sha256, offset } if self.step == Step::Sending => {
-                let file = self.file.as_mut().ok_or(DriverError::Protocol)?;
-                if !file.awaiting || file.sha != sha256 || file.offset != offset {
-                    return Err(DriverError::Protocol);
-                }
-                file.awaiting = false;
-                self.progress.transferred_bytes = self
-                    .progress
-                    .transferred_bytes
-                    .checked_add(file.chunk_bytes)
-                    .ok_or(DriverError::Bounds)?;
-                self.throughput
-                    .record(self.clock.monotonic_ms(), file.chunk_bytes);
-                if file.offset == file.length {
-                    self.file = None;
-                }
-                self.verification_sent = 0;
-                self.deadline = self.clock.monotonic_ms().saturating_add(DATA_MS);
+                self.accept_stream_ack(sha256, offset)?;
             }
-            Message::FilesComplete {} if self.step == Step::Sending && self.file.is_none() => {
+            Message::ChunksAccepted { files } if self.step == Step::Sending => {
+                self.accept_stream_receipts(files)?;
+            }
+            Message::FilesComplete {}
+                if self.step == Step::Sending
+                    && self.file.is_none()
+                    && self.pending_files.is_empty()
+                    && self.awaiting_files.is_empty() =>
+            {
                 // The receiver may have independently reverified private bytes.
                 // FileRequest membership and fully ACKed file windows remain mandatory.
                 self.step = Step::SourceReady;
@@ -2200,7 +2271,7 @@ impl Driver {
                         .checkpoint(super::work::WorkStage::FinalCheck, 0)
                         .map_err(work_error)?;
                     if current.digest_controlled(&self.work).map_err(work_error)?
-                        != source.digest_controlled(&self.work).map_err(work_error)?
+                        != *self.source_digest.as_ref().ok_or(DriverError::Protocol)?
                     {
                         return Err(DriverError::Library);
                     }
@@ -2257,6 +2328,7 @@ impl Driver {
         Ok(())
     }
     pub fn poll(&mut self) -> Result<()> {
+        self.observe_measurements();
         let mut result = self.poll_inner();
         if result.is_err() && self.cancel.check().is_err() && !self.state.terminal() {
             result = Err(DriverError::Cancelled);
@@ -2264,7 +2336,55 @@ impl Driver {
         if let Err(error) = &result {
             self.stop(matches!(error, DriverError::Cancelled));
         }
+        self.observe_measurements();
         result
+    }
+    fn observe_measurements(&mut self) {
+        self.throughput.configure(
+            self.state == State::Transferring,
+            self.progress.transfer_total_bytes,
+        );
+        let phase = match self.state {
+            State::Scanning => Some(Phase::Snapshot),
+            State::Comparing => Some(Phase::Preview),
+            State::Transferring if matches!(self.step, Step::Sending | Step::Receiving) => {
+                Some(Phase::Transfer)
+            }
+            State::Verifying => Some(Phase::Verify),
+            State::Applying => Some(Phase::Apply),
+            State::Completed | State::CompletedUnconfirmed => Some(Phase::Receipt),
+            _ => None,
+        };
+        self.metrics.phase(phase, self.clock.monotonic_ms());
+        self.metrics
+            .observe_media_bytes(self.progress.transferred_bytes);
+    }
+    pub(crate) fn record_usb_io(
+        &mut self,
+        kind: IoKind,
+        elapsed_ms: u64,
+        bytes: u64,
+        failed: bool,
+    ) {
+        self.metrics.io(kind, elapsed_ms, bytes, failed);
+    }
+    pub(crate) fn record_usb_drain(&mut self, media: bool) {
+        self.metrics.usb_drain(media);
+    }
+    pub(crate) fn record_usb_bundle(&mut self, drains: usize) {
+        self.metrics.usb_published(drains);
+    }
+    fn publish_measurements(&mut self) {
+        if !self.metrics_reported {
+            self.observe_measurements();
+            let record = format!(
+                "{} {}",
+                self.metrics.finish(self.clock.monotonic_ms()),
+                self.work.validation_metrics()
+            );
+            self.metrics_reported = true;
+            diagnostics::measurement(&record);
+        }
     }
     fn poll_inner(&mut self) -> Result<()> {
         if self.detached && self.local_apply_installed() {
@@ -2340,7 +2460,41 @@ impl Driver {
         {
             return Err(DriverError::Timeout);
         }
-        if let Some(bytes) = self.session.receive_payload(self.clock.unix_ms() / 1000)? {
+        let receive_limit = if matches!(self.session.transport(), super::Transport::Usb) {
+            MAX_INFLIGHT_CHUNKS
+        } else {
+            1
+        };
+        for index in 0..receive_limit {
+            if self.verification.is_some()
+                && self.session.peek_payload().is_some_and(Envelope::is_media)
+            {
+                // An ordered small-file batch may already have queued the next
+                // file. Let its predecessor seal asynchronously before consuming.
+                break;
+            }
+            if index > 0 {
+                // Only already-authenticated, already-queued media/ACK frames
+                // may share this bounded poll. Do not consume permission,
+                // account or configuration work ahead of its original boundary.
+                let ready_media = self.session.peek_payload().is_some_and(|bytes| {
+                    Envelope::is_media(bytes)
+                        || Envelope::decode(bytes).is_ok_and(|envelope| {
+                            matches!(
+                                envelope.message,
+                                Message::FileChunk { .. }
+                                    | Message::ChunkAccepted { .. }
+                                    | Message::ChunksAccepted { .. }
+                            )
+                        })
+                });
+                if !ready_media {
+                    break;
+                }
+            }
+            let Some(bytes) = self.session.receive_payload(self.clock.unix_ms() / 1000)? else {
+                break;
+            };
             self.progress.peak_plaintext_bytes =
                 self.progress.peak_plaintext_bytes.max(bytes.len());
             let envelope = Envelope::decode(&bytes)?;
@@ -2354,13 +2508,39 @@ impl Driver {
                 .received_sequence
                 .checked_add(1)
                 .ok_or(DriverError::Bounds)?;
+            let media = matches!(
+                envelope.message,
+                Message::FileChunk { .. }
+                    | Message::ChunkAccepted { .. }
+                    | Message::ChunksAccepted { .. }
+            );
             self.handle(envelope.message)?;
             if self.session.state() == SessionState::Terminal {
                 return Ok(());
             }
+            if !media || self.outbox.len() >= MAX_OUTBOX {
+                break;
+            }
         }
         self.poll_preparation(now)?;
-        if self.verification.as_ref().is_some_and(|w| w.is_finished()) {
+        if self.receive_ack.ready(now) && self.outbox.len() < MAX_OUTBOX {
+            if let Some((sha256, offset)) = self.receive_ack.take() {
+                self.enqueue(Message::ChunkAccepted { sha256, offset })?;
+            }
+        }
+        let verification_finished = self.verification.as_ref().is_some_and(|w| w.is_finished());
+        // A completed seal owns its result until every response can be queued:
+        // tail ACK, possibly a new request, or FilesComplete + apply request.
+        // Native output can remain in flight across many owner polls. That is
+        // backpressure, not a peer violation; never consume half a completion.
+        let completion_slots = if !self.requested_files.is_empty() {
+            1
+        } else if !self.needed.is_empty() || self.accounts_included() {
+            2
+        } else {
+            3
+        };
+        if verification_finished && self.outbox.len() <= MAX_OUTBOX - completion_slots {
             let (receive, result) = self
                 .verification
                 .take()
@@ -2374,7 +2554,7 @@ impl Driver {
             self.state = State::Transferring;
             self.next_file()?;
             self.deadline = now.saturating_add(DATA_MS);
-        } else if self.verification.is_some() {
+        } else if !verification_finished && self.verification.is_some() {
             let completed = self.verification_bytes.load(Ordering::SeqCst);
             if completed > self.verification_sent && self.outbox.is_empty() {
                 self.verification_sent = completed;
@@ -2483,21 +2663,32 @@ impl Driver {
                     }
                 }
             } else if self.step == Step::Sending {
+                self.advance_stream_file();
+                let in_flight = self
+                    .file
+                    .iter()
+                    .chain(self.awaiting_files.iter())
+                    .map(|file| file.offset.saturating_sub(file.acknowledged))
+                    .sum::<u64>();
                 if let Some(file) = &mut self.file {
-                    if !file.awaiting {
+                    if file.offset < file.length && in_flight < flow::WINDOW_BYTES {
                         let remaining = file.length - file.offset;
-                        let mut bytes = vec![0; remaining.min(wire::RAW_CHUNK as u64) as usize];
+                        let size = remaining
+                            .min(wire::MEDIA_CHUNK as u64)
+                            .min(flow::WINDOW_BYTES - in_flight);
+                        let mut bytes = vec![0; size as usize];
                         file.file
                             .read_exact(&mut bytes)
                             .map_err(|_| DriverError::Library)?;
                         let offset = file.offset;
-                        file.chunk_bytes = bytes.len() as u64;
-                        file.offset += file.chunk_bytes;
+                        let chunk_bytes = bytes.len() as u64;
+                        file.offset += chunk_bytes;
+                        file.pending_chunks.push_back((file.offset, chunk_bytes));
                         file.awaiting = true;
                         let message = Message::FileChunk {
                             sha256: file.sha.clone(),
                             offset,
-                            data: wire::encode_chunk(&bytes),
+                            data: bytes,
                         };
                         self.enqueue(message)?;
                     }
@@ -2505,8 +2696,17 @@ impl Driver {
             }
         }
         if !self.flush_required {
-            if let Some(message) = self.outbox.pop_front() {
+            for _ in 0..MAX_INFLIGHT_CHUNKS {
+                let Some(message) = self.outbox.pop_front() else {
+                    break;
+                };
+                let ready_usb_ack = matches!(self.session.transport(), super::Transport::Usb)
+                    && matches!(
+                        message,
+                        Message::ChunkAccepted { .. } | Message::ChunksAccepted { .. }
+                    );
                 let grants_permission = matches!(message, Message::LeaseGranted { .. });
+                let media = matches!(message, Message::FileChunk { .. });
                 let envelope = Envelope {
                     version: 1,
                     session: self.session.session_id().into(),
@@ -2516,8 +2716,13 @@ impl Driver {
                     message,
                 };
                 let payload = envelope.encode()?;
-                self.session
-                    .send_payload(&payload, self.clock.unix_ms() / 1000)?;
+                if media {
+                    self.session
+                        .send_media_payload(&payload, self.clock.unix_ms() / 1000)?;
+                } else {
+                    self.session
+                        .send_payload(&payload, self.clock.unix_ms() / 1000)?;
+                }
                 if grants_permission {
                     self.issued_until = self.source_until;
                 }
@@ -2527,18 +2732,54 @@ impl Driver {
                     .ok_or(DriverError::Bounds)?;
                 self.flush_required = true;
                 self.ciphertext_empty = false;
+                // ACKs already queued by this poll can share the immediate TLS
+                // output. Never wait for another ACK, poll new work here, merge
+                // permission/finalization controls, or change TCP packetization.
+                if !ready_usb_ack
+                    || payload.len() > super::MAX_CONTROL
+                    || !matches!(
+                        self.outbox.front(),
+                        Some(Message::ChunkAccepted { .. } | Message::ChunksAccepted { .. })
+                    )
+                {
+                    break;
+                }
             }
         }
         Ok(())
     }
     pub fn drain_ciphertext(&mut self) -> Result<Vec<u8>> {
-        if self.state == State::Completed && self.session.state() == SessionState::Terminal {
-            return Ok(vec![]);
+        self.drain_classified_ciphertext().map(|(bytes, _)| bytes)
+    }
+    pub(crate) fn media_publication_boundary(&self) -> bool {
+        if self.step != Step::Sending || self.flush_required || !self.outbox.is_empty() {
+            return false;
         }
-        let result = self.session.drain_ciphertext(self.clock.unix_ms() / 1000);
+        let in_flight: u64 = self
+            .file
+            .iter()
+            .chain(self.awaiting_files.iter())
+            .map(|file| file.offset.saturating_sub(file.acknowledged))
+            .sum();
+        in_flight >= flow::WINDOW_BYTES
+            || (self.pending_files.is_empty()
+                && self
+                    .file
+                    .as_ref()
+                    .is_some_and(|file| file.offset == file.length))
+    }
+    pub(crate) fn drain_classified_ciphertext(
+        &mut self,
+    ) -> Result<(Vec<u8>, super::session::OutputClass)> {
+        if self.state == State::Completed && self.session.state() == SessionState::Terminal {
+            return Ok((vec![], super::session::OutputClass::Immediate));
+        }
+        let result = self
+            .session
+            .drain_classified_ciphertext(self.clock.unix_ms() / 1000);
         match result {
-            Ok(bytes) => {
-                self.flush_required = false;
+            Ok((bytes, class)) => {
+                self.flush_required = self.session.has_pending_output();
                 self.ciphertext_empty = bytes.is_empty();
                 self.outstanding_ciphertext = self
                     .outstanding_ciphertext
@@ -2546,7 +2787,7 @@ impl Driver {
                     .ok_or(DriverError::Bounds)?;
                 self.progress.peak_ciphertext_bytes =
                     self.progress.peak_ciphertext_bytes.max(bytes.len());
-                Ok(bytes)
+                Ok((bytes, class))
             }
             Err(error) => {
                 self.stop(false);
@@ -2570,6 +2811,7 @@ impl Driver {
             return false;
         }
         if self.session.state() == SessionState::Terminal {
+            self.publish_measurements();
             return true;
         }
         if self.ciphertext_empty
@@ -2577,6 +2819,7 @@ impl Driver {
             && !self.flush_required
             && self.outbox.is_empty()
         {
+            self.publish_measurements();
             self.stop(false);
             return true;
         }
@@ -2633,6 +2876,10 @@ impl Driver {
         self.authorization = None;
         self.receive = None;
         self.file = None;
+        self.pending_files.clear();
+        self.awaiting_files.clear();
+        self.requested_files.clear();
+        self.receive_ack = Default::default();
         self.sender = None;
         self.collector = None;
         self.export_accounts = None;
@@ -2811,6 +3058,7 @@ impl Drop for Driver {
     fn drop(&mut self) {
         self.stop(true);
         self.finish_shutdown();
+        self.publish_measurements();
     }
 }
 

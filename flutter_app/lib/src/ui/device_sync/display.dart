@@ -51,12 +51,16 @@ String deviceSyncError(BuildContext context, Object error) {
     ),
     read.ReadError.cancelled => ('操作已取消。', 'Operation cancelled.'),
     read.ReadError.invalidInput => (
-      '二维码或连接信息无效。请在桌面生成新的二维码。',
-      'The code or connection information is invalid. Generate a new code on the desktop.',
+      '传输数据或交换目录校验未通过，可能是传输中断或目录数据损坏。请检查连接后重新连接；已校验的暂存文件会保留。',
+      'Transfer data or the exchange folder failed validation, possibly due to interruption or corrupt directory data. Check the connection and reconnect. Verified staged files are retained.',
     ),
     read.ReadError.versionMismatch => (
-      '两端软件版本号或构建号不一致，或二维码缺少版本信息。请将两端更新至相同版本和构建后，重新生成二维码。',
-      'The app version or build number differs, or this code has no version information. Update both devices to the same version and build, then generate a new code.',
+      '两端软件版本、构建号或传输协议不兼容。请更新两端应用至相同版本和构建，再重新生成二维码。',
+      'The app version, build number or transfer protocol is incompatible. Update both devices to matching versions and builds, then generate a new code.',
+    ),
+    _ when error is DeviceInvitationFailure => (
+      '二维码信息无效。请在电脑上生成新的二维码。',
+      'The QR code is invalid. Generate a new code on the computer.',
     ),
     _ when error is AccountConsentRequired => (
       '读取账号变化前需要单独授权。',
@@ -116,22 +120,101 @@ String deviceSyncStage(BuildContext context, driver.State stage) {
   return context.l10n.select(zh: zh, en: en);
 }
 
+/// The indicator is decorative; the full localized status is announced once.
+class DeviceSyncStatusLabel extends StatelessWidget {
+  const DeviceSyncStatusLabel({
+    super.key,
+    required this.stage,
+    this.pinning = false,
+    this.reviewing = false,
+  });
+
+  final driver.State stage;
+  final bool pinning, reviewing;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final text = pinning
+        ? context.l10n.select(zh: '正在校验图库原件', en: 'Verifying library originals')
+        : reviewing
+        ? context.l10n.select(zh: '预览变更内容', en: 'Preview changes')
+        : deviceSyncStage(context, stage);
+    final color = switch (stage) {
+      _ when pinning => dark ? Colors.blue.shade400 : Colors.blue.shade700,
+      driver.State.completed =>
+        dark ? Colors.green.shade400 : Colors.green.shade700,
+      driver.State.completedUnconfirmed =>
+        dark ? Colors.amber.shade400 : Colors.amber.shade800,
+      driver.State.failed || driver.State.recoveryPending =>
+        dark ? Colors.red.shade400 : Colors.red.shade700,
+      driver.State.pairing ||
+      driver.State.configuring ||
+      driver.State.awaitingApproval ||
+      driver.State.awaitingAccountConsent ||
+      driver.State.cancelled =>
+        dark ? Colors.grey.shade400 : Colors.grey.shade600,
+      driver.State.scanning ||
+      driver.State.comparing ||
+      driver.State.awaitingAccountFinal ||
+      driver.State.awaitingTargetAccountFinal ||
+      driver.State.awaitingExternal ||
+      driver.State.transferring ||
+      driver.State.verifying ||
+      driver.State.applying =>
+        dark ? Colors.blue.shade400 : Colors.blue.shade700,
+    };
+    return Semantics(
+      key: const Key('device-sync-status'),
+      label: text,
+      liveRegion: true,
+      child: ExcludeSemantics(
+        child: Row(
+          children: [
+            Container(
+              key: const Key('device-sync-status-dot'),
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(text, style: Theme.of(context).textTheme.titleMedium),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class DeviceChangeCounts extends StatelessWidget {
   const DeviceChangeCounts({
     super.key,
     required this.title,
     required this.counts,
+    this.icon = Icons.photo_library_outlined,
   });
   final String title;
   final read.ChangeCounts counts;
+  final IconData icon;
   @override
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.symmetric(vertical: 8),
-    child: Text(
-      context.l10n.select(
-        zh: '$title：新增 ${counts.added} · 替换 ${counts.replaced} · 移出 ${counts.removed} · 保留 ${counts.kept}',
-        en: '$title: Added ${counts.added} · Replaced ${counts.replaced} · Removed ${counts.removed} · Kept ${counts.kept}',
-      ),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 20),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            context.l10n.select(
+              zh: '$title：新增 ${counts.added} · 替换 ${counts.replaced} · 移出 ${counts.removed} · 保留 ${counts.kept}',
+              en: '$title: Added ${counts.added} · Replaced ${counts.replaced} · Removed ${counts.removed} · Kept ${counts.kept}',
+            ),
+          ),
+        ),
+      ],
     ),
   );
 }

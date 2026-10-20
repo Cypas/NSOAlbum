@@ -132,6 +132,16 @@ impl NintendoAuthClient {
     }
 
     pub async fn exchange_session_token(&self, session_token: &str) -> CoreResult<NintendoTokens> {
+        Ok(self
+            .exchange_session_token_with_expiry(session_token)
+            .await?
+            .0)
+    }
+
+    pub(crate) async fn exchange_session_token_with_expiry(
+        &self,
+        session_token: &str,
+    ) -> CoreResult<(NintendoTokens, chrono::DateTime<chrono::Utc>)> {
         let response: serde_json::Value = self
             .transport
             .post_json(
@@ -152,10 +162,19 @@ impl NintendoAuthClient {
             .get("id_token")
             .and_then(|value| value.as_str())
             .ok_or_else(|| CoreError::Authentication("missing Nintendo id token".into()))?;
-        Ok(NintendoTokens {
-            access_token: access_token.into(),
-            id_token: id_token.into(),
-        })
+        let now = chrono::Utc::now();
+        let expires_in = response
+            .get("expires_in")
+            .and_then(serde_json::Value::as_i64);
+        let expiry = super::token_expiry::expires_at(access_token, expires_in, now)
+            .min(super::token_expiry::expires_at(id_token, expires_in, now));
+        Ok((
+            NintendoTokens {
+                access_token: access_token.into(),
+                id_token: id_token.into(),
+            },
+            expiry,
+        ))
     }
 
     pub async fn fetch_profile(&self, access_token: &str) -> CoreResult<NintendoProfile> {

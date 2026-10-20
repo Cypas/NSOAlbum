@@ -1,4 +1,7 @@
 use super::*;
+
+#[path = "bundle_pump_tests.rs"]
+mod bundle_pump_tests;
 use crate::api::CoreApi;
 use crate::device_sync::clock::SystemClock;
 use crate::device_sync::planner::SyncMode;
@@ -14,6 +17,8 @@ mod local_apply_tests;
 mod phone_control_tests;
 #[path = "preparation_tests.rs"]
 mod preparation_tests;
+#[path = "stream_tests.rs"]
+mod stream_tests;
 
 struct TestClock {
     mono: AtomicU64,
@@ -120,7 +125,11 @@ impl Pair {
 
 fn cycle(a: &mut Driver, b: &mut Driver) {
     a.poll().unwrap();
-    let bytes = a.drain_ciphertext().unwrap();
+    let bytes = if b.ready_for_input() {
+        a.drain_ciphertext().unwrap()
+    } else {
+        vec![]
+    };
     if !bytes.is_empty() {
         for chunk in bytes.chunks(crate::device_sync::MAX_CIPHERTEXT) {
             b.ingest_ciphertext(chunk).unwrap();
@@ -128,7 +137,11 @@ fn cycle(a: &mut Driver, b: &mut Driver) {
         a.ciphertext_written(bytes.len()).unwrap();
     }
     b.poll().unwrap();
-    let bytes = b.drain_ciphertext().unwrap();
+    let bytes = if a.ready_for_input() {
+        b.drain_ciphertext().unwrap()
+    } else {
+        vec![]
+    };
     if !bytes.is_empty() {
         for chunk in bytes.chunks(crate::device_sync::MAX_CIPHERTEXT) {
             a.ingest_ciphertext(chunk).unwrap();
@@ -909,6 +922,101 @@ fn driver_mailbox_final_ack_requires_atomic_block_write_or_bounded_expiry() {
 }
 
 #[tokio::test]
+async fn driver_receives_all_media_before_any_content_hash_and_commits_only_after_batch_validation()
+{
+    let mut pair = Pair::new();
+    let input = tempfile::tempdir().unwrap();
+    let mut paths = Vec::new();
+    for index in 0..3 {
+        let path = input.path().join(format!("batch-{index}.jpg"));
+        std::fs::write(&path, vec![index as u8; 131_072]).unwrap();
+        paths.push(path.to_string_lossy().into_owned());
+    }
+    assert_eq!(pair.a.import_local_files(paths).await.unwrap().imported, 3);
+    pair.preview(Direction::DesktopToPhone, SyncMode::Merge);
+    pair.phone.approve_preview().unwrap();
+    let total = 3 * 131_072;
+    let mut observed_intermediate = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        cycle(&mut pair.host, &mut pair.phone);
+        let transferred = pair.phone.progress.transferred_bytes;
+        if transferred > 131_072 && transferred < total {
+            observed_intermediate = true;
+            assert_eq!(pair.phone.state(), State::Transferring);
+            let metrics = pair.phone.work.validation_metrics();
+            assert_eq!(metrics.receive_hashed_bytes, 0);
+            assert_eq!(metrics.checksum_read_bytes, 0);
+            assert!(pair
+                .b
+                .list_media(GalleryQuery::default())
+                .unwrap()
+                .is_empty());
+        }
+        if pair.host.state() == State::Completed && pair.phone.state() == State::Completed {
+            break;
+        }
+    }
+    assert!(observed_intermediate);
+    assert_eq!(pair.phone.state(), State::Completed);
+    assert_eq!(pair.b.list_media(GalleryQuery::default()).unwrap().len(), 3);
+    let metrics = pair.phone.work.validation_metrics();
+    assert_eq!(metrics.receive_hashed_bytes, 0);
+    assert_eq!(metrics.checksum_read_bytes, total);
+    assert_eq!(metrics.copy_bytes, total);
+}
+
+#[tokio::test]
+async fn driver_measurements_count_verified_media_without_user_confirmation_wait() {
+    let mut pair = Pair::new();
+    let input = tempfile::tempdir().unwrap();
+    let path = input.path().join("measured.jpeg");
+    let bytes = vec![7; 65_537];
+    std::fs::write(&path, &bytes).unwrap();
+    pair.a
+        .import_local_files(vec![path.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+    pair.preview(Direction::DesktopToPhone, SyncMode::Merge);
+    pair.hc.advance(5_000);
+    pair.pc.advance(5_000);
+    pair.host.poll().unwrap();
+    pair.phone.poll().unwrap();
+    pair.phone.approve_preview().unwrap();
+    for _ in 0..10_000 {
+        pair.hc.advance(1);
+        pair.pc.advance(1);
+        cycle(&mut pair.host, &mut pair.phone);
+        if pair.host.state() == State::Completed && pair.phone.state() == State::Completed {
+            break;
+        }
+    }
+    assert_eq!(pair.host.state(), State::Completed);
+    assert_eq!(pair.phone.state(), State::Completed);
+    for (driver, now) in [
+        (&mut pair.host, pair.hc.monotonic_ms()),
+        (&mut pair.phone, pair.pc.monotonic_ms()),
+    ] {
+        let record = driver.metrics.finish(now);
+        let value = |key: &str| {
+            record
+                .split_whitespace()
+                .find_map(|part| {
+                    let (name, value) = part.split_once('=')?;
+                    (name == key).then_some(value)
+                })
+                .expect("actual Driver must publish structured measurements")
+                .parse::<u64>()
+                .unwrap()
+        };
+        assert_eq!(value("media_bytes"), 65_537);
+        assert!(value("transfer_ms") > 0);
+        assert!(value("operation_ms") < 5_000);
+        assert!(value("session_ms") >= 5_000);
+    }
+}
+
+#[tokio::test]
 async fn driver_real_tls_two_libraries_requires_local_approval_then_streams_and_finalizes() {
     let roots = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
     let a = CoreApi::open(roots[0].path()).unwrap();
@@ -1658,7 +1766,7 @@ async fn driver_257_mib_real_file_streams_with_bounded_buffers_and_final_sha() {
         assert_eq!(driver.progress().transferred_bytes, length);
         assert_eq!(driver.progress().transfer_total_bytes, length);
         assert!(driver.progress().peak_outbox_messages <= 4);
-        assert!(driver.progress().peak_plaintext_bytes <= 65_536);
+        assert!(driver.progress().peak_plaintext_bytes <= super::super::MAX_PAYLOAD);
         assert!(driver.progress().peak_ciphertext_bytes <= 65_536);
         assert!(driver.progress().peak_receiving_files <= 1);
     }
@@ -1901,6 +2009,10 @@ fn driver_real_tcp_loopback_same_protocol_applies_and_closes_on_success() {
         assert_eq!(phone.driver().session.state(), SessionState::Terminal);
         assert_eq!(host.driver().state(), State::Completed);
         assert_eq!(phone.driver().state(), State::Completed);
+        assert!(
+            host.driver().metrics_reported && phone.driver().metrics_reported,
+            "both live completed TCP endpoints must publish measurements before the UI retires them"
+        );
     }
 }
 
@@ -2026,7 +2138,7 @@ async fn driver_valid_file_progress_extends_data_deadline_without_renewing_dupli
     let mut pair = Pair::new();
     let input = tempfile::tempdir().unwrap();
     let path = input.path().join("progress.jpg");
-    std::fs::write(&path, vec![0x45; 512 * 1024]).unwrap();
+    std::fs::write(&path, vec![0x45; 2 * 1024 * 1024]).unwrap();
     let summary = pair
         .a
         .import_local_files(vec![path.to_string_lossy().into_owned()])
@@ -2050,7 +2162,7 @@ async fn driver_valid_file_progress_extends_data_deadline_without_renewing_dupli
     }
     assert!(pair.hc.monotonic_ms() > DATA_MS);
     assert_eq!(pair.host.state(), State::Completed);
-    assert_eq!(pair.phone.progress().transferred_bytes, 512 * 1024);
+    assert_eq!(pair.phone.progress().transferred_bytes, 2 * 1024 * 1024);
 }
 
 #[tokio::test]
@@ -2124,111 +2236,146 @@ async fn driver_target_changes_wrong_sha_and_transport_cancel_do_not_replace_old
 
 #[tokio::test]
 async fn driver_fresh_tls_reconfirms_preview_and_requests_only_missing_verified_objects() {
-    for cached_files in [1, 2] {
-        let mut pair = Pair::new();
-        let input = tempfile::tempdir().unwrap();
-        for (name, bytes) in [("one.jpg", vec![11; 8192]), ("two.jpg", vec![22; 8192])] {
-            let path = input.path().join(name);
-            std::fs::write(&path, bytes).unwrap();
-            pair.a
-                .import_local_files(vec![path.to_string_lossy().into_owned()])
-                .await
-                .unwrap();
-        }
-        let target_generation = pair.b.database().device_sync_header().unwrap().generation;
-        pair.preview(Direction::DesktopToPhone, SyncMode::Merge);
-        let old_session = pair.phone.session.session_id().to_owned();
-        let old_operation = pair.phone.receive.as_ref().unwrap().operation_id();
-        pair.phone.approve_preview().unwrap();
-        let mut old_authorization = pair.phone.authorization.take().unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        loop {
-            cycle(&mut pair.host, &mut pair.phone);
-            if pair.phone.progress.transferred_bytes == cached_files * 8192
-                && pair.phone.verification.is_none()
-                && (pair.phone.step == Step::Lease || pair.phone.receiving.is_some())
-            {
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline);
-        }
-        pair.host.cancel();
-        pair.phone.cancel();
-        pair.host.finish_shutdown();
-        pair.phone.finish_shutdown();
-        assert!(pair
+    let mut pair = Pair::new();
+    let input = tempfile::tempdir().unwrap();
+    for (name, bytes) in [("one.jpg", vec![11; 8192]), ("two.jpg", vec![22; 8192])] {
+        let path = input.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        pair.a
+            .import_local_files(vec![path.to_string_lossy().into_owned()])
+            .await
+            .unwrap();
+    }
+    let target_generation = pair.b.database().device_sync_header().unwrap().generation;
+    pair.preview(Direction::DesktopToPhone, SyncMode::Merge);
+    let old_session = pair.phone.session.session_id().to_owned();
+    let old_operation = pair.phone.receive.as_ref().unwrap().operation_id();
+    pair.phone.approve_preview().unwrap();
+    let mut old_authorization = pair.phone.authorization.take().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while pair.phone.progress.transferred_bytes == 0 {
+        cycle(&mut pair.host, &mut pair.phone);
+        assert!(std::time::Instant::now() < deadline);
+    }
+    assert!(pair.phone.work.validation_metrics().checksum_read_bytes == 0);
+    pair.host.cancel();
+    pair.phone.cancel();
+    pair.host.finish_shutdown();
+    pair.phone.finish_shutdown();
+    assert!(pair
+        .b
+        .list_media(GalleryQuery::default())
+        .unwrap()
+        .is_empty());
+    let (host, phone, _) = confirmed(Role::Receiver);
+    pair.host = Driver::new(host, pair.a.database(), "Desktop", pair.hc.clone()).unwrap();
+    pair.phone = Driver::new(phone, pair.b.database(), "Phone", pair.pc.clone()).unwrap();
+    assert_ne!(pair.phone.session.session_id(), old_session);
+    pair.preview(Direction::DesktopToPhone, SyncMode::Merge);
+    assert_ne!(
+        pair.phone.receive.as_ref().unwrap().operation_id(),
+        old_operation
+    );
+    assert!(pair.phone.authorization.is_none());
+    assert!(matches!(
+        pair.phone.receive.as_mut().unwrap().apply(
+            Some(&mut old_authorization),
+            None,
+            &CancellationToken::default(),
+            &mut |_| {},
+        ),
+        Err(super::super::receiver::ReceiverError::AuthorizationMismatch)
+    ));
+    assert!(matches!(
+        pair.phone.receive.as_mut().unwrap().apply(
+            None,
+            None,
+            &CancellationToken::default(),
+            &mut |_| {},
+        ),
+        Err(super::super::receiver::ReceiverError::AuthorizationRequired)
+    ));
+    assert_eq!(pair.phone.needed.len(), 2);
+    assert_eq!(pair.phone.progress.transfer_total_bytes, 16384);
+    assert_eq!(pair.phone.plan().unwrap().space.new_staging_bytes, 16384);
+    assert_eq!(pair.phone.progress.transferred_bytes, 0);
+    assert_eq!(
+        pair.b.database().device_sync_header().unwrap().generation,
+        target_generation
+    );
+    assert!(pair
+        .b
+        .list_media(GalleryQuery::default())
+        .unwrap()
+        .is_empty());
+    pair.complete(Direction::DesktopToPhone);
+    assert_eq!(pair.host.served.len(), 2);
+    assert_eq!(pair.host.progress.transferred_bytes, 16384);
+    assert_eq!(pair.phone.progress.transferred_bytes, 16384);
+    assert_eq!(pair.b.list_media(GalleryQuery::default()).unwrap().len(), 2);
+    for source in pair.a.list_media(GalleryQuery::default()).unwrap() {
+        let target = pair
             .b
             .list_media(GalleryQuery::default())
             .unwrap()
-            .is_empty());
-        let (host, phone, _) = confirmed(Role::Receiver);
-        pair.host = Driver::new(host, pair.a.database(), "Desktop", pair.hc.clone()).unwrap();
-        pair.phone = Driver::new(phone, pair.b.database(), "Phone", pair.pc.clone()).unwrap();
-        assert_ne!(pair.phone.session.session_id(), old_session);
-        pair.preview(Direction::DesktopToPhone, SyncMode::Merge);
-        assert_ne!(
-            pair.phone.receive.as_ref().unwrap().operation_id(),
-            old_operation
-        );
-        assert!(pair.phone.authorization.is_none());
-        assert!(matches!(
-            pair.phone.receive.as_mut().unwrap().apply(
-                Some(&mut old_authorization),
-                None,
-                &CancellationToken::default(),
-                &mut |_| {},
-            ),
-            Err(super::super::receiver::ReceiverError::AuthorizationMismatch)
-        ));
-        assert!(matches!(
-            pair.phone.receive.as_mut().unwrap().apply(
-                None,
-                None,
-                &CancellationToken::default(),
-                &mut |_| {},
-            ),
-            Err(super::super::receiver::ReceiverError::AuthorizationRequired)
-        ));
-        assert_eq!(pair.phone.needed.len(), 2 - cached_files as usize);
+            .into_iter()
+            .find(|media| media.sha256 == source.sha256)
+            .unwrap();
         assert_eq!(
-            pair.phone.progress.transfer_total_bytes,
-            (2 - cached_files) * 8192
+            std::fs::read(target.storage_path).unwrap(),
+            std::fs::read(source.storage_path).unwrap()
         );
-        assert_eq!(pair.phone.plan().unwrap().space.new_staging_bytes, 16384);
-        assert_eq!(pair.phone.progress.transferred_bytes, 0);
-        assert_eq!(
-            pair.b.database().device_sync_header().unwrap().generation,
-            target_generation
-        );
-        assert!(pair
-            .b
-            .list_media(GalleryQuery::default())
-            .unwrap()
-            .is_empty());
-        pair.complete(Direction::DesktopToPhone);
-        assert_eq!(pair.host.served.len(), 2 - cached_files as usize);
-        assert_eq!(
-            pair.host.progress.transferred_bytes,
-            (2 - cached_files) * 8192
-        );
-        assert_eq!(
-            pair.phone.progress.transferred_bytes,
-            (2 - cached_files) * 8192
-        );
-        let source_media = pair.a.list_media(GalleryQuery::default()).unwrap();
-        let target_media = pair.b.list_media(GalleryQuery::default()).unwrap();
-        assert_eq!(target_media.len(), 2);
-        for source in source_media {
-            let target = target_media
-                .iter()
-                .find(|m| m.sha256 == source.sha256)
-                .unwrap();
-            assert_eq!(
-                std::fs::read(&target.storage_path).unwrap(),
-                std::fs::read(&source.storage_path).unwrap()
-            );
+    }
+}
+
+#[tokio::test]
+async fn media_sender_keeps_a_bounded_window_without_waiting_for_each_usb_roundtrip() {
+    let mut pair = Pair::new();
+    let input = tempfile::tempdir().unwrap();
+    let path = input.path().join("window.jpg");
+    std::fs::write(&path, vec![91; 1024 * 1024]).unwrap();
+    pair.a
+        .import_local_files(vec![path.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+    pair.preview(Direction::DesktopToPhone, SyncMode::Merge);
+    pair.phone.approve_preview().unwrap();
+    for _ in 0..1000 {
+        cycle(&mut pair.host, &mut pair.phone);
+        if pair.host.file.as_ref().is_some_and(|file| file.awaiting) {
+            break;
         }
     }
+    // Stop delivering peer ACKs, while draining real encrypted output as a
+    // successful mailbox write would. One already-ingested ACK may still drain.
+    for _ in 0..20 {
+        pair.host.poll().unwrap();
+        let bytes = pair.host.drain_ciphertext().unwrap();
+        pair.host.ciphertext_written(bytes.len()).unwrap();
+    }
+    let file = pair.host.file.as_ref().unwrap();
+    assert!(
+        file.offset >= (wire::RAW_CHUNK * 4) as u64,
+        "sender remained stop-and-wait despite available bounded capacity"
+    );
+    assert!(file.offset <= 2 * 1024 * 1024);
+    assert!(pair.host.progress.transferred_bytes <= wire::RAW_CHUNK as u64);
+    let sha = file.sha.clone();
+    let last = file.offset;
+    assert!(
+        pair.host
+            .handle(Message::ChunkAccepted {
+                sha256: sha,
+                offset: last
+            })
+            .is_ok(),
+        "an authenticated cumulative boundary must release all its earlier chunks"
+    );
+    assert!(pair
+        .b
+        .list_media(GalleryQuery::default())
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

@@ -7,12 +7,12 @@ import '../../backend/device_sync/account_gate.dart' show DeviceSyncBusy;
 import '../../backend/device_sync/service_contract.dart';
 import '../../l10n/app_localizations.dart';
 import '../../platform/device_sync_network.dart';
+import '../../rust/device_sync/connection.dart';
 import '../../rust/device_sync/driver.dart' as driver;
 import '../../rust/device_sync/read_model.dart' as read;
 import 'backup_page.dart';
 import 'debug_pairing.dart';
 import 'connection_info.dart';
-import 'capacity_format.dart';
 import 'display.dart';
 import 'frame.dart';
 import 'invitation_qr.dart';
@@ -51,11 +51,11 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
   DeviceWifiSnapshot _wifi = const DeviceWifiSnapshot();
   String? _peerSsid;
   bool _invitationInspected = false;
-  List<DeviceUsbStorageChoice>? _storages;
   Object? _error;
   bool _errorFromObservation = false;
   bool _usb = false, _leaving = false, _asking = false, _allowPop = false;
   bool _changed = false;
+  bool _autoPreviewAttempted = false;
   bool _ownedSettled = false, _settledFailure = false;
   Object? _lateOpeningFailure;
   StackTrace? _lateOpeningStack;
@@ -80,6 +80,28 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
         inject: _injectDebugInvitation,
       );
     }
+    if (!widget.mobile && widget.access.ready) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_run(_loadAddresses));
+      });
+    }
+  }
+
+  Future<void> _loadAddresses(int epoch) async {
+    final addresses = await widget.access.wifiAddresses();
+    final wifi = await widget.access.wifiInfo();
+    if (!mounted || epoch != _epoch || _leaving) return;
+    final previous = _selectedAddress?.address;
+    setState(() {
+      _addresses = addresses;
+      _selectedAddress =
+          addresses.where((value) => value.address == previous).firstOrNull ??
+          addresses
+              .where((value) => value.address.startsWith('192.168.'))
+              .firstOrNull ??
+          addresses.firstOrNull;
+      _wifi = wifi;
+    });
   }
 
   bool _debugActive() =>
@@ -140,7 +162,6 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
       widget.access.ready &&
       _session == null &&
       _action == null &&
-      !_asking &&
       _name.text.trim().isNotEmpty;
 
   String? _debugInvitation() {
@@ -186,6 +207,7 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
     try {
       await action(epoch);
     } catch (error, stack) {
+      unawaited(widget.access.logError(error, stack));
       if (epoch != _epoch && _leaving && _ownedSessions.isEmpty) {
         // A known unexecuted cancellation owns no endpoint. Unknown late
         // opening/retirement failures are not evidence that it is safe to pop.
@@ -211,6 +233,7 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
     setState(() {
       _session = session;
       _changed = false;
+      _autoPreviewAttempted = false;
     });
     await _observe(session);
   }
@@ -222,6 +245,13 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
     flight = () async {
       var reading = true;
       try {
+        final before = (
+          session.invitation,
+          session.snapshot?.value?.stage,
+          session.snapshot?.value?.cleanupPending,
+          session.preview,
+          session.issue,
+        );
         final read = await session.refresh();
         reading = false;
         if (!mounted ||
@@ -231,11 +261,31 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
           return;
         }
         final view = read.value;
+        if (view?.stage != driver.State.awaitingApproval) {
+          _autoPreviewAttempted = false;
+        }
+        final mayReview = view?.phoneControlled == true
+            ? view?.controller == true
+            : view?.source == false;
+        if (view?.stage == driver.State.awaitingApproval &&
+            mayReview &&
+            !_autoPreviewAttempted &&
+            session.preview == null) {
+          _autoPreviewAttempted = true;
+          try {
+            await session.refreshPreview();
+          } catch (error, stack) {
+            unawaited(widget.access.logError(error, stack));
+            if (mounted && epoch == _epoch && !_leaving) {
+              setState(() => _setError(error));
+            }
+          }
+        }
         if (view != null &&
             read.error == null &&
             _errorFromObservation &&
             _error is DeviceSyncBusy) {
-          _setError(null);
+          setState(() => _setError(null));
         }
         if (view?.source == false &&
             view?.cleanupPending == false &&
@@ -245,10 +295,31 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
           _changed = true;
           await widget.onLibraryChanged?.call();
         }
-        if (mounted && epoch == _epoch) setState(() {});
+        final after = (
+          session.invitation,
+          session.snapshot?.value?.stage,
+          session.snapshot?.value?.cleanupPending,
+          session.preview,
+          session.issue,
+        );
+        // Progress ticks are handled by the panel's own listener. Only rebuild
+        // this shell when its structural/terminal presentation actually changes.
+        if (before != after && mounted && epoch == _epoch && !_leaving) {
+          setState(() {});
+        }
       } catch (error) {
+        unawaited(widget.access.logError(error));
         if (mounted && epoch == _epoch && !_leaving) {
-          if (!reading || error is! DeviceSyncBusy || _error == null) {
+          if (reading &&
+              error is DeviceSyncBusy &&
+              session.presentationProgress?.workActive == true &&
+              session.snapshot?.value?.terminal != true) {
+            // Owner contention during measured work is not a failed action.
+            // Never replace an earlier fatal error or invent endpoint state.
+            if (_errorFromObservation && _error is DeviceSyncBusy) {
+              setState(() => _setError(null));
+            }
+          } else if (!reading || error is! DeviceSyncBusy || _error == null) {
             setState(() => _setError(error, observation: reading));
           }
         }
@@ -301,7 +372,13 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
     if (!mounted || _leaving || epoch != _epoch || _session != null) {
       throw const DeviceSyncBusy();
     }
-    final connection = await widget.access.inspectInvitation(invitation);
+    late final InvitationConnection connection;
+    try {
+      connection = await widget.access.inspectInvitation(invitation);
+    } catch (error, stack) {
+      unawaited(widget.access.logError(error, stack));
+      rethrow;
+    }
     _checkPairingForeground(epoch);
     setState(() {
       _usb = connection.usb;
@@ -370,23 +447,27 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
     }
   }
 
-  void _reset() => setState(() {
-    _session = null;
-    _ownedSessions.clear();
-    _attempt = null;
-    _storages = null;
-    _setError(null);
-    _leaving = false;
-    _settledFailure = false;
-    _ownedSettled = false;
-    _lateOpeningFailure = null;
-    _lateOpeningStack = null;
-    _selectedAddress = null;
-    _addresses = null;
-    _wifi = const DeviceWifiSnapshot();
-    _peerSsid = null;
-    _invitationInspected = false;
-  });
+  void _reset() {
+    setState(() {
+      _session = null;
+      _ownedSessions.clear();
+      _attempt = null;
+      _setError(null);
+      _leaving = false;
+      _settledFailure = false;
+      _ownedSettled = false;
+      _lateOpeningFailure = null;
+      _lateOpeningStack = null;
+      _selectedAddress = null;
+      _addresses = null;
+      _wifi = const DeviceWifiSnapshot();
+      _peerSsid = null;
+      _invitationInspected = false;
+    });
+    if (!widget.mobile && widget.access.ready) {
+      unawaited(_run(_loadAddresses));
+    }
+  }
 
   Future<void> _pop() async {
     setState(() => _allowPop = true);
@@ -398,14 +479,13 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
       await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-          scrollable: true,
           title: Text(
             context.l10n.select(zh: '结束本次连接？', en: 'End this connection?'),
           ),
           content: Text(
             context.l10n.select(
-              zh: '将取消并等待当前操作安全结束。若已进入提交或补偿阶段，需要等待处理完成。再次连接需要新的二维码。',
-              en: 'Cancel and wait for the current operation to finish safely. Commit or compensation may need time to settle. A new code is required to reconnect.',
+              zh: '将取消并等待当前操作安全结束。再次连接需要新的二维码。',
+              en: 'The current connection will be cancelled and allowed to finish safely. A new QR code is required to reconnect.',
             ),
           ),
           actions: [
@@ -435,13 +515,15 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
       }
       return;
     }
-    _asking = true;
     final active =
         _action != null ||
         (_session != null && _session!.snapshot?.value?.terminal != true);
-    final confirmed = !active || await _confirmEnd();
-    _asking = false;
-    if (!confirmed || !mounted) return;
+    if (active) {
+      _asking = true;
+      final confirmed = await _confirmEnd();
+      _asking = false;
+      if (!confirmed || !mounted) return;
+    }
     setState(() => _leaving = true);
     try {
       await _stopOwned();
@@ -503,7 +585,7 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
     final busy = _action != null || _leaving;
     return DeviceSyncFrame(
       mobile: widget.mobile,
-      title: context.l10n.select(zh: '设备同步', en: 'Device sync'),
+      title: context.l10n.select(zh: '多设备同步', en: 'Multi-device sync'),
       canPop: _allowPop,
       onBack: () => unawaited(_end(leave: true)),
       child: ListView(
@@ -618,24 +700,12 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
               if (!_usb) ...[
                 OutlinedButton.icon(
                   key: const Key('device-load-addresses'),
-                  onPressed: busy
-                      ? null
-                      : () => _run((epoch) async {
-                          final addresses = await widget.access.wifiAddresses();
-                          final wifi = await widget.access.wifiInfo();
-                          if (mounted && epoch == _epoch && !_leaving) {
-                            setState(() {
-                              _addresses = addresses;
-                              _selectedAddress = null;
-                              _wifi = wifi;
-                            });
-                          }
-                        }),
+                  onPressed: busy ? null : () => _run(_loadAddresses),
                   icon: const Icon(Icons.network_check),
                   label: Text(
                     context.l10n.select(
-                      zh: '查找本机局域网地址',
-                      en: 'Find local network addresses',
+                      zh: '刷新网卡列表',
+                      en: 'Refresh network adapters',
                     ),
                   ),
                 ),
@@ -646,24 +716,42 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
                       en: 'No active private IPv4 address is available. Check the network connection.',
                     ),
                   ),
-                for (var i = 0; i < (_addresses?.length ?? 0); i++)
-                  CheckboxListTile(
-                    key: Key('device-address-$i'),
-                    contentPadding: EdgeInsets.zero,
-                    controlAffinity: ListTileControlAffinity.leading,
-                    value: identical(_selectedAddress, _addresses![i]),
-                    title: Text(_addresses![i].interfaceName),
-                    subtitle: Text(_addresses![i].address),
-                    onChanged: busy
-                        ? null
-                        : (_) =>
-                              setState(() => _selectedAddress = _addresses![i]),
+                if (_addresses?.isNotEmpty == true)
+                  InputDecorator(
+                    decoration: InputDecoration(
+                      labelText: context.l10n.select(
+                        zh: '第一步：选择网卡',
+                        en: 'Step 1: Choose a network adapter',
+                      ),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<DeviceLanAddress>(
+                        key: const Key('device-address-dropdown'),
+                        isExpanded: true,
+                        value: _selectedAddress,
+                        items: [
+                          for (var i = 0; i < _addresses!.length; i++)
+                            DropdownMenuItem(
+                              key: Key('device-address-$i'),
+                              value: _addresses![i],
+                              child: Text(
+                                '${_addresses![i].interfaceName} · ${_addresses![i].address}',
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                        ],
+                        onChanged: busy
+                            ? null
+                            : (value) =>
+                                  setState(() => _selectedAddress = value),
+                      ),
+                    ),
                   ),
               ] else
                 Text(
                   context.l10n.select(
-                    zh: '连接手机并启用普通 USB 文件传输。生成二维码后选择枚举到的手机存储；设备组件不可用时，请检查应用安装和连接。',
-                    en: 'Connect the phone using ordinary USB file transfer. After creating a code, select its detected storage. If the device component is unavailable, check the app installation and connection.',
+                    zh: '手机启用 USB 文件传输后，扫描本机二维码即可自动连接。仅在需要时，手机会请求授权 Documents/NSOAlbumSync 目录。设备组件不可用时，请检查应用安装和连接。',
+                    en: 'Enable USB file transfer on the phone, then scan this computer’s code. The connection is found automatically. The phone requests access to Documents/NSOAlbumSync only if needed. If the device component is unavailable, check the app installation and connection.',
                   ),
                 ),
               FilledButton.icon(
@@ -677,8 +765,10 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
                 icon: const Icon(Icons.qr_code_2),
                 label: Text(
                   context.l10n.select(
-                    zh: '生成一次性二维码',
-                    en: 'Create one-time code',
+                    zh: _usb ? '生成一次性二维码' : '第二步：生成二维码',
+                    en: _usb
+                        ? 'Create one-time code'
+                        : 'Step 2: Create QR code',
                   ),
                 ),
               ),
@@ -693,64 +783,41 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
               ),
             ),
           ] else ...[
-            if (session.invitation case final invitation?)
-              DeviceInvitationQr(
-                invitation: invitation,
-                remainingMs: session.snapshot?.value?.invitationRemainingMs,
-              ),
-            if (_usb &&
-                !widget.mobile &&
-                session.snapshot?.value?.terminal != true) ...[
-              OutlinedButton(
-                key: const Key('device-find-usb'),
-                onPressed: busy || session.busy
-                    ? null
-                    : () => _run((epoch) async {
-                        final storages = await session.usbChoices();
-                        if (mounted && epoch == _epoch && !_leaving) {
-                          setState(() => _storages = storages);
-                        }
-                      }),
-                child: Text(
-                  context.l10n.select(zh: '查找手机存储', en: 'Find phone storage'),
-                ),
-              ),
-              if (_storages?.isEmpty == true)
-                Text(
-                  context.l10n.select(
-                    zh: '未发现可用存储。设备组件可能不可用，或手机尚未授权文件传输。',
-                    en: 'No storage is available. The device component may be unavailable, or the phone may not have allowed file transfer.',
-                  ),
-                ),
-              for (final choice in _storages ?? <DeviceUsbStorageChoice>[])
-                OutlinedButton(
-                  onPressed: busy || session.busy
-                      ? null
-                      : () => _run((_) async {
-                          await session.selectUsb(choice);
-                          if (mounted) setState(() => _storages = null);
-                        }),
-                  child: Text(
-                    '${choice.deviceName}\n${choice.storageName}\n${context.l10n.select(zh: '可用空间', en: 'Available space')}: ${formatDeviceCapacity(choice.freeBytes)}',
-                  ),
-                ),
-            ],
+            AnimatedBuilder(
+              animation: session,
+              builder: (context, _) {
+                final view = session.snapshot?.value;
+                final preHandshake =
+                    view?.pairing == read.PairingStage.handshaking ||
+                    view?.pairing == read.PairingStage.authenticating ||
+                    view?.pairing == read.PairingStage.awaitingConfirmation;
+                return session.invitation == null || !preHandshake
+                    ? const SizedBox.shrink()
+                    : DeviceInvitationQr(
+                        invitation: session.invitation!,
+                        remainingMs: view?.invitationRemainingMs,
+                      );
+              },
+            ),
             DeviceSyncSessionPanel(key: ObjectKey(session), session: session),
             const SizedBox(height: 16),
-            OutlinedButton(
-              key: Key(
-                session.snapshot?.value?.terminal == true || session.closed
-                    ? 'device-new-pairing'
-                    : 'device-end-session',
-              ),
-              onPressed: _leaving ? null : () => _end(leave: false),
-              child: Text(
-                session.snapshot?.value?.terminal == true || session.closed
-                    ? context.l10n.select(zh: '重新配对', en: 'Pair again')
-                    : context.l10n.select(
-                        zh: '取消并结束连接',
-                        en: 'Cancel and end connection',
-                      ),
+            AnimatedBuilder(
+              animation: session,
+              builder: (context, _) => OutlinedButton(
+                key: Key(
+                  session.snapshot?.value?.terminal == true || session.closed
+                      ? 'device-new-pairing'
+                      : 'device-end-session',
+                ),
+                onPressed: _leaving ? null : () => _end(leave: false),
+                child: Text(
+                  session.snapshot?.value?.terminal == true || session.closed
+                      ? context.l10n.select(zh: '重新配对', en: 'Pair again')
+                      : context.l10n.select(
+                          zh: '取消并结束连接',
+                          en: 'Cancel and end connection',
+                        ),
+                ),
               ),
             ),
           ],

@@ -102,6 +102,19 @@ void main() {
     expect(native.selected, isEmpty);
   });
 
+  test('USB host observation exposes native failure without opening a storage selector', () async {
+    final session = await lifecycle.service.hostUsb(name: 'Desktop');
+    native.view = const UsbView(
+      closed: true,
+      reason: UsbCloseReason.failure,
+      error: ReadError.unavailable,
+      devices: [],
+    );
+    await session.refresh();
+    expect(session.transportIssue, ReadError.unavailable);
+    expect(native.selected, isEmpty);
+  });
+
   test('successful terminal cleanup preserves helper failure until its own view recovers', () async {
     final session = await lifecycle.service.hostUsb(name: 'Desktop');
     final available = native.view;

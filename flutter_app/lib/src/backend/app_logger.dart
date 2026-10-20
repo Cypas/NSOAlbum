@@ -33,7 +33,7 @@ class AppLogger {
     }
     final timestamp = DateTime.now().toUtc().toIso8601String();
     await file.writeAsString(
-      '$timestamp [$level] ${_sanitize(message)}\n',
+      '$timestamp [$level] ${sanitizeDiagnostic(message)}\n',
       mode: FileMode.append,
       flush: true,
     );
@@ -45,14 +45,35 @@ class AppLogger {
     return next;
   }
 
-  String _sanitize(String value) => value
+}
+
+/// Shared by log writes, viewing, copying and diagnostic error panels.
+String sanitizeDiagnostic(String value) => value
+      .replaceAllMapped(
+        RegExp(r'''[a-z][a-z0-9+.-]*://[^\s<>"\])}]+''', caseSensitive: false),
+        (match) {
+          final uri = Uri.tryParse(match[0]!);
+          if (uri == null) return '<redacted-url>';
+          return uri.replace(userInfo: '', query: '', fragment: '').toString()
+              .replaceAll(RegExp(r'[?#]+$'), '');
+        },
+      )
+      .replaceAll(RegExp(r'[A-Za-z]:[\\/][^\s"<>]*'), '<redacted-path>')
+      .replaceAll(
+        RegExp(r'/(?:data/user|storage|home|Users|private|tmp)/[^\s"<>]*'),
+        '<redacted-path>',
+      )
+      .replaceAll(
+        RegExp(r'\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'),
+        '<redacted-jwt>',
+      )
       .replaceAllMapped(
         RegExp(r'(session_token_code=)[^&#\s]+', caseSensitive: false),
         (match) => '${match[1]}<redacted>',
       )
       .replaceAllMapped(
         RegExp(
-          r'((?:access|session|id|refresh)[_-]?token["\s:=]+)[^\s,&}\]]+',
+          r'((?:(?:access|session|id|refresh|bullet|game[_-]?web)[_-]?token|gtoken|token)["\s:=]+)[^\s,&}\]]+',
           caseSensitive: false,
         ),
         (match) => '${match[1]}<redacted>',
@@ -65,4 +86,3 @@ class AppLogger {
         RegExp(r'(cookie["\s:=]+)[^\r\n]+', caseSensitive: false),
         (match) => '${match[1]}<redacted>',
       );
-}

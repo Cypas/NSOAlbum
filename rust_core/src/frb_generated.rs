@@ -5358,6 +5358,7 @@ impl SseDecode for crate::models::NintendoFriend {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_friendId = <String>::sse_decode(deserializer);
         let mut var_nickname = <String>::sse_decode(deserializer);
+        let mut var_avatarUrl = <Option<String>>::sse_decode(deserializer);
         let mut var_note = <String>::sse_decode(deserializer);
         let mut var_isFavorite = <bool>::sse_decode(deserializer);
         let mut var_presence = <String>::sse_decode(deserializer);
@@ -5368,6 +5369,7 @@ impl SseDecode for crate::models::NintendoFriend {
         return crate::models::NintendoFriend {
             friend_id: var_friendId,
             nickname: var_nickname,
+            avatar_url: var_avatarUrl,
             note: var_note,
             is_favorite: var_isFavorite,
             presence: var_presence,
@@ -7634,6 +7636,7 @@ impl flutter_rust_bridge::IntoDart for crate::models::NintendoFriend {
         [
             self.friend_id.into_into_dart().into_dart(),
             self.nickname.into_into_dart().into_dart(),
+            self.avatar_url.into_into_dart().into_dart(),
             self.note.into_into_dart().into_dart(),
             self.is_favorite.into_into_dart().into_dart(),
             self.presence.into_into_dart().into_dart(),
@@ -9241,6 +9244,7 @@ impl SseEncode for crate::models::NintendoFriend {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.friend_id, serializer);
         <String>::sse_encode(self.nickname, serializer);
+        <Option<String>>::sse_encode(self.avatar_url, serializer);
         <String>::sse_encode(self.note, serializer);
         <bool>::sse_encode(self.is_favorite, serializer);
         <String>::sse_encode(self.presence, serializer);

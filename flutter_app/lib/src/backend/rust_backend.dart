@@ -72,6 +72,8 @@ class RustBackend
       ),
       initialize: _initializeSettings,
       isolated: _isolated,
+      onDiagnostic: (stage, error) =>
+          _logger.error('[device_sync] stage=$stage', error),
     );
   }
 
@@ -1523,6 +1525,9 @@ class RustBackend
         expectedAccount: accountId,
         proxyUrl: _networkProxy,
       );
+      await _logger.info(
+        '[sync] trigger=manual-or-scheduled account_slot=account stage=request_succeeded status=${summary.failed == BigInt.zero ? 'success' : 'partial_failure'}',
+      );
       try {
         await rust_api.recordSyncAttempt(
           accountId: accountId,
@@ -1541,6 +1546,11 @@ class RustBackend
       }
       return summary;
     } catch (error, stackTrace) {
+        await logError(
+          '[sync] trigger=manual-or-scheduled account_slot=account stage=request_failed',
+          error,
+          stackTrace,
+        );
       try {
         await rust_api.recordSyncAttempt(
           accountId: accountId,

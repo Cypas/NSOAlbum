@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../backend/app_backend.dart';
 import '../../l10n/app_localizations.dart';
 import 'device_sync_page.dart';
+import 'multi_device_sync_page.dart';
 import 'page_access.dart';
 
 class DeviceSyncEntry extends StatelessWidget {
@@ -15,8 +16,18 @@ class DeviceSyncEntry extends StatelessWidget {
   final AppBackend backend;
   final bool mobile;
   final Future<void> Function() onLibraryChanged;
-
   Future<void> _open(BuildContext context) async {
+    if (!mobile) {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => MultiDeviceSyncPage(
+            backend: backend,
+            onLibraryChanged: onLibraryChanged,
+          ),
+        ),
+      );
+      return;
+    }
     final access = BackendDeviceSyncPageAccess(backend);
     try {
       await Navigator.of(context).push<void>(
@@ -25,7 +36,7 @@ class DeviceSyncEntry extends StatelessWidget {
           // A push owns one access object; the page releases it on disposal.
           builder: (_) => DeviceSyncPage(
             access: access,
-            mobile: mobile,
+            mobile: true,
             onLibraryChanged: onLibraryChanged,
           ),
         ),
@@ -51,18 +62,20 @@ class DeviceSyncEntry extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Card(
-    child: ListTile(
-      key: const Key('device-sync-entry'),
-      leading: const Icon(Icons.devices_outlined),
-      title: Text(context.l10n.select(zh: '设备同步', en: 'Device sync')),
-      subtitle: Text(
-        context.l10n.select(
-          zh: '在桌面与 Android 之间同步图库，或恢复备份',
-          en: 'Sync between desktop and Android, or restore a backup',
+      child: ListTile(
+        key: const Key('device-sync-entry'),
+        leading: const Icon(Icons.devices_outlined),
+        title: Text(
+          context.l10n.select(zh: '多设备同步', en: 'Multi-device sync'),
         ),
+        subtitle: Text(
+          context.l10n.select(
+            zh: '在电脑与 Android 之间同步图库',
+            en: 'Sync libraries between desktop and Android',
+          ),
+        ),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => _open(context),
       ),
-      trailing: const Icon(Icons.chevron_right),
-      onTap: () => _open(context),
-    ),
   );
 }

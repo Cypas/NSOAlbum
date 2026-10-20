@@ -5,6 +5,24 @@ import 'package:squid_album/src/backend/device_sync/account_gate.dart';
 
 void main() {
   test(
+    'media-only transfer blocks normal work but allows its account protocol',
+    () async {
+      final gate = AccountWorkGate();
+      final transfer = gate.holdTransfer();
+      expect(gate.transferActive, isTrue);
+      expect(() => gate.normalPermit(), throwsA(isA<DeviceSyncBusy>()));
+      expect(() => gate.device(), throwsA(isA<DeviceSyncBusy>()));
+      final account = await transfer.run(() async => gate.device());
+      account.release();
+      expect(gate.transferActive, isTrue);
+      transfer.release();
+      expect(gate.busy, isFalse);
+      transfer.release();
+      expect(gate.busy, isFalse);
+      await gate.normal(() async {});
+    },
+  );
+  test(
     'normal async lifetime makes device preparation Busy without waiting',
     () async {
       final gate = AccountWorkGate();

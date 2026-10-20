@@ -140,3 +140,39 @@ Windows 强制使用 WPD，macOS 使用原生 USB；没有驱动替换、后台�
 该检查不枚举手机。macOS 原生运行和实际授权、读写、拔线重连须单独验收；
 这些入口不表示 USB 同步已可交付。详见
 [桌面 helper 构建与验包](../docs/TESTING.md#桌面-mtp-helper)。
+
+SAF 探针另提供双向合成吞吐按钮，逻辑在
+`tool/device_sync_saf_benchmark.dart`，回归在
+`test/android/device_sync_saf_benchmark_test.dart`。每块 64 KiB，最多四块在途；
+接收端校验字节后才确认，发送端按对端实际移除的连续前缀计数。
+等待超过一分钟无进展会失败，取消保留已发布的合成块，不访问图库或账号。
+此结果仅是 SAF/MTP 字节通道性能，不是应用内 TLS 同步的传输速度。
+
+### 独立图库协议 QA
+
+`tool/device_sync_qa.dart` 仅供 Debug 开发测试。每个进程创建全新的受控临时
+图库，账号安全存储替换为该进程的空内存实现，不打开个人库或系统凭据。
+它复用正常设备同步页面、Rust 协议、手机确认、空间检查与入库；没有跳过授权。
+“检查合成图库”入口禁用启动同步、更新和桌面托盘策略。
+
+在独立构建副本中运行：
+
+```powershell
+flutter run -d windows --debug -t tool/device_sync_qa.dart --dart-entrypoint-args=--ci-smoke
+flutter build apk --debug --target-platform android-arm64 -t tool/device_sync_qa.dart
+```
+
+这里桌面参数仅让原生 runner 为该独立入口创建窗口；正常主入口的 CI 诊断
+仍要求独立根参数并执行完整校验。该开发入口不属于正常应用、安装器或发布入口。
+支持 Dart 热重载；不要对本入口热重启来换库：Rust Core 是进程级拥有者，
+目录归属检查会拒绝这种不一致，重新开始请新启测试进程。
+测试结束须覆盖恢复完整普通 Debug 包，不卸载、不清空、不自动启动个人账号同步。
+
+吞吐对照可在同一独立入口增加
+`--dart-define=DEVICE_SYNC_THROUGHPUT_QA=true`：两端从空合成库开始。
+仅在发送端的受控 QA 根调用 `prepareThroughputFixture`，准备一份 64MiB
+及 64 份各 256KiB 的有效 PNG 合成文件；每次生成的文件字节一致且不同文件
+SHA-256 不同。生成及导入不计入传输用时，不更改正常入口的启动行为。
+新的接收轮次必须新建进程，不能热重启或复用已含这些原件的库冒充全量传输。
+阶段和原生 I/O 汇总使用单调计时，仅含固定字段及数字；原生 provider 用时、
+Bridge 往返与完整同步用时不能互相替代或简单相加。

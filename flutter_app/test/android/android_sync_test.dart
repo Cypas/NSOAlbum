@@ -263,10 +263,6 @@ void main() {
       expect(find.text('上次同步成功'), findsOneWidget);
       expect(find.text('上次同步已取消'), findsOneWidget);
       expect(find.byKey(const Key('android-account-progress')), findsNothing);
-      final mediaBar = tester.widget<LinearProgressIndicator>(
-        find.byKey(const Key('android-media-progress')),
-      );
-      expect(mediaBar.value, .25);
       expect(_statusDotColor(tester, 'a'), Colors.amber.shade700);
       expect(_statusDotColor(tester, 'b'), Colors.red.shade600);
       expect(_statusDotColor(tester, 'c'), Colors.green.shade600);
@@ -275,6 +271,18 @@ void main() {
       expect(find.textContaining('上次尝试：'), findsNWidgets(4));
       expect(find.textContaining('2026-'), findsNothing);
       expect(find.textContaining(RegExp(r'\.\d{3}')), findsNothing);
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('android-media-progress')),
+        160,
+      );
+      final mediaBar = tester.widget<LinearProgressIndicator>(
+        find.byKey(const Key('android-media-progress')),
+      );
+      expect(mediaBar.value, .25);
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('android-account-status-dot-a')),
+        -160,
+      );
 
       sync.currentAccountId = 'a';
       sync.state = SyncState.running;
@@ -489,7 +497,7 @@ void main() {
             if (scenario.history != null) {
               expect(
                 find.text(
-                  '${locale == 'zh' ? '上次尝试：' : 'Last attempt: '}01-02 03:04:05',
+                  '${locale == 'zh' ? '上次尝试：' : 'Last attempt: '}01-02 03:04',
                 ),
                 findsOneWidget,
               );
@@ -521,7 +529,9 @@ void main() {
             findsOneWidget,
           );
 
-          await tester.ensureVisible(find.byKey(const Key('android-sync-entry')));
+          await tester.ensureVisible(
+            find.byKey(const Key('android-sync-entry')),
+          );
           await tester.pump();
           await tester.tap(find.byKey(const Key('android-sync-entry')));
           await tester.pump();
@@ -529,7 +539,7 @@ void main() {
           expect(
             find.descendant(
               of: find.byType(AndroidNintendoSyncPage),
-              matching: find.textContaining('01-02 03:04:05'),
+              matching: find.textContaining('01-02 03:04'),
             ),
             findsOneWidget,
           );

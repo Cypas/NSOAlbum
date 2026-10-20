@@ -317,17 +317,19 @@ final class _DirectoryBoundary {
           return bytes;
         }
         final bytes = await File('${directory.path}/$name').readAsBytes();
-        expect(bytes.length, lessThanOrEqualTo(65548));
+        expect(bytes.length, inInclusiveRange(29, 8 * 1024 * 1024));
+        expect(bytes.take(8), [78, 83, 79, 85, 83, 66, 51, 0]);
         if (readFault == _ReadFault.corruptTls && readFaultsInjected == 0) {
-          expect(bytes.length, greaterThan(12));
           readFaultsInjected++;
-          // Keep the ordered envelope intact. Only TLS ciphertext is altered.
+          // Keep the v3 header and per-drain length intact. Alter TLS only.
           bytes[bytes.length - 1] ^= 1;
         }
         receipts[name!] = Uint8List.fromList(bytes);
         return bytes;
       case 'writeCiphertextBlock':
         final bytes = args['bytes'] as Uint8List;
+        expect(bytes.length, inInclusiveRange(29, 8 * 1024 * 1024));
+        expect(bytes.take(8), [78, 83, 79, 85, 83, 66, 51, 0]);
         final target = File('${directory.path}/$name');
         expect(await target.exists(), isFalse);
         final partial = File('${target.path}.part');
@@ -335,12 +337,13 @@ final class _DirectoryBoundary {
         await partial.rename(target.path);
         return null;
       case 'acknowledgeBlock':
-        final file = File('${directory.path}/$name');
-        expect(
-          listEquals(await file.readAsBytes(), receipts.remove(name)),
-          isTrue,
-        );
-        await file.delete();
+        final prefix = receipts.keys.where((key) => key.compareTo(name!) <= 0).toList()..sort();
+        expect(prefix.length, inInclusiveRange(1, 8));
+        for (final block in prefix) {
+          final file = File('${directory.path}/$block');
+          expect(listEquals(await file.readAsBytes(), receipts.remove(block)), isTrue);
+          await file.delete();
+        }
         return null;
       default:
         throw StateError('Unexpected OS action');

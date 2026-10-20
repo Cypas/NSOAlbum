@@ -13,6 +13,9 @@ import 'desktop_window_drag_area.dart';
 import 'media_metadata_editor.dart';
 import 'video_editor.dart';
 import 'video_runtime.dart';
+import 'video_preview.dart';
+import 'video_preview_prefetch.dart';
+import 'video_thumbnail.dart';
 
 Set<int> adjacentVideoIndices(int index, int length) => {
   for (final candidate in [index - 1, index, index + 1])
@@ -94,25 +97,36 @@ class _MediaViewerState extends State<MediaViewer> {
   late final List<MediaAsset> items = List.of(widget.items);
   late int currentIndex = widget.initialIndex;
   bool immersive = false;
+  int navigationGeneration = 0;
+  late final prefetch = MediaPreviewPrefetch(
+    warm: (item) async {
+      if (item.kind == MediaKind.video) {
+        await VideoThumbnailCache.warmCached(item);
+      } else if (mounted) {
+        await precacheImage(
+          mediaPreviewImage(item.storagePath),
+          context,
+          onError: (_, _) {},
+        );
+      }
+    },
+  );
 
   @override
   void initState() {
     super.initState();
-    _preloadAround(currentIndex);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _preloadAround(currentIndex);
+    });
   }
 
   void _preloadAround(int index) {
-    for (final candidate in adjacentVideoIndices(index, items.length)) {
-      final item = items[candidate];
-      if (item.kind == MediaKind.video) {
-        unawaited(VideoRuntime.prepare(item.storagePath));
-      }
-    }
+    prefetch.around(items, index);
   }
 
   @override
   void dispose() {
-    unawaited(VideoRuntime.clearPrepared());
+    prefetch.dispose();
     pageController.dispose();
     keyboardFocus.dispose();
     super.dispose();
@@ -248,7 +262,11 @@ class _MediaViewerState extends State<MediaViewer> {
                 controller: pageController,
                 itemCount: items.length,
                 allowImplicitScrolling: true,
-                onPageChanged: (index) {
+                onPageChanged: (index) async {
+                  final generation = ++navigationGeneration;
+                  await videoKeys[items[currentIndex].id]?.currentState
+                      ?.release();
+                  if (!mounted || generation != navigationGeneration) return;
                   setState(() => currentIndex = index);
                   _preloadAround(index);
                 },
@@ -262,18 +280,23 @@ class _MediaViewerState extends State<MediaViewer> {
                       immersive ? 12 : 126,
                     ),
                     child: media.kind == MediaKind.video
-                        ? _VideoViewer(
-                            key: videoKeys.putIfAbsent(
-                              media.id,
-                              () => GlobalKey<_VideoViewerState>(
-                                debugLabel: 'video-viewer-${media.id}',
-                              ),
-                            ),
+                        ? index != currentIndex
+                              ? VideoPoster(asset: media)
+                              : _VideoViewer(
+                                  key: videoKeys.putIfAbsent(
+                                    media.id,
+                                    () => GlobalKey<_VideoViewerState>(
+                                      debugLabel: 'video-viewer-${media.id}',
+                                    ),
+                                  ),
+                                  asset: media,
+                                  active: index == currentIndex,
+                                  autoPlay: widget.autoPlayVideo,
+                                )
+                        : _ImageViewer(
                             path: media.storagePath,
                             active: index == currentIndex,
-                            autoPlay: widget.autoPlayVideo,
-                          )
-                        : _ImageViewer(path: media.storagePath),
+                          ),
                   );
                 },
               ),
@@ -469,18 +492,21 @@ class _MediaViewerState extends State<MediaViewer> {
 }
 
 class _ImageViewer extends StatelessWidget {
-  const _ImageViewer({required this.path});
+  const _ImageViewer({required this.path, required this.active});
 
   final String path;
+  final bool active;
 
   @override
   Widget build(BuildContext context) => InteractiveViewer(
     minScale: 0.75,
     maxScale: 5,
     child: Center(
-      child: Image.file(
-        File(path),
+      child: Image(
+        key: ValueKey(path),
+        image: active ? FileImage(File(path)) : mediaPreviewImage(path),
         fit: BoxFit.contain,
+        gaplessPlayback: true,
         errorBuilder: (_, _, _) => _ViewerError(
           icon: Icons.broken_image_outlined,
           message: context.l10n.select(
@@ -545,12 +571,12 @@ class _ViewerTags extends StatelessWidget {
 class _VideoViewer extends StatefulWidget {
   const _VideoViewer({
     super.key,
-    required this.path,
+    required this.asset,
     required this.active,
     required this.autoPlay,
   });
 
-  final String path;
+  final MediaAsset asset;
   final bool active;
   final bool autoPlay;
 
@@ -558,20 +584,27 @@ class _VideoViewer extends StatefulWidget {
   State<_VideoViewer> createState() => _VideoViewerState();
 }
 
-class _VideoViewerState extends State<_VideoViewer>
-    with AutomaticKeepAliveClientMixin {
+class _VideoViewerState extends State<_VideoViewer> {
   late final VideoPlayerHandle _playerHandle = VideoRuntime.acquirePlayer(
-    widget.path,
+    widget.asset.storagePath,
   );
   late final Player player = _playerHandle.player;
   late final VideoController controller = VideoController(player);
 
   Object? openError;
+  Future<void>? releasing;
 
-  @override
-  bool get wantKeepAlive => true;
+  Future<void> release() => releasing ??= () async {
+    try {
+      await player.pause();
+    } finally {
+      await player.dispose();
+    }
+  }();
 
-  Future<void> togglePlayback() => player.playOrPause();
+  Future<void> togglePlayback() async {
+    if (releasing == null) await player.playOrPause();
+  }
 
   Future<void> pausePlayback() => player.pause();
 
@@ -580,11 +613,16 @@ class _VideoViewerState extends State<_VideoViewer>
     super.initState();
     (_playerHandle.ready ??
             player.open(
-              Media(widget.path),
+              Media(widget.asset.storagePath),
               play: widget.autoPlay && widget.active,
             ))
         .then((_) {
-          if (widget.autoPlay && widget.active) unawaited(player.play());
+          if (mounted &&
+              releasing == null &&
+              widget.autoPlay &&
+              widget.active) {
+            unawaited(player.play());
+          }
         })
         .catchError((Object error) {
           if (mounted) setState(() => openError = error);
@@ -600,13 +638,12 @@ class _VideoViewerState extends State<_VideoViewer>
 
   @override
   void dispose() {
-    player.dispose();
+    unawaited(release());
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    super.build(context);
     if (openError != null) {
       return _ViewerError(
         icon: Icons.videocam_off_outlined,
@@ -639,8 +676,9 @@ class _VideoViewerState extends State<_VideoViewer>
           child: MaterialVideoControlsTheme(
             normal: touchControls,
             fullscreen: touchControls,
-            child: Video(
+            child: VideoPreview(
               controller: controller,
+              cover: widget.asset,
               controls: AdaptiveVideoControls,
             ),
           ),

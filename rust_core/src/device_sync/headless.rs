@@ -79,6 +79,7 @@ pub(crate) struct Endpoint {
     pub(crate) transport_cancel: CancellationToken,
     lifecycle: Arc<super::local_apply::LifecycleControl>,
     work: super::work::WorkControl,
+    transfer: super::driver::TransferObserver,
     library: Uuid,
     pub(crate) runtime: Option<Arc<super::runtime::Control>>,
     published: Mutex<EndpointStatus>,
@@ -349,6 +350,7 @@ fn insert_endpoint(
     let cancellation = driver.cancellation();
     let lifecycle = driver.lifecycle_control();
     let work = driver.work_control();
+    let transfer = driver.transfer_observer();
     let published = driver_status(&driver);
     let (runtime, receiver) = match start.as_ref() {
         Some(start) => {
@@ -363,6 +365,7 @@ fn insert_endpoint(
         transport_cancel: CancellationToken::default(),
         lifecycle,
         work,
+        transfer,
         library,
         runtime,
         published: Mutex::new(published),
@@ -712,6 +715,7 @@ pub fn read_endpoint(handle: &str) -> EndpointRead {
         }
     };
     let mut progress = ProgressView::observing(&owner.work);
+    owner.transfer.project(&mut progress);
     let tcp = owner
         .runtime
         .as_ref()

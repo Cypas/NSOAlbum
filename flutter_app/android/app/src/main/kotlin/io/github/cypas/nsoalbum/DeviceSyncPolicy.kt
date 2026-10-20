@@ -5,7 +5,8 @@ import java.io.OutputStream
 import java.io.Closeable
 
 internal object DeviceSyncPolicy {
-    const val MAX_BLOCK = 65548
+    // v3 carrier only; Rust TLS drains and logical frames stay bounded.
+    const val MAX_BLOCK = 8 * 1024 * 1024
     const val MAX_ENTRIES = 128
     private val idPattern = Regex("[0-9a-f]{32}")
     fun sessionDirectory(id: String): String {
@@ -47,6 +48,9 @@ internal object DeviceSyncPolicy {
             when (error.message) {
                 "INVALID_SCOPE" -> "INVALID_SCOPE"
                 "INVALID_BLOCK" -> "INVALID_BLOCK"
+                "INVALID_BLOCK_NAME" -> "INVALID_BLOCK_NAME"
+                "INVALID_BLOCK_TYPE" -> "INVALID_BLOCK_TYPE"
+                "INVALID_BLOCK_SIZE" -> "INVALID_BLOCK_SIZE"
                 "BLOCK_TOO_LARGE" -> "BLOCK_TOO_LARGE"
                 "INVALID_DOCUMENT" -> "INVALID_DOCUMENT"
                 "INVALID_DIRECTORY" -> "INVALID_DIRECTORY"
@@ -85,7 +89,7 @@ internal object DeviceSyncPolicy {
             require(size <= MAX_BLOCK) { "BLOCK_TOO_LARGE" }
             output.write(buffer, 0, count)
         }
-        require(size > 0) { "INVALID_BLOCK" }
+        require(size > 0) { "INVALID_BLOCK_SIZE" }
         operation.check()
     }
 }

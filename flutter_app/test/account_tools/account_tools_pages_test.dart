@@ -30,6 +30,52 @@ Widget app(Widget page) => MaterialApp(
 
 void main() {
   testWidgets(
+    'two friend cards share a row on a normal phone and grow for text',
+    (tester) async {
+      tester.view.physicalSize = const Size(360, 1200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final backend = ToolsBackend(
+        friends: [
+          const NintendoFriend(
+            friendId: 'a',
+            nickname: 'First',
+            note: 'long note with more than one line',
+            isFavorite: false,
+            presence: 'ONLINE',
+          ),
+          const NintendoFriend(
+            friendId: 'b',
+            nickname: 'Second',
+            note: '',
+            isFavorite: false,
+            presence: 'ONLINE',
+          ),
+        ],
+      );
+      await tester.pumpWidget(
+        app(
+          NintendoFriendsPage(backend: backend, profile: profile, mobile: true),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        tester.getTopLeft(find.text('First')).dy,
+        tester.getTopLeft(find.text('Second')).dy,
+      );
+      expect(
+        tester.getTopLeft(find.text('First')).dx,
+        lessThan(tester.getTopLeft(find.text('Second')).dx),
+      );
+      expect(
+        find.ancestor(of: find.text('First'), matching: find.byType(Card)),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+  testWidgets(
     'friends are starred-first with stable names and hidden presence is explicit',
     (tester) async {
       final backend = ToolsBackend(
@@ -75,16 +121,18 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(
-        tester.getTopLeft(find.text('first id')).dy,
-        lessThan(tester.getTopLeft(find.text('second id')).dy),
+        tester.getTopLeft(find.text('first id')).dx,
+        lessThan(tester.getTopLeft(find.text('second id')).dx),
       );
       expect(
         tester.getTopLeft(find.text('second id')).dy,
         lessThan(tester.getTopLeft(find.text('unstarred')).dy),
       );
       expect(find.text('Hidden friend'), findsNothing);
+      await tester.scrollUntilVisible(find.text('离线好友'), 160);
       await tester.tap(find.text('离线好友'));
       await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(find.text('状态未公开'), 140);
       expect(find.text('状态未公开'), findsOneWidget);
       expect(find.textContaining('上次在线：'), findsNothing);
     },
@@ -173,11 +221,9 @@ void main() {
       await tester.pumpAndSettle();
       expect(backend.friendAccounts, ['clicked-b']);
       expect(find.text('在线好友'), findsOneWidget);
-      expect(find.text('离线好友'), findsOneWidget);
+      expect(find.text('特别关注'), findsOneWidget);
       expect(find.text('Online friend'), findsOneWidget);
-      expect(find.text('Offline friend'), findsNothing);
-      await tester.tap(find.text('离线好友'));
-      await tester.pumpAndSettle();
+      // Best friends are in their own expanded group, even when offline.
       expect(find.text('Offline friend'), findsOneWidget);
       backend.failRefresh = true;
       await tester.tap(find.byTooltip('刷新'));

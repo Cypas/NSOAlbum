@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
+
 import '../../platform/device_sync_saf.dart';
 import '../../rust/bridge.dart' as native;
 import '../../rust/device_sync/read_model.dart';
@@ -7,10 +9,15 @@ import '../../rust/device_sync/usb.dart';
 
 /// Serial OS byte I/O for one Rust-owned endpoint. No protocol or library state.
 final class DeviceSyncUsbSafOwner {
-  DeviceSyncUsbSafOwner({required this.endpoint, required this.saf});
+  DeviceSyncUsbSafOwner({
+    required this.endpoint,
+    required this.saf,
+    this.onFailure,
+  });
 
   final String endpoint;
   final DeviceSyncSaf saf;
+  final void Function(String stage, Object error)? onFailure;
   static final _active = <String>{};
   static final _safOwners =
       Map<DeviceSyncSaf, DeviceSyncUsbSafOwner>.identity();
@@ -109,13 +116,16 @@ final class DeviceSyncUsbSafOwner {
             case UsbActionKind.write:
               await saf.writeCiphertextBlock(action.name!, action.bytes);
             case UsbActionKind.acknowledge:
+              if (kDebugMode) debugPrint('device_sync_ack phase=providerBegin');
               await saf.acknowledgeBlock(action.direction.name, action.name!);
+              if (kDebugMode) debugPrint('device_sync_ack phase=providerEnd');
             case UsbActionKind.close:
               await _endNative(success: true);
             case UsbActionKind.enumerate:
               error = ReadError.invalidInput;
           }
         } catch (failure) {
+          onFailure?.call('saf_${action.kind.name}', failure);
           error = failure is DeviceSyncSafFailure
               ? switch (failure.code) {
                   DeviceSyncSafError.busy => ReadError.busy,
@@ -130,6 +140,9 @@ final class DeviceSyncUsbSafOwner {
               : ReadError.unavailable;
         }
         if (epoch != _epoch) break;
+        if (kDebugMode && action.kind == UsbActionKind.acknowledge) {
+          debugPrint('device_sync_ack phase=receiptBegin');
+        }
         await native.deviceSyncUsbComplete(
           endpoint: endpoint,
           reply: UsbReply(
@@ -143,10 +156,14 @@ final class DeviceSyncUsbSafOwner {
             error: error,
           ),
         );
+        if (kDebugMode && action.kind == UsbActionKind.acknowledge) {
+          debugPrint('device_sync_ack phase=receiptEnd');
+        }
       }
       await watcher;
       return await _retiredView(observed);
-    } catch (_) {
+    } catch (failure) {
+      onFailure?.call('saf_transport', failure);
       try {
         // An unknown transport receipt is not an explicit user cancellation.
         // The original native owner decides whether local authority exists.
@@ -164,7 +181,14 @@ final class DeviceSyncUsbSafOwner {
       var view = await native.deviceSyncUsbView(endpoint: endpoint);
       if (!view.closed) {
         await native.deviceSyncDetachTransport(endpoint: endpoint);
-        view = await native.deviceSyncUsbView(endpoint: endpoint);
+        view = await native.deviceSyncUsbWaitClosed(endpoint: endpoint);
+        if (!view.closed && view.reason == UsbCloseReason.cancelled) {
+          // Cancellation wakes the watcher before native retirement so it can
+          // interrupt pending SAF I/O. Only that explicit cancellation permits
+          // shutdown; natural detach must leave authorized local apply alone.
+          await native.deviceSyncShutdown(endpoint: endpoint);
+          view = await native.deviceSyncUsbView(endpoint: endpoint);
+        }
       }
       return view;
     } catch (_) {

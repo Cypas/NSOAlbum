@@ -14,6 +14,52 @@ import 'package:squid_album/src/ui/device_sync/session_panel.dart';
 
 void main() {
   testWidgets(
+    'live original pinning replaces stale configuration without granting controls',
+    (tester) async {
+      for (final language in ['zh', 'en']) {
+        final session = PanelSession()
+          ..confirmed = true
+          ..state = endpoint(driver.State.configuring)
+          ..liveProgress = read.ProgressView(
+            workStage: WorkStage.pinning,
+            workActive: true,
+            scannedItems: BigInt.from(4),
+            totalItems: BigInt.from(12),
+          );
+        await tester.pumpWidget(
+          panelApp(session, language: language, scale: 2),
+        );
+        expect(
+          find.text(
+            language == 'zh' ? '正在校验图库原件' : 'Verifying library originals',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.text(
+            language == 'zh' ? '等待手机选择同步内容' : 'Waiting for phone configuration',
+          ),
+          findsNothing,
+        );
+        expect(find.byKey(const Key('device-configure')), findsNothing);
+        expect(find.byKey(const Key('device-approve-preview')), findsNothing);
+        expect(find.byKey(const Key('device-item-progress')), findsOneWidget);
+        expect(session.snapshot?.value?.stage, driver.State.configuring);
+        expect(session.configurations, isEmpty);
+        expect(tester.takeException(), isNull);
+        session.liveProgress = null;
+        session.update(endpoint(driver.State.awaitingApproval));
+        await tester.pump();
+        expect(
+          find.textContaining('Verifying library originals'),
+          findsNothing,
+        );
+        expect(find.text('正在校验图库原件'), findsNothing);
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+    },
+  );
+  testWidgets(
     'confirmed pairing never asks for the original phone confirmation again',
     (tester) async {
       for (final language in ['zh', 'en']) {
@@ -233,6 +279,18 @@ void main() {
         await tester.tap(find.byKey(const Key('device-allow-accounts')));
         await tester.pump();
         expect(find.byKey(const Key('device-session-error')), findsOneWidget);
+        session.liveProgress = read.ProgressView(
+          workStage: WorkStage.pinning,
+          workActive: true,
+          scannedItems: BigInt.one,
+        );
+        session.update(endpoint(driver.State.awaitingAccountConsent));
+        await tester.pump();
+        expect(
+          find.byKey(const Key('device-session-error')),
+          failure is DeviceSyncBusy ? findsNothing : findsOneWidget,
+        );
+        session.liveProgress = null;
         session.update(endpoint(driver.State.completed));
         await tester.pump();
         expect(
@@ -328,6 +386,152 @@ void main() {
         );
       await tester.pumpWidget(panelApp(session));
       expect(find.textContaining('does not have enough space'), findsOneWidget);
+    },
+  );
+  testWidgets(
+    'transfer progress stays mounted and retains the last sample during a transient read gap',
+    (tester) async {
+      final session = PanelSession()
+        ..state = endpoint(
+          driver.State.transferring,
+          transferProgress: read.ProgressView(
+            workStage: WorkStage.idle,
+            workActive: false,
+            scannedItems: BigInt.zero,
+            transferredBytes: BigInt.from(10),
+            transferTotalBytes: BigInt.from(100),
+            transferBytesPerSecond: BigInt.from(20),
+          ),
+        );
+      await tester.pumpWidget(panelApp(session));
+      final progressState = tester.state(
+        find.byKey(const Key('device-transfer-progress-section')),
+      );
+      expect(find.byKey(const Key('device-byte-progress')), findsOneWidget);
+      expect(find.text('Transferred 10 B / 100 B'), findsOneWidget);
+
+      session.update(
+        endpoint(
+          driver.State.transferring,
+          transferProgress: read.ProgressView(
+            workStage: WorkStage.idle,
+            workActive: false,
+            scannedItems: BigInt.zero,
+            transferredBytes: null,
+            transferTotalBytes: BigInt.from(100),
+            transferBytesPerSecond: null,
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(
+        identical(
+          progressState,
+          tester.state(
+            find.byKey(const Key('device-transfer-progress-section')),
+          ),
+        ),
+        isTrue,
+      );
+      expect(find.byKey(const Key('device-byte-progress')), findsOneWidget);
+      expect(find.text('Transferred 10 B / 100 B'), findsOneWidget);
+
+      session.update(
+        endpoint(
+          driver.State.transferring,
+          transferProgress: read.ProgressView(
+            workStage: WorkStage.idle,
+            workActive: false,
+            scannedItems: BigInt.zero,
+            transferredBytes: BigInt.from(20),
+            transferTotalBytes: BigInt.from(100),
+            transferBytesPerSecond: BigInt.from(24),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Transferred 20 B / 100 B'), findsOneWidget);
+      expect(find.text('Current speed: 0.02 KB/s'), findsOneWidget);
+    },
+  );
+  testWidgets(
+    'background checkpoints do not move the transfer bar or rebuild the session heading',
+    (tester) async {
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      tester.view.physicalSize = const Size(320, 900);
+      tester.view.devicePixelRatio = 1;
+      for (final host in [false, true]) {
+        for (final language in ['zh', 'en']) {
+          final session = PanelSession()
+            ..state = endpoint(
+              driver.State.transferring,
+              host: host,
+              controller: !host,
+              transferProgress: read.ProgressView(
+                workStage: WorkStage.idle,
+                workActive: false,
+                scannedItems: BigInt.zero,
+                transferredBytes: BigInt.from(10),
+                transferTotalBytes: BigInt.from(100),
+                transferBytesPerSecond: BigInt.from(20),
+              ),
+            );
+          await tester.pumpWidget(
+            panelApp(session, language: language, scale: 2),
+          );
+          final bar = find.byKey(const Key('device-byte-progress'));
+          final rate = find.byKey(const Key('device-transfer-rate'));
+          final heading = find.text(language == 'zh' ? '正在传输' : 'Transferring');
+          final headingWidget = tester.widget(heading);
+          final barState = tester.state(bar);
+          final barPosition = tester.getTopLeft(bar);
+          final ratePosition = tester.getTopLeft(rate);
+          Widget? previousRateWidget;
+          for (final active in [true, false, true, false]) {
+            session.update(
+              endpoint(
+                driver.State.transferring,
+                host: host,
+                controller: !host,
+                transferProgress: read.ProgressView(
+                  workStage: WorkStage.pinning,
+                  workActive: active,
+                  scannedItems: BigInt.one,
+                  transferredBytes: BigInt.from(20),
+                  transferTotalBytes: BigInt.from(100),
+                  transferBytesPerSecond: BigInt.from(24),
+                ),
+              ),
+            );
+            await tester.pump();
+            expect(find.byType(LinearProgressIndicator), findsOneWidget);
+            expect(tester.getTopLeft(bar), barPosition);
+            expect(tester.getTopLeft(rate), ratePosition);
+            expect(identical(tester.state(bar), barState), isTrue);
+            expect(identical(tester.widget(heading), headingWidget), isTrue);
+            if (previousRateWidget != null) {
+              expect(
+                identical(tester.widget(rate), previousRateWidget),
+                isTrue,
+              );
+            }
+            previousRateWidget = tester.widget(rate);
+            expect(tester.takeException(), isNull);
+          }
+          // Identical native samples do not rebuild even the numeric region.
+          final rateWidget = tester.widget(rate);
+          session.update(session.state);
+          await tester.pump();
+          expect(identical(tester.widget(rate), rateWidget), isTrue);
+          session.update(endpoint(driver.State.cancelled));
+          await tester.pump();
+          expect(bar, findsNothing);
+          expect(rate, findsNothing);
+          await tester.pumpWidget(const SizedBox.shrink());
+        }
+      }
     },
   );
   testWidgets(
@@ -501,7 +705,7 @@ void main() {
   });
 
   testWidgets(
-    'unknown transfer total and rate are localized instead of a dash',
+    'unknown total remains localized but an initial transfer rate is zero',
     (tester) async {
       for (final language in ['zh', 'en']) {
         final session = PanelSession()
@@ -522,7 +726,7 @@ void main() {
           findsOneWidget,
         );
         expect(
-          find.text(language == 'zh' ? '当前速度：未知' : 'Current speed: Unknown'),
+          find.text(language == 'zh' ? '当前速度：0 KB/s' : 'Current speed: 0 KB/s'),
           findsOneWidget,
         );
         await tester.pumpWidget(const SizedBox.shrink());
@@ -558,6 +762,38 @@ void main() {
       session.update(endpoint(driver.State.completed));
       await tester.pump();
       expect(find.byKey(const Key('device-byte-progress')), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }
+  });
+
+  testWidgets('initial and idle transfer speed is zero on either role', (
+    tester,
+  ) async {
+    for (final host in [false, true]) {
+      final session = PanelSession()
+        ..state = endpoint(
+          driver.State.transferring,
+          host: host,
+          source: host,
+          transferProgress: read.ProgressView(
+            workStage: WorkStage.idle,
+            workActive: false,
+            scannedItems: BigInt.zero,
+            transferredBytes: BigInt.zero,
+            transferTotalBytes: BigInt.from(4194304),
+          ),
+        );
+      await tester.pumpWidget(panelApp(session));
+      expect(find.textContaining('0 KB/s'), findsOneWidget);
+      final original = tester.element(
+        find.byKey(const Key('device-byte-progress')),
+      );
+      session.update(session.state);
+      await tester.pump();
+      expect(
+        tester.element(find.byKey(const Key('device-byte-progress'))),
+        same(original),
+      );
       await tester.pumpWidget(const SizedBox.shrink());
     }
   });
@@ -786,6 +1022,10 @@ read.EndpointRead endpoint(
 );
 
 class PanelSession extends DeviceSyncSessionController {
+  read.ProgressView? liveProgress;
+  @override
+  read.ProgressView? get presentationProgress =>
+      liveProgress ?? snapshot?.progress;
   read.EndpointRead state = endpoint(driver.State.configuring);
   bool confirmed = false;
   final configurations =

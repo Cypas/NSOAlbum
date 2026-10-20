@@ -39,21 +39,29 @@
 | --- | --- | --- |
 | Flutter 启动入口 | `flutter_app/lib/main.dart` | 是 |
 | Android 独立页面和移动布局 | `flutter_app/lib/src/ui/android/` | 是 |
+| Android 日志查看与图库搜索确认面板 | `flutter_app/lib/src/ui/android/` | 是；日志仅私有目录存储，诊断必须脱敏 |
 | 桌面界面与共享展示组件 | `flutter_app/lib/src/ui/` 中对应模块 | 是 |
+| 视频首帧封面与受控邻近封面预取 | `flutter_app/lib/src/ui/video_preview*.dart` | 是；复用缩略图缓存，不预启动邻近播放器；测试位于 `flutter_app/test/` |
 | Dart 后端门面、状态控制器 | `flutter_app/lib/src/backend/`、`flutter_app/lib/src/state/` | 是 |
 | 启动准备、桌面等待式关闭、受控设备恢复与启动反馈 | `flutter_app/lib/src/startup/`、`lib/src/backend/device_sync/`、`lib/src/ui/device_sync/` | 是，账号材料仅由后端安全存储拥有 |
 | Windows 引擎前单实例选主与无负载窗口唤起 | `flutter_app/windows/runner/native_single_instance.{h,cpp}` | 是，锁文件属于系统用户本地数据，不放仓库 |
 | Windows 单实例真实子进程回归 | `flutter_app/test/windows_native_single_instance_test.dart`、`test/fixtures/desktop_instance/native/` | 是，夹具使用独立临时目录，不启动个人图库 |
 | 跨平台账号好友、观星与内嵌网页组件 | `flutter_app/lib/src/ui/account_tools/` | 是，平台外框与原生策略分离 |
 | 跨设备同步安全会话、清单与传输 | `rust_core/src/device_sync/` | 是，数据库访问仍集中 `database.rs` |
+| 累计媒体回执、字节窗口和小文件批次 | `rust_core/src/device_sync/driver/flow.rs`、`files.rs` | 是；只管理当前会话流控，媒体校验及数据库应用仍由暂存/接收模块负责 |
 | 同步网络到本地应用的一次性权限和取消裁决 | `rust_core/src/device_sync/local_apply.rs`、`local_apply/`、`driver/local_apply_tests.rs` | 是，权限仅内存持有，不放入缓存或普通备份；源码存在不代表设备验收完成 |
 | 跨设备同步页面及平台目录/设备适配 | `flutter_app/lib/src/ui/device_sync/`、`lib/src/platform/` | 是，凭据不进入普通文件 |
 | Debug 内部配对输入及页面回归 | `flutter_app/lib/src/ui/device_sync/debug_pairing.dart`、`flutter_app/test/device_sync/debug_pairing*_test.dart` | 是，仅认证 VM Service 输入，不新增产品权限或外部入口 |
 | 邀请通道、网络提示及安装包版本匹配 | `rust_core/src/device_sync/connection.rs`、`flutter_app/lib/src/platform/device_sync_{network,build}.dart`、`lib/src/ui/device_sync/connection_info.dart` | 是，SSID 只作提示；版本从安装包读取，不保存网络历史 |
 | 手机会话控制、接收预览授权和传输速度 | `rust_core/src/device_sync/driver/`、`flutter_app/lib/src/backend/device_sync/controlled_*.dart`、`lib/src/ui/device_sync/` | 是，手机授权绑定一次性会话和当前预览；账号凭据不进入普通文件 |
 | 同步容量与显式模式组件 | `flutter_app/lib/src/ui/device_sync/capacity_format.dart`、`mode_selector.dart` | 是，支持原生大整数容量、本地化选项和系统字号 |
+| 设备同步状态灯与方向图标 | `flutter_app/lib/src/ui/device_sync/display.dart`、`direction.dart` | 是；桌面/Android共享展示，不改变同步协议或权限；图标和圆点不重复朗读，回归位于 `test/device_sync/status_direction_test.dart` |
+| 设备同步稳定进度与速度展示 | `flutter_app/lib/src/ui/device_sync/transfer_progress.dart` | 是；共享桌面/Android组件，传输计数独立更新，不将后台工作采样当作页面重载 |
 | 桌面跨设备同步 MTP 隔离进程 | `rust_core/src/bin/nsoalbum_mtp_worker.rs` | 是，须与桌面分发的构建/签名验证一并接入 |
+| USB 本次会话只读发现与目录授权复用 | `rust_core/src/device_sync/native_mtp.rs`、`usb.rs`、Android `DeviceSyncPicker.kt`/`DeviceSyncSafChannel.kt` | 是，不按设备名建立信任；已有授权失效时仍走系统目录授权 |
 | 无账号设备文件通道探针 | `rust_core/examples/device_sync_native_probe.rs`、`flutter_app/tool/device_sync_saf_probe.dart` | 是，独立开发入口，不初始化正常账号或图库 |
+| SAF 合成吞吐与校验探针 | `flutter_app/tool/device_sync_saf_benchmark.dart`、`flutter_app/test/android/device_sync_saf_benchmark_test.dart` | 是；受控新会话、最多四个在途块；只测试原生字节通道，不代表应用内同步验收 |
+| 真实页面合成库 QA 与根目录归属 | `flutter_app/tool/device_sync_qa*.dart`、`flutter_app/test/device_sync/qa_{root,fixture}_test.dart` | 是；仅独立 Debug 开发入口、全新临时库、内存账号，PNG夹具须真实解码验证；不打包为产品入口；运行方法见 Flutter README |
 | Rust 子进程行为夹具 | `rust_core/tests/fixtures/` | 是，只使用合成数据，不打包为产品功能 |
 | Rust 数据库、文件仓库、协议、导入与同步 | `rust_core/src/` | 是 |
 | Flutter 单元/widget 测试 | `flutter_app/test/`，Android 测试放其 `android/` 子目录 | 是 |
@@ -113,9 +121,10 @@ Android 功能测试（页面、品牌、更新、APK 契约及 Gradle 配置）
 | 自动选路、SSID 及跨版本拒绝的验证记录 | `dist/device-sync-auto-connection-20261018/` | 本地忽略，保存失败/复验与独立 Debug 构建证据，不记录邀请或凭据 |
 | 手机单端控制及本地应用交接复验 | `dist/device-sync-phone-control-20261018/`，交接分任务放 `local-apply/` | 本地忽略，区分协议测试、真实预览和完整媒体传输；不保存二维码、凭据或认证调试地址 |
 | 本地 Windows/macOS 安装包与运行目录 | 打包脚本生成的 `dist/` 子目录 | 不改成根目录散放，不提交二进制 |
-| Flutter 编译输出和 Android APK | `flutter_app/build/` | 保持工具默认路径，不手工搬动正在使用的缓存 |
-| Android Gradle 报告与测试编译输出 | `flutter_app/android/build/` | 忽略，但不忽略相邻原生源码和配置 |
-| Rust 编译缓存 | Cargo 的 `target/` 目录 | 忽略；不把旧编译产物当作本次验证结果 |
+| 本地 Debug/原生构建输出 | Flutter 使用 C 盘独立构建副本；Rust 使用 C 盘 `--target-dir` | 优先避开 F 盘源码工作区；当前使用中的副本不得在运行时清理 |
+| Flutter 编译输出和 Android APK | 外部 C 盘构建目录内的 `flutter/build/` | F 盘 `flutter_app/build/` 仅为工具默认回退位置，生成后可重建且不提交 |
+| Android Gradle 报告与测试编译输出 | 外部 C 盘构建目录；必要时才使用 `flutter_app/android/build/` | 忽略，但不忽略相邻原生源码和配置 |
+| Rust 编译缓存 | C 盘外部 Cargo `--target-dir` | F 盘 `rust_core/target/` 仅为工具默认回退位置，生成后可重建且不提交 |
 | helper Cargo JSON、绝对产物路径和逐目标构建报告 | `flutter_app/build/` 或指定本地验收目录 | 忽略，不放进应用分发根目录 |
 | helper 打包回归的保留合成证据 | `flutter_app/build/test-fixtures/mtp-worker-packaging/run-*/` | 每次新建并记录；不自动删除/覆盖、不进 Runner Release 包，不含用户资料 |
 | 本地未使用字体 | `local-assets/unused-fonts/` | 本地保留，可另行备份，不属于构建依赖 |
@@ -135,6 +144,9 @@ Actions 远程 artifact 可能过期，本地独有证据需要单独备份。
   `docs/CHANGELOG.md` 与内部 `AGENTS.md` 按现有规则本地保留、Git 忽略。
   内部设计文档通过相对路径引用本文，不复制一套容易失效的目录规则。
 - 任务沟通、需求原文、诊断过程和内部验收记录不搬入应用界面或用户安装材料。
+- 设备同步吞吐设计位于本地 `docs/design/device-sync-throughput-design.md`，
+  测量和失败/成功证据归档到相应 `dist/` 专题；内部设计不提交，
+  正式可重复运行的源码及测试仍放对应 Rust、Flutter 和 Android 目录。
 
 ## 6. 忽略规则如何使用
 

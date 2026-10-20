@@ -150,7 +150,8 @@ final class DeviceSyncSaf {
   Future<void> writeCiphertextBlock(String name, Uint8List bytes) =>
       _invoke<void>('writeCiphertextBlock', {'name': name, 'bytes': bytes});
 
-  /// Invoke only after the ordered ciphertext decoder accepted this block.
+  /// Retire at most eight sequential blocks through [name], only after the
+  /// ordered ciphertext decoder accepted every block in that prefix.
   Future<void> acknowledgeBlock(String direction, String name) =>
       _invoke<void>('acknowledgeBlock', {'direction': direction, 'name': name});
 

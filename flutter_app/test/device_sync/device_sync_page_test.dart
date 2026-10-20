@@ -10,13 +10,150 @@ import 'package:squid_album/src/platform/device_sync_network.dart';
 import 'package:squid_album/src/rust/device_sync/connection.dart';
 import 'package:squid_album/src/rust/device_sync/driver.dart' as driver;
 import 'package:squid_album/src/rust/device_sync/read_model.dart' as read;
+import 'package:squid_album/src/rust/device_sync/work.dart';
 import 'package:squid_album/src/ui/desktop_window_drag_area.dart';
+import 'package:squid_album/src/ui/device_sync/invitation_qr.dart';
 import 'package:squid_album/src/ui/device_sync/device_sync_page.dart';
 import 'package:squid_album/src/ui/device_sync/page_access.dart';
 
 import 'session_panel_test.dart' show PanelSession, endpoint;
 
 void main() {
+  testWidgets('Wi-Fi adapters load on entry and default to a 192.168 address', (
+    tester,
+  ) async {
+    final access = _MixedLanAccess();
+    await openPage(tester, access);
+    expect(find.byKey(const Key('device-address-dropdown')), findsOneWidget);
+    await reveal(tester, find.byKey(const Key('device-create-code')));
+    await tester.tap(find.byKey(const Key('device-create-code')));
+    await tester.pump();
+    expect(access.hosts.single.address, '192.168.5.1');
+    await endPage(tester);
+  });
+  testWidgets('pair again reloads Wi-Fi adapters without a manual refresh', (
+    tester,
+  ) async {
+    final access = _MixedLanAccess();
+    await openPage(tester, access);
+    await reveal(tester, find.byKey(const Key('device-create-code')));
+    await tester.tap(find.byKey(const Key('device-create-code')));
+    await tester.pump();
+    access.sessions.single.update(endpoint(driver.State.completed));
+    await tester.pump();
+    await reveal(tester, find.byKey(const Key('device-new-pairing')));
+    await tester.tap(find.byKey(const Key('device-new-pairing')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('device-address-dropdown')), findsOneWidget);
+    await reveal(tester, find.byKey(const Key('device-create-code')));
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('device-create-code')))
+          .onPressed,
+      isNotNull,
+    );
+    await tester.tap(find.byKey(const Key('device-create-code')));
+    await tester.pump();
+    expect(access.hosts.last.address, '192.168.5.1');
+    await endPage(tester);
+  });
+  testWidgets(
+    'phone controller automatically reviews either transfer direction once',
+    (tester) async {
+      for (final source in [false, true]) {
+        final session = _AutomaticPreviewSession(source: source);
+        final access = PageAccess()..sessionFactory = () => session;
+        await openPage(tester, access);
+        await createHost(tester);
+        expect(session.previewReads, 1);
+        expect(find.byKey(const Key('device-review-preview')), findsNothing);
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pump();
+        expect(session.previewReads, 1);
+        await endPage(tester);
+        await tester.pumpWidget(const SizedBox());
+      }
+    },
+  );
+  testWidgets(
+    'invitation expiry display stops at handshake and does not use QR TTL for active transfer',
+    (tester) async {
+      final access = PageAccess()..sessionFactory = () => _InvitationSession();
+      await openPage(tester, access);
+      await createHost(tester);
+      final session = access.sessions.single;
+      session.update(
+        endpoint(driver.State.pairing, pairing: read.PairingStage.handshaking),
+      );
+      await tester.pump();
+      expect(find.byType(DeviceInvitationQr), findsOneWidget);
+      session.update(endpoint(driver.State.configuring));
+      await tester.pump();
+      expect(find.byType(DeviceInvitationQr), findsNothing);
+      session.update(endpoint(driver.State.transferring));
+      await tester.pump();
+      expect(find.byType(DeviceInvitationQr), findsNothing);
+      await endPage(tester);
+    },
+  );
+  testWidgets(
+    'cancel and finish requires confirmation but a failed untouched attempt does not',
+    (tester) async {
+      final access = PageAccess();
+      await openPage(tester, access);
+      await createHost(tester);
+      await tester.ensureVisible(find.byKey(const Key('device-end-session')));
+      await tester.tap(find.byKey(const Key('device-end-session')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('device-confirm-leave')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('device-confirm-leave')));
+      await tester.pumpAndSettle();
+      expect(access.sessions.single.closed, isTrue);
+      expect(find.byType(DeviceSyncPage), findsOneWidget);
+      await endPage(tester);
+
+      final failedAccess = PageAccess()..hostFailure = const DeviceSyncBusy();
+      await openPage(tester, failedAccess);
+      await createHost(tester);
+      await tester.tap(find.byTooltip('Back'));
+      await tester.pumpAndSettle();
+      expect(find.byType(DeviceSyncPage), findsNothing);
+    },
+  );
+  testWidgets('live pinning observation is progress rather than a Busy error', (
+    tester,
+  ) async {
+    final session = _PinningObservationSession();
+    final access = PageAccess()..sessionFactory = () => session;
+    await openPage(tester, access);
+    await createHost(tester);
+    expect(find.text('Verifying library originals'), findsOneWidget);
+    expect(find.byKey(const Key('device-page-error')), findsNothing);
+    expect(find.byKey(const Key('device-configure')), findsNothing);
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pump();
+    expect(find.byKey(const Key('device-page-error')), findsNothing);
+    session.liveProgress = null;
+    session.update(endpoint(driver.State.completed));
+    await tester.pump();
+    await endPage(tester);
+  });
+  testWidgets(
+    'USB host waits for the scanned phone without a storage selection action',
+    (tester) async {
+      final access = PageAccess();
+      await openPage(tester, access);
+      await tester.tap(find.byKey(const Key('device-usb')));
+      await tester.pump();
+      await reveal(tester, find.byKey(const Key('device-create-code')));
+      await tester.tap(find.byKey(const Key('device-create-code')));
+      await tester.pump();
+      expect(access.hosts.single.usb, isTrue);
+      expect(find.byKey(const Key('device-find-usb')), findsNothing);
+      expect(find.text('Find phone storage'), findsNothing);
+      await endPage(tester);
+    },
+  );
   testWidgets('desktop uses selected private address and keeps a drag region', (
     tester,
   ) async {
@@ -30,8 +167,7 @@ void main() {
     );
     await tester.tap(find.byKey(const Key('device-load-addresses')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('device-address-1')));
-    await tester.pump();
+    await chooseAddress(tester, 1);
     await reveal(tester, find.byKey(const Key('device-create-code')));
     await tester.tap(find.byKey(const Key('device-create-code')));
     await tester.pump();
@@ -91,15 +227,14 @@ void main() {
     await openPage(tester, access);
     await tester.tap(find.byKey(const Key('device-load-addresses')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('device-address-0')));
-    await tester.pump();
+    await chooseAddress(tester, 0);
     await reveal(tester, find.byKey(const Key('device-create-code')));
     await tester.tap(find.byKey(const Key('device-create-code')));
     await tester.pump();
     await tester.tap(find.byTooltip('Back'));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('device-confirm-leave')));
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.byType(DeviceSyncPage), findsOneWidget);
     final late = PanelSession();
     opened.complete(late);
@@ -134,8 +269,7 @@ void main() {
           await reveal(tester, find.byKey(const Key('device-load-addresses')));
           await tester.tap(find.byKey(const Key('device-load-addresses')));
           await tester.pumpAndSettle();
-          await reveal(tester, find.byKey(const Key('device-address-0')));
-          await tester.tap(find.byKey(const Key('device-address-0')));
+          await chooseAddress(tester, 0);
           await reveal(tester, find.byKey(const Key('device-create-code')));
           await tester.tap(find.byKey(const Key('device-create-code')));
           await tester.pumpAndSettle();
@@ -203,29 +337,6 @@ void main() {
   );
 
   testWidgets(
-    'successful observation does not dismiss an unrelated USB action Busy',
-    (tester) async {
-      final session = _ActionBusySession();
-      final access = PageAccess()..sessionFactory = () => session;
-      await openPage(tester, access);
-      await tester.tap(find.byKey(const Key('device-usb')));
-      await tester.pump();
-      await reveal(tester, find.byKey(const Key('device-create-code')));
-      await tester.tap(find.byKey(const Key('device-create-code')));
-      await tester.pump();
-      await tester.ensureVisible(find.byKey(const Key('device-find-usb')));
-      await tester.tap(find.byKey(const Key('device-find-usb')));
-      await tester.pump();
-      expect(find.byKey(const Key('device-page-error')), findsOneWidget);
-      session.update(endpoint(driver.State.failed));
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump();
-      expect(find.byKey(const Key('device-page-error')), findsOneWidget);
-      await endPage(tester);
-    },
-  );
-
-  testWidgets(
     'intervening observation Busy cannot replace a retained fatal read error',
     (tester) async {
       final session = _RecoveringObservationSession(
@@ -252,47 +363,6 @@ void main() {
         original,
       );
       await endPage(tester);
-    },
-  );
-
-  testWidgets(
-    'intervening observation Busy preserves action diagnostics through valid read',
-    (tester) async {
-      for (final failure in [
-        const DeviceSyncReadFailure(read.ReadError.unavailable),
-        const DeviceSyncBusy(),
-      ]) {
-        final session = _ActionBusySession(failure);
-        final access = PageAccess()..sessionFactory = () => session;
-        await openPage(tester, access);
-        await tester.tap(find.byKey(const Key('device-usb')));
-        await tester.pump();
-        await reveal(tester, find.byKey(const Key('device-create-code')));
-        await tester.tap(find.byKey(const Key('device-create-code')));
-        await tester.pump();
-        await tester.ensureVisible(find.byKey(const Key('device-find-usb')));
-        await tester.tap(find.byKey(const Key('device-find-usb')));
-        await tester.pump();
-        final original = tester
-            .widget<Text>(find.byKey(const Key('device-page-error')))
-            .data;
-        session.nextRefreshFailure = const DeviceSyncBusy();
-        await tester.pump(const Duration(milliseconds: 600));
-        await tester.pump();
-        expect(
-          tester.widget<Text>(find.byKey(const Key('device-page-error'))).data,
-          original,
-        );
-        session.update(endpoint(driver.State.failed));
-        await tester.pump(const Duration(milliseconds: 600));
-        await tester.pump();
-        expect(
-          tester.widget<Text>(find.byKey(const Key('device-page-error'))).data,
-          original,
-        );
-        await endPage(tester);
-        await tester.pumpWidget(const SizedBox.shrink());
-      }
     },
   );
 
@@ -399,11 +469,24 @@ Future<void> reveal(WidgetTester tester, Finder finder) async {
 Future<void> createHost(WidgetTester tester) async {
   await tester.tap(find.byKey(const Key('device-load-addresses')));
   await tester.pumpAndSettle();
-  await tester.tap(find.byKey(const Key('device-address-0')));
-  await tester.pump();
+  await chooseAddress(tester, 0);
   await reveal(tester, find.byKey(const Key('device-create-code')));
   await tester.tap(find.byKey(const Key('device-create-code')));
   await tester.pump();
+}
+
+Future<void> chooseAddress(WidgetTester tester, int index) async {
+  final dropdown = find.byKey(const Key('device-address-dropdown'));
+  await reveal(tester, dropdown);
+  await tester.tap(dropdown);
+  await tester.pumpAndSettle();
+  await tester.tap(
+    find.descendant(
+      of: find.byKey(Key('device-address-$index')).last,
+      matching: find.byType(Text),
+    ),
+  );
+  await tester.pumpAndSettle();
 }
 
 Future<void> endPage(WidgetTester tester) async {
@@ -537,6 +620,31 @@ class PageAccess extends DeviceSyncPageAccess {
   DeviceBackupBrowserController openBackups() => throw UnimplementedError();
 }
 
+class _AutomaticPreviewSession extends PanelSession {
+  _AutomaticPreviewSession({required bool source}) {
+    state = endpoint(driver.State.awaitingApproval, source: source);
+  }
+  int previewReads = 0;
+  @override
+  Future<DeviceSyncPreviewView> refreshPreview() async {
+    previewReads++;
+    return super.refreshPreview();
+  }
+}
+
+class _InvitationSession extends PanelSession {
+  @override
+  String? get invitation => 'synthetic-invitation-for-ui-only';
+}
+
+class _MixedLanAccess extends PageAccess {
+  @override
+  Future<List<DeviceLanAddress>> wifiAddresses() async => [
+    const DeviceLanAddress(interfaceName: 'VPN', address: '10.0.0.2'),
+    ...await super.wifiAddresses(),
+  ];
+}
+
 class _CleanupSession extends PanelSession {
   _CleanupSession() {
     state = endpoint(
@@ -554,6 +662,19 @@ class _CleanupSession extends PanelSession {
     }
     return state;
   }
+}
+
+class _PinningObservationSession extends PanelSession {
+  _PinningObservationSession() {
+    state = endpoint(driver.State.configuring, host: true, controller: false);
+    liveProgress = read.ProgressView(
+      workStage: WorkStage.pinning,
+      workActive: true,
+      scannedItems: BigInt.zero,
+    );
+  }
+  @override
+  Future<read.EndpointRead> refresh() async => throw const DeviceSyncBusy();
 }
 
 class _UnsettledSession extends PanelSession {
@@ -583,21 +704,4 @@ class _RecoveringObservationSession extends PanelSession {
     state = endpoint(driver.State.failed, host: true, controller: false);
     return state;
   }
-}
-
-class _ActionBusySession extends PanelSession {
-  _ActionBusySession([this.actionFailure = const DeviceSyncBusy()]);
-  final Object actionFailure;
-  Object? nextRefreshFailure;
-  @override
-  Future<read.EndpointRead> refresh() async {
-    final failure = nextRefreshFailure;
-    nextRefreshFailure = null;
-    if (failure != null) throw failure;
-    return state;
-  }
-
-  @override
-  Future<List<DeviceUsbStorageChoice>> usbChoices() async =>
-      throw actionFailure;
 }

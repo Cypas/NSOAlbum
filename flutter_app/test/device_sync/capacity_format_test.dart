@@ -28,13 +28,15 @@ void main() {
   });
 
   test(
-    'rates share capacity units and never manufacture unknown throughput',
+    'rates start at KB per second while capacities still support bytes',
     () {
-      expect(formatDeviceTransferRate(BigInt.from(512)), '512 B/s');
+      expect(formatDeviceTransferRate(BigInt.from(512)), '0.5 KB/s');
+      expect(formatDeviceTransferRate(BigInt.from(1023)), '1 KB/s');
       expect(formatDeviceTransferRate(BigInt.from(1536)), '1.5 KB/s');
       expect(formatDeviceTransferRate(BigInt.from(2097152)), '2 MB/s');
-      expect(formatDeviceTransferRate(BigInt.zero), '0 B/s');
+      expect(formatDeviceTransferRate(BigInt.zero), '0 KB/s');
       expect(formatDeviceTransferRate(null, unknown: '—'), '—');
+      expect(() => formatDeviceTransferRate(-BigInt.one), throwsArgumentError);
     },
   );
 }

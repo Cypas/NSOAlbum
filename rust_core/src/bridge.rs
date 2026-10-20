@@ -385,6 +385,7 @@ pub fn init_core(library_root: String) -> Result<(), String> {
     if CORE.get().is_some() {
         return Ok(());
     }
+    crate::diagnostics::configure(std::path::Path::new(&library_root));
     CORE.set(CoreApi::open(library_root).map_err(error_text)?)
         .map_err(|_| "core was initialized concurrently".to_owned())
 }
@@ -905,5 +906,6 @@ fn clear_current_sync() {
 }
 
 fn error_text(error: impl std::fmt::Display) -> String {
+    crate::diagnostics::event("core", "operation_failed", None);
     error.to_string()
 }

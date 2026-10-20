@@ -33,6 +33,7 @@ pub struct CoreApi {
     disable_app_proxy: AtomicBool,
     import_progress: Mutex<ImportProgressStore>,
     account_tools: crate::nso::account_tools::AccountTools,
+    transport_pool: Mutex<Option<(Option<String>, HttpTransport, HttpTransport)>>,
 }
 
 #[derive(Default)]
@@ -46,6 +47,19 @@ const MAX_TERMINAL_IMPORT_PROGRESS: usize = 32;
 #[cfg(test)]
 mod device_sync_account_guard_tests {
     use super::*;
+
+    #[test]
+    fn core_reuses_connection_pool_until_proxy_policy_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let api = CoreApi::open(root.path()).unwrap();
+        let first = api.transport(None).unwrap();
+        let second = api.transport(None).unwrap();
+        assert!(first.shares_client(&second));
+        let proxy = api.transport(Some("http://127.0.0.1:8999".into())).unwrap();
+        assert!(!proxy.shares_client(&first));
+        assert!(proxy.shares_client(&api.transport(Some("http://127.0.0.1:8999".into())).unwrap()));
+        assert!(!first.shares_client(&api.transport(None).unwrap()));
+    }
 
     #[tokio::test]
     async fn normal_account_tool_is_rejected_by_library_gate_before_proxy_or_network_work() {
@@ -78,6 +92,7 @@ impl CoreApi {
             disable_app_proxy: AtomicBool::new(false),
             import_progress: Mutex::new(ImportProgressStore::default()),
             account_tools: Default::default(),
+            transport_pool: Mutex::new(None),
         };
         if api.database.device_sync_recovery_pending() {
             api.database
@@ -316,7 +331,7 @@ impl CoreApi {
         let _writing = self.database.write_lease()?;
         cancellation.check()?;
         let proxy = self.resolve_proxy_url(proxy_url)?;
-        let transport = Self::transport_with_resolved_proxy(proxy.clone())?;
+        let transport = self.transport_with_resolved_proxy(proxy.clone())?;
         self.account_tools
             .authenticate(
                 &session_token,
@@ -363,7 +378,7 @@ impl CoreApi {
     ) -> CoreResult<SyncSummary> {
         let _writing = self.database.write_lease()?;
         let proxy = self.resolve_proxy_url(proxy_url)?;
-        let transport = Self::transport_with_resolved_proxy(proxy.clone())?;
+        let transport = self.transport_with_resolved_proxy(proxy.clone())?;
         for attempt in 0..2 {
             let session = self
                 .account_tools
@@ -410,7 +425,7 @@ impl CoreApi {
         let _writing = self.database.write_lease()?;
         cancellation.check()?;
         let proxy = self.resolve_proxy_url(proxy_url)?;
-        let transport = Self::transport_with_resolved_proxy(proxy.clone())?;
+        let transport = self.transport_with_resolved_proxy(proxy.clone())?;
         self.sync_nso_with_resolved_transport(session, proxy, transport, cancellation)
             .await
     }
@@ -426,7 +441,7 @@ impl CoreApi {
         cancellation.check()?;
         let attestation = self
             .account_tools
-            .attestation(proxy.as_deref(), &transport)?;
+            .attestation(&session, proxy.as_deref(), &transport)?;
         let nso_version = tokio::select! {
             _ = cancellation.cancelled() => return Err(CoreError::Cancelled),
             result = attestation.nso_version() => result?,
@@ -454,7 +469,7 @@ impl CoreApi {
     ) -> CoreResult<crate::nso::account_tools::ToolResponse> {
         let _writing = self.database.write_lease()?;
         let proxy = self.resolve_proxy_url(proxy_url)?;
-        let transport = Self::transport_with_resolved_proxy(proxy.clone())?.without_redirects()?;
+        let transport = self.transport_pair(proxy.clone())?.1;
         self.account_tools
             .execute(
                 &account_id,
@@ -1252,14 +1267,36 @@ impl CoreApi {
 
     fn transport(&self, explicit_proxy: Option<String>) -> CoreResult<HttpTransport> {
         let proxy_url = self.resolve_proxy_url(explicit_proxy)?;
-        Self::transport_with_resolved_proxy(proxy_url)
+        self.transport_with_resolved_proxy(proxy_url)
     }
 
-    fn transport_with_resolved_proxy(proxy_url: Option<String>) -> CoreResult<HttpTransport> {
-        HttpTransport::new(TransportConfig {
-            proxy_url,
+    fn transport_with_resolved_proxy(
+        &self,
+        proxy_url: Option<String>,
+    ) -> CoreResult<HttpTransport> {
+        Ok(self.transport_pair(proxy_url)?.0)
+    }
+
+    fn transport_pair(
+        &self,
+        proxy_url: Option<String>,
+    ) -> CoreResult<(HttpTransport, HttpTransport)> {
+        let mut pool = self
+            .transport_pool
+            .lock()
+            .map_err(|_| CoreError::LibraryLockUnavailable)?;
+        if let Some((policy, normal, strict)) = pool.as_ref() {
+            if policy == &proxy_url {
+                return Ok((normal.clone(), strict.clone()));
+            }
+        }
+        let normal = HttpTransport::new(TransportConfig {
+            proxy_url: proxy_url.clone(),
             ..TransportConfig::default()
-        })
+        })?;
+        let strict = normal.without_redirects()?;
+        *pool = Some((proxy_url, normal.clone(), strict.clone()));
+        Ok((normal, strict))
     }
 
     fn resolve_proxy_url(&self, explicit_proxy: Option<String>) -> CoreResult<Option<String>> {

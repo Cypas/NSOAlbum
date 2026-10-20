@@ -12,6 +12,7 @@ import '../../state/android_update_controller.dart';
 import 'android_page_frame.dart';
 import 'android_tag_management_page.dart';
 import 'android_update_controls.dart';
+import 'android_log_viewer_page.dart';
 
 class AndroidSettingsPage extends StatefulWidget {
   const AndroidSettingsPage({
@@ -142,6 +143,7 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
         androidMessage(
           context,
           context.l10n.select(zh: '图库位置已更新。', en: 'Library location updated.'),
+          isError: false,
         );
       }
     } catch (error) {
@@ -350,6 +352,26 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
                   MaterialPageRoute<void>(
                     builder: (_) =>
                         AndroidTagManagementPage(backend: widget.backend),
+                  ),
+                ),
+              ),
+            ),
+            Card(
+              child: ListTile(
+                key: const Key('android-view-logs'),
+                leading: const Icon(Icons.article_outlined),
+                title: Text(context.l10n.select(zh: '查看日志', en: 'View logs')),
+                subtitle: Text(
+                  context.l10n.select(
+                    zh: '查看最近运行记录并复制脱敏内容。',
+                    en: 'Review recent activity and copy a redacted report.',
+                  ),
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) =>
+                        AndroidLogViewerPage(backend: widget.backend),
                   ),
                 ),
               ),

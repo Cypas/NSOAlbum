@@ -5,6 +5,12 @@ internal class DeviceSyncPicker<T> {
     var outstanding: Boolean = false
         private set
     private var callback: T? = null
+    fun beginIfNeeded(value: T, reusable: Boolean): Boolean {
+        check(!outstanding) { "PICKER_BUSY" }
+        if (reusable) return false
+        begin(value)
+        return true
+    }
     fun begin(value: T) {
         check(!outstanding) { "PICKER_BUSY" }
         outstanding = true

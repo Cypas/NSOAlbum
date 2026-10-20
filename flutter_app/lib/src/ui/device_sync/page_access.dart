@@ -12,6 +12,7 @@ import '../../rust/device_sync/read_model.dart' as read;
 
 /// Page-level resource factories, never account storage, roots, or native Core.
 abstract class DeviceSyncPageAccess extends ChangeNotifier {
+  Future<void> logError(Object error, [StackTrace? stackTrace]) async {}
   bool get ready;
   bool get checking;
   bool get canCheckRecovery;
@@ -38,15 +39,20 @@ abstract class DeviceSyncPageAccess extends ChangeNotifier {
 
 final class BackendDeviceSyncPageAccess extends DeviceSyncPageAccess {
   BackendDeviceSyncPageAccess(AppBackend backend)
-    : _owner = backend is DeviceSyncStartupBackend
+    : _backend = backend,
+      _owner = backend is DeviceSyncStartupBackend
           ? (backend as DeviceSyncStartupBackend).deviceSyncStartup
           : null {
     _owner?.addListener(_changed);
   }
   final DeviceSyncStartupLifecycle? _owner;
+  final AppBackend _backend;
   final _network = DeviceNetworkReader();
   bool _disposed = false;
   void _changed() => notifyListeners();
+  @override
+  Future<void> logError(Object error, [StackTrace? stackTrace]) =>
+      _backend.logError('Device sync operation failed', error, stackTrace);
   @override
   bool get ready =>
       !_disposed && _owner?.ready == true && _owner?.isolated == false;
@@ -85,9 +91,10 @@ final class BackendDeviceSyncPageAccess extends DeviceSyncPageAccess {
         appBuild: await loadDeviceApplicationBuild(),
       );
     } catch (error) {
-      throw DeviceSyncReadFailure(
-        error is read.ReadError ? error : read.ReadError.invalidInput,
-      );
+      if (error == read.ReadError.invalidInput || error is! read.ReadError) {
+        throw const DeviceInvitationFailure();
+      }
+      throw DeviceSyncReadFailure(error);
     }
   }
 

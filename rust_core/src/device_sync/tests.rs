@@ -14,7 +14,85 @@ fn creates_an_ephemeral_usb_invitation() {
 }
 
 #[test]
-fn invitation_connection_reads_optional_wifi_hint_and_legacy_usb_without_opening() {
+fn streaming_profile_is_required_for_both_transports_even_at_the_same_application_version() {
+    for transport in [
+        Transport::Usb,
+        Transport::Tcp("192.168.1.2:40501".parse().unwrap()),
+    ] {
+        let time = now();
+        let invitation = Invitation::create(transport, time).unwrap();
+        let original: serde_json::Value =
+            serde_json::from_str(&invitation.qr().unwrap().encode().unwrap()).unwrap();
+        assert_eq!(original["flow_profile"], "binary-media-v2");
+        for profile in [None, Some("stream-window-v1"), Some("binary-media-v99")] {
+            let mut value = original.clone();
+            value.as_object_mut().unwrap().remove("flow_profile");
+            if let Some(profile) = profile {
+                value["flow_profile"] = profile.into();
+            }
+            assert!(matches!(
+                Qr::parse(&value.to_string(), time),
+                Err(SessionError::VersionMismatch)
+            ));
+        }
+    }
+}
+
+#[test]
+fn usb_invitation_advertises_explicit_mailbox_profile_not_just_app_build() {
+    let invitation = Invitation::create(Transport::Usb, now()).unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&invitation.qr().unwrap().encode().unwrap()).unwrap();
+    assert_eq!(value["usb_profile"], "usb-mailbox-v4");
+}
+
+#[test]
+fn usb_missing_or_unknown_profile_is_rejected_even_with_the_same_app_build() {
+    let time = now();
+    let build = super::connection::ApplicationBuild {
+        version: "0.2.14".into(),
+        build_number: "47".into(),
+    };
+    let mut invitation = Invitation::create(Transport::Usb, time).unwrap();
+    invitation.set_app_build(Some(build.clone())).unwrap();
+    invitation.delegate_to_phone().unwrap();
+    let original: serde_json::Value =
+        serde_json::from_str(&invitation.qr().unwrap().encode().unwrap()).unwrap();
+    for capability in [
+        None,
+        Some("usb-mailbox-v1"),
+        Some("usb-mailbox-v2"),
+        Some("usb-mailbox-v99"),
+    ] {
+        let mut value = original.clone();
+        value.as_object_mut().unwrap().remove("usb_profile");
+        if let Some(capability) = capability {
+            value["usb_profile"] = capability.into();
+        }
+        assert_eq!(
+            super::connection::inspect_compatible(&value.to_string(), time, &build),
+            Err(SessionError::VersionMismatch)
+        );
+    }
+}
+
+#[test]
+fn tcp_invitation_preserves_its_format_and_refuses_usb_capability() {
+    let time = now();
+    let invitation =
+        Invitation::create(Transport::Tcp("192.168.31.66:40501".parse().unwrap()), time).unwrap();
+    let mut value: serde_json::Value =
+        serde_json::from_str(&invitation.qr().unwrap().encode().unwrap()).unwrap();
+    assert!(value.get("usb_profile").is_none());
+    value["usb_profile"] = "usb-mailbox-v2".into();
+    assert!(matches!(
+        Qr::parse(&value.to_string(), time),
+        Err(SessionError::InvalidQr)
+    ));
+}
+
+#[test]
+fn invitation_connection_reads_optional_wifi_hint_and_usb_without_opening() {
     let time = now();
     let mut wifi =
         Invitation::create(Transport::Tcp("192.168.31.66:40501".parse().unwrap()), time).unwrap();
@@ -346,7 +424,12 @@ fn wrong_secret_or_session_or_transport_or_fingerprint_is_terminal() {
             "secret" => qr.wire.secret = "00".repeat(32),
             "session_id" => qr.wire.session_id = "00".repeat(16),
             "operation_id" => qr.wire.operation_id = "00".repeat(16),
-            "transport" => qr.wire.transport = Transport::Tcp("127.0.0.1:12345".parse().unwrap()),
+            "transport" => {
+                qr.wire.transport = Transport::Tcp("127.0.0.1:12345".parse().unwrap());
+                // Keep the forged TCP QR schema-valid so this still tests TLS
+                // authentication binding, not the earlier USB-only field check.
+                qr.wire.usb_profile = None;
+            }
             "fingerprint" => qr.wire.fingerprint = "00".repeat(32),
             "root_der" => {
                 let other = Invitation::create(Transport::Usb, time).unwrap();

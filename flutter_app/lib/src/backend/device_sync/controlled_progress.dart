@@ -3,10 +3,12 @@ part of 'startup_lifecycle.dart';
 /// Advances only steps covered by local consent or authenticated phone consent.
 /// Rust remains the sole transport pump and authority for durable completion.
 extension _DeviceSessionProgress on DeviceSyncSession {
-  Future<void> _advance(read.EndpointView? view) async {
-    if (closed || busy || _advanceBlocked || view == null) return;
+  Future<bool> _advance(read.EndpointView? view) async {
+    if (closed || busy || _advanceBlocked || view == null) return false;
+    var attempted = false;
     final coordinator = _service._owner._coordinator!;
     Future<void> advance(Future<void> Function() action) async {
+      attempted = true;
       await _act(action);
       if (_issue == read.ReadError.busy) _setIssue(null);
     }
@@ -105,5 +107,6 @@ extension _DeviceSessionProgress on DeviceSyncSession {
       _service._recordFailure(failure);
     }
     _publish();
+    return attempted;
   }
 }

@@ -6,6 +6,8 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:squid_album/src/platform/device_sync_saf.dart';
 
+import 'device_sync_saf_benchmark.dart';
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const MaterialApp(home: _Probe()));
@@ -25,6 +27,7 @@ class _ProbeState extends State<_Probe> {
   ).join();
   String state = 'Select Documents/NSOAlbumSync';
   bool busy = false;
+  SafTransferBenchmark? benchmark;
   void report(String message) {
     debugPrint('DEVICE_SYNC_SAF_PROBE session=$session $message');
     if (mounted) setState(() => state = message);
@@ -84,8 +87,36 @@ class _ProbeState extends State<_Probe> {
     report('PASS Windows MTP -> Android SAF 123 bytes');
   }
 
+  Future<void> benchmarkTransfer({required bool sending}) async {
+    await saf.cancel();
+    final transfer = benchmark = SafTransferBenchmark(
+      saf,
+      onProgress: (completed, total) {
+        if (completed % 16 == 0 || completed == total) {
+          report('Synthetic ${sending ? 'send' : 'receive'} $completed/$total');
+        }
+      },
+    );
+    setState(() {});
+    const count = int.fromEnvironment(
+      'SAF_BENCHMARK_BLOCKS',
+      defaultValue: 256,
+    );
+    report('Benchmark ready ${transfer.session}');
+    final result = sending
+        ? await transfer.send(blockCount: count)
+        : await transfer.receive(blockCount: count);
+    final seconds = result.elapsed.inMicroseconds / 1000000;
+    report(
+      'PASS ${sending ? 'Android SAF -> Windows MTP' : 'Windows MTP -> Android SAF'} '
+      '${result.verifiedBytes} bytes ${seconds.toStringAsFixed(3)}s '
+      '${(result.verifiedBytes / seconds).round()} B/s',
+    );
+  }
+
   @override
   void dispose() {
+    unawaited(benchmark?.cancel());
     unawaited(saf.cancel());
     super.dispose();
   }
@@ -98,7 +129,19 @@ class _ProbeState extends State<_Probe> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SelectableText('Session: $session\n$state'),
+          SelectableText('Session: ${benchmark?.session ?? session}\n$state'),
+          TextButton(
+            onPressed: busy
+                ? null
+                : () => run(() => benchmarkTransfer(sending: true)),
+            child: const Text('Benchmark Android to Windows'),
+          ),
+          TextButton(
+            onPressed: busy
+                ? null
+                : () => run(() => benchmarkTransfer(sending: false)),
+            child: const Text('Benchmark Windows to Android'),
+          ),
           TextButton(
             onPressed: busy
                 ? null

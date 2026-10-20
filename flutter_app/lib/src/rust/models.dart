@@ -472,6 +472,7 @@ enum MediaKind { image, video }
 class NintendoFriend {
   final String friendId;
   final String nickname;
+  final String? avatarUrl;
   final String note;
   final bool isFavorite;
   final String presence;
@@ -483,6 +484,7 @@ class NintendoFriend {
   const NintendoFriend({
     required this.friendId,
     required this.nickname,
+    this.avatarUrl,
     required this.note,
     required this.isFavorite,
     required this.presence,
@@ -496,6 +498,7 @@ class NintendoFriend {
   int get hashCode =>
       friendId.hashCode ^
       nickname.hashCode ^
+      avatarUrl.hashCode ^
       note.hashCode ^
       isFavorite.hashCode ^
       presence.hashCode ^
@@ -511,6 +514,7 @@ class NintendoFriend {
           runtimeType == other.runtimeType &&
           friendId == other.friendId &&
           nickname == other.nickname &&
+          avatarUrl == other.avatarUrl &&
           note == other.note &&
           isFavorite == other.isFavorite &&
           presence == other.presence &&

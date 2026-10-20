@@ -3,8 +3,7 @@
 use super::{driver::DriverError, receiver::ReceiverError, SessionError};
 use crate::error::CoreError;
 
-#[derive(Clone, Copy)]
-#[cfg_attr(debug_assertions, derive(Debug))]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum Boundary {
     SnapshotLease,
     SnapshotHeader,
@@ -67,6 +66,9 @@ pub(crate) enum Boundary {
     ApplyPermitSqlDeadline,
     ApplySourceLeaseExpired,
     ApplySourceSqlDeadline,
+    UsbPoll,
+    UsbDrainInput,
+    UsbOutput,
 }
 
 pub(crate) fn checkpoint(boundary: Boundary) {
@@ -82,6 +84,7 @@ fn checkpoint_record(boundary: Boundary) -> String {
 }
 
 pub(super) fn core(boundary: Boundary, error: &CoreError) {
+    crate::diagnostics::device(&core_record(boundary, error));
     #[cfg(debug_assertions)]
     emit(&core_record(boundary, error));
     #[cfg(not(debug_assertions))]
@@ -89,6 +92,7 @@ pub(super) fn core(boundary: Boundary, error: &CoreError) {
 }
 
 pub(super) fn receiver(boundary: Boundary, error: &ReceiverError) {
+    crate::diagnostics::device(&receiver_record(boundary, error));
     #[cfg(debug_assertions)]
     emit(&receiver_record(boundary, error));
     #[cfg(not(debug_assertions))]
@@ -96,6 +100,7 @@ pub(super) fn receiver(boundary: Boundary, error: &ReceiverError) {
 }
 
 pub(super) fn driver(boundary: Boundary, error: &DriverError) {
+    crate::diagnostics::device(&format!("boundary={boundary:?} driver={error:?}"));
     #[cfg(debug_assertions)]
     emit(&format!(
         "device_sync boundary={boundary:?} category=Driver reason={error:?}"
@@ -105,6 +110,7 @@ pub(super) fn driver(boundary: Boundary, error: &DriverError) {
 }
 
 pub(super) fn channel(boundary: Boundary, error: &SessionError) {
+    crate::diagnostics::device(&format!("boundary={boundary:?} session={error:?}"));
     #[cfg(debug_assertions)]
     emit(&format!(
         "device_sync boundary={boundary:?} category=Session reason={error:?}"
@@ -114,13 +120,19 @@ pub(super) fn channel(boundary: Boundary, error: &SessionError) {
 }
 
 pub(super) fn usb(kind: super::usb::UsbActionKind, error: &super::read_model::ReadError) {
+    crate::diagnostics::device(&usb_record(kind, error));
     #[cfg(debug_assertions)]
     emit(&usb_record(kind, error));
     #[cfg(not(debug_assertions))]
     let _ = (kind, error);
 }
 
-#[cfg(debug_assertions)]
+pub(super) fn measurement(record: &str) {
+    crate::diagnostics::device_measurement(record);
+    #[cfg(debug_assertions)]
+    emit_with_priority(record, 4);
+}
+
 fn core_record(boundary: Boundary, error: &CoreError) -> String {
     let (category, reason) = match error {
         CoreError::LibraryBusy => ("LibraryBusy", "none"),
@@ -167,7 +179,6 @@ fn core_record(boundary: Boundary, error: &CoreError) -> String {
     format!("device_sync boundary={boundary:?} category={category} reason={reason}")
 }
 
-#[cfg(debug_assertions)]
 fn known_reason(value: &str) -> &'static str {
     match value {
         "device sync: noncanonical tag" => "noncanonical_tag",
@@ -206,7 +217,6 @@ fn known_reason(value: &str) -> &'static str {
     }
 }
 
-#[cfg(debug_assertions)]
 fn receiver_record(boundary: Boundary, error: &ReceiverError) -> String {
     match error {
         ReceiverError::Core(error) => core_record(boundary, error),
@@ -229,20 +239,24 @@ fn receiver_record(boundary: Boundary, error: &ReceiverError) -> String {
     }
 }
 
-#[cfg(debug_assertions)]
 fn usb_record(kind: super::usb::UsbActionKind, error: &super::read_model::ReadError) -> String {
     format!("device_sync boundary=UsbAction action={kind:?} category=ReadError reason={error:?}")
 }
 
-#[cfg(all(debug_assertions, not(target_os = "android")))]
+#[cfg(debug_assertions)]
 fn emit(record: &str) {
+    emit_with_priority(record, 6);
+}
+
+#[cfg(all(debug_assertions, not(target_os = "android")))]
+fn emit_with_priority(record: &str, _priority: i32) {
     use std::io::Write;
     // A closed diagnostic stream must not alter transfer behavior.
     let _ = writeln!(std::io::stderr().lock(), "{record}");
 }
 
 #[cfg(all(debug_assertions, target_os = "android"))]
-fn emit(record: &str) {
+fn emit_with_priority(record: &str, priority: i32) {
     #[link(name = "log")]
     extern "C" {
         fn __android_log_write(
@@ -254,7 +268,7 @@ fn emit(record: &str) {
     if let Ok(record) = std::ffi::CString::new(record) {
         // Both tag and message originate only from static enums/allowlists.
         unsafe {
-            let _ = __android_log_write(6, c"NSOAlbumDeviceSync".as_ptr(), record.as_ptr());
+            let _ = __android_log_write(priority, c"NSOAlbumDeviceSync".as_ptr(), record.as_ptr());
         }
     }
 }

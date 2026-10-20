@@ -1,5 +1,6 @@
 //! Bounded ordered ciphertext envelopes; MTP filesystem operations are platform-owned.
 use super::*;
+pub(crate) mod bundle;
 
 /// Each direction owns a separate counter. Only call decode on atomically completed
 /// `.block` files in the selected operation mailbox; never follow directories/symlinks.
