@@ -4,30 +4,47 @@
 `flutter test` 不等于真实桌面窗口、播放器、FFmpeg 或 USB 设备已通过验收。
 所有测试均使用合成数据，不需要真实 Nintendo 账号或个人媒体。
 
+`test/windows_media_viewer_device_test.dart` 需显式使用
+`flutter run --debug -d windows -t test/windows_media_viewer_device_test.dart`
+运行；它采用 Live binding、自制视频和内存后端，检查正式详情页的暂停、
+过期编辑取消、编辑结果交接及有界相邻预载。普通宿主 `flutter test`
+明确跳过这些原生用例。用例断言和原生进程退出分别记账，不能用测试输出成功
+掩盖非零退出或用该入口代替 Rust 入库验收。运行后重新构建普通主入口。
+`flutter run` 自身退出0也不能证明原生子进程退出0。验证普通窗口关闭时须先确认
+进程/父命令行属于本次合成入口，保留该子进程句柄，再读取其真实退出码；
+不能向用户普通窗口或仅按进程名匹配的窗口发送关闭请求。
+
 ## 本地构建空间约定
 
 本地 Windows、Android 和 macOS Debug/原生验证优先在 C 盘独立构建副本中执行，
 不要把大型 Rust target、Flutter build、Gradle 中间目录长期写入 F 盘源码工作区。
-当前约定的本地副本位于 `C:\Users\cypas\.codex\tmp\` 下，按专题创建独立目录；
-测试完成后只保留仍在使用的 Debug 副本，旧构建缓存按确认后的清单清理。
+本地副本及工具缓存复用维护环境中已约定的固定基准目录，不按日期、轮次或
+普通源码改动重复创建隔离构建根。使用其他隔离根须先说明原因、路径并取得
+维护者同意；已有缓存及历史产物不得擅自清理、移动或删除。
 
 Flutter 构建和测试在 C 盘构建副本的 `flutter_app` 下运行；不要使用
 `flutter --build-dir …`，该全局参数并不适用于当前工具链。源码修改后用
 非删除式复制更新副本，不用镜像删除覆盖其中保留的验收资料。例如：
 
 ```powershell
-Set-Location <C盘构建副本>\flutter_app
+$env:CARGO_TARGET_DIR = Join-Path $buildRoot 'cargo-target'
+$env:GRADLE_USER_HOME = Join-Path $buildRoot 'gradle-home'
+$env:PUB_CACHE = Join-Path $buildRoot 'pub-cache'
+$env:NSO_GRADLE_BUILD_DIR = Join-Path $buildRoot 'source\flutter_app\build'
+Set-Location (Join-Path $buildRoot 'source\flutter_app')
 flutter build windows --debug
 flutter build apk --debug --target-platform android-arm64
 flutter test
-cargo test --manifest-path F:\PycharmProjects\nso_photo\rust_core\Cargo.toml `
-  --target-dir C:\Users\cypas\.codex\tmp\nsoalbum-local-build\rust-target --lib
+cargo test --manifest-path ..\rust_core\Cargo.toml --lib
 ```
 
 Rust 可从源码目录运行并使用 C 盘 `--target-dir`。不要为单次测试改写全局
 Flutter 配置或并行启动争用同一构建目录的原生构建。
 
-路径仅为本机示例，不写入应用配置、发布包或 CI。CI runner 使用工作流自己的
+`$buildRoot` 必须在开始前解析到该维护环境已批准的 C 盘固定基准；示例不负责
+创建或清理它。构建后核对 APK/EXE、Gradle 项目/用户缓存、intermediates、
+Cargo/Cargokit 输出均位于基准内；发现意外写入立即报告，不自行清理。
+这些路径不写入应用配置、发布包或 CI。CI runner 使用工作流自己的
 临时构建目录和缓存；仓库中的 `flutter_app/build/`、`.dart_tool/`、
 `rust_core/target/`、Android/Gradle 输出仍是可重建的忽略目录。
 
@@ -83,7 +100,17 @@ Dart 分析和完整 Flutter 测试。完整测试在 APK 构建后启用
 `NSO_VERIFY_ANDROID_BUILD=1`，执行真实 Gradle ABI 配置、编译的应用入口、
 品牌资源、Release 网络权限及最终 APK 权限检查；其他平台测试保留明确 skip。
 原生 JVM 更新规则回归检查官方资产地址、包身份、签名、受限复制/哈希及后台任务生命周期。
+同一 opt-in 套件显式执行通知权限协调器的 JUnit 回归，覆盖同步/更新共用权限弹窗、
+待发摘要、拒绝后不重复请求及迟到回调；不是仅编译测试类，也不代替真实系统弹窗验收。
 测试统计来自本次日志，报告 artifact 为 `validation-android-arm64`。
+
+Android 构建与验收之间直接传递 APK、同提交的封存清单及 SHA-256 文件，
+工作流不再自行创建 ZIP/TAR。中间 artifact 绑定平台、架构、版本、构建号和
+提交；最终测试 artifact 名为 `android-arm64-ci-test-<version>-<build>`，
+内容为可安装的 ARM64 测试 APK、同提交封存清单和 SHA-256 文件。
+GitHub artifact 服务自身的下载容器不由仓库
+控制，不代表 APK 仍需执行项目自定义解包步骤。正式签名 artifact 名称及
+Release 签名、Secrets 门禁保持不变。
 
 验收 job 只下载同次 run、同提交的中间 artifact，不重新构建。使用现有
 `ci_bundle.ps1` 核对提交、平台、SemVer、构建号和所有文件 SHA-256，再通过
@@ -93,7 +120,8 @@ AArch64；Rust Core、Flutter AOT/引擎、libmpv 和 FFmpeg 必须存在。
 静态报告 artifact 为 `verification-android-arm64`。
 
 当前使用工程既有测试签名，产物明确命名为
-`NSOAlbum-Android-arm64-CI-Test.apk`，artifact 为 `android-arm64-ci-test`。
+`NSOAlbum-Android-arm64-CI-Test.apk`，artifact 为
+`android-arm64-ci-test-<version>-<build>`。
 它不是正式签名发布包，不能作为稳定升级渠道；不匹配 Release 的
 `native-*` 下载范围，也不进入正式 Release 资产。
 ARM64 运行节点尚未确认，本阶段不自动配置自托管 runner、
@@ -212,6 +240,80 @@ flutter test
 修改跨语言 API 时，先在 `flutter_app` 运行
 `.\tool\generate_bridge.ps1`，再检查 Rust 和 Dart 两侧；不得手工修改生成桥接。
 CI 使用完整测试套件，不通过排除平台测试隐藏不支持的平台行为。
+
+### Windows WebView DLL 生命周期
+
+Windows runner 先从 System32 可选加载 CoreMessaging，再通过延迟加载注册
+WebView 消费者，使 provider 先初始化、后卸载。未提供该系统组件时保留插件
+原有的运行时能力检查，不把较新的队列 API 硬绑定为程序加载入口。不通过额外
+AddRef、跳过析构、固定 pin 或修改包缓存规避退出失败，也不复制系统 DLL。
+
+`flutter_app/tool/windows_plugin_lifetime.cmake` 对固定版本插件的析构边界生成
+构建树内派生源码：WebView 先销毁消费者，再释放所属线程的 composition/
+dispatcher 资源；FFmpeg 在卸载库前停止并等待原生回调消费线程结束。
+源片段或目标文件列表变化时 CMake 必须失败，升级依赖时重新审查，不静默套用。
+它不修改共享 pub 缓存，也不表示活跃编码任务已完成退出验收。
+仅 Android Wi-Fi 使用的权限实现不注册到桌面，以免创建无用途的定位订阅。
+
+原生关闭验收须保留测试子进程句柄，核对其 EXE 和合成入口父进程后发送
+WM_CLOSE，等待并读取该子进程的实际退出码。`flutter run` 或交互式 `q`
+返回 0 只能证明工具正常结束，不能证明原生应用析构成功。
+SDK-only 探针、成品 PE 检查、视频断言及实际窗口关闭分别记结果。
+
+在准备好的构建副本中，对普通 Debug 包或同次 CI 已验摘要的 Release 包执行：
+
+```powershell
+$env:NSO_VERIFY_WINDOWS_WEBVIEW_LOADER = '1'
+$env:NSO_WINDOWS_WEBVIEW_BUNDLE = '<prepared bundle directory>'
+flutter test test/windows_webview_loader_test.dart --reporter expanded
+Remove-Item Env:NSO_VERIFY_WINDOWS_WEBVIEW_LOADER, Env:NSO_WINDOWS_WEBVIEW_BUNDLE
+```
+
+该回归读取实际成品 PE 的延迟加载关系，不启动账号或图库。CI 原生 Windows 验收 job
+在还原、核验同次包后显式执行此门禁，再执行已有正常/重开/安全模式冒烟；
+普通宿主完整测试明确跳过需要预先构建包的用例，不把 skip 计为通过。
+
+`test/fixtures/webview_lifetime/run_probe.ps1` 是额外的 SDK-only 诊断，
+以子进程对照动态加载/显式导入与静态卸载/提前释放/关闭排空三种方式：
+
+```powershell
+./test/fixtures/webview_lifetime/run_probe.ps1 `
+  -ApprovedBuildRoot $buildRoot -OutputDirectory (Join-Path $buildRoot 'temp')
+./test/fixtures/webview_lifetime/run_probe.ps1 `
+  -ApprovedBuildRoot $buildRoot -OutputDirectory (Join-Path $buildRoot 'temp') `
+  -PreloadProvider
+```
+
+先按仓库本地构建约定设置 `$buildRoot`，输出目录必须已存在且位于该根内。
+脚本要求 PowerShell 7。探针使用 Debug C++ 运行库、真实 Windows SDK 与独立 DLL，不创建 UI、不初始化
+Flutter/Rust、不访问任何应用账号或个人库；动态加载负对照可能故意以原生异常
+退出，不代表正式应用已修复。报告保存实测退出码，SDK 初始化失败不能作为
+复现成功；只允许终止自己创建且超时的探针子进程，不操作用户应用。
+`-StaticDependency` 和 `-DescriptorOnly` 仅供链接方式对照，不是产品当前配置；
+空导入描述符未必能建立有效的 provider 生命周期，不能仅凭编译成功判定有效。
+
+### Windows 系统通知 Live 验收
+
+先在已准备的构建副本运行 `flutter test test/windows_sync_notifications_test.dart`，
+构建既有 `TEMP/nsoalbum-sync-notification-native` 内的 SDK 夹具。显式 Live
+入口不初始化 Rust、账号或图库；只发送合成的中英多账号汇总，比对系统
+通知历史中的固定 tag/group 和确切文字，再通过实际 COM 激活恢复同一个
+隐藏窗口。它可能显示测试通知，不更改系统通知权限；只在当前通知仍与
+本次合成文字完全匹配时删除，不清空其他应用或本应用的其他历史。
+
+```powershell
+$env:NSOALBUM_VERIFY_SYSTEM_NOTIFICATIONS = '1'
+$env:NSOALBUM_NOTIFICATION_NATIVE_FIXTURE = Join-Path $env:TEMP `
+  'nsoalbum-sync-notification-native/Debug/sync_notification_fixture.exe'
+flutter run -d windows --debug --no-pub `
+  -t test/windows_sync_notifications_device_test.dart
+```
+
+遵守仓库固定 C 盘输出约定，先确认没有用户应用实例。此入口不得附加
+`--ci-smoke`，因为该 runner 模式有意禁止系统通知注册。普通宿主套件
+明确 skip，系统通知关闭/不支持时保留实际失败，不能以模拟成功代替。
+COM 激活是系统回调路径验收，不等同于人工点击通知横幅；结束后核对测试
+子进程真实 WM_CLOSE 退出码并恢复普通 `lib/main.dart` Debug 入口。
 
 ## Flutter 测试分类
 

@@ -113,7 +113,15 @@ impl CoreApi {
 
     pub fn save_settings(&self, settings: &AppSettings) -> CoreResult<()> {
         validate_settings(settings)?;
-        self.database.set_setting("app.settings", settings)
+        let previous_proxy = self
+            .database
+            .get_setting::<AppSettings>("app.settings")?
+            .and_then(|previous| previous.proxy_url);
+        self.database.set_setting("app.settings", settings)?;
+        if previous_proxy != settings.proxy_url {
+            self.account_tools.invalidate_network_context()?;
+        }
+        Ok(())
     }
 
     pub fn load_settings(&self) -> CoreResult<Option<AppSettings>> {
@@ -1417,7 +1425,10 @@ fn edited_media_candidate(
     game_name: Option<String>,
 ) -> MediaCandidate {
     let game_name = game_name.unwrap_or_else(|| source.game_name.clone());
-    let captured_at = source.captured_at.or(source.imported_at);
+    // Generated media is a new library item. Keep source capture metadata out
+    // of the gallery sort key so frame/edited/merged outputs appear newest.
+    let captured_at = None;
+    let generated_at = Utc::now();
     let unique_id = uuid::Uuid::new_v4().simple().to_string();
     MediaCandidate {
         remote_id: None,
@@ -1432,7 +1443,7 @@ fn edited_media_candidate(
         expires_at: None,
         original_name: Some(readable_media_name(
             &game_name,
-            captured_at.unwrap_or_else(Utc::now),
+            generated_at,
             Some(&unique_id),
             kind,
         )),
@@ -1773,6 +1784,8 @@ mod tests {
             compact_tag_display: true,
             auto_play_video: false,
             auto_sync_on_launch: false,
+            notify_on_auto_sync: true,
+            show_splatoon_schedule: true,
             close_behavior: "ask".into(),
             custom_font_paths: Vec::new(),
             sync_policy: SyncPolicy {
@@ -1828,6 +1841,8 @@ mod tests {
             compact_tag_display: true,
             auto_play_video: false,
             auto_sync_on_launch: false,
+            notify_on_auto_sync: true,
+            show_splatoon_schedule: true,
             close_behavior: "ask".into(),
             custom_font_paths: Vec::new(),
             sync_policy: SyncPolicy {
@@ -1860,6 +1875,8 @@ mod tests {
             compact_tag_display: true,
             auto_play_video: false,
             auto_sync_on_launch: false,
+            notify_on_auto_sync: true,
+            show_splatoon_schedule: true,
             close_behavior: "ask".into(),
             custom_font_paths: Vec::new(),
             sync_policy: SyncPolicy::default(),
@@ -2004,6 +2021,8 @@ mod tests {
             compact_tag_display: true,
             auto_play_video: false,
             auto_sync_on_launch: false,
+            notify_on_auto_sync: true,
+            show_splatoon_schedule: true,
             close_behavior: "ask".into(),
             custom_font_paths: Vec::new(),
             sync_policy: SyncPolicy::default(),
@@ -2275,6 +2294,7 @@ mod tests {
             .unwrap();
         assert_ne!(saved_copy.id, original.id);
         assert_ne!(saved_copy.original_name, original.original_name);
+        assert_eq!(saved_copy.captured_at, None);
         assert!(saved_copy.favorite);
         assert_eq!(saved_copy.note.as_deref(), Some("edited note"));
         assert_eq!(saved_copy.tags, vec!["Edited", "剪辑"]);
@@ -2373,6 +2393,8 @@ mod tests {
             compact_tag_display: true,
             auto_play_video: false,
             auto_sync_on_launch: false,
+            notify_on_auto_sync: true,
+            show_splatoon_schedule: true,
             close_behavior: "ask".into(),
             custom_font_paths: Vec::new(),
             sync_policy: SyncPolicy::default(),
@@ -2609,6 +2631,8 @@ mod tests {
             compact_tag_display: true,
             auto_play_video: false,
             auto_sync_on_launch: false,
+            notify_on_auto_sync: true,
+            show_splatoon_schedule: true,
             close_behavior: "ask".into(),
             custom_font_paths: Vec::new(),
             sync_policy: SyncPolicy::default(),
@@ -2680,6 +2704,8 @@ mod tests {
             compact_tag_display: true,
             auto_play_video: false,
             auto_sync_on_launch: false,
+            notify_on_auto_sync: true,
+            show_splatoon_schedule: true,
             close_behavior: "ask".into(),
             custom_font_paths: Vec::new(),
             sync_policy: SyncPolicy {

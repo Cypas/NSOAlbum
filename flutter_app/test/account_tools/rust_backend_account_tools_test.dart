@@ -12,6 +12,7 @@ import 'package:squid_album/src/backend/device_sync/account_gate.dart';
 import 'package:squid_album/src/backend/rust_initialization.dart';
 import 'package:squid_album/src/rust/frb_generated.dart';
 import 'package:squid_album/src/rust/models.dart';
+import 'package:squid_album/src/rust/nso/provider.dart';
 import 'package:squid_album/src/rust/settings.dart';
 
 import '../device_sync/startup_native_boundary.dart';
@@ -50,6 +51,128 @@ void main() {
   Future<RustBackend> open() => RustBackend.open(
     storage: const FlutterSecureStorage(),
     applicationRoot: root.path,
+  );
+
+  test('selected-account sync uses the account-scoped Rust refresh entry and records separate counts', () async {
+    storage.values[_tokensKey] = jsonEncode({
+      _account: 'synthetic-old-session',
+      'other-account': 'synthetic-other-session',
+    });
+    final backend = await open();
+    final result = await backend.syncNintendoAlbum();
+
+    expect(result, rust.syncResult);
+    expect(rust.syncRequests, [
+      (account: _account, token: 'synthetic-old-session', proxy: null),
+    ]);
+    expect(rust.syncHistory, [
+      {
+        'account': _account,
+        'status': 'partial_failure',
+        'found': BigInt.from(9),
+        'downloaded': BigInt.from(2),
+        'duplicates': BigInt.one,
+        'existing': BigInt.from(5),
+        'failed': BigInt.one,
+      },
+    ]);
+    expect(jsonDecode(storage.values[_tokensKey]!), {
+      _account: 'synthetic-old-session',
+      'other-account': 'synthetic-other-session',
+    });
+  });
+
+  test('selected-account rate limit is recorded once without a Flutter authentication retry', () async {
+    final backend = await open();
+    rust.syncError = StateError('synthetic HTTP 429 rate limit');
+
+    await expectLater(backend.syncNintendoAlbum(), throwsStateError);
+
+    expect(rust.syncRequests.length, 1);
+    expect(rust.syncHistory, [
+      {
+        'account': _account,
+        'status': 'rate_limited',
+        'found': BigInt.zero,
+        'downloaded': BigInt.zero,
+        'duplicates': BigInt.zero,
+        'existing': null,
+        'failed': BigInt.zero,
+      },
+    ]);
+  });
+
+  test(
+    'account removal during a sync credential read rejects the captured token',
+    () async {
+      final backend = await open();
+      storage.readGate = Completer<void>();
+      final pending = backend
+          .syncNintendoAccount(_account)
+          .then<Object?>(
+            (_) => null,
+            onError: (Object error, StackTrace _) => error,
+          );
+      await storage.tokenReadStarted.future;
+      await backend.removeNintendoAccount(_account);
+      storage.readGate!.complete();
+
+      expect(await pending, isA<StateError>());
+      expect(rust.syncRequests, isEmpty);
+      expect(rust.syncHistory.single['status'], 'cancelled');
+      expect(storage.values.containsKey(_tokensKey), isFalse);
+    },
+  );
+
+  test(
+    'a same-ID re-login cannot revive an older sync credential read',
+    () async {
+      final backend = await open();
+      storage.readGate = Completer<void>();
+      final pending = backend
+          .syncNintendoAccount(_account)
+          .then<Object?>(
+            (_) => null,
+            onError: (Object error, StackTrace _) => error,
+          );
+      await storage.tokenReadStarted.future;
+      await backend.removeNintendoAccount(_account);
+      storage.values[_tokensKey] = jsonEncode({
+        _account: 'synthetic-new-session',
+      });
+      // Login publishes availability only after writing the new secure token.
+      backend.accountToolLifecycle.accountAvailable(_account);
+      storage.readGate!.complete();
+
+      expect(await pending, isA<StateError>());
+      expect(rust.syncRequests, isEmpty);
+      expect(rust.syncHistory.single['status'], 'cancelled');
+      final result = await backend.syncNintendoAccount(_account);
+      expect(result.downloaded, BigInt.from(2));
+      expect(rust.syncRequests, [
+        (account: _account, token: 'synthetic-new-session', proxy: null),
+      ]);
+      expect(rust.syncHistory.last['status'], 'partial_failure');
+    },
+  );
+
+  test(
+    'cancelling while selecting the sync account prevents later dispatch',
+    () async {
+      final backend = await open();
+      storage.readGate = Completer<void>();
+      final pending = backend.syncNintendoAlbum().then<Object?>(
+        (_) => null,
+        onError: (Object error, StackTrace _) => error,
+      );
+      await storage.tokenReadStarted.future;
+      expect(await backend.cancelSync(), isTrue);
+      storage.readGate!.complete();
+
+      expect(await pending, isA<StateError>());
+      expect(rust.syncRequests, isEmpty);
+      expect(rust.syncCancellations, 1);
+    },
   );
 
   test('device preparation is Busy for the whole normal credential-read/request lifetime', () async {
@@ -114,6 +237,89 @@ void main() {
       expect(rust.initializedRoots, [root.path]);
     },
   );
+
+  test(
+    'own friend code survives a backend restart without another request',
+    () async {
+      final backend = await open();
+      final first = await backend.loadNintendoFriendCode(_account, 'own-first');
+      expect(first.friendCode, '1234-5678-9012');
+      await backend.close();
+      final reopened = await open();
+      final cached = await reopened.loadNintendoFriendCode(
+        _account,
+        'own-cached',
+      );
+      expect(cached.friendCode, '1234-5678-9012');
+      expect(rust.friendCodeDispatches, ['own-first']);
+    },
+  );
+
+  test(
+    'own friend codes are isolated by account and cleared on removal',
+    () async {
+      storage.values[_tokensKey] = jsonEncode({
+        _account: 'synthetic-old-session',
+        'second-account': 'synthetic-second-session',
+      });
+      final backend = await open();
+      final first = await backend.loadNintendoFriendCode(_account, 'own-a');
+      final second = await backend.loadNintendoFriendCode(
+        'second-account',
+        'own-b',
+      );
+      expect(first.friendCode, '1234-5678-9012');
+      expect(second.friendCode, '9876-5432-1098');
+      await backend.removeNintendoAccount(_account);
+      expect(
+        storage.values.values.any((value) => value.contains('1234-5678-9012')),
+        isFalse,
+      );
+      expect(
+        (await backend.loadNintendoFriendCode(
+          'second-account',
+          'own-b-again',
+        )).friendCode,
+        '9876-5432-1098',
+      );
+      expect(rust.friendCodeDispatches, ['own-a', 'own-b']);
+    },
+  );
+
+  test(
+    'a removed accounts late friend code cannot recreate its persistent cache',
+    () async {
+      final backend = await open();
+      rust.friendCodeGate = Completer<NintendoFriendCodeSnapshot>();
+      final request = backend.loadNintendoFriendCode(_account, 'own-late');
+      final rejected = expectLater(request, throwsStateError);
+      await rust.friendCodeStarted.future;
+      await backend.removeNintendoAccount(_account);
+      rust.friendCodeGate!.complete(
+        const NintendoFriendCodeSnapshot(friendCode: '1234-5678-9012', url: ''),
+      );
+      await rejected;
+      expect(
+        storage.values.values.any((value) => value.contains('1234-5678-9012')),
+        isFalse,
+      );
+    },
+  );
+
+  test('a failed friend code fetch is retried rather than cached', () async {
+    final backend = await open();
+    rust.friendCodeError = StateError('synthetic unavailable');
+    await expectLater(
+      backend.loadNintendoFriendCode(_account, 'own-failed'),
+      throwsStateError,
+    );
+    rust.friendCodeError = null;
+    expect(
+      (await backend.loadNintendoFriendCode(_account, 'own-retry')).friendCode,
+      '1234-5678-9012',
+    );
+    expect(rust.friendCodeDispatches, ['own-failed', 'own-retry']);
+  });
 
   test(
     'a request after the removal snapshot cannot dispatch or recreate cache',
@@ -199,7 +405,24 @@ void main() {
 class _RustBoundary with NoPendingStartupBoundary implements RustLibApi {
   final initializedRoots = <String>[];
   final friendDispatches = <String>[];
+  final syncRequests = <({String account, String token, String? proxy})>[];
+  final syncHistory = <Map<String, Object?>>[];
+  final syncResult = SyncSummary(
+    jobId: 'synthetic-sync',
+    totalFound: BigInt.from(9),
+    downloaded: BigInt.from(2),
+    duplicates: BigInt.one,
+    skippedRemote: BigInt.from(5),
+    failed: BigInt.one,
+    errors: const [SyncItemError(message: 'synthetic media download failure')],
+  );
+  Object? syncError;
+  int syncCancellations = 0;
   final cancelled = <String>[];
+  final friendCodeDispatches = <String>[];
+  final friendCodeStarted = Completer<void>();
+  Completer<NintendoFriendCodeSnapshot>? friendCodeGate;
+  Object? friendCodeError;
   final accountCache = <String, String>{};
   final cacheCleared = Completer<void>();
   final friendDispatched = Completer<void>();
@@ -217,6 +440,69 @@ class _RustBoundary with NoPendingStartupBoundary implements RustLibApi {
   }) async {}
 
   @override
+  Future<CoralSession> crateBridgeEstablishCoralSessionForAccount({
+    required String sessionToken,
+    required String expectedAccount,
+    String? proxyUrl,
+  }) async => CoralSession(
+    accessToken: 'synthetic-coral',
+    naId: expectedAccount,
+    nickname: 'Synthetic account',
+  );
+
+  @override
+  Future<SyncSummary> crateBridgeSyncNso({
+    required CoralSession session,
+    String? proxyUrl,
+  }) async {
+    if (syncError case final failure?) throw failure;
+    return syncResult;
+  }
+
+  @override
+  Future<SyncSummary> crateBridgeSyncNsoFromSessionTokenForAccount({
+    required String sessionToken,
+    required String expectedAccount,
+    String? proxyUrl,
+  }) async {
+    syncRequests.add((
+      account: expectedAccount,
+      token: sessionToken,
+      proxy: proxyUrl,
+    ));
+    if (syncError case final failure?) throw failure;
+    return syncResult;
+  }
+
+  @override
+  Future<bool> crateBridgeCancelCurrentSync() async {
+    syncCancellations++;
+    return true;
+  }
+
+  @override
+  Future<SyncRuntimeState> crateBridgeRecordSyncAttempt({
+    required String accountId,
+    required String status,
+    required BigInt totalFound,
+    required BigInt downloaded,
+    required BigInt duplicates,
+    BigInt? skippedRemote,
+    required BigInt failed,
+  }) async {
+    syncHistory.add({
+      'account': accountId,
+      'status': status,
+      'found': totalFound,
+      'downloaded': downloaded,
+      'duplicates': duplicates,
+      'existing': skippedRemote,
+      'failed': failed,
+    });
+    return const SyncRuntimeState();
+  }
+
+  @override
   Future<AppSettings?> crateBridgeLoadSettings() async => const AppSettings(
     libraryPath: 'synthetic-library',
     theme: 'ocean',
@@ -228,6 +514,8 @@ class _RustBoundary with NoPendingStartupBoundary implements RustLibApi {
     compactTagDisplay: true,
     autoPlayVideo: false,
     autoSyncOnLaunch: false,
+    notifyOnAutoSync: true,
+    showSplatoonSchedule: true,
     closeBehavior: 'ask',
     customFontPaths: [],
     syncPolicy: SyncPolicy(
@@ -253,6 +541,24 @@ class _RustBoundary with NoPendingStartupBoundary implements RustLibApi {
   }) async {
     cancelled.add(operationId);
     return true;
+  }
+
+  @override
+  Future<NintendoFriendCodeSnapshot> crateBridgeNintendoFriendCode({
+    required String accountId,
+    required String sessionToken,
+    required String operationId,
+    String? proxyUrl,
+  }) async {
+    friendCodeDispatches.add(operationId);
+    if (!friendCodeStarted.isCompleted) friendCodeStarted.complete();
+    final error = friendCodeError;
+    if (error != null) throw error;
+    if (friendCodeGate != null) return friendCodeGate!.future;
+    return NintendoFriendCodeSnapshot(
+      friendCode: accountId == _account ? '1234-5678-9012' : '9876-5432-1098',
+      url: '',
+    );
   }
 
   @override

@@ -128,6 +128,236 @@ void main() {
     },
   );
 
+  test('automatic multi-account sync publishes one merged notification after all accounts', () async {
+    final backend = _NotifyingAccountBackend(
+      outcomes: {
+        'a': _summary(
+          'a',
+          downloaded: 2,
+          duplicates: 1,
+          skippedRemote: 2,
+          failed: 1,
+        ),
+        'b': _summary(
+          'b',
+          downloaded: 3,
+          duplicates: 2,
+          skippedRemote: 1,
+          failed: 2,
+        ),
+      },
+    );
+    final controller = SyncController(backend, allAccounts: true);
+
+    await controller.run(automatic: true);
+
+    expect(backend.notifications, [(5, 6, 3, 2)]);
+    expect(controller.accountResults.keys, ['a', 'b']);
+    expect(controller.state, SyncState.completed);
+    controller.dispose();
+  });
+
+  test(
+    'manual sync and automatic sync without additions do not notify',
+    () async {
+      final backend = _NotifyingAccountBackend(
+        outcomes: {
+          'a': _summary('a', duplicates: 2),
+          'b': _summary('b', skippedRemote: 3),
+        },
+      );
+      final controller = SyncController(backend, allAccounts: true);
+
+      await controller.run();
+      await controller.run(automatic: true);
+
+      expect(backend.notifications, isEmpty);
+      controller.dispose();
+    },
+  );
+
+  test('automatic summary includes account-level failures alongside downloaded media', () async {
+    final backend = _NotifyingAccountBackend(
+      outcomes: {
+        'a': _summary('a', downloaded: 2),
+        'b': StateError('network unavailable'),
+      },
+    );
+    final controller = SyncController(backend, allAccounts: true);
+
+    await controller.run(automatic: true);
+
+    expect(backend.notifications, [(2, 0, 0, 2)]);
+    expect(backend.failedAccounts, 1);
+    expect(controller.accountErrors, contains('b'));
+    controller.dispose();
+  });
+
+  test('disabled and cancelled automatic sync do not notify', () async {
+    final disabled = _NotifyingAccountBackend(
+      outcomes: {'a': _summary('a', downloaded: 1), 'b': _summary('b')},
+    );
+    disabled.settings = copyAppSettings(
+      disabled.settings,
+      notifyOnAutoSync: false,
+    );
+    final disabledController = SyncController(disabled, allAccounts: true);
+    await disabledController.run(automatic: true);
+    expect(disabled.notifications, isEmpty);
+    disabledController.dispose();
+
+    final cancelled = _NotifyingAccountBackend(
+      outcomes: {
+        'a': _summary('a', downloaded: 1),
+        'b': _summary('b', downloaded: 1),
+      },
+      preparingAccount: 'a',
+    );
+    final cancelledController = SyncController(cancelled, allAccounts: true);
+    final pending = cancelledController.run(automatic: true);
+    await cancelled.preparationStarted.future;
+    await cancelledController.cancel();
+    await pending;
+
+    expect(cancelled.notifications, isEmpty);
+    expect(cancelledController.state, SyncState.cancelled);
+    cancelledController.dispose();
+  });
+
+  test(
+    'notification and diagnostic logging failures do not fail a completed sync',
+    () async {
+      final backend = _NotifyingAccountBackend(
+        outcomes: {'a': _summary('a', downloaded: 1), 'b': _summary('b')},
+        failNotification: true,
+        failLogging: true,
+      );
+      final controller = SyncController(backend, allAccounts: true);
+
+      await expectLater(controller.run(automatic: true), completes);
+
+      expect(controller.state, SyncState.completed);
+      expect(controller.accountResults.keys, ['a', 'b']);
+      controller.dispose();
+    },
+  );
+
+  for (final firstFails in [false, true]) {
+    test(
+      'disposed automatic queue cannot advance or notify after a late ${firstFails ? 'failure' : 'success'}',
+      () async {
+        final backend = _NotifyingAccountBackend(
+          outcomes: {
+            'a': firstFails
+                ? StateError('synthetic network failure')
+                : _summary('a', downloaded: 2),
+            'b': _summary('b', downloaded: 1),
+          },
+          preparingAccount: 'a',
+        );
+        final controller = SyncController(backend, allAccounts: true);
+        final pending = controller.run(automatic: true);
+        await backend.preparationStarted.future;
+
+        controller.dispose();
+        backend.preparationReleased.complete();
+        await pending;
+
+        expect(backend.accountCalls, ['a']);
+        expect(backend.notifications, isEmpty);
+      },
+    );
+  }
+
+  test('a late selected-account result cannot notify after disposal', () async {
+    final result = Completer<SyncSummary>();
+    final backend = _NotifyingLegacyBackend.pending(result.future);
+    final controller = SyncController(backend);
+    final pending = controller.run(automatic: true);
+
+    controller.dispose();
+    result.complete(_summary('desktop', downloaded: 2));
+    await pending;
+
+    expect(backend.notifications, isEmpty);
+  });
+
+  test('late account discovery cannot start a disposed queue', () async {
+    final backend = _LateDiscoveredNotifyingBackend();
+    final controller = SyncController(backend, allAccounts: true);
+    final pending = controller.run(automatic: true);
+    await backend.discoveryStarted.future;
+
+    controller.dispose();
+    backend.profiles.complete(const [
+      NintendoAccountProfile(accountId: 'a', nickname: 'A'),
+      NintendoAccountProfile(accountId: 'b', nickname: 'B'),
+    ]);
+    await pending;
+
+    expect(backend.accountCalls, isEmpty);
+    expect(backend.notifications, isEmpty);
+  });
+
+  test(
+    'late discovery failure cannot call a retired diagnostic backend',
+    () async {
+      final backend = _LateDiscoveredNotifyingBackend(failLogging: true);
+      final controller = SyncController(backend, allAccounts: true);
+      final pending = controller.run(automatic: true);
+      await backend.discoveryStarted.future;
+
+      controller.dispose();
+      backend.profiles.completeError(StateError('synthetic discovery failure'));
+
+      await expectLater(pending, completes);
+      expect(backend.accountCalls, isEmpty);
+    },
+  );
+
+  test(
+    'late desktop failure cannot call a retired diagnostic backend',
+    () async {
+      final result = Completer<SyncSummary>();
+      final backend = _NotifyingLegacyBackend.pending(
+        result.future,
+        failLogging: true,
+      );
+      final controller = SyncController(backend);
+      final pending = controller.run(automatic: true);
+
+      controller.dispose();
+      result.completeError(StateError('synthetic late network failure'));
+
+      await expectLater(pending, completes);
+      expect(backend.notifications, isEmpty);
+    },
+  );
+
+  test(
+    'selected-account desktop automatic sync also sends its completion',
+    () async {
+      final backend = _NotifyingLegacyBackend(
+        _summary(
+          'desktop',
+          downloaded: 2,
+          duplicates: 1,
+          skippedRemote: 3,
+          failed: 1,
+        ),
+      );
+      final controller = SyncController(backend);
+
+      await controller.run();
+      expect(backend.notifications, isEmpty);
+      await controller.run(automatic: true);
+
+      expect(backend.notifications, [(2, 4, 1, 1)]);
+      expect(controller.state, SyncState.completed);
+      controller.dispose();
+    },
+  );
+
   test(
     'cancel retries bounded delivery when registration is not ready',
     () async {
@@ -365,13 +595,14 @@ SyncSummary _summary(
   String id, {
   int downloaded = 0,
   int duplicates = 0,
+  int skippedRemote = 0,
   int failed = 0,
 }) => SyncSummary(
   jobId: id,
-  totalFound: BigInt.from(downloaded + duplicates + failed),
+  totalFound: BigInt.from(downloaded + duplicates + skippedRemote + failed),
   downloaded: BigInt.from(downloaded),
   duplicates: BigInt.from(duplicates),
-  skippedRemote: BigInt.zero,
+  skippedRemote: BigInt.from(skippedRemote),
   failed: BigInt.from(failed),
   errors: const [],
 );
@@ -427,6 +658,90 @@ class _AccountBackend extends FakeBackend implements AccountSyncBackend {
     sleeping: false,
     nextSyncAt: DateTime.now().toUtc().add(const Duration(minutes: 30)),
   );
+}
+
+class _NotifyingAccountBackend extends _AccountBackend
+    implements SyncNotificationBackend {
+  _NotifyingAccountBackend({
+    required super.outcomes,
+    super.preparingAccount,
+    this.failNotification = false,
+    this.failLogging = false,
+  });
+
+  final bool failNotification;
+  final bool failLogging;
+  final notifications = <(int, int, int, int)>[];
+  int failedAccounts = 0;
+
+  @override
+  Future<void> notifyAutomaticSyncCompleted({
+    required int downloaded,
+    required int existing,
+    required int failed,
+    required int accountCount,
+    int failedAccountCount = 0,
+  }) async {
+    if (failNotification) throw StateError('Synthetic notification failure');
+    failedAccounts = failedAccountCount;
+    notifications.add((downloaded, existing, failed, accountCount));
+  }
+
+  @override
+  Future<void> logError(
+    String message,
+    Object error, [
+    StackTrace? stackTrace,
+  ]) async {
+    if (failLogging) throw StateError('Synthetic diagnostic failure');
+  }
+}
+
+class _NotifyingLegacyBackend extends FakeBackend
+    implements SyncNotificationBackend {
+  _NotifyingLegacyBackend(SyncSummary summary)
+    : failLogging = false,
+      super(signedIn: true, syncFuture: Future.value(summary));
+
+  _NotifyingLegacyBackend.pending(
+    Future<SyncSummary> summary, {
+    this.failLogging = false,
+  }) : super(signedIn: true, syncFuture: summary);
+
+  final bool failLogging;
+  final notifications = <(int, int, int, int)>[];
+
+  @override
+  Future<void> logError(
+    String message,
+    Object error, [
+    StackTrace? stackTrace,
+  ]) async {
+    if (failLogging) throw StateError('Synthetic retired diagnostic backend');
+  }
+
+  @override
+  Future<void> notifyAutomaticSyncCompleted({
+    required int downloaded,
+    required int existing,
+    required int failed,
+    required int accountCount,
+    int failedAccountCount = 0,
+  }) async => notifications.add((downloaded, existing, failed, accountCount));
+}
+
+class _LateDiscoveredNotifyingBackend extends _NotifyingAccountBackend {
+  _LateDiscoveredNotifyingBackend({super.failLogging})
+    : super(outcomes: {'a': _summary('a', downloaded: 1), 'b': _summary('b')});
+
+  final discoveryStarted = Completer<void>();
+  final profiles = Completer<List<NintendoAccountProfile>>();
+
+  @override
+  Future<List<NintendoAccountProfile>> listNintendoAccounts() {
+    if (!discoveryStarted.isCompleted) discoveryStarted.complete();
+    return profiles.future;
+  }
 }
 
 class _LoginAccountBackend extends _AccountBackend {

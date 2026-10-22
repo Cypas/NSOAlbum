@@ -2,6 +2,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -16,11 +17,177 @@ import 'package:squid_album/src/state/sync_controller.dart';
 import 'package:squid_album/src/state/transfer_controller.dart';
 import 'package:squid_album/src/ui/android/android_transfer_page.dart';
 import 'package:squid_album/src/ui/android/android_nintendo_sync_page.dart';
+import 'package:squid_album/src/ui/android/android_theme.dart';
 import 'package:squid_album/src/ui/platform_ui.dart';
 
 import '../home_shell_test.dart' show FakeBackend;
 
 void main() {
+  for (final language in ['zh', 'en']) {
+    for (final textScale in [1.0, 2.0]) {
+      testWidgets(
+        'automatic sync input labels stay separate in $language at ${textScale}x',
+        (tester) async {
+          tester.view.physicalSize = const Size(320, 1400);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.resetPhysicalSize);
+          addTearDown(tester.view.resetDevicePixelRatio);
+          final backend = FakeBackend(signedIn: true, mediaItems: []);
+          final settings = SettingsController(backend);
+          final sync = SyncController(backend, allAccounts: true);
+          final transfer = TransferController(backend, settings, sync);
+          addTearDown(transfer.dispose);
+          addTearDown(sync.dispose);
+          addTearDown(settings.dispose);
+          await transfer.refresh();
+          await tester.pumpWidget(
+            MaterialApp(
+              locale: Locale(language),
+              theme: androidTheme('ocean'),
+              localizationsDelegates: const [
+                AppLocalizations.delegate,
+                GlobalMaterialLocalizations.delegate,
+                GlobalWidgetsLocalizations.delegate,
+                GlobalCupertinoLocalizations.delegate,
+              ],
+              supportedLocales: AppLocalizations.supportedLocales,
+              builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(context)
+                    .copyWith(textScaler: TextScaler.linear(textScale)),
+                child: child!,
+              ),
+              home: AndroidNintendoSyncPage(controller: transfer),
+            ),
+          );
+          await tester.pumpAndSettle();
+          final sleepLabel = find.text(
+            language == 'zh'
+                ? '无新媒体后进入休眠（小时）'
+                : 'Sleep after no new media (hours)',
+          );
+          await tester.ensureVisible(sleepLabel);
+          await tester.pumpAndSettle();
+          final interval = find.byType(DropdownButtonFormField<int>);
+          expect(
+            tester.getTopLeft(sleepLabel).dy,
+            greaterThan(tester.getBottomLeft(interval).dy),
+            reason:
+                'The floating sleep label must not touch the interval field.',
+          );
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+        },
+        variant: TargetPlatformVariant({TargetPlatform.android}),
+      );
+    }
+  }
+
+  testWidgets(
+    'automatic sync card groups and saves the notification preference',
+    (tester) async {
+      final backend = FakeBackend(signedIn: true, mediaItems: []);
+      final settings = SettingsController(backend);
+      final sync = SyncController(backend, allAccounts: true);
+      final transfer = TransferController(backend, settings, sync);
+      addTearDown(transfer.dispose);
+      addTearDown(sync.dispose);
+      addTearDown(settings.dispose);
+      await transfer.refresh();
+      await tester.pumpWidget(
+        MaterialApp(
+          locale: const Locale('zh'),
+          localizationsDelegates: const [
+            AppLocalizations.delegate,
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: AndroidNintendoSyncPage(controller: transfer),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('自动同步设置'),
+        180,
+        scrollable: find.byType(Scrollable).last,
+      );
+      expect(find.text('同步完成后通知'), findsOneWidget);
+      final card = find.ancestor(
+        of: find.text('同步完成后通知'),
+        matching: find.byType(Card),
+      );
+      expect(card, findsOneWidget);
+      for (final text in [
+        '自动同步设置',
+        '启用自动同步策略',
+        '启动时自动同步',
+        '活跃期检查周期',
+        '无新媒体后进入休眠（小时）',
+      ]) {
+        expect(
+          find.descendant(of: card, matching: find.text(text)),
+          findsOneWidget,
+        );
+      }
+      expect(settings.value.notifyOnAutoSync, isTrue);
+      await tester.ensureVisible(find.text('同步完成后通知'));
+      await tester.tap(find.text('同步完成后通知'));
+      await tester.pumpAndSettle();
+      expect(settings.value.notifyOnAutoSync, isFalse);
+      expect(backend.settings.notifyOnAutoSync, isFalse);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+    variant: TargetPlatformVariant({TargetPlatform.android}),
+  );
+
+  testWidgets('Nintendo sync account avatar opens a preview and save action', (
+    tester,
+  ) async {
+    final backend = FakeBackend(
+      signedIn: true,
+      mediaItems: [],
+      accountProfiles: [
+        NintendoAccountProfile(
+          accountId: 'avatar-account',
+          nickname: 'Avatar account',
+          avatarBytes: base64Decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+          ),
+        ),
+      ],
+    );
+    final settings = SettingsController(backend);
+    final sync = SyncController(backend, allAccounts: true);
+    final transfer = TransferController(backend, settings, sync);
+    await transfer.refresh();
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('zh'),
+        localizationsDelegates: const [
+          AppLocalizations.delegate,
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: AndroidNintendoSyncPage(controller: transfer),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('android-sync-avatar-avatar-account')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Avatar account'), findsNWidgets(2));
+    expect(find.byKey(const Key('app-image-viewer-pages')), findsOneWidget);
+    expect(find.byType(InteractiveViewer), findsOneWidget);
+    expect(find.byKey(const Key('app-image-viewer-save')), findsOneWidget);
+    transfer.dispose();
+    sync.dispose();
+    settings.dispose();
+  }, variant: TargetPlatformVariant({TargetPlatform.android}));
+
   testWidgets('running sync displays readable counts and survives navigation', (
     tester,
   ) async {

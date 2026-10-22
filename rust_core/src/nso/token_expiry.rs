@@ -3,6 +3,12 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{DateTime, Duration, Utc};
 
+/// Ordinary Nintendo/Coral/SplatNet credentials need a full five-minute margin.
+/// NXAPI client OAuth has an independent, short-lived expiry policy.
+pub(crate) fn reusable(expires_at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+    expires_at > now + Duration::minutes(5)
+}
+
 pub(crate) fn expires_at(
     token: &str,
     expires_in: Option<i64>,

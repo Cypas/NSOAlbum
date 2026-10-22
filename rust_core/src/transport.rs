@@ -567,29 +567,118 @@ impl HttpTransport {
     async fn execute(&self, request: reqwest::RequestBuilder) -> CoreResult<Response> {
         let request = request.build()?;
         let stage = request_stage(request.url());
+        let url = diagnostic_endpoint(request.url());
+        let proxy = if self
+            .config
+            .proxy_url
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            "explicit"
+        } else {
+            "default"
+        };
+        let started = std::time::Instant::now();
         match self.client.execute(request).await {
             Ok(response) => {
                 if !response.status().is_success() {
-                    crate::diagnostics::event("network", stage, Some(response.status().as_u16()));
+                    crate::diagnostics::network_failure(&CoreError::NetworkRequest {
+                        stage,
+                        reason: "http_error",
+                        proxy,
+                        elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                        url,
+                        code_kind: "http",
+                        code: response.status().as_u16().to_string(),
+                    });
                 }
                 Ok(response)
             }
             Err(error) => {
-                crate::diagnostics::event(
-                    "network",
-                    if error.is_timeout() {
-                        "timeout"
-                    } else if error.is_connect() {
-                        "connect_failed"
-                    } else {
-                        stage
-                    },
-                    error.status().map(|status| status.as_u16()),
-                );
-                Err(error.without_url().into())
+                let reason = if error.is_timeout() {
+                    "timeout"
+                } else if error.is_connect() {
+                    "connect_failed"
+                } else if error.is_body() {
+                    "body_failed"
+                } else if error.is_request() {
+                    "request_failed"
+                } else {
+                    "transport_failed"
+                };
+                let elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                // Never serialize reqwest's remote URL, nested connector text,
+                // headers or payload. Both the log and Bridge retain only
+                // fixed classifications and bounded numeric timing.
+                let (code_kind, code) = network_failure_code(&error);
+                let failure = CoreError::NetworkRequest {
+                    stage,
+                    reason,
+                    proxy,
+                    elapsed_ms,
+                    url,
+                    code_kind,
+                    code,
+                };
+                crate::diagnostics::network_failure(&failure);
+                Err(failure)
             }
         }
     }
+}
+
+fn network_failure_code(error: &reqwest::Error) -> (&'static str, String) {
+    if let Some(status) = error.status() {
+        return ("http", status.as_u16().to_string());
+    }
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(cause) = source {
+        if let Some(code) = cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::raw_os_error)
+        {
+            return ("os", code.to_string());
+        }
+        source = cause.source();
+    }
+    ("none", "none".into())
+}
+
+fn diagnostic_endpoint(url: &Url) -> String {
+    // Endpoint names are useful; arbitrary media/account path segments, query
+    // strings, fragments and URL userinfo must never enter runtime logs.
+    let path = match (url.host_str(), url.path()) {
+        (Some("nxapi-auth.fancy.org.uk"), "/api/oauth/token") => url.path(),
+        (
+            Some("nxapi-znca-api.fancy.org.uk"),
+            "/api/znca/config"
+            | "/api/znca/f"
+            | "/api/znca/encrypt-request"
+            | "/api/znca/decrypt-response",
+        ) => url.path(),
+        (
+            Some("accounts.nintendo.com"),
+            "/connect/1.0.0/api/token" | "/connect/1.0.0/api/session_token",
+        ) => url.path(),
+        (Some("api.accounts.nintendo.com"), "/2.0.0/users/me") => url.path(),
+        (
+            Some("api-lp1.znc.srv.nintendo.net"),
+            "/v4/Account/Login"
+            | "/v4/Friend/List"
+            | "/v3/Friend/CreateFriendCodeUrl"
+            | "/v3/Friend/GetUserByFriendCode"
+            | "/v4/FriendRequest/Create"
+            | "/v4/Friend/Note/Update"
+            | "/v4/User/PlayLog/Show"
+            | "/v4/Game/GetWebServiceToken"
+            | "/v4/Media/List",
+        ) => url.path(),
+        (Some("api.lp1.av5ja.srv.nintendo.net"), "/api/bullet_tokens" | "/api/graphql") => {
+            url.path()
+        }
+        _ => "/<redacted-path>",
+    };
+    format!("{}{path}", url.origin().ascii_serialization())
 }
 
 fn request_stage(url: &Url) -> &'static str {
@@ -597,6 +686,8 @@ fn request_stage(url: &Url) -> &'static str {
         (Some("nxapi-auth.fancy.org.uk"), _) => "nxapi_oauth",
         (Some("nxapi-znca-api.fancy.org.uk"), "/api/znca/config") => "nxapi_config",
         (Some("nxapi-znca-api.fancy.org.uk"), "/api/znca/f") => "nxapi_attestation",
+        (Some("nxapi-znca-api.fancy.org.uk"), "/api/znca/encrypt-request") => "nxapi_encrypt",
+        (Some("nxapi-znca-api.fancy.org.uk"), "/api/znca/decrypt-response") => "nxapi_decrypt",
         (Some("nxapi-znca-api.fancy.org.uk"), _) => "nxapi",
         (Some("accounts.nintendo.com"), _) => "nintendo_oauth",
         (Some("api.accounts.nintendo.com"), _) => "nintendo_profile",
@@ -674,6 +765,30 @@ pub(crate) mod tests {
     use std::net::TcpListener;
 
     use super::*;
+
+    #[test]
+    fn logged_endpoints_retain_known_api_routes_but_never_url_credentials_or_private_paths() {
+        for (raw, expected) in [
+            (
+                "https://user:password@nxapi-znca-api.fancy.org.uk/api/znca/encrypt-request?token=secret#private",
+                "https://nxapi-znca-api.fancy.org.uk/api/znca/encrypt-request",
+            ),
+            (
+                "https://api-lp1.znc.srv.nintendo.net/v4/User/PlayLog/Show?user=private",
+                "https://api-lp1.znc.srv.nintendo.net/v4/User/PlayLog/Show",
+            ),
+            (
+                "https://media.example.invalid/private-account/private-media.jpg?signature=secret",
+                "https://media.example.invalid/<redacted-path>",
+            ),
+            (
+                "https://nxapi-auth.fancy.org.uk/unrecognised/private-account?token=secret",
+                "https://nxapi-auth.fancy.org.uk/<redacted-path>",
+            ),
+        ] {
+            assert_eq!(diagnostic_endpoint(&Url::parse(raw).unwrap()), expected);
+        }
+    }
     use crate::sync::CancellationToken;
 
     #[test]
@@ -755,6 +870,61 @@ pub(crate) mod tests {
             String::from_utf8(request).unwrap()
         });
         (url, server)
+    }
+
+    #[tokio::test]
+    async fn timed_out_nxapi_request_keeps_stage_and_safe_cause_without_url_or_credentials() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut bytes = [0; 1024];
+            let _ = stream.read(&mut bytes);
+            std::thread::sleep(Duration::from_millis(250));
+        });
+        let transport = HttpTransport {
+            client: Arc::new(
+                Client::builder()
+                    .no_proxy()
+                    .resolve("nxapi-auth.fancy.org.uk", address)
+                    .timeout(Duration::from_millis(100))
+                    .build()
+                    .unwrap(),
+            ),
+            config: TransportConfig::default(),
+            download_user_agent: None,
+        };
+        let error = transport
+            .post_form_raw(
+                &format!(
+                    "http://nxapi-auth.fancy.org.uk:{}/api/oauth/token?private=query",
+                    address.port()
+                ),
+                &[("Authorization", "Bearer private-bearer".into())],
+                &[("refresh_token", "private-token")],
+            )
+            .await
+            .unwrap_err();
+        server.join().unwrap();
+        let message = error.to_string();
+        assert!(message.contains("stage=nxapi_oauth"), "{message}");
+        assert!(message.contains("reason=timeout"), "{message}");
+        assert!(message.contains("proxy=default"), "{message}");
+        assert!(
+            message.contains(&format!(
+                "url=http://nxapi-auth.fancy.org.uk:{}/api/oauth/token",
+                address.port()
+            )),
+            "{message}"
+        );
+        assert!(message.contains("code_kind=none code=none"), "{message}");
+        for private in ["private", "Bearer", "refresh_token", "?"] {
+            assert!(!message.contains(private), "{message}");
+            assert!(!format!("{error:?}").contains(private));
+        }
     }
 
     #[tokio::test]

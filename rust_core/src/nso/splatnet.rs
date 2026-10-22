@@ -9,7 +9,7 @@ use base64::{
     engine::general_purpose::{STANDARD, STANDARD_NO_PAD},
     Engine,
 };
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 
 const ORIGIN: &str = "https://api.lp1.av5ja.srv.nintendo.net";
@@ -20,6 +20,53 @@ pub(crate) struct SplatNetSession {
     bullet: Option<String>,
     version: Option<String>,
     bullet_expires_at: Option<DateTime<Utc>>,
+}
+
+impl From<SplatNetWebSession> for SplatNetSession {
+    fn from(web: SplatNetWebSession) -> Self {
+        Self {
+            web,
+            bullet: None,
+            version: None,
+            bullet_expires_at: None,
+        }
+    }
+}
+
+impl SplatNetSession {
+    pub(crate) fn reusable_web(&self, now: DateTime<Utc>) -> bool {
+        super::token_expiry::reusable(self.web.expires_at, now)
+    }
+
+    pub(crate) fn reusable_bullet(&self, now: DateTime<Utc>) -> bool {
+        self.bullet.is_some()
+            && self.version.is_some()
+            && self
+                .bullet_expires_at
+                .is_some_and(|expiry| super::token_expiry::reusable(expiry, now))
+    }
+}
+
+/// A rejection retires the credential used by that endpoint, not its parents.
+/// Returning false leaves unrelated authentication failures to their owner.
+pub(crate) fn retire_rejected_credential(
+    cache: &mut Option<SplatNetSession>,
+    error: &CoreError,
+) -> bool {
+    let CoreError::Authentication(code) = error else {
+        return false;
+    };
+    match code.as_str() {
+        "splatnet_bullet_token_invalid" => {
+            if let Some(session) = cache.as_mut() {
+                session.bullet = None;
+                session.bullet_expires_at = None;
+            }
+        }
+        "splatnet_game_web_token_invalid (HTTP 401)" => *cache = None,
+        _ => return false,
+    }
+    true
 }
 
 #[derive(Clone, Copy)]
@@ -49,17 +96,31 @@ pub(crate) async fn web_session<A: AttestationService>(
     auth: &AuthenticatedCoralSession,
     cache: &mut Option<SplatNetSession>,
 ) -> CoreResult<SplatNetWebSession> {
-    if let Some(session) = cache
-        .as_ref()
-        .filter(|v| v.web.expires_at > Utc::now() + Duration::seconds(60))
-    {
+    web_session_at(
+        transport,
+        attestation,
+        auth,
+        cache,
+        &format!("{CORAL_ORIGIN}/v4/Game/GetWebServiceToken"),
+    )
+    .await
+}
+
+async fn web_session_at<A: AttestationService>(
+    transport: &HttpTransport,
+    attestation: &A,
+    auth: &AuthenticatedCoralSession,
+    cache: &mut Option<SplatNetSession>,
+    url: &str,
+) -> CoreResult<SplatNetWebSession> {
+    if let Some(session) = cache.as_ref().filter(|v| v.reusable_web(Utc::now())) {
         return Ok(session.web.clone());
     }
     let result = coral_call(
         transport,
         attestation,
         &auth.session,
-        &format!("{CORAL_ORIGIN}/v4/Game/GetWebServiceToken"),
+        url,
         game_token_parameter(&auth.session.access_token),
         2,
     )
@@ -68,7 +129,7 @@ pub(crate) async fn web_session<A: AttestationService>(
         .pointer("/result/accessToken")
         .and_then(Value::as_str)
         .filter(|v| !v.is_empty())
-        .ok_or_else(|| CoreError::Provider("SplatNet web session is unavailable".into()))?;
+        .ok_or_else(|| CoreError::Provider("splatnet_response_invalid".into()))?;
     validate_cookie_token(token)?;
     let expires = result
         .pointer("/result/expiresIn")
@@ -81,12 +142,12 @@ pub(crate) async fn web_session<A: AttestationService>(
         language: auth.language.clone(),
         country: auth.country.clone(),
     };
-    *cache = Some(SplatNetSession {
-        web: web.clone(),
-        bullet: None,
-        version: None,
-        bullet_expires_at: None,
-    });
+    if let Some(session) = cache.as_mut() {
+        // Natural parent expiry does not revoke a separately valid child.
+        session.web = web.clone();
+    } else {
+        *cache = Some(web.clone().into());
+    }
     Ok(web)
 }
 
@@ -96,13 +157,12 @@ pub(crate) async fn session<A: AttestationService>(
     auth: &AuthenticatedCoralSession,
     cache: &mut Option<SplatNetSession>,
 ) -> CoreResult<SplatNetSession> {
+    if let Some(session) = cache.as_ref().filter(|v| v.reusable_bullet(Utc::now())) {
+        return Ok(session.clone());
+    }
     web_session(transport, attestation, auth, cache).await?;
     let session = cache.as_mut().expect("web session populated cache");
-    if session.bullet.is_some()
-        && session
-            .bullet_expires_at
-            .is_some_and(|expiry| expiry > Utc::now() + Duration::seconds(60))
-    {
+    if session.reusable_bullet(Utc::now()) {
         return Ok(session.clone());
     }
     let headers = web_headers(&session.web);
@@ -161,9 +221,7 @@ fn validate_cookie_token(token: &str) -> CoreResult<()> {
         .bytes()
         .any(|b| !b.is_ascii_graphic() || matches!(b, b';' | b',' | b'"' | b'\\'))
     {
-        return Err(CoreError::Authentication(
-            "SplatNet returned an invalid web credential".into(),
-        ));
+        return Err(CoreError::Provider("splatnet_response_invalid".into()));
     }
     Ok(())
 }
@@ -205,6 +263,11 @@ async fn query_at(
     ]);
     let response = transport.post_json_raw(url, &headers,
         &json!({"variables":{}, "extensions":{"persistedQuery":{"version":1,"sha256Hash":query.hash()}}})).await?;
+    if response.status == 401 {
+        return Err(CoreError::Authentication(
+            "splatnet_bullet_token_invalid".into(),
+        ));
+    }
     ensure_response(&response, "SplatNet query")?;
     let value: Value = response.json()?;
     if value
@@ -349,25 +412,273 @@ async fn bullet_at(
         ("Content-Type", "application/json".into()),
     ]);
     let response = transport.post_bytes_raw(url, &headers, Vec::new()).await?;
-    ensure_response(&response, "SplatNet game session")?;
-    if response.status == 204 {
-        return Err(CoreError::Provider(
-            "SplatNet is not available for this account; play online first".into(),
-        ));
+    if let Some(error) = super::conditions::bullet_status_error(response.status) {
+        return Err(error);
     }
-    let value: Value = response.json()?;
+    ensure_response(&response, "SplatNet game session")?;
+    let value: Value = response
+        .json()
+        .map_err(|_| CoreError::Provider("splatnet_response_invalid".into()))?;
     value
         .get("bulletToken")
         .and_then(Value::as_str)
         .filter(|v| !v.is_empty())
         .map(str::to_owned)
-        .ok_or_else(|| CoreError::Provider("SplatNet game session is unavailable".into()))
+        .ok_or_else(|| CoreError::Provider("splatnet_response_invalid".into()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
     use serde_json::json;
+
+    struct NoExchange;
+
+    struct SyntheticWebExchange(Value);
+
+    #[async_trait::async_trait]
+    impl AttestationService for SyntheticWebExchange {
+        async fn encrypt_request(
+            &self,
+            _: &str,
+            token: &str,
+            parameter: Value,
+            method: u8,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> CoreResult<super::super::attestation::EncryptedRequest> {
+            assert_eq!(token, "synthetic-coral");
+            assert_eq!(method, 2);
+            assert_eq!(parameter["registrationToken"], "synthetic-coral");
+            Ok(super::super::attestation::EncryptedRequest {
+                body: b"synthetic-request".to_vec(),
+                request_id: String::new(),
+                timestamp: 0,
+            })
+        }
+
+        async fn decrypt_response(&self, _: &[u8]) -> CoreResult<Value> {
+            Ok(self.0.clone())
+        }
+
+        async fn nso_version(&self) -> CoreResult<String> {
+            Ok("3.9.9".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn natural_web_renewal_preserves_separately_valid_bullet() {
+        let (url, server) = crate::transport::tests::capture_request("{}");
+        let mut cache = Some(SplatNetSession {
+            web: SplatNetWebSession {
+                game_web_token: "expired-game-web".into(),
+                expires_at: Utc::now() - Duration::seconds(1),
+                language: "ja-JP".into(),
+                country: "JP".into(),
+            },
+            bullet: Some("valid-bullet".into()),
+            version: Some("11.2.4-abc12345".into()),
+            bullet_expires_at: Some(Utc::now() + Duration::hours(1)),
+        });
+        let auth = AuthenticatedCoralSession {
+            session: super::super::CoralSession {
+                access_token: "synthetic-coral".into(),
+                na_id: Some("synthetic-account".into()),
+                coral_user_id: Some("123456".into()),
+                expires_at: Some(Utc::now() + Duration::hours(1)),
+                nickname: String::new(),
+                avatar_url: None,
+                avatar_bytes: None,
+            },
+            language: "ja-JP".into(),
+            country: "JP".into(),
+        };
+        let result = web_session_at(
+            &HttpTransport::new(Default::default()).unwrap(),
+            &SyntheticWebExchange(json!({"status":0,"result":{
+                "accessToken":"renewed-game-web", "expiresIn":10800
+            }})),
+            &auth,
+            &mut cache,
+            &url,
+        )
+        .await
+        .unwrap();
+        let request = server.join().unwrap();
+        assert!(request.ends_with("synthetic-request"));
+        assert_eq!(result.game_web_token, "renewed-game-web");
+        let retained = cache.as_ref().unwrap();
+        assert!(retained.reusable_bullet(Utc::now()));
+        assert_eq!(retained.bullet.as_deref(), Some("valid-bullet"));
+    }
+
+    #[tokio::test]
+    async fn malformed_web_credentials_are_safe_non_retryable_provider_failures() {
+        for result in [
+            json!({}),
+            json!({"accessToken":""}),
+            json!({"accessToken":7}),
+            json!({"accessToken":"PRIVATE;other=value"}),
+            json!({"accessToken":"PRIVATE\r\nHeader: value"}),
+        ] {
+            let (url, server) = crate::transport::tests::capture_request("{}");
+            let auth = AuthenticatedCoralSession {
+                session: super::super::CoralSession {
+                    access_token: "synthetic-coral".into(),
+                    na_id: Some("synthetic-account".into()),
+                    coral_user_id: Some("123456".into()),
+                    expires_at: Some(Utc::now() + Duration::hours(1)),
+                    nickname: String::new(),
+                    avatar_url: None,
+                    avatar_bytes: None,
+                },
+                language: "ja-JP".into(),
+                country: "JP".into(),
+            };
+            let mut cache = None;
+            let error = web_session_at(
+                &HttpTransport::new(Default::default()).unwrap(),
+                &SyntheticWebExchange(json!({"status":0,"result":result})),
+                &auth,
+                &mut cache,
+                &url,
+            )
+            .await
+            .err()
+            .expect("invalid credential must not be accepted");
+            server.join().unwrap();
+            assert!(matches!(
+                error,
+                CoreError::Provider(ref code) if code == "splatnet_response_invalid"
+            ));
+            assert!(cache.is_none());
+            assert!(!error.to_string().contains("PRIVATE"));
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AttestationService for NoExchange {
+        async fn encrypt_request(
+            &self,
+            _: &str,
+            _: &str,
+            _: Value,
+            _: u8,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> CoreResult<super::super::attestation::EncryptedRequest> {
+            Err(CoreError::Provider("unexpected parent exchange".into()))
+        }
+
+        async fn decrypt_response(&self, _: &[u8]) -> CoreResult<Value> {
+            panic!("cached child must not decrypt a parent exchange")
+        }
+
+        async fn nso_version(&self) -> CoreResult<String> {
+            panic!("cached child must not prepare a parent exchange")
+        }
+    }
+
+    #[tokio::test]
+    async fn valid_bullet_is_reused_without_renewing_expired_game_web_token() {
+        let mut cache = Some(SplatNetSession {
+            web: SplatNetWebSession {
+                game_web_token: "expired-parent".into(),
+                expires_at: Utc::now() - Duration::seconds(1),
+                language: "ja-JP".into(),
+                country: "JP".into(),
+            },
+            bullet: Some("valid-child".into()),
+            version: Some("11.2.4-abc12345".into()),
+            bullet_expires_at: Some(Utc::now() + Duration::hours(1)),
+        });
+        let auth = AuthenticatedCoralSession {
+            session: super::super::CoralSession {
+                access_token: "expired-coral".into(),
+                na_id: Some("synthetic-account".into()),
+                coral_user_id: Some("123456".into()),
+                expires_at: Some(Utc::now() - Duration::seconds(1)),
+                nickname: String::new(),
+                avatar_url: None,
+                avatar_bytes: None,
+            },
+            language: "ja-JP".into(),
+            country: "JP".into(),
+        };
+        let result = session(
+            &HttpTransport::new(Default::default()).unwrap(),
+            &NoExchange,
+            &auth,
+            &mut cache,
+        )
+        .await
+        .expect("valid bullet does not depend on parent TTL");
+        assert_eq!(result.bullet.as_deref(), Some("valid-child"));
+    }
+
+    #[tokio::test]
+    async fn graphql_401_identifies_bullet_rejection_without_echoing_body() {
+        let (url, server) =
+            crate::transport::tests::capture_response(401, r#"{"private":"PRIVATE"}"#, &[]);
+        let session = SplatNetSession {
+            web: SplatNetWebSession {
+                game_web_token: "valid-parent".into(),
+                expires_at: Utc::now() + Duration::hours(1),
+                language: "en-GB".into(),
+                country: "GB".into(),
+            },
+            bullet: Some("rejected-child".into()),
+            version: Some("11.2.4-abc12345".into()),
+            bullet_expires_at: Some(Utc::now() + Duration::hours(1)),
+        };
+        let error = query_at(
+            &HttpTransport::new(Default::default()).unwrap(),
+            &session,
+            Query::Friends,
+            &url,
+        )
+        .await
+        .unwrap_err();
+        server.join().unwrap();
+        assert!(matches!(
+            error,
+            CoreError::Authentication(ref code) if code == "splatnet_bullet_token_invalid"
+        ));
+        assert!(!error.to_string().contains("PRIVATE"));
+        let mut cache = Some(session);
+        assert!(retire_rejected_credential(&mut cache, &error));
+        let retained = cache.as_ref().unwrap();
+        assert!(retained.reusable_web(Utc::now()));
+        assert!(!retained.reusable_bullet(Utc::now()));
+        assert!(retained.bullet.is_none());
+        assert!(retained.bullet_expires_at.is_none());
+        assert_eq!(retained.web.game_web_token, "valid-parent");
+        assert_eq!(retained.version.as_deref(), Some("11.2.4-abc12345"));
+    }
+
+    #[test]
+    fn web_and_bullet_credentials_require_strictly_more_than_five_minutes() {
+        use chrono::TimeZone;
+        let now = Utc.timestamp_opt(1_000, 0).unwrap();
+        let mut session = SplatNetSession::from(SplatNetWebSession {
+            game_web_token: "synthetic-game".into(),
+            expires_at: now + Duration::seconds(301),
+            language: "en-GB".into(),
+            country: "GB".into(),
+        });
+        session.bullet = Some("synthetic-bullet".into());
+        session.version = Some("synthetic-version".into());
+        session.bullet_expires_at = Some(now + Duration::seconds(301));
+        assert!(session.reusable_web(now));
+        assert!(session.reusable_bullet(now));
+        for remaining in [300, 299, 0, -1] {
+            session.web.expires_at = now + Duration::seconds(remaining);
+            session.bullet_expires_at = Some(now + Duration::seconds(remaining));
+            assert!(!session.reusable_web(now), "web: {remaining}");
+            assert!(!session.reusable_bullet(now), "bullet: {remaining}");
+        }
+    }
 
     fn complete_gear() -> Value {
         json!({
@@ -577,6 +888,67 @@ mod tests {
         assert!(request.contains("x-nacountry: HK"));
         assert!(request.contains("cookie: _gtoken=game-cookie; _dnt=1"));
         assert!(!request.contains("authorization:"));
+    }
+
+    #[tokio::test]
+    async fn bullet_special_statuses_are_actionable_non_authentication_failures() {
+        for (status, code) in [
+            (204, "splatnet_user_not_registered"),
+            (400, "splatnet_request_invalid"),
+            (403, "splatnet_version_outdated"),
+            (499, "splatnet_access_restricted"),
+            (500, "splatnet_service_unavailable"),
+            (503, "splatnet_service_maintenance"),
+        ] {
+            let (url, server) = crate::transport::tests::capture_response(
+                status,
+                r#"{"private":"do-not-echo"}"#,
+                &[],
+            );
+            let web = SplatNetWebSession {
+                game_web_token: "synthetic-game".into(),
+                expires_at: Utc::now() + Duration::hours(1),
+                language: "en-GB".into(),
+                country: "GB".into(),
+            };
+            let error = bullet_at(
+                &HttpTransport::new(Default::default()).unwrap(),
+                &web,
+                "11.2.4-abc12345",
+                &url,
+            )
+            .await
+            .unwrap_err();
+            server.join().unwrap();
+            assert!(matches!(error, CoreError::Provider(_)), "{status}");
+            assert!(error.to_string().contains(code), "{status}: {error}");
+            assert!(!error.to_string().contains("do-not-echo"));
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_bullet_responses_are_safe_provider_failures() {
+        for body in ["", "<html>PRIVATE</html>", r#"{"private":"PRIVATE"}"#] {
+            let (url, server) = crate::transport::tests::capture_response(200, body, &[]);
+            let web = SplatNetWebSession {
+                game_web_token: "synthetic-game".into(),
+                expires_at: Utc::now() + Duration::hours(1),
+                language: "en-GB".into(),
+                country: "GB".into(),
+            };
+            let error = bullet_at(
+                &HttpTransport::new(Default::default()).unwrap(),
+                &web,
+                "11.2.4-abc12345",
+                &url,
+            )
+            .await
+            .unwrap_err();
+            server.join().unwrap();
+            assert!(matches!(error, CoreError::Provider(_)));
+            assert!(error.to_string().contains("splatnet_response_invalid"));
+            assert!(!error.to_string().contains("PRIVATE"));
+        }
     }
 
     #[tokio::test]

@@ -78,6 +78,8 @@ void main() {
           compactTagDisplay: backend.settings.compactTagDisplay,
           autoPlayVideo: backend.settings.autoPlayVideo,
           autoSyncOnLaunch: backend.settings.autoSyncOnLaunch,
+          notifyOnAutoSync: backend.settings.notifyOnAutoSync,
+          showSplatoonSchedule: backend.settings.showSplatoonSchedule,
           closeBehavior: backend.settings.closeBehavior,
           customFontPaths: [firstFont, secondFont],
           syncPolicy: backend.settings.syncPolicy,
@@ -980,6 +982,8 @@ void main() {
       compactTagDisplay: true,
       autoPlayVideo: false,
       autoSyncOnLaunch: false,
+      notifyOnAutoSync: true,
+      showSplatoonSchedule: true,
       closeBehavior: 'ask',
       customFontPaths: [],
       syncPolicy: SyncPolicy(
@@ -1409,6 +1413,7 @@ void main() {
     await tester.drag(settingsScroll, const Offset(0, -420));
     await tester.pumpAndSettle();
     await tester.ensureVisible(manageTags);
+    await tester.pumpAndSettle();
     await tester.tap(manageTags);
     await tester.pumpAndSettle();
 
@@ -1668,6 +1673,7 @@ void main() {
     );
 
     final openLog = find.widgetWithText(FilledButton, 'Open log').first;
+    expect(find.text('View recent runtime logs'), findsOneWidget);
     final settingsScroll = find
         .ancestor(of: openLog, matching: find.byType(CustomScrollView))
         .first;
@@ -1699,7 +1705,7 @@ void main() {
 
     expect(find.text('Cypas_Nya'), findsOneWidget);
     expect(find.text('小鱿鱿bot作者'), findsOneWidget);
-    expect(find.textContaining('4.5.6+78'), findsOneWidget);
+    expect(find.textContaining('4.5.6+78 Debug'), findsOneWidget);
     if (Platform.isWindows) {
       expect(find.byKey(const Key('check-app-updates')), findsOneWidget);
     }
@@ -2177,6 +2183,8 @@ void main() {
         compactTagDisplay: backend.settings.compactTagDisplay,
         autoPlayVideo: backend.settings.autoPlayVideo,
         autoSyncOnLaunch: true,
+        notifyOnAutoSync: backend.settings.notifyOnAutoSync,
+        showSplatoonSchedule: backend.settings.showSplatoonSchedule,
         closeBehavior: backend.settings.closeBehavior,
         customFontPaths: backend.settings.customFontPaths,
         syncPolicy: backend.settings.syncPolicy,
@@ -2189,6 +2197,42 @@ void main() {
       expect(backend.syncCalls, 1);
     },
   );
+
+  testWidgets('desktop sync restrictions show localized account guidance', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    final settings = SettingsController(backend);
+    final sync = SyncController(backend);
+    addTearDown(settings.dispose);
+    addTearDown(sync.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('zh'),
+        localizationsDelegates: const [
+          AppLocalizations.delegate,
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: HomeShell(
+          backend: backend,
+          settings: settings,
+          syncController: sync,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    sync.state = SyncState.failed;
+    sync.error = StateError(
+      'provider failed: nintendo_account_not_linked (status 9407)',
+    );
+    sync.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(find.textContaining('尚未关联 Switch 用户'), findsOneWidget);
+    expect(find.textContaining('nintendo_account_not_linked'), findsNothing);
+  });
 
   testWidgets('shows an automatic sync failure in a global snackbar', (
     tester,
@@ -2350,6 +2394,8 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
     compactTagDisplay: true,
     autoPlayVideo: false,
     autoSyncOnLaunch: false,
+    notifyOnAutoSync: true,
+    showSplatoonSchedule: true,
     closeBehavior: 'ask',
     customFontPaths: [],
     syncPolicy: SyncPolicy(
@@ -2364,6 +2410,7 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
   bool lastNewestFirst = true;
   DateTime? lastCapturedFrom;
   DateTime? lastCapturedUntil;
+  CapturedOnThisDay? lastCapturedOnThisDay;
   int listMediaCalls = 0;
   int listAlbumsCalls = 0;
   final Map<int, bool> favoriteUpdates = {};
@@ -2625,6 +2672,7 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
     List<String> gameNames = const [],
     DateTime? capturedFrom,
     DateTime? capturedUntil,
+    CapturedOnThisDay? capturedOnThisDay,
   }) async {
     listMediaCalls += 1;
     lastKind = kind;
@@ -2632,6 +2680,7 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
     lastNewestFirst = newestFirst;
     lastCapturedFrom = capturedFrom;
     lastCapturedUntil = capturedUntil;
+    lastCapturedOnThisDay = capturedOnThisDay;
     final gate = nextMediaGate;
     if (gate != null) {
       nextMediaGate = null;

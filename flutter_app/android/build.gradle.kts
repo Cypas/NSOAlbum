@@ -5,10 +5,12 @@ allprojects {
     }
 }
 
-val newBuildDir: Directory =
-    rootProject.layout.buildDirectory
-        .dir("../../build")
-        .get()
+val isolatedBuildDir = System.getenv("NSO_GRADLE_BUILD_DIR")
+val newBuildDir: Directory = if (isolatedBuildDir.isNullOrBlank()) {
+    rootProject.layout.buildDirectory.dir("../../build").get()
+} else {
+    rootProject.layout.dir(rootProject.provider { rootProject.file(isolatedBuildDir) }).get()
+}
 rootProject.layout.buildDirectory.value(newBuildDir)
 
 subprojects {

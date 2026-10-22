@@ -12,6 +12,8 @@
 #include "win32_window.h"
 #include "native_single_instance.h"
 
+class SyncNotificationRegistration;
+
 // A window that does nothing but host a Flutter view.
 class FlutterWindow : public Win32Window {
  public:
@@ -46,6 +48,9 @@ class FlutterWindow : public Win32Window {
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       ime_context_channel_;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      sync_notification_channel_;
+  std::unique_ptr<SyncNotificationRegistration> sync_notifications_;
   HWND flutter_view_ = nullptr;
 
   // Third-party TSF/IMM32 IMEs such as Sogou need an IME context whose lifetime

@@ -57,6 +57,17 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# main.cpp loads the optional system composition provider before registering
+# plugins. Delay the WebView consumer so its DLL initializes after that provider
+# and detaches first. Keep the plugin's runtime API capability checks intact.
+if(TARGET flutter_inappwebview_windows_plugin)
+  target_link_libraries(${BINARY_NAME} PRIVATE delayimp)
+  target_link_options(${BINARY_NAME} PRIVATE
+    "/DELAYLOAD:flutter_inappwebview_windows_plugin.dll")
+endif()
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/../tool/windows_plugin_lifetime.cmake")
+
 include("${CMAKE_CURRENT_SOURCE_DIR}/../tool/desktop_mtp_worker.cmake")
 
 # === Installation ===

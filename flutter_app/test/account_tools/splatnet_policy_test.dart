@@ -143,8 +143,10 @@ function run(origin, frame) {
   const context = {window:win, location:win.location, URL, console};
   vm.runInNewContext(${jsonEncode(script)}, context);
   const fn = win.requestGameWebToken;
+  const bridgeFn = win.jsBridge?.requestGameWebToken;
   if (fn) fn();
-  return {calls, installed: !!fn};
+  if (bridgeFn) bridgeFn();
+  return {calls, installed: !!fn, bridgeInstalled: !!bridgeFn};
 }
 console.log(JSON.stringify([
   run('https://api.lp1.av5ja.srv.nintendo.net', false),
@@ -157,10 +159,14 @@ console.log(JSON.stringify([
       final data = jsonDecode((result.stdout as String).trim()) as List;
       expect(data[0]['calls'], [
         ['nsoRequestGameWebToken'],
+        ['nsoRequestGameWebToken'],
       ]);
       expect(data[0]['installed'], isTrue);
+      expect(data[0]['bridgeInstalled'], isTrue);
       expect(data[1]['installed'], isFalse);
+      expect(data[1]['bridgeInstalled'], isFalse);
       expect(data[2]['installed'], isFalse);
+      expect(data[2]['bridgeInstalled'], isFalse);
     },
   );
 }

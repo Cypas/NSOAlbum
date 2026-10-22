@@ -166,15 +166,35 @@ class AndroidMediaCard extends StatelessWidget {
             ),
           ),
           Padding(
-            padding: const EdgeInsets.all(8),
-            child: Wrap(
-              spacing: 4,
-              runSpacing: 4,
+            padding: const EdgeInsets.fromLTRB(8, 6, 8, 7),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                if (settings.showGameTag && asset.gameName.isNotEmpty)
-                  AndroidTag(label: asset.gameName, game: true, compact: true),
-                for (final tag in asset.tags)
-                  AndroidTag(label: tag, compact: true),
+                Wrap(
+                  spacing: 4,
+                  runSpacing: 3,
+                  children: [
+                    if (settings.showGameTag && asset.gameName.isNotEmpty)
+                      AndroidTag(
+                        label: asset.gameName,
+                        game: true,
+                        compact: true,
+                      ),
+                    for (final tag in asset.tags)
+                      AndroidTag(label: tag, compact: true),
+                  ],
+                ),
+                if (settings.showNotePreview &&
+                    asset.note?.trim().isNotEmpty == true) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    _notePreview(asset.note!),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
               ],
             ),
           ),
@@ -182,6 +202,13 @@ class AndroidMediaCard extends StatelessWidget {
       ),
     ),
   );
+}
+
+String _notePreview(String value) {
+  final characters = value.trim().characters;
+  return characters.length <= 15
+      ? characters.toString()
+      : '${characters.take(15)}…';
 }
 
 String androidDuration(Duration value) {

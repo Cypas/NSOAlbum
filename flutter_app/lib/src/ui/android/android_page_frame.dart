@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../../backend/app_logger.dart';
+import '../account_tools/account_tool_errors.dart';
 import 'android_back_guard.dart';
 import 'android_layout.dart';
 
@@ -28,11 +29,12 @@ class AndroidPageFrame extends StatelessWidget {
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
       automaticallyImplyLeading: false,
+      toolbarHeight: secondary ? 48 : null,
       leading: secondary
           ? IconButton(
               key: const Key('android-page-back'),
               tooltip: context.l10n.select(zh: '返回', en: 'Back'),
-              icon: const Icon(Icons.arrow_back),
+              icon: const Icon(Icons.arrow_back, size: 20),
               onPressed: onBack ?? () => AndroidBackGuard.back(context),
             )
           : null,
@@ -67,6 +69,8 @@ String androidSafeDiagnostic(Object error) => sanitizeDiagnostic(
 );
 
 String androidReadableError(BuildContext context, Object error) {
+  final condition = nintendoConditionText(context.l10n, error);
+  if (condition != null) return condition;
   final value = error.toString().toLowerCase();
   if (value.contains('storage') && value.contains('unavailable')) {
     return context.l10n.select(

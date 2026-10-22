@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 758067148;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 124399239;
 
 // Section: executor
 
@@ -3406,6 +3406,145 @@ fn wire__crate__bridge__nintendo_friend_avatar_impl(
         },
     )
 }
+fn wire__crate__bridge__nintendo_friend_code_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "nintendo_friend_code",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_account_id = <String>::sse_decode(&mut deserializer);
+            let api_session_token = <String>::sse_decode(&mut deserializer);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+            let api_proxy_url = <Option<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let output_ok = crate::bridge::nintendo_friend_code(
+                            api_account_id,
+                            api_session_token,
+                            api_operation_id,
+                            api_proxy_url,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__bridge__nintendo_friend_lookup_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "nintendo_friend_lookup",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_account_id = <String>::sse_decode(&mut deserializer);
+            let api_session_token = <String>::sse_decode(&mut deserializer);
+            let api_friend_code = <String>::sse_decode(&mut deserializer);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+            let api_proxy_url = <Option<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let output_ok = crate::bridge::nintendo_friend_lookup(
+                            api_account_id,
+                            api_session_token,
+                            api_friend_code,
+                            api_operation_id,
+                            api_proxy_url,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__bridge__nintendo_friend_play_log_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "nintendo_friend_play_log",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_account_id = <String>::sse_decode(&mut deserializer);
+            let api_session_token = <String>::sse_decode(&mut deserializer);
+            let api_friend_id = <String>::sse_decode(&mut deserializer);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+            let api_proxy_url = <Option<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let output_ok = crate::bridge::nintendo_friend_play_log(
+                            api_account_id,
+                            api_session_token,
+                            api_friend_id,
+                            api_operation_id,
+                            api_proxy_url,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__bridge__nintendo_friends_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -3439,6 +3578,149 @@ fn wire__crate__bridge__nintendo_friends_impl(
                         let output_ok = crate::bridge::nintendo_friends(
                             api_account_id,
                             api_session_token,
+                            api_operation_id,
+                            api_proxy_url,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__bridge__nintendo_game_image_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "nintendo_game_image",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_account_id = <String>::sse_decode(&mut deserializer);
+            let api_session_token = <String>::sse_decode(&mut deserializer);
+            let api_game_name = <String>::sse_decode(&mut deserializer);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+            let api_proxy_url = <Option<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let output_ok = crate::bridge::nintendo_game_image(
+                            api_account_id,
+                            api_session_token,
+                            api_game_name,
+                            api_operation_id,
+                            api_proxy_url,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__bridge__nintendo_send_friend_request_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "nintendo_send_friend_request",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_account_id = <String>::sse_decode(&mut deserializer);
+            let api_session_token = <String>::sse_decode(&mut deserializer);
+            let api_friend_id = <String>::sse_decode(&mut deserializer);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+            let api_proxy_url = <Option<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let output_ok = crate::bridge::nintendo_send_friend_request(
+                            api_account_id,
+                            api_session_token,
+                            api_friend_id,
+                            api_operation_id,
+                            api_proxy_url,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__bridge__nintendo_update_friend_note_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "nintendo_update_friend_note",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_account_id = <String>::sse_decode(&mut deserializer);
+            let api_session_token = <String>::sse_decode(&mut deserializer);
+            let api_friend_id = <String>::sse_decode(&mut deserializer);
+            let api_note = <String>::sse_decode(&mut deserializer);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+            let api_proxy_url = <Option<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let output_ok = crate::bridge::nintendo_update_friend_note(
+                            api_account_id,
+                            api_session_token,
+                            api_friend_id,
+                            api_note,
                             api_operation_id,
                             api_proxy_url,
                         )
@@ -4425,6 +4707,8 @@ impl SseDecode for crate::settings::AppSettings {
         let mut var_compactTagDisplay = <bool>::sse_decode(deserializer);
         let mut var_autoPlayVideo = <bool>::sse_decode(deserializer);
         let mut var_autoSyncOnLaunch = <bool>::sse_decode(deserializer);
+        let mut var_notifyOnAutoSync = <bool>::sse_decode(deserializer);
+        let mut var_showSplatoonSchedule = <bool>::sse_decode(deserializer);
         let mut var_closeBehavior = <String>::sse_decode(deserializer);
         let mut var_customFontPaths = <Vec<String>>::sse_decode(deserializer);
         let mut var_syncPolicy = <crate::settings::SyncPolicy>::sse_decode(deserializer);
@@ -4440,6 +4724,8 @@ impl SseDecode for crate::settings::AppSettings {
             compact_tag_display: var_compactTagDisplay,
             auto_play_video: var_autoPlayVideo,
             auto_sync_on_launch: var_autoSyncOnLaunch,
+            notify_on_auto_sync: var_notifyOnAutoSync,
+            show_splatoon_schedule: var_showSplatoonSchedule,
             close_behavior: var_closeBehavior,
             custom_font_paths: var_customFontPaths,
             sync_policy: var_syncPolicy,
@@ -4530,6 +4816,22 @@ impl SseDecode for bool {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         deserializer.cursor.read_u8().unwrap() != 0
+    }
+}
+
+impl SseDecode for crate::models::CapturedOnThisDay {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_month = <u32>::sse_decode(deserializer);
+        let mut var_day = <u32>::sse_decode(deserializer);
+        let mut var_beforeYear = <i32>::sse_decode(deserializer);
+        let mut var_utcOffsetSeconds = <i32>::sse_decode(deserializer);
+        return crate::models::CapturedOnThisDay {
+            month: var_month,
+            day: var_day,
+            before_year: var_beforeYear,
+            utc_offset_seconds: var_utcOffsetSeconds,
+        };
     }
 }
 
@@ -4803,6 +5105,8 @@ impl SseDecode for crate::models::GalleryQuery {
             <Option<chrono::DateTime<chrono::Utc>>>::sse_decode(deserializer);
         let mut var_capturedUntil =
             <Option<chrono::DateTime<chrono::Utc>>>::sse_decode(deserializer);
+        let mut var_capturedOnThisDay =
+            <Option<crate::models::CapturedOnThisDay>>::sse_decode(deserializer);
         return crate::models::GalleryQuery {
             kind: var_kind,
             limit: var_limit,
@@ -4813,6 +5117,7 @@ impl SseDecode for crate::models::GalleryQuery {
             game_names: var_gameNames,
             captured_from: var_capturedFrom,
             captured_until: var_capturedUntil,
+            captured_on_this_day: var_capturedOnThisDay,
         };
     }
 }
@@ -5148,6 +5453,20 @@ impl SseDecode for Vec<crate::models::NintendoFriend> {
     }
 }
 
+impl SseDecode for Vec<crate::models::NintendoFriendGame> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::models::NintendoFriendGame>::sse_decode(
+                deserializer,
+            ));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<i64> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -5365,9 +5684,17 @@ impl SseDecode for crate::models::NintendoFriend {
         let mut var_isFavorite = <bool>::sse_decode(deserializer);
         let mut var_presence = <String>::sse_decode(deserializer);
         let mut var_gameName = <Option<String>>::sse_decode(deserializer);
+        let mut var_gameImageUrl = <Option<String>>::sse_decode(deserializer);
         let mut var_totalPlayTimeMinutes = <Option<u32>>::sse_decode(deserializer);
+        let mut var_firstPlayedAt =
+            <Option<chrono::DateTime<chrono::Utc>>>::sse_decode(deserializer);
         let mut var_logoutAt = <Option<chrono::DateTime<chrono::Utc>>>::sse_decode(deserializer);
         let mut var_activity = <Option<String>>::sse_decode(deserializer);
+        let mut var_inGameName = <Option<String>>::sse_decode(deserializer);
+        let mut var_friendshipSource = <Option<String>>::sse_decode(deserializer);
+        let mut var_friendshipGameName = <Option<String>>::sse_decode(deserializer);
+        let mut var_friendCreatedAt =
+            <Option<chrono::DateTime<chrono::Utc>>>::sse_decode(deserializer);
         return crate::models::NintendoFriend {
             friend_id: var_friendId,
             nickname: var_nickname,
@@ -5376,9 +5703,70 @@ impl SseDecode for crate::models::NintendoFriend {
             is_favorite: var_isFavorite,
             presence: var_presence,
             game_name: var_gameName,
+            game_image_url: var_gameImageUrl,
             total_play_time_minutes: var_totalPlayTimeMinutes,
+            first_played_at: var_firstPlayedAt,
             logout_at: var_logoutAt,
             activity: var_activity,
+            in_game_name: var_inGameName,
+            friendship_source: var_friendshipSource,
+            friendship_game_name: var_friendshipGameName,
+            friend_created_at: var_friendCreatedAt,
+        };
+    }
+}
+
+impl SseDecode for crate::models::NintendoFriendCodeSnapshot {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_friendCode = <String>::sse_decode(deserializer);
+        let mut var_url = <String>::sse_decode(deserializer);
+        return crate::models::NintendoFriendCodeSnapshot {
+            friend_code: var_friendCode,
+            url: var_url,
+        };
+    }
+}
+
+impl SseDecode for crate::models::NintendoFriendCodeUser {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_friendId = <String>::sse_decode(deserializer);
+        let mut var_nickname = <String>::sse_decode(deserializer);
+        let mut var_avatarUrl = <Option<String>>::sse_decode(deserializer);
+        return crate::models::NintendoFriendCodeUser {
+            friend_id: var_friendId,
+            nickname: var_nickname,
+            avatar_url: var_avatarUrl,
+        };
+    }
+}
+
+impl SseDecode for crate::models::NintendoFriendGame {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_name = <String>::sse_decode(deserializer);
+        let mut var_imageUrl = <Option<String>>::sse_decode(deserializer);
+        let mut var_totalPlayTimeMinutes = <Option<u32>>::sse_decode(deserializer);
+        let mut var_firstPlayedAt =
+            <Option<chrono::DateTime<chrono::Utc>>>::sse_decode(deserializer);
+        return crate::models::NintendoFriendGame {
+            name: var_name,
+            image_url: var_imageUrl,
+            total_play_time_minutes: var_totalPlayTimeMinutes,
+            first_played_at: var_firstPlayedAt,
+        };
+    }
+}
+
+impl SseDecode for crate::models::NintendoFriendRequestResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_friendId = <String>::sse_decode(deserializer);
+        let mut var_accepted = <bool>::sse_decode(deserializer);
+        return crate::models::NintendoFriendRequestResult {
+            friend_id: var_friendId,
+            accepted: var_accepted,
         };
     }
 }
@@ -5511,6 +5899,17 @@ impl SseDecode for Option<bool> {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         if (<bool>::sse_decode(deserializer)) {
             return Some(<bool>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::models::CapturedOnThisDay> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::models::CapturedOnThisDay>::sse_decode(deserializer));
         } else {
             return None;
         }
@@ -6635,42 +7034,57 @@ fn pde_ffi_dispatcher_primary_impl(
         90 => wire__crate__bridge__merge_game_tags_impl(port, ptr, rust_vec_len, data_len),
         91 => wire__crate__bridge__merge_tags_impl(port, ptr, rust_vec_len, data_len),
         92 => wire__crate__bridge__nintendo_friend_avatar_impl(port, ptr, rust_vec_len, data_len),
-        93 => wire__crate__bridge__nintendo_friends_impl(port, ptr, rust_vec_len, data_len),
-        94 => wire__crate__bridge__prepare_seed_export_impl(port, ptr, rust_vec_len, data_len),
-        95 => wire__crate__bridge__prepare_splatnet_session_impl(port, ptr, rust_vec_len, data_len),
-        96 => wire__crate__bridge__probe_library_root_impl(port, ptr, rust_vec_len, data_len),
-        97 => {
-            wire__crate__bridge__record_game_tag_selection_impl(port, ptr, rust_vec_len, data_len)
-        }
-        98 => wire__crate__bridge__record_sync_attempt_impl(port, ptr, rust_vec_len, data_len),
-        99 => wire__crate__bridge__record_sync_outcome_impl(port, ptr, rust_vec_len, data_len),
-        100 => wire__crate__bridge__relocate_media_library_impl(port, ptr, rust_vec_len, data_len),
-        101 => wire__crate__bridge__remove_media_from_album_impl(port, ptr, rust_vec_len, data_len),
-        102 => wire__crate__bridge__rename_game_tag_impl(port, ptr, rust_vec_len, data_len),
-        103 => wire__crate__bridge__rename_tag_impl(port, ptr, rust_vec_len, data_len),
-        104 => wire__crate__bridge__replace_album_rules_impl(port, ptr, rust_vec_len, data_len),
-        105 => wire__crate__bridge__replace_tags_impl(port, ptr, rust_vec_len, data_len),
-        106 => wire__crate__bridge__save_settings_impl(port, ptr, rust_vec_len, data_len),
-        107 => wire__crate__bridge__save_sync_policy_impl(port, ptr, rust_vec_len, data_len),
-        108 => wire__crate__bridge__save_video_frame_impl(port, ptr, rust_vec_len, data_len),
-        109 => wire__crate__bridge__set_favorite_impl(port, ptr, rust_vec_len, data_len),
-        110 => wire__crate__bridge__set_note_impl(port, ptr, rust_vec_len, data_len),
-        111 => {
-            wire__crate__bridge__set_runtime_proxy_policy_impl(port, ptr, rust_vec_len, data_len)
-        }
-        112 => wire__crate__bridge__sync_account_history_impl(port, ptr, rust_vec_len, data_len),
-        113 => wire__crate__bridge__sync_nso_impl(port, ptr, rust_vec_len, data_len),
-        114 => {
-            wire__crate__bridge__sync_nso_from_session_token_impl(port, ptr, rust_vec_len, data_len)
-        }
-        115 => wire__crate__bridge__sync_nso_from_session_token_for_account_impl(
+        93 => wire__crate__bridge__nintendo_friend_code_impl(port, ptr, rust_vec_len, data_len),
+        94 => wire__crate__bridge__nintendo_friend_lookup_impl(port, ptr, rust_vec_len, data_len),
+        95 => wire__crate__bridge__nintendo_friend_play_log_impl(port, ptr, rust_vec_len, data_len),
+        96 => wire__crate__bridge__nintendo_friends_impl(port, ptr, rust_vec_len, data_len),
+        97 => wire__crate__bridge__nintendo_game_image_impl(port, ptr, rust_vec_len, data_len),
+        98 => wire__crate__bridge__nintendo_send_friend_request_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        116 => wire__crate__bridge__sync_schedule_status_impl(port, ptr, rust_vec_len, data_len),
-        117 => wire__crate__bridge__update_album_impl(port, ptr, rust_vec_len, data_len),
+        99 => {
+            wire__crate__bridge__nintendo_update_friend_note_impl(port, ptr, rust_vec_len, data_len)
+        }
+        100 => wire__crate__bridge__prepare_seed_export_impl(port, ptr, rust_vec_len, data_len),
+        101 => {
+            wire__crate__bridge__prepare_splatnet_session_impl(port, ptr, rust_vec_len, data_len)
+        }
+        102 => wire__crate__bridge__probe_library_root_impl(port, ptr, rust_vec_len, data_len),
+        103 => {
+            wire__crate__bridge__record_game_tag_selection_impl(port, ptr, rust_vec_len, data_len)
+        }
+        104 => wire__crate__bridge__record_sync_attempt_impl(port, ptr, rust_vec_len, data_len),
+        105 => wire__crate__bridge__record_sync_outcome_impl(port, ptr, rust_vec_len, data_len),
+        106 => wire__crate__bridge__relocate_media_library_impl(port, ptr, rust_vec_len, data_len),
+        107 => wire__crate__bridge__remove_media_from_album_impl(port, ptr, rust_vec_len, data_len),
+        108 => wire__crate__bridge__rename_game_tag_impl(port, ptr, rust_vec_len, data_len),
+        109 => wire__crate__bridge__rename_tag_impl(port, ptr, rust_vec_len, data_len),
+        110 => wire__crate__bridge__replace_album_rules_impl(port, ptr, rust_vec_len, data_len),
+        111 => wire__crate__bridge__replace_tags_impl(port, ptr, rust_vec_len, data_len),
+        112 => wire__crate__bridge__save_settings_impl(port, ptr, rust_vec_len, data_len),
+        113 => wire__crate__bridge__save_sync_policy_impl(port, ptr, rust_vec_len, data_len),
+        114 => wire__crate__bridge__save_video_frame_impl(port, ptr, rust_vec_len, data_len),
+        115 => wire__crate__bridge__set_favorite_impl(port, ptr, rust_vec_len, data_len),
+        116 => wire__crate__bridge__set_note_impl(port, ptr, rust_vec_len, data_len),
+        117 => {
+            wire__crate__bridge__set_runtime_proxy_policy_impl(port, ptr, rust_vec_len, data_len)
+        }
+        118 => wire__crate__bridge__sync_account_history_impl(port, ptr, rust_vec_len, data_len),
+        119 => wire__crate__bridge__sync_nso_impl(port, ptr, rust_vec_len, data_len),
+        120 => {
+            wire__crate__bridge__sync_nso_from_session_token_impl(port, ptr, rust_vec_len, data_len)
+        }
+        121 => wire__crate__bridge__sync_nso_from_session_token_for_account_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        122 => wire__crate__bridge__sync_schedule_status_impl(port, ptr, rust_vec_len, data_len),
+        123 => wire__crate__bridge__update_album_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -6768,6 +7182,8 @@ impl flutter_rust_bridge::IntoDart for crate::settings::AppSettings {
             self.compact_tag_display.into_into_dart().into_dart(),
             self.auto_play_video.into_into_dart().into_dart(),
             self.auto_sync_on_launch.into_into_dart().into_dart(),
+            self.notify_on_auto_sync.into_into_dart().into_dart(),
+            self.show_splatoon_schedule.into_into_dart().into_dart(),
             self.close_behavior.into_into_dart().into_dart(),
             self.custom_font_paths.into_into_dart().into_dart(),
             self.sync_policy.into_into_dart().into_dart(),
@@ -6895,6 +7311,29 @@ impl flutter_rust_bridge::IntoIntoDart<crate::device_sync::read_model::BackupUna
     for crate::device_sync::read_model::BackupUnavailableReason
 {
     fn into_into_dart(self) -> crate::device_sync::read_model::BackupUnavailableReason {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::models::CapturedOnThisDay {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.month.into_into_dart().into_dart(),
+            self.day.into_into_dart().into_dart(),
+            self.before_year.into_into_dart().into_dart(),
+            self.utc_offset_seconds.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::models::CapturedOnThisDay
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::models::CapturedOnThisDay>
+    for crate::models::CapturedOnThisDay
+{
+    fn into_into_dart(self) -> crate::models::CapturedOnThisDay {
         self
     }
 }
@@ -7231,6 +7670,7 @@ impl flutter_rust_bridge::IntoDart for crate::models::GalleryQuery {
             self.game_names.into_into_dart().into_dart(),
             self.captured_from.into_into_dart().into_dart(),
             self.captured_until.into_into_dart().into_dart(),
+            self.captured_on_this_day.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -7645,9 +8085,15 @@ impl flutter_rust_bridge::IntoDart for crate::models::NintendoFriend {
             self.is_favorite.into_into_dart().into_dart(),
             self.presence.into_into_dart().into_dart(),
             self.game_name.into_into_dart().into_dart(),
+            self.game_image_url.into_into_dart().into_dart(),
             self.total_play_time_minutes.into_into_dart().into_dart(),
+            self.first_played_at.into_into_dart().into_dart(),
             self.logout_at.into_into_dart().into_dart(),
             self.activity.into_into_dart().into_dart(),
+            self.in_game_name.into_into_dart().into_dart(),
+            self.friendship_source.into_into_dart().into_dart(),
+            self.friendship_game_name.into_into_dart().into_dart(),
+            self.friend_created_at.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -7657,6 +8103,93 @@ impl flutter_rust_bridge::IntoIntoDart<crate::models::NintendoFriend>
     for crate::models::NintendoFriend
 {
     fn into_into_dart(self) -> crate::models::NintendoFriend {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::models::NintendoFriendCodeSnapshot {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.friend_code.into_into_dart().into_dart(),
+            self.url.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::models::NintendoFriendCodeSnapshot
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::models::NintendoFriendCodeSnapshot>
+    for crate::models::NintendoFriendCodeSnapshot
+{
+    fn into_into_dart(self) -> crate::models::NintendoFriendCodeSnapshot {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::models::NintendoFriendCodeUser {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.friend_id.into_into_dart().into_dart(),
+            self.nickname.into_into_dart().into_dart(),
+            self.avatar_url.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::models::NintendoFriendCodeUser
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::models::NintendoFriendCodeUser>
+    for crate::models::NintendoFriendCodeUser
+{
+    fn into_into_dart(self) -> crate::models::NintendoFriendCodeUser {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::models::NintendoFriendGame {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.name.into_into_dart().into_dart(),
+            self.image_url.into_into_dart().into_dart(),
+            self.total_play_time_minutes.into_into_dart().into_dart(),
+            self.first_played_at.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::models::NintendoFriendGame
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::models::NintendoFriendGame>
+    for crate::models::NintendoFriendGame
+{
+    fn into_into_dart(self) -> crate::models::NintendoFriendGame {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::models::NintendoFriendRequestResult {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.friend_id.into_into_dart().into_dart(),
+            self.accepted.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::models::NintendoFriendRequestResult
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::models::NintendoFriendRequestResult>
+    for crate::models::NintendoFriendRequestResult
+{
+    fn into_into_dart(self) -> crate::models::NintendoFriendRequestResult {
         self
     }
 }
@@ -8588,6 +9121,8 @@ impl SseEncode for crate::settings::AppSettings {
         <bool>::sse_encode(self.compact_tag_display, serializer);
         <bool>::sse_encode(self.auto_play_video, serializer);
         <bool>::sse_encode(self.auto_sync_on_launch, serializer);
+        <bool>::sse_encode(self.notify_on_auto_sync, serializer);
+        <bool>::sse_encode(self.show_splatoon_schedule, serializer);
         <String>::sse_encode(self.close_behavior, serializer);
         <Vec<String>>::sse_encode(self.custom_font_paths, serializer);
         <crate::settings::SyncPolicy>::sse_encode(self.sync_policy, serializer);
@@ -8659,6 +9194,16 @@ impl SseEncode for bool {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         serializer.cursor.write_u8(self as _).unwrap();
+    }
+}
+
+impl SseEncode for crate::models::CapturedOnThisDay {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u32>::sse_encode(self.month, serializer);
+        <u32>::sse_encode(self.day, serializer);
+        <i32>::sse_encode(self.before_year, serializer);
+        <i32>::sse_encode(self.utc_offset_seconds, serializer);
     }
 }
 
@@ -8850,6 +9395,10 @@ impl SseEncode for crate::models::GalleryQuery {
         <Vec<String>>::sse_encode(self.game_names, serializer);
         <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.captured_from, serializer);
         <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.captured_until, serializer);
+        <Option<crate::models::CapturedOnThisDay>>::sse_encode(
+            self.captured_on_this_day,
+            serializer,
+        );
     }
 }
 
@@ -9095,6 +9644,16 @@ impl SseEncode for Vec<crate::models::NintendoFriend> {
     }
 }
 
+impl SseEncode for Vec<crate::models::NintendoFriendGame> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::models::NintendoFriendGame>::sse_encode(item, serializer);
+        }
+    }
+}
+
 impl SseEncode for Vec<i64> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -9254,9 +9813,50 @@ impl SseEncode for crate::models::NintendoFriend {
         <bool>::sse_encode(self.is_favorite, serializer);
         <String>::sse_encode(self.presence, serializer);
         <Option<String>>::sse_encode(self.game_name, serializer);
+        <Option<String>>::sse_encode(self.game_image_url, serializer);
         <Option<u32>>::sse_encode(self.total_play_time_minutes, serializer);
+        <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.first_played_at, serializer);
         <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.logout_at, serializer);
         <Option<String>>::sse_encode(self.activity, serializer);
+        <Option<String>>::sse_encode(self.in_game_name, serializer);
+        <Option<String>>::sse_encode(self.friendship_source, serializer);
+        <Option<String>>::sse_encode(self.friendship_game_name, serializer);
+        <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.friend_created_at, serializer);
+    }
+}
+
+impl SseEncode for crate::models::NintendoFriendCodeSnapshot {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.friend_code, serializer);
+        <String>::sse_encode(self.url, serializer);
+    }
+}
+
+impl SseEncode for crate::models::NintendoFriendCodeUser {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.friend_id, serializer);
+        <String>::sse_encode(self.nickname, serializer);
+        <Option<String>>::sse_encode(self.avatar_url, serializer);
+    }
+}
+
+impl SseEncode for crate::models::NintendoFriendGame {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.name, serializer);
+        <Option<String>>::sse_encode(self.image_url, serializer);
+        <Option<u32>>::sse_encode(self.total_play_time_minutes, serializer);
+        <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.first_played_at, serializer);
+    }
+}
+
+impl SseEncode for crate::models::NintendoFriendRequestResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.friend_id, serializer);
+        <bool>::sse_encode(self.accepted, serializer);
     }
 }
 
@@ -9361,6 +9961,16 @@ impl SseEncode for Option<bool> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <bool>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::models::CapturedOnThisDay> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::models::CapturedOnThisDay>::sse_encode(value, serializer);
         }
     }
 }

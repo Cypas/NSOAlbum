@@ -109,6 +109,18 @@ void main() {
     expect(value, isNot(contains('abc')));
   });
 
+  test('native reports redact service path credentials and URL queries', () {
+    final value = sanitizeSmokeDiagnostic(
+      'Dart VM service http://127.0.0.1:12345/synthetic-debug-key=/\n'
+      'request https://example.invalid/api?private=synthetic-query#fragment',
+    );
+    expect(value, isNot(contains('synthetic-debug-key')));
+    expect(value, isNot(contains('synthetic-query')));
+    expect(value, isNot(contains('fragment')));
+    expect(value, contains('Dart VM service'));
+    expect(value, contains('https://example.invalid/api'));
+  });
+
   test(
     'reopen rejects redirected directories before reading library data',
     () async {

@@ -476,6 +476,8 @@ class _Backend implements AppBackend, DeviceSyncStartupBackend {
         compactTagDisplay: true,
         autoPlayVideo: false,
         autoSyncOnLaunch: false,
+        notifyOnAutoSync: true,
+        showSplatoonSchedule: true,
         closeBehavior: 'ask',
         customFontPaths: const [],
         syncPolicy: const SyncPolicy(

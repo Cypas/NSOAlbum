@@ -85,6 +85,7 @@ void main() {
           return nativeStatus;
         });
     controller = AndroidUpdateController(
+      allowPackageUpdates: true,
       releaseService: service,
       channel: channel,
       versionLoader: () async => '0.2.14+47',
@@ -106,6 +107,61 @@ void main() {
     automatic: automatic,
     language: 'en',
     confirm: (_) async => action,
+  );
+
+  test(
+    'Debug manually checks versions without downloading release APKs',
+    () async {
+      final debug = AndroidUpdateController(
+        releaseService: service,
+        versionLoader: () async => '0.2.14+47',
+      );
+      addTearDown(debug.dispose);
+      await debug.check(
+        automatic: false,
+        language: 'en',
+        confirm: (_) async => AndroidUpdateAction.download,
+      );
+      expect(service.checks, 1);
+      expect(debug.updateStatus, UpdateStatusKind.available);
+      expect(debug.latestRelease!.version, '0.3.0');
+      expect(debug.canDownload, false);
+      await debug.download(language: 'en');
+      expect(calls, isEmpty);
+    },
+  );
+
+  test('Debug never starts automatic checks or restores APK tasks', () async {
+    final debug = AndroidUpdateController(
+      releaseService: service,
+      versionLoader: () async => '0.2.14+47',
+    );
+    addTearDown(debug.dispose);
+    await debug.check(
+      automatic: true,
+      language: 'en',
+      confirm: (_) async => AndroidUpdateAction.later,
+    );
+    await debug.restore();
+    debug.setForeground(true);
+    await Future<void>.delayed(Duration.zero);
+    expect(service.checks, 0);
+    expect(calls, isEmpty);
+  });
+
+  test(
+    'Debug cannot install even if a ready package status is present',
+    () async {
+      final debug = AndroidUpdateController(releaseService: service);
+      addTearDown(debug.dispose);
+      debug.status = const AndroidUpdateStatus(
+        state: AndroidUpdateState.ready,
+        version: '0.3.0',
+      );
+      expect(debug.canInstall, false);
+      await debug.install();
+      expect(calls, isEmpty);
+    },
   );
 
   test('availability requires explicit download confirmation', () async {
@@ -299,6 +355,34 @@ void main() {
     expect(controller.canInstall, true);
   });
 
+  test('manual Android checks are available outside tests and diagnostics', () {
+    expect(
+      androidUpdateChecksEnabled(
+        isAndroid: true,
+        isTest: false,
+        safeMode: false,
+        ciSmoke: false,
+      ),
+      true,
+    );
+    for (final input in [
+      (false, false, false, false),
+      (true, true, false, false),
+      (true, false, true, false),
+      (true, false, false, true),
+    ]) {
+      expect(
+        androidUpdateChecksEnabled(
+          isAndroid: input.$1,
+          isTest: input.$2,
+          safeMode: input.$3,
+          ciSmoke: input.$4,
+        ),
+        false,
+      );
+    }
+  });
+
   test('startup updates require actual Android Release outside tests and diagnostics', () {
     expect(
       androidUpdateStartupEnabled(
@@ -356,7 +440,7 @@ void main() {
       'state': 'downloading',
       'version': '0.3.0',
     };
-    final ownedController = AndroidUpdateController();
+    final ownedController = AndroidUpdateController(allowPackageUpdates: true);
     await ownedController.restore();
     ownedController.dispose();
     final callCount = calls.length;

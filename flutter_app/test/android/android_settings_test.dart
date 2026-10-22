@@ -3,6 +3,7 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:squid_album/main.dart';
 import 'package:squid_album/src/ui/platform_ui.dart';
 import 'package:squid_album/src/ui/android/android_settings_page.dart';
@@ -86,6 +87,13 @@ void main() {
   testWidgets('Android retains author information and tag creation', (
     tester,
   ) async {
+    PackageInfo.setMockInitialValues(
+      appName: 'NSOAlbum',
+      packageName: 'io.github.cypas.nsoalbum',
+      version: '4.5.6',
+      buildNumber: '78',
+      buildSignature: '',
+    );
     final backend = _TagBackend();
     await tester.pumpWidget(
       SquidAlbumApp(backend: backend, uiPlatform: AppUiPlatform.android),
@@ -109,8 +117,10 @@ void main() {
       200,
       scrollable: settingsScroll,
     );
+    await tester.pumpAndSettle();
     expect(find.text('Cypas_Nya'), findsOneWidget);
     expect(find.text('小鱿鱿bot作者'), findsOneWidget);
+    expect(find.text('版本 4.5.6+78 Debug'), findsOneWidget);
     expect(find.byKey(const Key('android-about-github-link')), findsOneWidget);
     expect(
       find.byKey(const Key('android-about-feedback-link')),
@@ -131,7 +141,6 @@ void main() {
     expect(backend.createdTags, ['独立标签']);
     expect(tester.takeException(), isNull);
   }, variant: TargetPlatformVariant({TargetPlatform.android}));
-
 }
 
 class _TagBackend extends FakeBackend {

@@ -6,6 +6,7 @@
 #include <variant>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "sync_notifications.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project,
                              NativeSingleInstance* instance)
@@ -22,6 +23,10 @@ constexpr UINT_PTR kImeWindowSubclassId = 1;
 bool FlutterWindow::OnCreate() {
   if (!Win32Window::OnCreate()) {
     return false;
+  }
+  if (instance_ != nullptr) {
+    sync_notifications_ =
+        std::make_unique<SyncNotificationRegistration>(GetHandle());
   }
 
   RECT frame = GetClientArea();
@@ -61,6 +66,45 @@ bool FlutterWindow::OnCreate() {
         SetTextClientActive(*active);
         result->Success();
       });
+  sync_notification_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(),
+          "io.github.cypas.nsoalbum/notifications",
+          &flutter::StandardMethodCodec::GetInstance());
+  sync_notification_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+         std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+        if (call.method_name() != "syncCompleted") {
+          result->NotImplemented();
+          return;
+        }
+        const auto* arguments =
+            call.arguments() == nullptr
+                ? nullptr
+                : std::get_if<flutter::EncodableMap>(call.arguments());
+        const auto text = [arguments](const char* key) -> const std::string* {
+          if (arguments == nullptr) return nullptr;
+          const auto item = arguments->find(flutter::EncodableValue(key));
+          return item == arguments->end()
+                     ? nullptr
+                     : std::get_if<std::string>(&item->second);
+        };
+        const auto* title = text("title");
+        const auto* body = text("body");
+        if (title == nullptr || body == nullptr) {
+          result->Error("invalid_argument", "Expected notification summary");
+          return;
+        }
+        const HRESULT status = sync_notifications_ == nullptr
+                                   ? E_UNEXPECTED
+                                   : sync_notifications_->Show(*title, *body);
+        if (FAILED(status)) {
+          result->Error("notification_failed",
+                        "The notification could not be shown");
+          return;
+        }
+        result->Success();
+      });
   SetChildContent(flutter_view);
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -76,6 +120,8 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  sync_notifications_.reset();
+  sync_notification_channel_.reset();
   ime_context_channel_.reset();
   RemoveImeCompatibility();
   flutter_view_ = nullptr;

@@ -4,8 +4,6 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:squid_album/src/platform/splatnet_mac_network.dart';
 import 'package:squid_album/src/platform/splatnet_windows_environment.dart';
 import 'package:squid_album/src/ui/account_tools/native_webview_lifecycle.dart';
@@ -60,10 +58,9 @@ class _ProbeState extends State<_Probe> {
       if (Platform.isWindows) {
         final version = await WebViewEnvironment.getAvailableVersion();
         if (version == null) throw StateError('WebView2 unavailable');
-        final cache = await getApplicationCacheDirectory();
-        final parent = Directory(p.join(cache.path, 'splatnet-smoke'));
-        await parent.create(recursive: true);
-        directory = await parent.createTemp('probe-');
+        // The launcher selects the approved build-root TEMP. Do not create a
+        // probe profile beside real application sessions or account caches.
+        directory = await Directory.systemTemp.createTemp('splatnet-smoke-');
         environment = await SplatNetWindowsEnvironment.create(
           settings: WebViewEnvironmentSettings(userDataFolder: directory!.path),
         );

@@ -9,7 +9,7 @@ use url::Url;
 
 use crate::error::{CoreError, CoreResult};
 use crate::models::LoginChallenge;
-use crate::transport::HttpTransport;
+use crate::transport::{HttpResponseData, HttpTransport};
 
 const CLIENT_ID: &str = "71b963c1b7b6d119";
 const REDIRECT_URI: &str = "npf71b963c1b7b6d119://auth";
@@ -142,9 +142,9 @@ impl NintendoAuthClient {
         &self,
         session_token: &str,
     ) -> CoreResult<(NintendoTokens, chrono::DateTime<chrono::Utc>)> {
-        let response: serde_json::Value = self
+        let response = self
             .transport
-            .post_json(
+            .post_json_raw(
                 "https://accounts.nintendo.com/connect/1.0.0/api/token",
                 &[("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 14)".into())],
                 &serde_json::json!({
@@ -154,6 +154,7 @@ impl NintendoAuthClient {
                 }),
             )
             .await?;
+        let response = decode_token_response(&response)?;
         let access_token = response
             .get("access_token")
             .and_then(|value| value.as_str())
@@ -193,9 +194,54 @@ impl NintendoAuthClient {
     }
 }
 
+fn decode_token_response(response: &HttpResponseData) -> CoreResult<serde_json::Value> {
+    let body = response.json::<serde_json::Value>().ok();
+    if response.status != 429
+        && body
+            .as_ref()
+            .and_then(|body| body.get("error"))
+            .and_then(serde_json::Value::as_str)
+            == Some("invalid_grant")
+    {
+        return Err(CoreError::Authentication(
+            "nintendo_sign_in_required".into(),
+        ));
+    }
+    response.ensure_success_redacted("Nintendo OAuth")?;
+    let body = body.ok_or_else(|| CoreError::Provider("nintendo_response_invalid".into()))?;
+    if body.get("error").is_some() {
+        return Err(CoreError::Provider("nintendo_response_invalid".into()));
+    }
+    Ok(body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revoked_nintendo_grant_is_safe_sign_in_guidance_and_rate_limit_wins() {
+        for status in [200, 400, 401] {
+            let response = HttpResponseData {
+                status,
+                headers: Default::default(),
+                body: br#"{"error":"invalid_grant","error_description":"PRIVATE","session_token":"PRIVATE"}"#.to_vec(),
+            };
+            let error = decode_token_response(&response).unwrap_err();
+            assert!(matches!(error, CoreError::Authentication(_)));
+            assert!(error.to_string().contains("nintendo_sign_in_required"));
+            assert!(!error.to_string().contains("PRIVATE"));
+        }
+        let response = HttpResponseData {
+            status: 429,
+            headers: Default::default(),
+            body: br#"{"error":"invalid_grant"}"#.to_vec(),
+        };
+        assert!(matches!(
+            decode_token_response(&response),
+            Err(CoreError::RateLimited { .. })
+        ));
+    }
 
     #[test]
     fn parses_nintendo_fragment_callback() {

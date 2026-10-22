@@ -215,17 +215,21 @@ jobs:
           $directory = 'dist/ci-build/android-arm64'
           New-Item -ItemType Directory -Path $directory -Force | Out-Null
           Copy-Item -LiteralPath flutter_app/build/app/outputs/flutter-apk/app-release.apk -Destination "$directory/NSOAlbum-Android-arm64-CI-Test.apk"
+          $apk = Join-Path $directory 'NSOAlbum-Android-arm64-CI-Test.apk'
+          $hash = (Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path $directory 'SHA256SUMS.txt'), "$hash  $(Split-Path -Leaf $apk)`n", [Text.UTF8Encoding]::new($false))
           ./flutter_app/tool/ci_bundle.ps1 -Mode Seal -Directory $directory -Commit $env:EXPECTED_SHA -Platform android-arm64 -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD
-          New-Item -ItemType Directory -Path dist/ci-transfer -Force | Out-Null
-          tar -cf dist/ci-transfer/android-arm64.tar -C $directory .
-          if ($LASTEXITCODE -ne 0) { throw 'Archiving Android build failed.' }
       - name: Upload same-run intermediate Android build
         uses: actions/upload-artifact@v4
         with:
-          name: built-android-arm64-${{ needs.resolve.outputs.sha }}
-          path: dist/ci-transfer/android-arm64.tar
+          name: built-android-arm64-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.build }}-${{ needs.resolve.outputs.sha }}
+          path: |
+            dist/ci-build/android-arm64/NSOAlbum-Android-arm64-CI-Test.apk
+            dist/ci-build/android-arm64/.nso-ci-bundle.json
+            dist/ci-build/android-arm64/SHA256SUMS.txt
           retention-days: 3
           compression-level: 0
+          include-hidden-files: true
           if-no-files-found: error
       - name: Upload Android build test reports
         if: always()
@@ -262,7 +266,7 @@ jobs:
         run: sdkmanager "build-tools;$ANDROID_BUILD_TOOLS"
       - uses: actions/download-artifact@v4
         with:
-          name: built-android-arm64-${{ needs.resolve.outputs.sha }}
+          name: built-android-arm64-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.build }}-${{ needs.resolve.outputs.sha }}
           path: dist/ci-transfer
       - name: Verify commit, metadata, hashes, APK identity, ELF and signature
         shell: pwsh
@@ -275,8 +279,9 @@ jobs:
           $directory = 'dist/ci-verify/android-arm64'
           if (Test-Path -LiteralPath $directory) { throw 'Android verification directory must be new.' }
           New-Item -ItemType Directory -Path $directory -Force | Out-Null
-          tar -xpf dist/ci-transfer/android-arm64.tar -C $directory
-          if ($LASTEXITCODE -ne 0) { throw 'Extracting Android build failed.' }
+          Copy-Item -LiteralPath dist/ci-transfer/NSOAlbum-Android-arm64-CI-Test.apk -Destination $directory
+          Copy-Item -LiteralPath dist/ci-transfer/.nso-ci-bundle.json -Destination $directory
+          Copy-Item -LiteralPath dist/ci-transfer/SHA256SUMS.txt -Destination $directory
           ./flutter_app/tool/ci_bundle.ps1 -Mode Verify -Directory $directory -Commit $env:EXPECTED_SHA -Platform android-arm64 -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD
           $tools = Join-Path $env:ANDROID_HOME "build-tools/$env:ANDROID_BUILD_TOOLS"
           ./flutter_app/tool/verify_android_apk.ps1 -Apk "$directory/NSOAlbum-Android-arm64-CI-Test.apk" -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD -BuildToolsDirectory $tools -ReportsDirectory android-reports
@@ -291,10 +296,14 @@ jobs:
       - name: Upload verified test APK, never a Release asset
         uses: actions/upload-artifact@v4
         with:
-          name: android-arm64-ci-test
-          path: dist/ci-verify/android-arm64/NSOAlbum-Android-arm64-CI-Test.apk
+          name: android-arm64-ci-test-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.build }}
+          path: |
+            dist/ci-verify/android-arm64/NSOAlbum-Android-arm64-CI-Test.apk
+            dist/ci-verify/android-arm64/.nso-ci-bundle.json
+            dist/ci-verify/android-arm64/SHA256SUMS.txt
           retention-days: 7
           compression-level: 0
+          include-hidden-files: true
           if-no-files-found: error
 
   sign:
@@ -321,7 +330,7 @@ jobs:
         run: sdkmanager "build-tools;$ANDROID_BUILD_TOOLS"
       - uses: actions/download-artifact@v4
         with:
-          name: built-android-arm64-${{ needs.resolve.outputs.sha }}
+          name: built-android-arm64-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.build }}-${{ needs.resolve.outputs.sha }}
           path: dist/ci-transfer
       - name: Reverify the exact same-run input without rebuilding
         shell: pwsh
@@ -334,8 +343,9 @@ jobs:
           $directory = 'dist/ci-sign-input/android-arm64'
           if (Test-Path -LiteralPath $directory) { throw 'Signing input directory must be new.' }
           New-Item -ItemType Directory -Path $directory -Force | Out-Null
-          tar -xpf dist/ci-transfer/android-arm64.tar -C $directory
-          if ($LASTEXITCODE -ne 0) { throw 'Extracting signing input failed.' }
+          Copy-Item -LiteralPath dist/ci-transfer/NSOAlbum-Android-arm64-CI-Test.apk -Destination $directory
+          Copy-Item -LiteralPath dist/ci-transfer/.nso-ci-bundle.json -Destination $directory
+          Copy-Item -LiteralPath dist/ci-transfer/SHA256SUMS.txt -Destination $directory
           ./flutter_app/tool/ci_bundle.ps1 -Mode Verify -Directory $directory -Commit $env:EXPECTED_SHA -Platform android-arm64 -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD
       - name: Sign, verify release certificate, and clean private temporary material
         shell: pwsh

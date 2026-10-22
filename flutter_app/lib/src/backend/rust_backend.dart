@@ -33,6 +33,7 @@ import 'device_sync/account_gate.dart';
 import 'device_sync/account_storage.dart';
 import 'device_sync/account_coordinator.dart';
 import 'device_sync/startup_lifecycle.dart';
+import '../platform/sync_notifications.dart';
 
 const _windowsPicturesKnownFolderId = '{33E28130-4E1E-4676-835A-98395C3BC3BB}';
 
@@ -44,10 +45,12 @@ class RustBackend
         AppBackend,
         SyncScheduleBackend,
         SyncHistoryBackend,
+        SyncNotificationBackend,
         AccountSyncBackend,
         OperationProgressBackend,
         MobileStorageBackend,
         NintendoAccountToolsBackend,
+        NintendoGameImageBackend,
         NintendoAccountToolLifecycleBackend,
         AccountWorkBackend,
         AccountScheduleAdmissionBackend,
@@ -82,6 +85,8 @@ class RustBackend
   static const _accountTokensKey = 'nintendo.account_tokens.v1';
   static const _accountProfilesKey = 'nintendo.account_profiles.v1';
   static const _selectedAccountKey = 'nintendo.selected_account.v1';
+  static String _friendCodeKey(String accountId) =>
+      'nintendo.friend_code.v1.$accountId';
   final FlutterSecureStorage _storage;
   @override
   final accountWorkGate = AccountWorkGate();
@@ -95,8 +100,6 @@ class RustBackend
   Future<RustBackend>? _registration;
 
   LoginChallenge? _pendingLogin;
-  final Map<String, CoralSession> _coralSessions = {};
-  final Map<String, String> _coralTokens = {};
   int _accountCredentialEpoch = 0;
   int _accountMutationIntent = 0;
   int _loginFlow = 0;
@@ -138,6 +141,9 @@ class RustBackend
   }
 
   final _accountToolRequests = AccountToolRequests();
+  final _syncNotifications = SyncNotifications(
+    platform: Platform.operatingSystem,
+  );
   @override
   final accountToolLifecycle = AccountToolLifecycle();
   AppSettings? _settings;
@@ -145,6 +151,25 @@ class RustBackend
   final _operations = StreamController<OperationProgressValue>.broadcast();
   @override
   Stream<OperationProgressValue> get operationProgress => _operations.stream;
+
+  @override
+  Future<void> notifyAutomaticSyncCompleted({
+    required int downloaded,
+    required int existing,
+    required int failed,
+    required int accountCount,
+    int failedAccountCount = 0,
+  }) async {
+    await _syncNotifications.show(
+      language: settings.language,
+      downloaded: downloaded,
+      existing: existing,
+      failed: failed,
+      accountCount: accountCount,
+      failedAccountCount: failedAccountCount,
+    );
+  }
+
   @override
   Future<List<MobileStorageLocation>> mobileStorageLocations() async {
     if (!Platform.isAndroid) return const [];
@@ -283,12 +308,11 @@ class RustBackend
     final cleanup = accountToolLifecycle.invalidateAndWait(accountIds);
     try {
       for (final accountId in accountIds) {
-        _coralSessions.remove(accountId);
-        _coralTokens.remove(accountId);
         for (final id in _accountToolRequests.removeAccount(accountId)) {
           await rust_api.cancelAccountToolOperation(operationId: id);
         }
         await rust_api.clearAccountToolCache(accountId: accountId);
+        await _storage.delete(key: _friendCodeKey(accountId));
       }
     } finally {
       await cleanup;
@@ -417,6 +441,8 @@ class RustBackend
     compactTagDisplay: true,
     autoPlayVideo: false,
     autoSyncOnLaunch: true,
+    notifyOnAutoSync: true,
+    showSplatoonSchedule: true,
     closeBehavior: 'ask',
     customFontPaths: const [],
     syncPolicy: const SyncPolicy(
@@ -432,7 +458,9 @@ class RustBackend
     final previousProxy = _settings?.proxyUrl;
     await rust_api.saveSettings(settings: value);
     _settings = value;
-    if (previousProxy != value.proxyUrl) accountToolLifecycle.networkChanged();
+    if (previousProxy != value.proxyUrl) {
+      accountToolLifecycle.networkChanged();
+    }
   }
 
   @override
@@ -453,6 +481,7 @@ class RustBackend
     List<String> gameNames = const [],
     DateTime? capturedFrom,
     DateTime? capturedUntil,
+    CapturedOnThisDay? capturedOnThisDay,
   }) => rust_api.listMedia(
     query: GalleryQuery(
       kind: kind,
@@ -464,6 +493,7 @@ class RustBackend
       gameNames: gameNames,
       capturedFrom: capturedFrom,
       capturedUntil: capturedUntil,
+      capturedOnThisDay: capturedOnThisDay,
     ),
   );
 
@@ -993,6 +1023,7 @@ class RustBackend
       }
       await rust_api.clearAccountToolCache(accountId: accountId);
       await cleanup;
+      await _storage.delete(key: _friendCodeKey(accountId));
       _checkLogin(pending, flow, intent, publishingEpoch);
       final tokens = await _readStoredAccountTokens();
       _checkLogin(pending, flow, intent, publishingEpoch);
@@ -1003,8 +1034,6 @@ class RustBackend
       await _storage.write(key: _selectedAccountKey, value: accountId);
       await _storage.delete(key: _sessionTokenKey);
       await _cacheProfile(accountId, session);
-      _coralSessions[accountId] = session;
-      _coralTokens[accountId] = sessionToken;
       accountToolLifecycle.accountAvailable(accountId);
       if (identical(_pendingLogin, pending) && _pendingLoginFlow == flow) {
         _pendingLogin = null;
@@ -1116,8 +1145,7 @@ class RustBackend
       await cleanup;
       final tokens = await _readStoredAccountTokens();
       tokens.remove(accountId);
-      _coralSessions.remove(accountId);
-      _coralTokens.remove(accountId);
+      await _storage.delete(key: _friendCodeKey(accountId));
       final profiles = await _readCachedProfiles();
       profiles.remove(accountId);
       await _writeCachedProfiles(profiles);
@@ -1208,6 +1236,134 @@ class RustBackend
   );
 
   @override
+  Future<Uint8List> loadNintendoGameImage(
+    String accountId,
+    String gameName,
+    String operationId,
+  ) => _withAccountTool(
+    accountId,
+    operationId,
+    (token) => rust_api.nintendoGameImage(
+      accountId: accountId,
+      sessionToken: token,
+      gameName: gameName,
+      operationId: operationId,
+      proxyUrl: _networkProxy,
+    ),
+  );
+
+  @override
+  Future<List<NintendoFriendGame>> loadNintendoFriendPlayLog(
+    String accountId,
+    String friendId,
+    String operationId,
+  ) => _withAccountTool(
+    accountId,
+    operationId,
+    (token) => rust_api.nintendoFriendPlayLog(
+      accountId: accountId,
+      sessionToken: token,
+      friendId: friendId,
+      operationId: operationId,
+      proxyUrl: _networkProxy,
+    ),
+  );
+
+  @override
+  Future<NintendoFriendCodeSnapshot> loadNintendoFriendCode(
+    String accountId,
+    String operationId,
+  ) => _withAccountTool(accountId, operationId, (token) async {
+    final epoch = _accountCredentialEpoch;
+    final stored = await _storage.read(key: _friendCodeKey(accountId));
+    if (stored != null) {
+      try {
+        final value = jsonDecode(stored) as Map<String, dynamic>;
+        final code = value['friendCode'] as String;
+        if (RegExp(r'^[0-9]{4}-[0-9]{4}-[0-9]{4}$').hasMatch(code)) {
+          return NintendoFriendCodeSnapshot(
+            friendCode: code,
+            url: value['url'] as String? ?? '',
+          );
+        }
+      } catch (_) {
+        // An incomplete cache is replaced only after a successful request.
+      }
+    }
+    final result = await rust_api.nintendoFriendCode(
+      accountId: accountId,
+      sessionToken: token,
+      operationId: operationId,
+      proxyUrl: _networkProxy,
+    );
+    await _commitAccounts(() async {
+      if (epoch != _accountCredentialEpoch ||
+          accountToolLifecycle.isRemoved(accountId) ||
+          (await _readStoredAccountTokens())[accountId] != token) {
+        throw StateError('account_tool_cancelled');
+      }
+      await _storage.write(
+        key: _friendCodeKey(accountId),
+        value: jsonEncode({'friendCode': result.friendCode, 'url': result.url}),
+      );
+    });
+    return result;
+  });
+
+  @override
+  Future<NintendoFriendCodeUser> lookupNintendoFriendCode(
+    String accountId,
+    String friendCode,
+    String operationId,
+  ) => _withAccountTool(
+    accountId,
+    operationId,
+    (token) => rust_api.nintendoFriendLookup(
+      accountId: accountId,
+      sessionToken: token,
+      friendCode: friendCode,
+      operationId: operationId,
+      proxyUrl: _networkProxy,
+    ),
+  );
+
+  @override
+  Future<NintendoFriendRequestResult> sendNintendoFriendRequest(
+    String accountId,
+    String friendId,
+    String operationId,
+  ) => _withAccountTool(
+    accountId,
+    operationId,
+    (token) => rust_api.nintendoSendFriendRequest(
+      accountId: accountId,
+      sessionToken: token,
+      friendId: friendId,
+      operationId: operationId,
+      proxyUrl: _networkProxy,
+    ),
+  );
+
+  @override
+  Future<void> updateNintendoFriendNote(
+    String accountId,
+    String friendId,
+    String note,
+    String operationId,
+  ) => _withAccountTool(
+    accountId,
+    operationId,
+    (token) => rust_api.nintendoUpdateFriendNote(
+      accountId: accountId,
+      sessionToken: token,
+      friendId: friendId,
+      note: note,
+      operationId: operationId,
+      proxyUrl: _networkProxy,
+    ),
+  );
+
+  @override
   Future<SplatNetWebSession> prepareSplatNetSession(
     String accountId,
     String operationId, {
@@ -1255,35 +1411,6 @@ class RustBackend
     avatarBytes: session.avatarBytes,
   );
 
-  Future<CoralSession> _validCoralSessionFor(
-    String accountId,
-    String sessionToken, {
-    bool forceRefresh = false,
-  }) async {
-    final now = DateTime.now().toUtc();
-    final epoch = _accountCredentialEpoch;
-    final cached = _coralSessions[accountId];
-    if (!forceRefresh &&
-        cached != null &&
-        _coralTokens[accountId] == sessionToken &&
-        (cached.expiresAt == null || cached.expiresAt!.isAfter(now))) {
-      return cached;
-    }
-    final session = await rust_api.establishCoralSessionForAccount(
-      sessionToken: sessionToken,
-      expectedAccount: accountId,
-      proxyUrl: _networkProxy,
-    );
-    if (_accountId(session) != accountId ||
-        epoch != _accountCredentialEpoch ||
-        accountToolLifecycle.isRemoved(accountId)) {
-      throw StateError('Nintendo account identity changed');
-    }
-    _coralSessions[accountId] = session;
-    _coralTokens[accountId] = sessionToken;
-    return session;
-  }
-
   Future<Map<String, String>> _readStoredAccountTokens() async {
     _requireAccountAccess();
     final raw = await _storage.read(key: _accountTokensKey);
@@ -1330,8 +1457,6 @@ class RustBackend
       await _writeAccountTokens(migrated);
       await _storage.write(key: _selectedAccountKey, value: accountId);
       await _storage.delete(key: _sessionTokenKey);
-      _coralSessions[accountId] = session;
-      _coralTokens[accountId] = legacy;
       return migrated;
     });
   }
@@ -1432,88 +1557,39 @@ class RustBackend
       accountWorkGate.normal(_syncNintendoAlbum);
   Future<SyncSummary> _syncNintendoAlbum() async {
     _requireAccountAccess();
-    final tokens = await _readAccountTokens();
+    final epoch = _syncCancellationEpoch;
     final accountId = await selectedNintendoAccountId;
-    if (accountId == null || tokens[accountId] == null) {
+    if (accountId == null) {
       throw StateError(
         settings.language == 'en'
             ? 'Sign in to Nintendo Account first'
             : '请先登录 Nintendo Account',
       );
     }
-    if (Platform.isAndroid) return syncNintendoAccount(accountId);
-    final SyncSummary summary;
-    try {
-      final credentialEpoch = _accountCredentialEpoch;
-      final session = await _validCoralSessionFor(
-        accountId,
-        tokens[accountId]!,
-        forceRefresh: true,
-      );
-      await _cacheProfile(
-        accountId,
-        session,
-        expectedEpoch: credentialEpoch,
-        expectedToken: tokens[accountId],
-      );
-      summary = await rust_api.syncNso(
-        session: session,
-        proxyUrl: _networkProxy,
-      );
-    } catch (error) {
-      final message = error.toString().toLowerCase();
-      final cancelled = message.contains('cancelled');
-      try {
-        await rust_api.recordSyncAttempt(
-          accountId: accountId,
-          status: cancelled ? 'cancelled' : 'failure',
-          totalFound: BigInt.zero,
-          downloaded: BigInt.zero,
-          duplicates: BigInt.zero,
-          failed: BigInt.zero,
-        );
-      } catch (historyError, stackTrace) {
-        await logError(
-          'Failed to persist Nintendo sync failure history',
-          historyError,
-          stackTrace,
-        );
-      }
-      rethrow;
-    }
-
-    final failed = summary.failed.toInt();
-    try {
-      await rust_api.recordSyncAttempt(
-        accountId: accountId,
-        status: failed == 0 ? 'success' : 'partial_failure',
-        totalFound: summary.totalFound,
-        downloaded: summary.downloaded,
-        duplicates: summary.duplicates,
-        skippedRemote: summary.skippedRemote,
-        failed: summary.failed,
-      );
-    } catch (error, stackTrace) {
-      await logError(
-        'Failed to persist Nintendo sync result history',
-        error,
-        stackTrace,
-      );
-    }
-    return summary;
+    return _syncNintendoAccount(accountId, cancellationEpoch: epoch);
   }
 
   @override
   Future<SyncSummary> syncNintendoAccount(String accountId) =>
       accountWorkGate.normal(() => _syncNintendoAccount(accountId));
-  Future<SyncSummary> _syncNintendoAccount(String accountId) async {
+  Future<SyncSummary> _syncNintendoAccount(
+    String accountId, {
+    int? cancellationEpoch,
+  }) async {
     _requireAccountAccess();
-    final epoch = _syncCancellationEpoch;
+    final epoch = cancellationEpoch ?? _syncCancellationEpoch;
+    var invalidated = accountToolLifecycle.isRemoved(accountId);
+    final cleanup = accountToolLifecycle.registerCleanup(accountId, () async {
+      invalidated = true;
+    });
     void checkCancelled() {
-      if (epoch != _syncCancellationEpoch) throw StateError('task cancelled');
+      if (epoch != _syncCancellationEpoch || invalidated) {
+        throw StateError('task cancelled');
+      }
     }
 
     try {
+      checkCancelled();
       await _ensureMobileStorageAvailable();
       checkCancelled();
       final tokens = await _readAccountTokens();
@@ -1553,11 +1629,11 @@ class RustBackend
       }
       return summary;
     } catch (error, stackTrace) {
-        await logError(
-          '[sync] trigger=manual-or-scheduled account_slot=account stage=request_failed',
-          error,
-          stackTrace,
-        );
+      await logError(
+        '[sync] trigger=manual-or-scheduled account_slot=account stage=request_failed',
+        error,
+        stackTrace,
+      );
       try {
         await rust_api.recordSyncAttempt(
           accountId: accountId,
@@ -1575,6 +1651,8 @@ class RustBackend
         );
       }
       rethrow;
+    } finally {
+      cleanup.remove();
     }
   }
 

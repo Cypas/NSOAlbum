@@ -442,7 +442,10 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               IconButton.filled(
                 key: const Key('video-editor-play-selection'),
@@ -457,13 +460,11 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
                   playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
                 ),
               ),
-              const SizedBox(width: 12),
               Text(
                 '${_formatDuration(selectionStart)} – ${_formatDuration(selectionEnd)}',
                 key: const Key('video-editor-selection-label'),
                 style: const TextStyle(color: Colors.white70),
               ),
-              const SizedBox(width: 12),
               Container(
                 key: const Key('video-editor-selection-duration'),
                 padding: const EdgeInsets.symmetric(
@@ -486,7 +487,6 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
                   ),
                 ),
               ),
-              const SizedBox(width: 12),
               FilterChip(
                 key: const Key('video-editor-auto-play-selection'),
                 labelStyle: TextStyle(
@@ -510,15 +510,25 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
                   ),
                 ),
               ),
-              const Spacer(),
-              const Icon(Icons.mouse_rounded, size: 18, color: Colors.white54),
-              const SizedBox(width: 6),
-              Text(
-                context.l10n.select(
-                  zh: '滚轮缩放时间轴 · ${timelineZoom.toStringAsFixed(1)}×',
-                  en: 'Scroll to zoom timeline · ${timelineZoom.toStringAsFixed(1)}×',
-                ),
-                style: const TextStyle(color: Colors.white54),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.mouse_rounded,
+                    size: 18,
+                    color: Colors.white54,
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      context.l10n.select(
+                        zh: '滚轮缩放时间轴 · ${timelineZoom.toStringAsFixed(1)}×',
+                        en: 'Scroll to zoom timeline · ${timelineZoom.toStringAsFixed(1)}×',
+                      ),
+                      style: const TextStyle(color: Colors.white54),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),

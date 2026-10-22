@@ -142,22 +142,30 @@ class _AndroidVideoEditorState extends State<AndroidVideoEditor> {
             spacing: 8,
             runSpacing: 8,
             children: [
-              IconButton(
-                tooltip: context.l10n.select(zh: '播放选区', en: 'Play selection'),
-                onPressed: busy
-                    ? null
-                    : () async {
-                        await player.seek(
-                          Duration(milliseconds: start.round()),
-                        );
-                        await player.play();
-                      },
-                icon: const Icon(Icons.play_arrow),
-              ),
-              IconButton(
-                tooltip: context.l10n.select(zh: '暂停', en: 'Pause'),
-                onPressed: busy ? null : player.pause,
-                icon: const Icon(Icons.pause),
+              StreamBuilder<bool>(
+                stream: player.stream.playing,
+                initialData: player.state.playing,
+                builder: (context, snapshot) => IconButton(
+                  key: const Key('android-trim-playback-toggle'),
+                  tooltip: snapshot.data == true
+                      ? context.l10n.select(zh: '暂停', en: 'Pause')
+                      : context.l10n.select(zh: '播放', en: 'Play'),
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          if (player.state.playing) {
+                            await player.pause();
+                          } else {
+                            await player.seek(
+                              Duration(milliseconds: start.round()),
+                            );
+                            if (mounted) await player.play();
+                          }
+                        },
+                  icon: Icon(
+                    snapshot.data == true ? Icons.pause : Icons.play_arrow,
+                  ),
+                ),
               ),
               Text(
                 context.l10n.select(

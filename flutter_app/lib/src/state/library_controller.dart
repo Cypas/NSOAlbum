@@ -14,6 +14,7 @@ class LibraryController extends ChangeNotifier {
   List<String> gameNames = [];
   DateTime? capturedFrom;
   DateTime? capturedUntil;
+  CapturedOnThisDay? capturedOnThisDay;
   String search = '';
   List<MediaAsset> items = [];
   Object? error;
@@ -61,6 +62,7 @@ class LibraryController extends ChangeNotifier {
         gameNames: gameNames,
         capturedFrom: capturedFrom,
         capturedUntil: capturedUntil,
+        capturedOnThisDay: capturedOnThisDay,
       );
       if (disposed || request != revision) return;
       items = result;
@@ -83,6 +85,7 @@ class LibraryController extends ChangeNotifier {
     List<String> gameNames = const [],
     DateTime? capturedFrom,
     DateTime? capturedUntil,
+    CapturedOnThisDay? capturedOnThisDay,
     int limit = 500,
   }) => backend
       .listMedia(
@@ -93,6 +96,7 @@ class LibraryController extends ChangeNotifier {
         gameNames: gameNames,
         capturedFrom: capturedFrom,
         capturedUntil: capturedUntil,
+        capturedOnThisDay: capturedOnThisDay,
         limit: limit,
       )
       .timeout(const Duration(seconds: 25));

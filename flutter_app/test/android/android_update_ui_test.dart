@@ -10,9 +10,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/src/l10n/app_localizations.dart';
 import 'package:squid_album/src/release_update.dart';
 import 'package:squid_album/src/state/android_update_controller.dart';
+import 'package:squid_album/src/state/settings_controller.dart';
 import 'package:squid_album/src/ui/android/android_update_dialog.dart';
 import 'package:squid_album/src/ui/android/android_update_controls.dart';
+import 'package:squid_album/src/ui/android/android_settings_page.dart';
 
+import '../home_shell_test.dart' show FakeBackend;
 import 'android_release_update_test.dart' show metadata;
 
 Widget app(Widget child, String language) => MaterialApp(
@@ -29,6 +32,75 @@ Widget app(Widget child, String language) => MaterialApp(
 
 void main() {
   for (final language in ['zh', 'en']) {
+    testWidgets('$language settings allows a manual Debug version check', (
+      tester,
+    ) async {
+      final backend = FakeBackend();
+      final settings = SettingsController(backend);
+      addTearDown(settings.dispose);
+      var checks = 0;
+      await tester.pumpWidget(
+        app(
+          AndroidSettingsPage(
+            controller: settings,
+            backend: backend,
+            onCheckForUpdates: () async {
+              checks++;
+            },
+          ),
+          language,
+        ),
+      );
+      final button = find.byKey(const Key('android-check-updates'));
+      await tester.scrollUntilVisible(button, 400);
+      await Scrollable.ensureVisible(
+        tester.element(button),
+        alignment: 0.5,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+      expect(checks, 1);
+      expect(tester.widget<OutlinedButton>(button).onPressed, isNotNull);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('$language Debug update dialog does not offer APK downloads', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        app(
+          Builder(
+            builder: (context) => TextButton(
+              onPressed: () => unawaited(
+                showAndroidReleaseUpdateDialog(
+                  context,
+                  release: latestReleaseInfoFromGithubJson(
+                    metadata(),
+                    '0.2.14',
+                  )!,
+                ),
+              ),
+              child: const Text('Open'),
+            ),
+          ),
+          language,
+        ),
+      );
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('0.3.0'), findsOneWidget);
+      expect(find.byKey(const Key('android-update-download')), findsNothing);
+      expect(
+        find.textContaining(
+          language == 'en' ? 'Debug builds can check' : 'Debug 版本可检查',
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const Key('android-update-later')));
+      await tester.pumpAndSettle();
+    });
+
     testWidgets('$language update confirmation exposes later ignore download', (
       tester,
     ) async {
@@ -40,6 +112,7 @@ void main() {
               onPressed: () async {
                 result = await showAndroidReleaseUpdateDialog(
                   context,
+                  allowDownload: true,
                   release: latestReleaseInfoFromGithubJson(
                     metadata(),
                     '0.2.14',
@@ -83,6 +156,7 @@ void main() {
                     metadata()..['assets'] = [],
                     '0.2.14',
                   )!,
+                  allowDownload: true,
                 ),
               ),
               child: const Text('Open'),
@@ -125,7 +199,7 @@ void main() {
                       'notificationAllowed': false,
                     };
             });
-        final controller = AndroidUpdateController();
+        final controller = AndroidUpdateController(allowPackageUpdates: true);
         addTearDown(() async {
           controller.dispose();
           TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

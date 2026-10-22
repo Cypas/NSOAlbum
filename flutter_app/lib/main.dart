@@ -464,9 +464,8 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
             AppUiPlatform.android,
       );
       automaticSync = AutomaticSyncCoordinator(backend, settings!, sync!);
-      if (androidUpdateStartupEnabled(
+      if (androidUpdateChecksEnabled(
         isAndroid: Platform.isAndroid,
-        releaseMode: kReleaseMode,
         isTest: Platform.environment.containsKey('FLUTTER_TEST'),
         ciSmoke: widget.startupOptions.ciSmoke,
         safeMode: widget.startupOptions.safeMode,
@@ -500,7 +499,13 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
             !widget.startupOptions.safeMode) {
           unawaited(_checkForUpdates(automatic: true));
         }
-        if (androidUpdates != null) {
+        if (androidUpdateStartupEnabled(
+          isAndroid: Platform.isAndroid,
+          releaseMode: kReleaseMode,
+          isTest: Platform.environment.containsKey('FLUTTER_TEST'),
+          ciSmoke: widget.startupOptions.ciSmoke,
+          safeMode: widget.startupOptions.safeMode,
+        )) {
           unawaited(_restoreAndroidUpdatesAndCheck());
         }
         if (!widget.startupOptions.ciSmoke &&
@@ -653,7 +658,11 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
         language: settings?.value.language ?? 'en',
         confirm: (release) {
           if (!mounted) return Future.value(null);
-          return showAndroidReleaseUpdateDialog(context, release: release);
+          return showAndroidReleaseUpdateDialog(
+            context,
+            release: release,
+            allowDownload: androidUpdates!.allowPackageUpdates,
+          );
         },
       );
       return;
@@ -994,6 +1003,8 @@ AppSettings _settingsWithCloseBehavior(
   compactTagDisplay: value.compactTagDisplay,
   autoPlayVideo: value.autoPlayVideo,
   autoSyncOnLaunch: value.autoSyncOnLaunch,
+  notifyOnAutoSync: value.notifyOnAutoSync,
+  showSplatoonSchedule: value.showSplatoonSchedule,
   closeBehavior: closeBehavior,
   customFontPaths: value.customFontPaths,
   syncPolicy: value.syncPolicy,

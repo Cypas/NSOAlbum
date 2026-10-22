@@ -65,6 +65,10 @@ flutter test
 Android 先用 `flutter build apk --debug --target-platform android-arm64 -t tool/account_tools_webview_smoke.dart`。
 探针验证实际系统 WebView 的创建、JavaScript 回调、释放和重建，结果以
 `ACCOUNT_TOOLS_WEBVIEW_SMOKE PASS` 为准，不以编译或进程存活代替。
+运行前将 `TEMP`/`TMP` 指向仓库规定的已有本地构建根内 `temp`；Windows
+探针仅在系统临时目录创建本次独占 profile，不复用真实应用会话缓存。
+PASS 之后还须核对测试窗口实际进程的正常关闭退出码，不使用 Flutter
+工具本身的退出码替代；结束后恢复普通 `lib/main.dart` 入口。
 使用正式包名的 Android 设备运行后，必须重新覆盖安装普通 `lib/main.dart` 的 Debug 包，
 不卸载或清空数据。探针不代表真实账号登录、网页代理或观星网站兼容已验收。
 

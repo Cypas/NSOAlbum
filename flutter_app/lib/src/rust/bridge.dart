@@ -517,6 +517,90 @@ Future<Uint8List> nintendoFriendAvatar({
   proxyUrl: proxyUrl,
 );
 
+Future<List<NintendoFriendGame>> nintendoFriendPlayLog({
+  required String accountId,
+  required String sessionToken,
+  required String friendId,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeNintendoFriendPlayLog(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  friendId: friendId,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
+Future<Uint8List> nintendoGameImage({
+  required String accountId,
+  required String sessionToken,
+  required String gameName,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeNintendoGameImage(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  gameName: gameName,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
+Future<NintendoFriendCodeSnapshot> nintendoFriendCode({
+  required String accountId,
+  required String sessionToken,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeNintendoFriendCode(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
+Future<NintendoFriendCodeUser> nintendoFriendLookup({
+  required String accountId,
+  required String sessionToken,
+  required String friendCode,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeNintendoFriendLookup(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  friendCode: friendCode,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
+Future<NintendoFriendRequestResult> nintendoSendFriendRequest({
+  required String accountId,
+  required String sessionToken,
+  required String friendId,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeNintendoSendFriendRequest(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  friendId: friendId,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
+Future<void> nintendoUpdateFriendNote({
+  required String accountId,
+  required String sessionToken,
+  required String friendId,
+  required String note,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeNintendoUpdateFriendNote(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  friendId: friendId,
+  note: note,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
 Future<SplatNetWebSession> prepareSplatnetSession({
   required String accountId,
   required String sessionToken,

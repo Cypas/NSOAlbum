@@ -38,6 +38,8 @@ abstract final class SplatNetPolicy {
     }
   };
   window.requestGameWebToken = request;
+  window.jsBridge = window.jsBridge || {};
+  window.jsBridge.requestGameWebToken = request;
   if (window.vh) window.vh.requestGameWebToken = request;
 })();
 ''';

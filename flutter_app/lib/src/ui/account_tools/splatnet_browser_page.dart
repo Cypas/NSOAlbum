@@ -21,6 +21,8 @@ import 'account_tool_frame.dart';
 import 'account_tool_operation.dart';
 import 'native_webview_lifecycle.dart';
 import 'splatnet_policy.dart';
+import 'splatnet_close.dart';
+import 'splatnet_profile_cleanup.dart';
 import 'splatnet_request_gate.dart';
 import 'web_resource_lifecycle.dart';
 
@@ -279,22 +281,23 @@ class _SplatNetBrowserPageState extends State<SplatNetBrowserPage> {
     environment = null;
     if (oldEnvironment != null) await oldEnvironment.dispose();
     final directory = profileDirectory;
+    final parent = profileParent;
+    final backend = widget.backend;
     profileDirectory = null;
     if (directory != null &&
-        profileParent != null &&
-        p.isWithin(profileParent!, directory.absolute.path) &&
+        parent != null &&
+        p.isWithin(parent, directory.absolute.path) &&
         !await FileSystemEntity.isLink(directory.path)) {
-      // This is the unique directory created above, never a supplied user path.
-      // A WebView2 process may briefly retain a handle after native disposal.
-      for (var attempt = 0; attempt < 4; attempt++) {
-        try {
-          if (await directory.exists()) await directory.delete(recursive: true);
-          break;
-        } on FileSystemException {
-          if (attempt == 3) rethrow;
-          await Future<void>.delayed(const Duration(milliseconds: 250));
-        }
-      }
+      await retireSplatNetProfile(
+        deleteProfile: () => deleteOwnedSplatNetProfile(directory, parent),
+        onIssue: (issue) {
+          unawaited(
+            backend
+                .logError('[splatnet] profile cleanup', StateError(issue))
+                .catchError((Object _) {}),
+          );
+        },
+      );
     }
   }
 
@@ -326,6 +329,34 @@ class _SplatNetBrowserPageState extends State<SplatNetBrowserPage> {
       if (valid && generation == document) await fail(failure);
     }
   });
+
+  Future<void> installCloseWatcher(InAppWebViewController controller) async {
+    await controller.evaluateJavascript(source: splatNetCloseWatcherScript);
+  }
+
+  Future<void> closeFromWebsite() async {
+    if (!valid) return;
+    final navigator = Navigator.of(context);
+    leaving = true;
+    lease?.release();
+    setState(() => ready = false);
+    await closeSplatNetAndReturn(
+      closeResources: closeResources,
+      onCleanupError: (failure) {
+        unawaited(
+          widget.backend
+              .logError('[splatnet] WebView cleanup failed', failure)
+              .catchError((Object _) {}),
+        );
+      },
+      returnToCaller: () async {
+        if (!mounted) return;
+        setState(() => allowPop = true);
+        await WidgetsBinding.instance.endOfFrame;
+        if (mounted) navigator.pop();
+      },
+    );
+  }
 
   Future<void> fail(Object failure) async {
     if (!mounted || leaving || error != null) return;
@@ -487,6 +518,13 @@ class _SplatNetBrowserPageState extends State<SplatNetBrowserPage> {
                             forMainFrameOnly: true,
                             allowedOriginRules: {SplatNetPolicy.origin},
                           ),
+                          UserScript(
+                            source: splatNetCloseWatcherScript,
+                            injectionTime:
+                                UserScriptInjectionTime.AT_DOCUMENT_START,
+                            forMainFrameOnly: true,
+                            allowedOriginRules: {SplatNetPolicy.origin},
+                          ),
                         ]),
                         onWebViewCreated: (controller) {
                           final acceptsEvents = nativeOwner.created(
@@ -498,6 +536,14 @@ class _SplatNetBrowserPageState extends State<SplatNetBrowserPage> {
                             handlerName: 'nsoRequestGameWebToken',
                             callback: (_) {
                               if (currentValid()) unawaited(deliverToken());
+                              return null;
+                            },
+                          );
+                          controller.addJavaScriptHandler(
+                            handlerName: 'splatnetClosed',
+                            callback: (_) {
+                              // Return to JS before disposing its native view.
+                              if (currentValid()) unawaited(closeFromWebsite());
                               return null;
                             },
                           );
@@ -527,6 +573,7 @@ class _SplatNetBrowserPageState extends State<SplatNetBrowserPage> {
                             await controller.evaluateJavascript(
                               source: SplatNetPolicy.bootstrapScript,
                             );
+                            await installCloseWatcher(controller);
                             if (currentValid()) await deliverToken();
                           } catch (failure) {
                             if (currentValid()) await fail(failure);
@@ -534,6 +581,9 @@ class _SplatNetBrowserPageState extends State<SplatNetBrowserPage> {
                         },
                         onProgressChanged: (_, value) {
                           if (currentValid()) setState(() => progress = value);
+                        },
+                        onCloseWindow: (_) {
+                          if (currentValid()) unawaited(closeFromWebsite());
                         },
                         onConsoleMessage: (_, message) {
                           if (currentValid() &&

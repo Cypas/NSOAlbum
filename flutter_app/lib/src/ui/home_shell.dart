@@ -29,6 +29,7 @@ import 'active_page_host.dart';
 import 'font_families.dart';
 import 'display_time.dart';
 import 'account_tools/account_tools_expander.dart';
+import 'account_tools/account_tool_errors.dart';
 import 'nxapi_disclosure_card.dart';
 import 'macos_update_dialog.dart';
 import 'device_sync/album_source_label.dart';
@@ -390,10 +391,11 @@ class _HomeShellState extends State<HomeShell> {
     if (next == SyncState.failed && _lastSyncState != SyncState.failed) {
       final failure = sync.error;
       if (failure != null && mounted) {
+        final message = nintendoConditionText(context.l10n, failure) ?? failure;
         setState(
           () => _syncFailureMessage = context.l10n.select(
-            zh: 'Nintendo 同步失败：$failure',
-            en: 'Nintendo synchronization failed: $failure',
+            zh: 'Nintendo 同步失败：$message',
+            en: 'Nintendo synchronization failed: $message',
           ),
         );
       }
@@ -5838,7 +5840,10 @@ class _TransferPageState extends State<TransferPage>
       );
       if (mounted) {
         _showMessage(
-          context.l10n.select(zh: '登录失败：$error', en: 'Sign-in failed: $error'),
+          context.l10n.select(
+            zh: '登录失败：${nintendoConditionText(context.l10n, error) ?? error}',
+            en: 'Sign-in failed: ${nintendoConditionText(context.l10n, error) ?? error}',
+          ),
           error: true,
         );
       }
@@ -6718,9 +6723,12 @@ String _syncText(BuildContext context, SyncController controller) {
     );
   }
   if (controller.error != null) {
+    final message =
+        nintendoConditionText(context.l10n, controller.error!) ??
+        controller.error;
     return context.l10n.select(
-      zh: '同步失败：${controller.error}',
-      en: 'Sync failed: ${controller.error}',
+      zh: '同步失败：$message',
+      en: 'Sync failed: $message',
     );
   }
   return switch (controller.state) {
@@ -6788,7 +6796,9 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     proxy = TextEditingController(text: widget.controller.value.proxyUrl);
-    appVersion = loadApplicationVersion();
+    appVersion = loadApplicationVersion().then(
+      formatApplicationVersionForDisplay,
+    );
     _fontDraft = widget.controller.value.customFontPaths
         .map((path) => _CustomFontDraftEntry(path, isManaged: true))
         .toList();
@@ -7033,6 +7043,44 @@ class _SettingsPageState extends State<SettingsPage> {
                     ),
                   ],
                 ),
+              ),
+            ),
+            Material(
+              color: Colors.transparent,
+              child: SwitchListTile(
+                key: const Key('nso-auto-sync-notifications'),
+                contentPadding: EdgeInsets.zero,
+                title: Text(
+                  context.l10n.select(
+                    zh: '自动同步新增媒体后通知',
+                    en: 'Notify after automatic sync adds media',
+                  ),
+                ),
+                value: value.notifyOnAutoSync,
+                onChanged: widget.controller.saving
+                    ? null
+                    : (enabled) => _save(
+                        _copySettings(value, notifyOnAutoSync: enabled),
+                      ),
+              ),
+            ),
+            Material(
+              color: Colors.transparent,
+              child: SwitchListTile(
+                key: const Key('show-splatoon-schedule'),
+                contentPadding: EdgeInsets.zero,
+                title: Text(
+                  context.l10n.select(
+                    zh: '展示喷三日程',
+                    en: 'Show Splatoon 3 schedule',
+                  ),
+                ),
+                value: value.showSplatoonSchedule,
+                onChanged: widget.controller.saving
+                    ? null
+                    : (enabled) => _save(
+                        _copySettings(value, showSplatoonSchedule: enabled),
+                      ),
               ),
             ),
             const SizedBox(height: 16),
@@ -7419,7 +7467,10 @@ class _SettingsPageState extends State<SettingsPage> {
                 contentPadding: const EdgeInsets.all(20),
                 leading: const Icon(Icons.description_outlined),
                 title: Text(
-                  context.l10n.select(zh: '应用日志', en: 'Application log'),
+                  context.l10n.select(
+                    zh: '查看最近运行日志',
+                    en: 'View recent runtime logs',
+                  ),
                 ),
                 subtitle: Text(widget.controller.logFilePath),
                 trailing: FilledButton.tonalIcon(
@@ -8607,6 +8658,8 @@ AppSettings _copySettings(
   bool? compactTagDisplay,
   bool? autoPlayVideo,
   bool? autoSyncOnLaunch,
+  bool? notifyOnAutoSync,
+  bool? showSplatoonSchedule,
   String? closeBehavior,
   String? theme,
   String? language,
@@ -8630,6 +8683,8 @@ AppSettings _copySettings(
   compactTagDisplay: compactTagDisplay ?? value.compactTagDisplay,
   autoPlayVideo: autoPlayVideo ?? value.autoPlayVideo,
   autoSyncOnLaunch: autoSyncOnLaunch ?? value.autoSyncOnLaunch,
+  notifyOnAutoSync: notifyOnAutoSync ?? value.notifyOnAutoSync,
+  showSplatoonSchedule: showSplatoonSchedule ?? value.showSplatoonSchedule,
   closeBehavior: closeBehavior ?? value.closeBehavior,
   customFontPaths: customFontPaths ?? value.customFontPaths,
   syncPolicy: syncPolicy ?? value.syncPolicy,

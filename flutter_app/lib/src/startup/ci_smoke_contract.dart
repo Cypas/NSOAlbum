@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 
+import '../backend/app_logger.dart';
+
 Future<void> verifySmokeVideoFrame({
   required Future<Uint8List?> Function() capture,
   required Future<void> Function(Uint8List) decode,
@@ -185,7 +187,7 @@ String sanitizeSmokeDiagnostic(
   for (final root in roots.where((root) => root.isNotEmpty)) {
     value = value.replaceAll(root, '<ci-root>');
   }
-  value = value
+  value = sanitizeDiagnostic(value)
       .replaceAll(
         RegExp(r'(authorization|cookie)[^\r\n]*', caseSensitive: false),
         '<redacted>',
@@ -197,7 +199,10 @@ String sanitizeSmokeDiagnostic(
         ),
         '<redacted>',
       )
-      .replaceAll(RegExp(r'[A-Za-z]:[\\/][^\r\n"<>]+'), '<path>')
+      .replaceAll(
+        RegExp(r'''(?<![A-Za-z0-9+.-])[A-Za-z]:[\\/][^\r\n"<>]+'''),
+        '<path>',
+      )
       .replaceAll(
         RegExp(r'/(?:Users|home|private|var|tmp)/[^\s"<>]+'),
         '<path>',

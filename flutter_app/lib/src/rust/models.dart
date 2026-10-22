@@ -82,6 +82,37 @@ class AlbumSummary {
           sourceDeviceName == other.sourceDeviceName;
 }
 
+class CapturedOnThisDay {
+  final int month;
+  final int day;
+  final int beforeYear;
+  final int utcOffsetSeconds;
+
+  const CapturedOnThisDay({
+    required this.month,
+    required this.day,
+    required this.beforeYear,
+    required this.utcOffsetSeconds,
+  });
+
+  @override
+  int get hashCode =>
+      month.hashCode ^
+      day.hashCode ^
+      beforeYear.hashCode ^
+      utcOffsetSeconds.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CapturedOnThisDay &&
+          runtimeType == other.runtimeType &&
+          month == other.month &&
+          day == other.day &&
+          beforeYear == other.beforeYear &&
+          utcOffsetSeconds == other.utcOffsetSeconds;
+}
+
 enum GalleryKindFilter { all, image, video }
 
 class GalleryQuery {
@@ -94,6 +125,7 @@ class GalleryQuery {
   final List<String> gameNames;
   final DateTime? capturedFrom;
   final DateTime? capturedUntil;
+  final CapturedOnThisDay? capturedOnThisDay;
 
   const GalleryQuery({
     required this.kind,
@@ -105,6 +137,7 @@ class GalleryQuery {
     required this.gameNames,
     this.capturedFrom,
     this.capturedUntil,
+    this.capturedOnThisDay,
   });
 
   @override
@@ -117,7 +150,8 @@ class GalleryQuery {
       newestFirst.hashCode ^
       gameNames.hashCode ^
       capturedFrom.hashCode ^
-      capturedUntil.hashCode;
+      capturedUntil.hashCode ^
+      capturedOnThisDay.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -132,7 +166,8 @@ class GalleryQuery {
           newestFirst == other.newestFirst &&
           gameNames == other.gameNames &&
           capturedFrom == other.capturedFrom &&
-          capturedUntil == other.capturedUntil;
+          capturedUntil == other.capturedUntil &&
+          capturedOnThisDay == other.capturedOnThisDay;
 }
 
 class GameTagAliasSummary {
@@ -477,9 +512,15 @@ class NintendoFriend {
   final bool isFavorite;
   final String presence;
   final String? gameName;
+  final String? gameImageUrl;
   final int? totalPlayTimeMinutes;
+  final DateTime? firstPlayedAt;
   final DateTime? logoutAt;
   final String? activity;
+  final String? inGameName;
+  final String? friendshipSource;
+  final String? friendshipGameName;
+  final DateTime? friendCreatedAt;
 
   const NintendoFriend({
     required this.friendId,
@@ -489,9 +530,15 @@ class NintendoFriend {
     required this.isFavorite,
     required this.presence,
     this.gameName,
+    this.gameImageUrl,
     this.totalPlayTimeMinutes,
+    this.firstPlayedAt,
     this.logoutAt,
     this.activity,
+    this.inGameName,
+    this.friendshipSource,
+    this.friendshipGameName,
+    this.friendCreatedAt,
   });
 
   @override
@@ -503,9 +550,15 @@ class NintendoFriend {
       isFavorite.hashCode ^
       presence.hashCode ^
       gameName.hashCode ^
+      gameImageUrl.hashCode ^
       totalPlayTimeMinutes.hashCode ^
+      firstPlayedAt.hashCode ^
       logoutAt.hashCode ^
-      activity.hashCode;
+      activity.hashCode ^
+      inGameName.hashCode ^
+      friendshipSource.hashCode ^
+      friendshipGameName.hashCode ^
+      friendCreatedAt.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -519,9 +572,113 @@ class NintendoFriend {
           isFavorite == other.isFavorite &&
           presence == other.presence &&
           gameName == other.gameName &&
+          gameImageUrl == other.gameImageUrl &&
           totalPlayTimeMinutes == other.totalPlayTimeMinutes &&
+          firstPlayedAt == other.firstPlayedAt &&
           logoutAt == other.logoutAt &&
-          activity == other.activity;
+          activity == other.activity &&
+          inGameName == other.inGameName &&
+          friendshipSource == other.friendshipSource &&
+          friendshipGameName == other.friendshipGameName &&
+          friendCreatedAt == other.friendCreatedAt;
+}
+
+class NintendoFriendCodeSnapshot {
+  final String friendCode;
+  final String url;
+
+  const NintendoFriendCodeSnapshot({
+    required this.friendCode,
+    required this.url,
+  });
+
+  @override
+  int get hashCode => friendCode.hashCode ^ url.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is NintendoFriendCodeSnapshot &&
+          runtimeType == other.runtimeType &&
+          friendCode == other.friendCode &&
+          url == other.url;
+}
+
+class NintendoFriendCodeUser {
+  final String friendId;
+  final String nickname;
+  final String? avatarUrl;
+
+  const NintendoFriendCodeUser({
+    required this.friendId,
+    required this.nickname,
+    this.avatarUrl,
+  });
+
+  @override
+  int get hashCode =>
+      friendId.hashCode ^ nickname.hashCode ^ avatarUrl.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is NintendoFriendCodeUser &&
+          runtimeType == other.runtimeType &&
+          friendId == other.friendId &&
+          nickname == other.nickname &&
+          avatarUrl == other.avatarUrl;
+}
+
+class NintendoFriendGame {
+  final String name;
+  final String? imageUrl;
+  final int? totalPlayTimeMinutes;
+  final DateTime? firstPlayedAt;
+
+  const NintendoFriendGame({
+    required this.name,
+    this.imageUrl,
+    this.totalPlayTimeMinutes,
+    this.firstPlayedAt,
+  });
+
+  @override
+  int get hashCode =>
+      name.hashCode ^
+      imageUrl.hashCode ^
+      totalPlayTimeMinutes.hashCode ^
+      firstPlayedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is NintendoFriendGame &&
+          runtimeType == other.runtimeType &&
+          name == other.name &&
+          imageUrl == other.imageUrl &&
+          totalPlayTimeMinutes == other.totalPlayTimeMinutes &&
+          firstPlayedAt == other.firstPlayedAt;
+}
+
+class NintendoFriendRequestResult {
+  final String friendId;
+  final bool accepted;
+
+  const NintendoFriendRequestResult({
+    required this.friendId,
+    required this.accepted,
+  });
+
+  @override
+  int get hashCode => friendId.hashCode ^ accepted.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is NintendoFriendRequestResult &&
+          runtimeType == other.runtimeType &&
+          friendId == other.friendId &&
+          accepted == other.accepted;
 }
 
 class NintendoFriendsSnapshot {

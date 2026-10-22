@@ -160,7 +160,7 @@ fn core_record(boundary: Boundary, error: &CoreError) -> String {
                 _ => "other",
             },
         ),
-        CoreError::Network(_) => ("Network", "other"),
+        CoreError::Network(_) | CoreError::NetworkRequest { .. } => ("Network", "other"),
         CoreError::Io(error) => (
             "Io",
             match error.kind() {

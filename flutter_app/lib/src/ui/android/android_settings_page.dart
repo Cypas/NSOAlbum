@@ -35,7 +35,9 @@ class AndroidSettingsPage extends StatefulWidget {
 }
 
 class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
-  final version = loadApplicationVersion();
+  final version = loadApplicationVersion().then(
+    formatApplicationVersionForDisplay,
+  );
   bool checkingUpdates = false;
   bool choosingStorage = false;
   bool movingStorage = false;
@@ -259,23 +261,54 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
               ],
             ),
             if (widget.backend is MobileStorageBackend)
-              OutlinedButton.icon(
-                key: const Key('android-storage-location'),
-                onPressed: choosingStorage || controller.saving
-                    ? null
-                    : chooseStorage,
-                icon: movingStorage
-                    ? const SizedBox.square(
-                        dimension: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.folder_outlined),
-                label: Text(
-                  context.l10n.select(
-                    zh: movingStorage ? '正在处理，请稍后' : '选择图库位置',
-                    en: movingStorage
-                        ? 'Processing, please wait'
-                        : 'Choose library location',
+              Card(
+                key: const Key('android-storage-card'),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.folder_outlined),
+                        title: Text(
+                          context.l10n.select(
+                            zh: '图库位置',
+                            en: 'Library location',
+                          ),
+                        ),
+                        subtitle: Text(
+                          value.libraryPath.split(RegExp(r'[/\\]')).last,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: OutlinedButton.icon(
+                          key: const Key('android-storage-location'),
+                          onPressed: choosingStorage || controller.saving
+                              ? null
+                              : chooseStorage,
+                          icon: movingStorage
+                              ? const SizedBox.square(
+                                  dimension: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.drive_file_move_outlined),
+                          label: Text(
+                            context.l10n.select(
+                              zh: movingStorage ? '正在处理，请稍后' : '更改图库位置',
+                              en: movingStorage
+                                  ? 'Processing, please wait'
+                                  : 'Change library location',
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -325,6 +358,23 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
                 value.autoPlayVideo,
                 (bool next) => copyAppSettings(value, autoPlayVideo: next),
               ),
+              (
+                context.l10n.select(
+                  zh: '自动同步新增媒体后通知',
+                  en: 'Notify after automatic sync adds media',
+                ),
+                value.notifyOnAutoSync,
+                (bool next) => copyAppSettings(value, notifyOnAutoSync: next),
+              ),
+              (
+                context.l10n.select(
+                  zh: '展示喷三日程',
+                  en: 'Show Splatoon 3 schedule',
+                ),
+                value.showSplatoonSchedule,
+                (bool next) =>
+                    copyAppSettings(value, showSplatoonSchedule: next),
+              ),
             ])
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
@@ -360,11 +410,16 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
               child: ListTile(
                 key: const Key('android-view-logs'),
                 leading: const Icon(Icons.article_outlined),
-                title: Text(context.l10n.select(zh: '查看日志', en: 'View logs')),
+                title: Text(
+                  context.l10n.select(
+                    zh: '查看最近运行日志',
+                    en: 'View recent runtime logs',
+                  ),
+                ),
                 subtitle: Text(
                   context.l10n.select(
-                    zh: '查看最近运行记录并复制脱敏内容。',
-                    en: 'Review recent activity and copy a redacted report.',
+                    zh: '查看最近运行日志。',
+                    en: 'View recent runtime logs.',
                   ),
                 ),
                 trailing: const Icon(Icons.chevron_right),

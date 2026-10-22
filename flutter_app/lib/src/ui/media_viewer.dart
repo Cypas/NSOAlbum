@@ -13,6 +13,7 @@ import 'desktop_window_drag_area.dart';
 import 'media_metadata_editor.dart';
 import 'video_editor.dart';
 import 'video_runtime.dart';
+import 'video_viewer_lifecycle.dart';
 import 'video_preview.dart';
 import 'video_preview_prefetch.dart';
 import 'video_thumbnail.dart';
@@ -170,7 +171,16 @@ class _MediaViewerState extends State<MediaViewer> {
   }
 
   Future<void> _editCurrent() async {
-    final asset = items[currentIndex];
+    final generation = ++navigationGeneration;
+    final sourceIndex = currentIndex;
+    final asset = items[sourceIndex];
+    await videoKeys[asset.id]?.currentState?.pausePlayback();
+    if (!mounted ||
+        generation != navigationGeneration ||
+        currentIndex != sourceIndex ||
+        ModalRoute.of(context)?.isCurrent == false) {
+      return;
+    }
     final update = await showModalBottomSheet<MediaMetadataUpdate>(
       context: context,
       showDragHandle: true,
@@ -179,9 +189,14 @@ class _MediaViewerState extends State<MediaViewer> {
       builder: (_) =>
           MediaMetadataEditor(backend: widget.backend, asset: asset),
     );
-    if (update == null || !mounted) return;
+    if (update == null ||
+        !mounted ||
+        generation != navigationGeneration ||
+        items[sourceIndex].id != asset.id) {
+      return;
+    }
     setState(() {
-      items[currentIndex] = _copyMediaAsset(
+      items[sourceIndex] = _copyMediaAsset(
         asset,
         note: update.note,
         tags: update.tags,
@@ -191,25 +206,42 @@ class _MediaViewerState extends State<MediaViewer> {
   }
 
   Future<void> _editCurrentVideo() async {
-    final asset = items[currentIndex];
+    final generation = ++navigationGeneration;
+    final sourceIndex = currentIndex;
+    final asset = items[sourceIndex];
     if (asset.kind != MediaKind.video) return;
-    await videoKeys[asset.id]?.currentState?.pausePlayback();
-    if (!mounted) return;
+    final sourceVideo = videoKeys[asset.id];
+    await sourceVideo?.currentState?.pausePlayback();
+    if (!mounted ||
+        generation != navigationGeneration ||
+        currentIndex != sourceIndex ||
+        ModalRoute.of(context)?.isCurrent == false) {
+      return;
+    }
     final result = await VideoEditorPage.open(
       context,
       backend: widget.backend,
       source: asset,
       onMediaCreated: widget.onMetadataChanged,
     );
-    if (result == null || !mounted) return;
-    var targetIndex = currentIndex;
+    if (result == null ||
+        !mounted ||
+        generation != navigationGeneration ||
+        items[sourceIndex].id != asset.id) {
+      return;
+    }
+    if (result.overwrite) {
+      await sourceVideo?.currentState?.release();
+    }
+    if (!mounted || generation != navigationGeneration) return;
+    var targetIndex = sourceIndex;
     setState(() {
       if (result.overwrite) {
-        items[currentIndex] = result.asset;
+        items[sourceIndex] = result.asset;
         videoKeys.remove(asset.id);
       } else {
-        items.insert(currentIndex + 1, result.asset);
-        targetIndex = currentIndex + 1;
+        items.insert(sourceIndex + 1, result.asset);
+        targetIndex = sourceIndex + 1;
         currentIndex = targetIndex;
       }
     });
@@ -265,7 +297,18 @@ class _MediaViewerState extends State<MediaViewer> {
                 onPageChanged: (index) async {
                   final generation = ++navigationGeneration;
                   await videoKeys[items[currentIndex].id]?.currentState
-                      ?.release();
+                      ?.pausePlayback();
+                  final retainedIds = {
+                    for (final position in adjacentVideoIndices(
+                      index,
+                      items.length,
+                    ))
+                      items[position].id,
+                  };
+                  for (final id in videoKeys.keys.toList(growable: false)) {
+                    if (retainedIds.contains(id)) continue;
+                    await videoKeys.remove(id)?.currentState?.release();
+                  }
                   if (!mounted || generation != navigationGeneration) return;
                   setState(() => currentIndex = index);
                   _preloadAround(index);
@@ -280,7 +323,7 @@ class _MediaViewerState extends State<MediaViewer> {
                       immersive ? 12 : 126,
                     ),
                     child: media.kind == MediaKind.video
-                        ? index != currentIndex
+                        ? (index - currentIndex).abs() > 1
                               ? VideoPoster(asset: media)
                               : _VideoViewer(
                                   key: videoKeys.putIfAbsent(
@@ -291,6 +334,7 @@ class _MediaViewerState extends State<MediaViewer> {
                                   ),
                                   asset: media,
                                   active: index == currentIndex,
+                                  prewarm: index != currentIndex,
                                   autoPlay: widget.autoPlayVideo,
                                 )
                         : _ImageViewer(
@@ -573,11 +617,13 @@ class _VideoViewer extends StatefulWidget {
     super.key,
     required this.asset,
     required this.active,
+    required this.prewarm,
     required this.autoPlay,
   });
 
   final MediaAsset asset;
   final bool active;
+  final bool prewarm;
   final bool autoPlay;
 
   @override
@@ -590,38 +636,89 @@ class _VideoViewerState extends State<_VideoViewer> {
   );
   late final Player player = _playerHandle.player;
   late final VideoController controller = VideoController(player);
+  late final VideoViewerLifecycle playbackLifecycle = VideoViewerLifecycle(
+    initiallyActive: false,
+    pause: player.pause,
+    play: () async {
+      await opening;
+      if (mounted && !playbackLifecycle.disposed && widget.active) {
+        await player.play();
+      }
+    },
+    disposePlayer: _disposePlayer,
+  );
 
   Object? openError;
-  Future<void>? releasing;
+  late Future<void> opening;
 
-  Future<void> release() => releasing ??= () async {
+  Future<void> _disposePlayer() async {
     try {
-      await player.pause();
-    } finally {
-      await player.dispose();
+      await opening;
+    } catch (_) {
+      // The player still needs disposal when opening fails.
     }
-  }();
-
-  Future<void> togglePlayback() async {
-    if (releasing == null) await player.playOrPause();
+    await player.dispose();
   }
 
-  Future<void> pausePlayback() => player.pause();
+  Future<void> _prewarm() async {
+    try {
+      await playbackLifecycle.prewarm((interrupted) async {
+        if (!mounted || playbackLifecycle.disposed || widget.active) return;
+        await warmVideoPreview(
+          player: player,
+          firstFrame: controller.waitUntilFirstFrameRendered,
+          interrupted: interrupted,
+          requireDecodedOutput: false,
+        );
+      });
+    } catch (_) {
+      // Neighbor preparation is optional; the selected page owns playback errors.
+    }
+  }
+
+  Future<void> _updateActive() async {
+    try {
+      await playbackLifecycle.updateActive(
+        widget.active,
+        autoPlay: widget.autoPlay,
+      );
+    } catch (error) {
+      if (mounted) setState(() => openError = error);
+    }
+  }
+
+  Future<void> release() => playbackLifecycle.dispose();
+
+  Future<void> togglePlayback() async {
+    try {
+      await playbackLifecycle.runCommand(player.playOrPause);
+    } catch (error) {
+      if (mounted && !playbackLifecycle.disposed) {
+        setState(() => openError = error);
+      }
+    }
+  }
+
+  Future<void> pausePlayback() => playbackLifecycle.pause();
 
   @override
   void initState() {
     super.initState();
-    (_playerHandle.ready ??
-            player.open(
-              Media(widget.asset.storagePath),
-              play: widget.autoPlay && widget.active,
-            ))
-        .then((_) {
-          if (mounted &&
-              releasing == null &&
-              widget.autoPlay &&
-              widget.active) {
-            unawaited(player.play());
+    opening = () async {
+      await controller.platform.future.timeout(const Duration(seconds: 15));
+      if (playbackLifecycle.disposed) return;
+      await (_playerHandle.ready ??
+          player
+              .open(Media(widget.asset.storagePath), play: false)
+              .timeout(const Duration(seconds: 15)));
+    }();
+    opening
+        .then((_) async {
+          if (!mounted || playbackLifecycle.disposed) return;
+          if (widget.active) {
+            await _updateActive();
+          } else if (widget.prewarm) {
+            unawaited(_prewarm());
           }
         })
         .catchError((Object error) {
@@ -632,8 +729,17 @@ class _VideoViewerState extends State<_VideoViewer> {
   @override
   void didUpdateWidget(covariant _VideoViewer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.active && !widget.active) player.pause();
-    if (!oldWidget.active && widget.active && widget.autoPlay) player.play();
+    if (oldWidget.active != widget.active && widget.active) {
+      unawaited(_updateActive());
+    } else if (oldWidget.active != widget.active) {
+      unawaited(
+        playbackLifecycle
+            .updateActive(false, autoPlay: widget.autoPlay)
+            .catchError((Object error) {
+              if (mounted) setState(() => openError = error);
+            }),
+      );
+    }
   }
 
   @override
@@ -655,6 +761,7 @@ class _VideoViewerState extends State<_VideoViewer> {
     }
     const desktopControls = MaterialDesktopVideoControlsThemeData(
       toggleFullscreenOnDoublePress: false,
+      bufferingIndicatorBuilder: _noVideoBufferingIndicator,
       bottomButtonBar: [
         MaterialDesktopSkipPreviousButton(),
         MaterialDesktopPlayOrPauseButton(),
@@ -665,6 +772,7 @@ class _VideoViewerState extends State<_VideoViewer> {
       ],
     );
     const touchControls = MaterialVideoControlsThemeData(
+      bufferingIndicatorBuilder: _noVideoBufferingIndicator,
       bottomButtonBar: [MaterialPositionIndicator(), Spacer()],
     );
     return Center(
@@ -680,6 +788,7 @@ class _VideoViewerState extends State<_VideoViewer> {
               controller: controller,
               cover: widget.asset,
               controls: AdaptiveVideoControls,
+              showLoadingIndicator: false,
             ),
           ),
         ),
@@ -687,6 +796,9 @@ class _VideoViewerState extends State<_VideoViewer> {
     );
   }
 }
+
+Widget _noVideoBufferingIndicator(BuildContext context) =>
+    const SizedBox.shrink();
 
 class _ViewerTag extends StatelessWidget {
   const _ViewerTag({required this.text, this.game = false});

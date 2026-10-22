@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -587,6 +587,8 @@ mod receiver_sql_tests {
             compact_tag_display: true,
             auto_play_video: false,
             auto_sync_on_launch: false,
+            notify_on_auto_sync: true,
+            show_splatoon_schedule: true,
             close_behavior: "ask".into(),
             custom_font_paths: Vec::new(),
             sync_policy: crate::settings::SyncPolicy {
@@ -4942,6 +4944,21 @@ impl Database {
     }
 
     pub fn list_media(&self, query: &GalleryQuery) -> CoreResult<Vec<MediaAsset>> {
+        let anniversary = query
+            .captured_on_this_day
+            .as_ref()
+            .map(|day| {
+                if !(1..=9999).contains(&day.before_year)
+                    || NaiveDate::from_ymd_opt(2000, day.month, day.day).is_none()
+                {
+                    return Err(CoreError::InvalidConfig("invalid anniversary date".into()));
+                }
+                let offset = FixedOffset::east_opt(day.utc_offset_seconds).ok_or_else(|| {
+                    CoreError::InvalidConfig("invalid anniversary UTC offset".into())
+                })?;
+                Ok((day, offset))
+            })
+            .transpose()?;
         let mut media = self.load_all_media()?;
         media.retain(|asset| match query.kind {
             GalleryKindFilter::All => true,
@@ -4962,6 +4979,19 @@ impl Database {
                     .is_some_and(|timestamp| {
                         query.captured_from.is_none_or(|from| timestamp >= from)
                             && query.captured_until.is_none_or(|until| timestamp < until)
+                    })
+            });
+        }
+        if let Some((day, offset)) = anniversary {
+            media.retain(|asset| {
+                asset
+                    .captured_at
+                    .or(asset.imported_at)
+                    .is_some_and(|timestamp| {
+                        let local = timestamp.with_timezone(&offset);
+                        local.year() < day.before_year
+                            && local.month() == day.month
+                            && local.day() == day.day
                     })
             });
         }
@@ -8586,6 +8616,109 @@ mod unknown_import_time_tests {
         }
     }
 
+    fn anniversary_query(month: u32, day: u32, year: i32, offset: i32) -> GalleryQuery {
+        GalleryQuery {
+            captured_on_this_day: Some(crate::models::CapturedOnThisDay {
+                month,
+                day,
+                before_year: year,
+                utc_offset_seconds: offset,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn anniversary_filters_previous_local_years_before_pagination() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("library.sqlite3")).unwrap();
+        insert(&database, 1, Some("2025-10-21T16:00:00Z"), "");
+        insert(&database, 2, Some("2024-10-22T15:59:59Z"), "");
+        insert(&database, 3, None, "2023-10-22T04:00:00Z");
+        insert(&database, 4, Some("2026-10-22T00:00:00Z"), "");
+        insert(&database, 5, Some("2025-10-21T15:59:59Z"), "");
+        insert(&database, 6, Some("2025-10-22T16:00:00Z"), "");
+        insert(&database, 7, None, "");
+        insert(
+            &database,
+            8,
+            Some("2022-10-21T04:00:00Z"),
+            "2021-10-22T04:00:00Z",
+        );
+        insert(&database, 9, Some("2027-10-22T00:00:00Z"), "");
+        // Older matches must remain reachable behind more than a full UI page.
+        for id in 100..611 {
+            insert(&database, id, Some("2026-10-22T00:00:00Z"), "");
+        }
+        let mut query = anniversary_query(10, 22, 2026, 8 * 3600);
+        query.limit = 2;
+        query.offset = 1;
+        let ids = |query: &GalleryQuery| {
+            database
+                .list_media(query)
+                .unwrap()
+                .iter()
+                .map(|asset| asset.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&query), vec![2, 3]);
+        query.offset = 0;
+        query.newest_first = false;
+        assert_eq!(ids(&query), vec![3, 2]);
+        query.favorite_only = true;
+        assert!(ids(&query).is_empty());
+    }
+
+    #[test]
+    fn anniversary_matches_real_leap_days_and_local_year_boundaries() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("library.sqlite3")).unwrap();
+        for (id, date) in [
+            (1, "2024-02-29T12:00:00Z"),
+            (2, "2020-02-29T12:00:00Z"),
+            (3, "2024-02-28T12:00:00Z"),
+            (4, "2024-03-01T12:00:00Z"),
+            (5, "2028-02-29T12:00:00Z"),
+            (6, "2025-01-01T03:59:59Z"),
+            (7, "2025-01-01T04:00:00Z"),
+        ] {
+            insert(&database, id, Some(date), "");
+        }
+        for (query, expected) in [
+            (anniversary_query(2, 29, 2028, 0), vec![1, 2]),
+            (anniversary_query(2, 28, 2026, 0), vec![3]),
+            (anniversary_query(12, 31, 2025, -4 * 3600), vec![6]),
+            (anniversary_query(1, 1, 2025, -4 * 3600), vec![]),
+        ] {
+            let ids = database
+                .list_media(&query)
+                .unwrap()
+                .iter()
+                .map(|asset| asset.id)
+                .collect::<Vec<_>>();
+            assert_eq!(ids, expected);
+        }
+    }
+
+    #[test]
+    fn anniversary_rejects_invalid_calendar_and_timezone_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("library.sqlite3")).unwrap();
+        for query in [
+            anniversary_query(0, 1, 2026, 0),
+            anniversary_query(13, 1, 2026, 0),
+            anniversary_query(2, 30, 2026, 0),
+            anniversary_query(4, 31, 2026, 0),
+            anniversary_query(1, 1, 0, 0),
+            anniversary_query(1, 1, 2026, 86400),
+        ] {
+            assert!(matches!(
+                database.list_media(&query),
+                Err(CoreError::InvalidConfig(_))
+            ));
+        }
+    }
+
     #[test]
     fn unknown_import_time_marker_is_narrow_and_invalid_dates_still_fail_consumers() {
         let directory = tempfile::tempdir().unwrap();
@@ -8685,6 +8818,8 @@ mod unknown_import_time_tests {
                 compact_tag_display: true,
                 auto_play_video: false,
                 auto_sync_on_launch: false,
+                notify_on_auto_sync: true,
+                show_splatoon_schedule: true,
                 close_behavior: "ask".into(),
                 custom_font_paths: vec![],
                 sync_policy: crate::settings::SyncPolicy::default(),

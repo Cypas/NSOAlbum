@@ -1,6 +1,8 @@
 pub mod account_tools;
 pub mod attestation;
 pub mod auth;
+mod conditions;
+mod game_images;
 pub mod provider;
 pub mod session;
 pub mod splatnet;

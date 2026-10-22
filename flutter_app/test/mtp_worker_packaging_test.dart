@@ -897,7 +897,11 @@ add_executable(\${BINARY_NAME} main.cpp)
         'cmake/flutter/ephemeral/generated_config.cmake',
         'set(FLUTTER_ROOT "$fixtureRoot/sdk")\n',
       );
-      final build = p.join(root.path, 'cmake-build');
+      // MSVC's longer link-cvtres tracking filename can exceed MAX_PATH even
+      // with a one-letter case build directory. Keep the one graph build
+      // directly in this uniquely owned retained run, without another case
+      // prefix. Compiler sanity checks and all three configurations stay real.
+      final build = p.join(retainedRun.path, 'b');
       final budget = Stopwatch()..start();
       Future<ProcessResult> runCmake(
         List<String> arguments, {

@@ -4,7 +4,9 @@
 
 #include <fstream>
 #include <cstdio>
+#include <memory>
 #include <string>
+#include <type_traits>
 
 #include "flutter_window.h"
 #include "utils.h"
@@ -76,6 +78,17 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // Initialize COM, so that it is available for use in the library and/or
   // plugins.
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+  // WebView loads its system compositor dynamically, but its static COM
+  // resources survive until DLL detach. Initialize the optional provider before
+  // that delay-loaded consumer, preserving provider/consumer unload ordering.
+  // A missing provider remains optional: the plugin keeps its runtime checks.
+  using ModuleOwner =
+      std::unique_ptr<std::remove_pointer_t<HMODULE>, decltype(&::FreeLibrary)>;
+  const ModuleOwner composition_provider(
+      ::LoadLibraryExW(L"CoreMessaging.dll", nullptr,
+                       LOAD_LIBRARY_SEARCH_SYSTEM32),
+      &::FreeLibrary);
 
   flutter::DartProject project(L"data");
 

@@ -1,9 +1,93 @@
 import 'dart:convert';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/src/platform/device_sync_network.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  const permissions = MethodChannel('flutter.baseflow.com/permissions/methods');
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  tearDown(() => messenger.setMockMethodCallHandler(permissions, null));
+
+  for (final granted in [false, true]) {
+    test(
+      'Android Wi-Fi permission keeps its native request contract ($granted)',
+      () async {
+        final calls = <MethodCall>[];
+        messenger.setMockMethodCallHandler(permissions, (call) async {
+          calls.add(call);
+          expect(call.method, 'requestPermissions');
+          expect(call.arguments, [5]);
+          return <int, int>{5: granted ? 1 : 0};
+        });
+        var networkReads = 0;
+        final reader = DeviceNetworkReader(
+          android: true,
+          windows: false,
+          macos: false,
+          readName: () async {
+            networkReads++;
+            return '"Synthetic Wi-Fi"';
+          },
+          readAddress: () async => '192.168.20.2',
+        );
+        final snapshot = await reader.read(requestPermission: true);
+        expect(calls, hasLength(1));
+        expect(networkReads, granted ? 2 : 0);
+        expect(snapshot.ssid, granted ? 'Synthetic Wi-Fi' : isNull);
+      },
+    );
+  }
+
+  test(
+    'Android passive Wi-Fi status never opens a permission request',
+    () async {
+      final methods = <String>[];
+      messenger.setMockMethodCallHandler(permissions, (call) async {
+        methods.add(call.method);
+        expect(call.method, 'checkPermissionStatus');
+        expect(call.arguments, 5);
+        return 1;
+      });
+      final reader = DeviceNetworkReader(
+        android: true,
+        windows: false,
+        macos: false,
+        readName: () async => '"Synthetic Wi-Fi"',
+        readAddress: () async => '192.168.20.2',
+      );
+      expect((await reader.read()).ssid, 'Synthetic Wi-Fi');
+      expect(methods, ['checkPermissionStatus']);
+    },
+  );
+
+  for (final windows in [false, true]) {
+    test(
+      'desktop Wi-Fi does not call Android permission APIs (windows=$windows)',
+      () async {
+        final methods = <String>[];
+        messenger.setMockMethodCallHandler(permissions, (call) async {
+          methods.add(call.method);
+          throw StateError('Desktop must not request Android permission.');
+        });
+        final reader = DeviceNetworkReader(
+          android: false,
+          windows: windows,
+          macos: !windows,
+          readName: () async => 'Synthetic Wi-Fi',
+          readAddress: () async => '192.168.20.2',
+        );
+        expect(
+          (await reader.read(requestPermission: true)).ssid,
+          'Synthetic Wi-Fi',
+        );
+        expect(methods, isEmpty);
+      },
+    );
+  }
+
   test(
     'macOS plugin IP is not asserted to belong to the SSID interface',
     () async {

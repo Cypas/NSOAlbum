@@ -16,7 +16,21 @@ bool androidUpdateStartupEnabled({
   required bool isTest,
   required bool safeMode,
   required bool ciSmoke,
-}) => isAndroid && releaseMode && !isTest && !safeMode && !ciSmoke;
+}) =>
+    releaseMode &&
+    androidUpdateChecksEnabled(
+      isAndroid: isAndroid,
+      isTest: isTest,
+      safeMode: safeMode,
+      ciSmoke: ciSmoke,
+    );
+
+bool androidUpdateChecksEnabled({
+  required bool isAndroid,
+  required bool isTest,
+  required bool safeMode,
+  required bool ciSmoke,
+}) => isAndroid && !isTest && !safeMode && !ciSmoke;
 
 class AndroidUpdateStatus {
   const AndroidUpdateStatus({
@@ -65,6 +79,7 @@ class AndroidUpdateController extends ChangeNotifier {
     this.channel = const MethodChannel('io.github.cypas.nsoalbum/update'),
     Future<String> Function()? versionLoader,
     String? applicationRoot,
+    this.allowPackageUpdates = kReleaseMode,
   }) : _service =
            releaseService ??
            ReleaseUpdateService(
@@ -76,6 +91,7 @@ class AndroidUpdateController extends ChangeNotifier {
   final ReleaseUpdateService _service;
   final MethodChannel channel;
   final Future<String> Function() _versionLoader;
+  final bool allowPackageUpdates;
   AndroidUpdateStatus status = const AndroidUpdateStatus();
   LatestReleaseInfo? latestRelease;
   UpdateStatusKind? updateStatus;
@@ -89,18 +105,22 @@ class AndroidUpdateController extends ChangeNotifier {
   Timer? _poll;
 
   bool get canDownload =>
+      allowPackageUpdates &&
       latestRelease?.androidPackage != null &&
       !status.busy &&
       status.state != AndroidUpdateState.ready &&
       !_starting;
   bool get canInstall =>
-      status.state == AndroidUpdateState.ready && !installing;
+      allowPackageUpdates &&
+      status.state == AndroidUpdateState.ready &&
+      !installing;
 
   Future<void> check({
     required bool automatic,
     required String language,
     required Future<AndroidUpdateAction?> Function(LatestReleaseInfo) confirm,
   }) async {
+    if (automatic && !allowPackageUpdates) return;
     if (_disposed || checking || status.busy || _starting) return;
     if (automatic && status.state == AndroidUpdateState.ready) return;
     checking = true;
@@ -181,7 +201,7 @@ class AndroidUpdateController extends ChangeNotifier {
   }
 
   Future<void> restore() async {
-    if (_disposed || _restoring) return;
+    if (_disposed || _restoring || !allowPackageUpdates) return;
     _restoring = true;
     try {
       final value = await channel.invokeMethod<Object?>('status');

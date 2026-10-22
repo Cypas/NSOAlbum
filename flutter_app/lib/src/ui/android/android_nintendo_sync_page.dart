@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../backend/app_backend.dart';
 import '../../l10n/app_localizations.dart';
 import '../../rust/models.dart';
 import '../../rust/settings.dart';
@@ -8,6 +9,7 @@ import '../../state/sync_controller.dart';
 import '../../state/transfer_controller.dart';
 import '../nxapi_disclosure_card.dart';
 import '../display_time.dart';
+import '../account_tools/avatar_preview.dart';
 import 'android_back_guard.dart';
 import 'android_account_status.dart';
 import 'android_page_frame.dart';
@@ -47,6 +49,16 @@ class _AndroidNintendoSyncPageState extends State<AndroidNintendoSyncPage> {
     } catch (error) {
       if (mounted) androidMessage(context, error);
     }
+  }
+
+  Future<void> showAvatar(NintendoAccountProfile account) async {
+    final bytes = account.avatarBytes;
+    if (bytes == null || bytes.isEmpty) return;
+    await showNintendoAvatarPreview(
+      context,
+      bytes: bytes,
+      nickname: account.nickname,
+    );
   }
 
   @override
@@ -90,16 +102,25 @@ class _AndroidNintendoSyncPageState extends State<AndroidNintendoSyncPage> {
                               Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  CircleAvatar(
-                                    radius: 28,
-                                    foregroundImage:
-                                        account.avatarBytes?.isNotEmpty == true
-                                        ? MemoryImage(account.avatarBytes!)
-                                        : null,
-                                    child:
-                                        account.avatarBytes?.isNotEmpty == true
-                                        ? null
-                                        : const Icon(Icons.person_outline),
+                                  InkWell(
+                                    onTap: () => showAvatar(account),
+                                    borderRadius: BorderRadius.circular(32),
+                                    child: CircleAvatar(
+                                      key: Key(
+                                        'android-sync-avatar-${account.accountId}',
+                                      ),
+                                      radius: 28,
+                                      foregroundImage:
+                                          account.avatarBytes?.isNotEmpty ==
+                                              true
+                                          ? MemoryImage(account.avatarBytes!)
+                                          : null,
+                                      child:
+                                          account.avatarBytes?.isNotEmpty ==
+                                              true
+                                          ? null
+                                          : const Icon(Icons.person_outline),
+                                    ),
                                   ),
                                   const SizedBox(height: 6),
                                   SizedBox(
@@ -288,84 +309,138 @@ class _AndroidNintendoSyncPageState extends State<AndroidNintendoSyncPage> {
                   ),
                 ),
               ],
-              Text(
-                context.l10n.select(zh: '自动同步', en: 'Automatic sync'),
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: Text(
-                  context.l10n.select(
-                    zh: '启用自动同步策略',
-                    en: 'Enable automatic sync',
-                  ),
-                ),
-                value: settings.syncPolicy.enabled,
-                onChanged: state.settings.saving
-                    ? null
-                    : (value) => savePolicy(enabled: value),
-              ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: Text(
-                  context.l10n.select(zh: '启动时自动同步', en: 'Sync on launch'),
-                ),
-                value: settings.autoSyncOnLaunch,
-                onChanged: state.settings.saving
-                    ? null
-                    : (value) async {
-                        try {
-                          await state.settings.save(
-                            copyAppSettings(settings, autoSyncOnLaunch: value),
-                          );
-                        } catch (error) {
-                          if (context.mounted) androidMessage(context, error);
-                        }
-                      },
-              ),
-              DropdownButtonFormField<int>(
-                initialValue: settings.syncPolicy.activeIntervalMinutes,
-                isExpanded: true,
-                decoration: InputDecoration(
-                  labelText: context.l10n.select(
-                    zh: '活跃期检查周期',
-                    en: 'Active check interval',
-                  ),
-                ),
-                items: [
-                  for (final minutes in [30, 45, 60, 90, 120])
-                    DropdownMenuItem(
-                      value: minutes,
-                      child: Text(
-                        context.l10n.select(
-                          zh: '$minutes 分钟',
-                          en: '$minutes minutes',
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.sync_outlined),
+                        title: Text(
+                          context.l10n.select(
+                            zh: '自动同步设置',
+                            en: 'Automatic sync settings',
+                          ),
                         ),
                       ),
-                    ),
-                ],
-                onChanged: state.settings.saving
-                    ? null
-                    : (value) => savePolicy(interval: value),
-              ),
-              TextFormField(
-                initialValue: '${settings.syncPolicy.sleepAfterHours}',
-                keyboardType: TextInputType.number,
-                decoration: InputDecoration(
-                  labelText: context.l10n.select(
-                    zh: '无新媒体后进入休眠（小时）',
-                    en: 'Sleep after no new media (hours)',
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                          context.l10n.select(
+                            zh: '启用自动同步策略',
+                            en: 'Enable automatic sync',
+                          ),
+                        ),
+                        value: settings.syncPolicy.enabled,
+                        onChanged: state.settings.saving
+                            ? null
+                            : (value) => savePolicy(enabled: value),
+                      ),
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                          context.l10n.select(
+                            zh: '同步完成后通知',
+                            en: 'Notify when sync completes',
+                          ),
+                        ),
+                        value: settings.notifyOnAutoSync,
+                        onChanged: state.settings.saving
+                            ? null
+                            : (value) async {
+                                try {
+                                  await state.settings.save(
+                                    copyAppSettings(
+                                      settings,
+                                      notifyOnAutoSync: value,
+                                    ),
+                                  );
+                                } catch (error) {
+                                  if (context.mounted) {
+                                    androidMessage(context, error);
+                                  }
+                                }
+                              },
+                      ),
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                          context.l10n.select(
+                            zh: '启动时自动同步',
+                            en: 'Sync on launch',
+                          ),
+                        ),
+                        value: settings.autoSyncOnLaunch,
+                        onChanged: state.settings.saving
+                            ? null
+                            : (value) async {
+                                try {
+                                  await state.settings.save(
+                                    copyAppSettings(
+                                      settings,
+                                      autoSyncOnLaunch: value,
+                                    ),
+                                  );
+                                } catch (error) {
+                                  if (context.mounted) {
+                                    androidMessage(context, error);
+                                  }
+                                }
+                              },
+                      ),
+                      DropdownButtonFormField<int>(
+                        initialValue: settings.syncPolicy.activeIntervalMinutes,
+                        isExpanded: true,
+                        decoration: InputDecoration(
+                          labelText: context.l10n.select(
+                            zh: '活跃期检查周期',
+                            en: 'Active check interval',
+                          ),
+                        ),
+                        items: [
+                          for (final minutes in [30, 45, 60, 90, 120])
+                            DropdownMenuItem(
+                              value: minutes,
+                              child: Text(
+                                context.l10n.select(
+                                  zh: '$minutes 分钟',
+                                  en: '$minutes minutes',
+                                ),
+                              ),
+                            ),
+                        ],
+                        onChanged: state.settings.saving
+                            ? null
+                            : (value) => savePolicy(interval: value),
+                      ),
+                      const SizedBox(height: 16),
+                      TextFormField(
+                        initialValue: '${settings.syncPolicy.sleepAfterHours}',
+                        keyboardType: TextInputType.number,
+                        decoration: InputDecoration(
+                          labelText: context.l10n.select(
+                            zh: '无新媒体后进入休眠（小时）',
+                            en: 'Sleep after no new media (hours)',
+                          ),
+                        ),
+                        onFieldSubmitted: (value) {
+                          final hours = int.tryParse(value);
+                          if (hours != null && hours > 0) {
+                            savePolicy(sleep: hours);
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        context.l10n.select(
+                          zh: '休眠期间每24小时检查；发现新媒体后恢复活跃期。',
+                          en: 'Checks every 24 hours while asleep; new media restores active checks.',
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-                onFieldSubmitted: (value) {
-                  final hours = int.tryParse(value);
-                  if (hours != null && hours > 0) savePolicy(sleep: hours);
-                },
-              ),
-              Text(
-                context.l10n.select(
-                  zh: '休眠期间每24小时检查；发现新媒体后恢复活跃期。',
-                  en: 'Checks every 24 hours while asleep; new media restores active checks.',
                 ),
               ),
             ],

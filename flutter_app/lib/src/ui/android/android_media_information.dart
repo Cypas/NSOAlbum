@@ -148,12 +148,7 @@ class AndroidMediaInformation extends StatelessWidget {
                   ),
                 ],
               ),
-            ] else if (noteEmpty)
-              TextButton(
-                onPressed: busy ? null : onEditNote,
-                child: Text(context.l10n.select(zh: '添加备注', en: 'Add note')),
-              )
-            else
+            ] else if (!noteEmpty)
               SelectableText(item.note!),
             const SizedBox(height: 8),
             _TimeRow(

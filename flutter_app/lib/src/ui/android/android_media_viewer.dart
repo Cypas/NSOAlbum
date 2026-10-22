@@ -11,6 +11,7 @@ import '../../rust/settings.dart';
 import '../../state/media_edit_controller.dart';
 import '../video_preview_prefetch.dart';
 import '../video_thumbnail.dart';
+import '../video_preview.dart';
 import 'android_back_guard.dart';
 import 'android_media_information.dart';
 import 'android_media_swipe_region.dart';
@@ -40,11 +41,16 @@ class AndroidMediaViewer extends StatefulWidget {
 class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
   late List<MediaAsset> items = List.of(widget.items);
   late int index = widget.initialIndex;
-  GlobalKey<AndroidVideoSurfaceState> video = GlobalKey();
+  late final pages = PageController(initialPage: widget.initialIndex);
+  final videoPages = <(int, String), GlobalKey<AndroidVideoSurfaceState>>{};
+  GlobalKey<AndroidVideoSurfaceState> videoKey(MediaAsset asset) =>
+      videoPages.putIfAbsent((asset.id, asset.sha256), GlobalKey.new);
+  GlobalKey<AndroidVideoSurfaceState> get video => videoKey(items[index]);
   final transform = TransformationController();
   late final prefetch = MediaPreviewPrefetch(warm: _warm);
   Player? player;
   bool busy = false, switching = false, controlsVisible = true;
+  int navigationGeneration = 0;
   final tagInput = TextEditingController();
   final noteInput = TextEditingController();
   bool addingTag = false, editingNote = false;
@@ -79,6 +85,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
   @override
   void dispose() {
     prefetch.dispose();
+    pages.dispose();
     // The surface owns its player; do not dispose that player twice here.
     transform.removeListener(_zoomChanged);
     transform.dispose();
@@ -157,15 +164,24 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
   Future<void> navigate(int delta) async {
     final next = index + delta;
     if (busy || switching || next < 0 || next >= items.length) return;
+    navigationGeneration++;
     setState(() => switching = true);
     try {
       if (dirty && !await confirmAndroidDiscard(context)) return;
       if (!mounted) return;
-      await video.currentState?.release();
+      await video.currentState?.pausePlayback();
+      final retained = {
+        for (final position in [next - 1, next, next + 1])
+          if (position >= 0 && position < items.length)
+            (items[position].id, items[position].sha256),
+      };
+      for (final key in videoPages.keys.toList(growable: false)) {
+        if (retained.contains(key)) continue;
+        await videoPages.remove(key)?.currentState?.release();
+      }
       if (!mounted) return;
       setState(() {
         player = null;
-        video = GlobalKey();
         index = next;
         controlsVisible = true;
         addingTag = false;
@@ -175,6 +191,11 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
         transform.value = Matrix4.identity();
       });
       prefetch.around(items, index);
+      await pages.animateToPage(
+        next,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+      );
     } catch (error) {
       if (mounted) androidMessage(context, error);
     } finally {
@@ -183,15 +204,25 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
   }
 
   Future<void> edit() async {
-    await player?.pause();
-    if (!mounted) return;
+    if (busy || switching) return;
+    final generation = ++navigationGeneration;
+    final item = items[index];
+    await video.currentState?.pausePlayback();
+    if (!mounted ||
+        generation != navigationGeneration ||
+        dirty ||
+        ModalRoute.of(context)?.isCurrent == false) {
+      return;
+    }
     final result = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) =>
-            AndroidMetadataEditor(backend: widget.backend, asset: items[index]),
+            AndroidMetadataEditor(backend: widget.backend, asset: item),
       ),
     );
-    if (result != true || !mounted) return;
+    if (result != true || !mounted || generation != navigationGeneration) {
+      return;
+    }
     final fresh = await widget.backend.listMedia(limit: 100000);
     if (mounted) {
       setState(() {
@@ -235,22 +266,35 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
   }
 
   Future<void> trim() async {
-    await player?.pause();
-    if (!mounted) return;
+    if (busy || switching) return;
+    final generation = ++navigationGeneration;
     final item = items[index];
+    final sourceVideo = video;
+    await sourceVideo.currentState?.pausePlayback();
+    if (!mounted ||
+        generation != navigationGeneration ||
+        dirty ||
+        ModalRoute.of(context)?.isCurrent == false) {
+      return;
+    }
     final result = await Navigator.of(context).push<MediaAsset>(
       MaterialPageRoute(
         builder: (_) =>
             AndroidVideoEditor(backend: widget.backend, source: item),
       ),
     );
-    if (result == null || !mounted || result.id != item.id) return;
-    await video.currentState?.release();
-    if (mounted) {
+    if (result == null ||
+        !mounted ||
+        generation != navigationGeneration ||
+        result.id != item.id) {
+      return;
+    }
+    await sourceVideo.currentState?.release();
+    if (mounted && generation == navigationGeneration) {
       setState(() {
+        videoPages.remove((item.id, item.sha256));
         items[index] = result;
         player = null;
-        video = GlobalKey();
       });
     }
   }
@@ -263,26 +307,34 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
   Widget _picture(MediaAsset item) => AndroidMediaSwipeRegion(
     enabled: !busy && !switching && transform.value.getMaxScaleOnAxis() <= 1.01,
     onSwipe: (delta) => unawaited(navigate(delta)),
-    child: GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: () {
-        if (!dirty) setState(() => controlsVisible = !controlsVisible);
-      },
-      child: InteractiveViewer(
-        key: ValueKey(item.sha256),
-        transformationController: transform,
-        minScale: .75,
-        maxScale: 5,
-        child: Center(
-          child: Image.file(
-            File(item.storagePath),
-            fit: BoxFit.contain,
-            errorBuilder: (_, _, _) => Semantics(
-              label: context.l10n.select(
-                zh: '无法读取这张图片',
-                en: 'Unable to load this image',
+    child: Semantics(
+      button: true,
+      label: controlsVisible
+          ? context.l10n.select(zh: '隐藏操作栏', en: 'Hide controls')
+          : context.l10n.select(zh: '显示操作栏', en: 'Show controls'),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: dirty
+            ? null
+            : () => setState(() => controlsVisible = !controlsVisible),
+        child: InteractiveViewer(
+          key: ValueKey(item.sha256),
+          transformationController: item.id == items[index].id
+              ? transform
+              : null,
+          minScale: .75,
+          maxScale: 5,
+          child: Center(
+            child: Image.file(
+              File(item.storagePath),
+              fit: BoxFit.contain,
+              errorBuilder: (_, _, _) => Semantics(
+                label: context.l10n.select(
+                  zh: '无法读取这张图片',
+                  en: 'Unable to load this image',
+                ),
+                child: const Icon(Icons.broken_image_outlined, size: 36),
               ),
-              child: const Icon(Icons.broken_image_outlined, size: 36),
             ),
           ),
         ),
@@ -293,19 +345,23 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
   Widget _media(MediaAsset item) {
     final settings = widget.settings ?? widget.backend.settings;
     return ColoredBox(
-      key: const Key('android-detail-media'),
+      key: ValueKey(('android-media-page', item.id, item.sha256)),
       color: Theme.of(context).colorScheme.surfaceContainerLow,
       child: item.kind == MediaKind.image
           ? _picture(item)
           : KeyedSubtree(
-              key: ValueKey((item.sha256, index)),
+              key: ValueKey((item.id, item.sha256)),
               child: AndroidVideoSurface(
-                key: video,
+                key: videoKey(item),
                 path: item.storagePath,
                 cover: item,
+                active: item.id == items[index].id,
+                prewarm: item.id != items[index].id,
                 autoPlay: widget.autoPlay ?? settings.autoPlayVideo,
                 onReady: (value) {
-                  if (mounted) setState(() => player = value);
+                  if (mounted && item.id == items[index].id) {
+                    setState(() => player = value);
+                  }
                 },
                 onSwipe: (delta) => unawaited(navigate(delta)),
               ),
@@ -344,7 +400,21 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
               final media = Stack(
                 fit: StackFit.expand,
                 children: [
-                  _media(item),
+                  PageView.builder(
+                    key: const Key('android-detail-media'),
+                    controller: pages,
+                    physics: const NeverScrollableScrollPhysics(),
+                    allowImplicitScrolling: true,
+                    itemCount: items.length,
+                    itemBuilder: (context, page) {
+                      final asset = items[page];
+                      if ((page - index).abs() > 1 &&
+                          asset.kind == MediaKind.video) {
+                        return VideoPoster(asset: asset);
+                      }
+                      return _media(asset);
+                    },
+                  ),
                   if (controlsVisible)
                     Positioned(
                       top: 0,

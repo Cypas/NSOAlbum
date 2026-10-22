@@ -62,9 +62,12 @@
 │  │                                        手机单端控制、预览授权及容量/速度展示实施记录
 │  │     ├─ 2026-10-18-device-sync-normal-entry.md
 │  │     │                                  普通主入口USB双向复验与配置/SAF问题定位
-│  │     └─ 2026-10-18-device-sync-usb-discovery.md
+│  │     ├─ 2026-10-18-device-sync-usb-discovery.md
 │  │                                        USB 自动发现、WPD快照竞态、授权复用及双向账号实测计划
+│  │     └─ 2026-10-21-multiplatform-remainder.md
+│  │                                        普通剩余需求原文、逐项验收及两大项会话协作边界
 │  ├─ protocol/                           [本地]
+│  │  ├─ nxapi-request-rules.md            NXAPI/Coral请求、好友码、链式token与特殊状态规则
 │  │  └─ nintendo-implementacao-para-comunidade.md
 │  │                                      外部 NSO/Coral 协议研究归档
 │  └─ prototypes/                         [本地]
@@ -90,7 +93,7 @@
 | `flutter_app/README.md` | 只进入 Flutter 工程时即可找到 bridge、工具链和本机开发命令；不是另一份产品需求书 |
 | `flutter_app/rust_builder/README.md` | 解释该目录只是 native 构建胶水，不是另一个 Rust 业务实现；改构建接入时阅读 |
 | `flutter_app/rust_builder/cargokit/build_tool/README.md` | 上游脚手架自带的样例包说明；不代表应用增加命令行产品或要求照此开发 |
-| `flutter_app/test/fixtures/android/README.md` | 夹具涉及实际 Gradle/JVM 测试及显式启用条件，必须在运行前就近看见 |
+| `flutter_app/test/fixtures/android/README.md` | 夹具涉及实际 Gradle/JVM、合成视频及普通页面布局 Live 真机回归和显式启用条件，必须在运行前就近看见 |
 | `flutter_app/assets/fonts/SmileySans-OFL.txt` | 是许可证，不是可删的使用指南；字体本地归档后仍保留声明供打包脚本使用 |
 
 `rust_core/` 当前没有独立 Markdown 指南，业务架构由设计基线、
@@ -103,6 +106,12 @@
 本地 `docs/design/plans/2026-10-18-multiplatform-sync-experience.md` 记录多端同步、
 认证复用、日志、好友与 Android 搜索的批准行为和实施状态；执行账本位于
 `.superpowers/sdd/2026-10-18-multiplatform-sync/`，不提交或随应用分发。
+普通剩余需求的逐项核对表位于本地 `docs/REQUIREMENTS-CHECK-20261021.md`；
+对应批准计划和完整原始需求登记位于本地
+`docs/design/plans/2026-10-21-multiplatform-remainder.md`，同时约定另外两个
+大项会话的文件所有权和主会话集成门禁，不随应用分发。
+账号工具、系统通知、视频详情与代理缓存的后续证据持续记在该表，代码与测试
+位置见目录规范。该表包含内部原始需求与未验收说明，不作为产品材料或发布证明。
 同一本地计划还记录 Android 详情页和跨平台视频首帧封面的已批准增补、测试及未验收边界。
 `docs/design/device-sync-throughput-design.md` 是后续传输优化的本地设计，
 用于区分协议边界、测量口径和分阶段验收；不提交或随应用分发，
@@ -241,6 +250,14 @@ SAF 合成吞吐工具与回归的位置见目录规范的“无账号设备文�
 不作为真实 MTP 或 macOS 验收通过声明。
 
 账号工具的原生 WebView 探针及其运行前提见 `flutter_app/README.md`；
+Windows 系统 DLL 依赖的成品 PE 回归与无 UI SDK 子进程对照见 `docs/TESTING.md`
+的“Windows WebView DLL 生命周期”；对应源码位于
+`test/windows_webview_loader_test.dart` 和 `test/fixtures/webview_lifetime/`，
+探针结果不代替正式应用的进程退出与媒体功能验收。
+同节说明 `tool/windows_plugin_lifetime.cmake` 的构建树派生源码、升级失败关闭
+规则及真实子进程 WM_CLOSE 退出验收，不能以 Flutter 工具退出码代替。
+同页“Windows 系统通知 Live 验收”列出显式合成入口、系统历史比对和
+实际 COM 激活边界；其宿主 skip 不代表真实系统通知已通过。
 本地实施、审查和设备验收记录分别归档于
 `.superpowers/sdd/2026-10-15-account-tools/` 与 `dist/time-sync-display-20261015/`，
 均不提交，不包含公开发行验收结论或真实账号导出文件。

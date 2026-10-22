@@ -164,6 +164,10 @@ pub struct AppSettings {
     pub auto_play_video: bool,
     #[serde(default = "default_true")]
     pub auto_sync_on_launch: bool,
+    #[serde(default = "default_true")]
+    pub notify_on_auto_sync: bool,
+    #[serde(default = "default_true")]
+    pub show_splatoon_schedule: bool,
     #[serde(default = "default_close_behavior")]
     pub close_behavior: String,
     #[serde(default)]
@@ -217,6 +221,24 @@ mod tests {
             policy.effective_interval_minutes(Some(now - Duration::hours(25)), now),
             Some(24 * 60)
         );
+    }
+
+    #[test]
+    fn app_settings_default_feature_flags_are_enabled() {
+        let settings: AppSettings = serde_json::from_str(
+            r#"{
+              "proxy_url":null,"library_path":"library","theme":"ocean",
+              "language":"zh","gallery_columns":4,"gallery_rows":3,
+              "show_note_preview":true,"show_game_tag":true,
+              "compact_tag_display":true,"auto_play_video":false,
+              "auto_sync_on_launch":true,"close_behavior":"ask",
+              "custom_font_paths":[],
+              "sync_policy":{"enabled":false,"active_interval_minutes":30,"sleep_after_hours":24}
+            }"#,
+        )
+        .unwrap();
+        assert!(settings.notify_on_auto_sync);
+        assert!(settings.show_splatoon_schedule);
     }
 
     #[test]

@@ -18,7 +18,7 @@ class AndroidLogViewerPage extends StatefulWidget {
 }
 
 class _AndroidLogViewerPageState extends State<AndroidLogViewerPage> {
-  String value = '';
+  List<_LogBlock> entries = [];
   String filter = '';
   String level = '';
   String module = '';
@@ -39,23 +39,30 @@ class _AndroidLogViewerPageState extends State<AndroidLogViewerPage> {
     });
     try {
       final file = File(widget.backend.logFilePath);
-      final lines = <String>[];
+      final blocks = <_LogBlock>[];
+      final seenPaths = <String>{};
       for (final candidate in [
         File('${file.path}.1'),
         file,
         File('${file.parent.path}/rust_core.log.1'),
         File('${file.parent.path}/rust_core.log'),
       ]) {
-        if (await candidate.exists()) {
-          lines.addAll(await candidate.readAsLines());
+        if (seenPaths.add(candidate.absolute.path) &&
+            await candidate.exists()) {
+          blocks.addAll(_parseLogBlocks(await candidate.readAsLines()));
         }
       }
-      lines.sort();
+      final ordered = blocks.indexed.toList()
+        ..sort((left, right) {
+          final time = left.$2.timestamp.compareTo(right.$2.timestamp);
+          return time != 0 ? time : left.$1.compareTo(right.$1);
+        });
       if (mounted) {
         setState(
-          () => value = collapseRepeatedAsyncSuspension(
-            lines.takeLast(300).join('\n'),
-          ),
+          () => entries = ordered
+              .skip(ordered.length > 300 ? ordered.length - 300 : 0)
+              .map((entry) => entry.$2)
+              .toList(),
         );
       }
     } catch (error, stack) {
@@ -68,16 +75,15 @@ class _AndroidLogViewerPageState extends State<AndroidLogViewerPage> {
 
   @override
   Widget build(BuildContext context) {
-    final shown = value
-        .split('\n')
+    final shown = entries
         .where(
-          (line) =>
+          (entry) =>
               (filter.isEmpty ||
-                  line.toLowerCase().contains(filter.toLowerCase())) &&
-              (level.isEmpty || line.contains('[$level]')) &&
-              (module.isEmpty || line.toLowerCase().contains(module)),
+                  entry.text.toLowerCase().contains(filter.toLowerCase())) &&
+              (level.isEmpty || entry.text.contains('[$level]')) &&
+              (module.isEmpty || entry.text.toLowerCase().contains(module)),
         )
-        .join('\n');
+        .toList();
     return AndroidPageFrame(
       title: context.l10n.select(zh: '最近日志', en: 'Recent logs'),
       secondary: true,
@@ -152,26 +158,32 @@ class _AndroidLogViewerPageState extends State<AndroidLogViewerPage> {
             ),
             onChanged: (next) => setState(() => filter = next),
           ),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              IconButton(
-                key: const Key('android-log-copy'),
-                tooltip: context.l10n.select(zh: '复制日志', en: 'Copy logs'),
-                onPressed: () => Clipboard.setData(
-                  ClipboardData(text: androidSafeLog(shown)),
+          if (shown.isEmpty)
+            Text(context.l10n.select(zh: '暂无日志', en: 'No logs yet')),
+          for (final entry in shown)
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (entry.text.contains('[ERROR]'))
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: IconButton(
+                      key: const Key('android-log-copy'),
+                      tooltip: context.l10n.select(
+                        zh: '复制脱敏诊断',
+                        en: 'Copy redacted diagnostic',
+                      ),
+                      onPressed: () => Clipboard.setData(
+                        ClipboardData(text: androidSafeLog(entry.text)),
+                      ),
+                      icon: const Icon(Icons.copy_outlined),
+                    ),
+                  ),
+                SelectionArea(
+                  child: SelectableText(androidSafeLog(entry.text)),
                 ),
-                icon: const Icon(Icons.copy_outlined),
-              ),
-            ],
-          ),
-          SelectionArea(
-            child: SelectableText(
-              shown.isEmpty
-                  ? context.l10n.select(zh: '暂无日志', en: 'No logs yet')
-                  : androidSafeLog(shown),
+              ],
             ),
-          ),
         ],
       ),
     );
@@ -180,9 +192,37 @@ class _AndroidLogViewerPageState extends State<AndroidLogViewerPage> {
 
 String androidSafeLog(String value) => sanitizeDiagnostic(value);
 
-extension on Iterable<String> {
-  Iterable<String> takeLast(int count) {
-    final list = toList();
-    return list.length <= count ? list : list.sublist(list.length - count);
+class _LogBlock {
+  const _LogBlock(this.timestamp, this.text);
+  final DateTime timestamp;
+  final String text;
+}
+
+List<_LogBlock> _parseLogBlocks(List<String> lines) {
+  final header = RegExp(r'^(\d{4}-\d{2}-\d{2}T\S+)\s+\[[A-Z]+\]');
+  final result = <_LogBlock>[];
+  var timestamp = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+  var content = <String>[];
+  void finish() {
+    if (content.isEmpty) return;
+    result.add(
+      _LogBlock(
+        timestamp,
+        collapseRepeatedAsyncSuspension(content.join('\n').trimRight()),
+      ),
+    );
+    content = [];
   }
+
+  for (final line in lines) {
+    final match = header.firstMatch(line);
+    final next = match == null ? null : DateTime.tryParse(match[1]!);
+    if (next != null) {
+      finish();
+      timestamp = next;
+    }
+    content.add(line);
+  }
+  finish();
+  return result;
 }

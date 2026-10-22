@@ -32,6 +32,16 @@ pub enum CoreError {
     Database(#[from] rusqlite::Error),
     #[error("network error: {0}")]
     Network(#[from] reqwest::Error),
+    #[error("network error: stage={stage} reason={reason} proxy={proxy} elapsed_ms={elapsed_ms} url={url} code_kind={code_kind} code={code}")]
+    NetworkRequest {
+        stage: &'static str,
+        reason: &'static str,
+        proxy: &'static str,
+        elapsed_ms: u64,
+        url: String,
+        code_kind: &'static str,
+        code: String,
+    },
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("URL error: {0}")]

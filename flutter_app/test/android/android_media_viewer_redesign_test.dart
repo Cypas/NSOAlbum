@@ -7,10 +7,95 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/src/l10n/app_localizations.dart';
 import 'package:squid_album/src/rust/models.dart';
 import 'package:squid_album/src/ui/android/android_media_viewer.dart';
+import 'package:squid_album/src/ui/android/android_theme.dart';
 
 import '../home_shell_test.dart' show FakeBackend;
+import '../layout_viewport.dart';
 
 void main() {
+  for (final locale in ['en', 'zh']) {
+    for (final scale in [1.0, 2.0]) {
+      testWidgets(
+        '$locale ${scale}x compact metadata actions retain accessible touch targets',
+        (tester) async {
+          final semantics = tester.ensureSemantics();
+          try {
+            await useLayoutTestViewport(tester, const Size(320, 720));
+            await tester.pumpWidget(
+              _app([_image(1)], locale: locale, scale: scale),
+            );
+            await tester.pumpAndSettle();
+            final addTag = find.byKey(const Key('android-inline-add-tag'));
+            await tester.ensureVisible(addTag);
+            await tester.pumpAndSettle();
+            expect(
+              tester.getSemantics(addTag).getSemanticsData().tooltip,
+              locale == 'zh' ? '新增标签' : 'Add tag',
+            );
+            await expectLater(
+              tester,
+              meetsGuideline(androidTapTargetGuideline),
+            );
+            await expectLater(
+              tester,
+              meetsGuideline(labeledTapTargetGuideline),
+            );
+            final media = find.byKey(const Key('android-detail-media'));
+            await tester.tap(media);
+            await tester.pumpAndSettle();
+            expect(
+              find.bySemanticsLabel(
+                RegExp(locale == 'zh' ? '显示操作栏' : 'Show controls'),
+              ),
+              findsOneWidget,
+            );
+            expect(
+              find.byKey(const Key('android-detail-overlay')),
+              findsNothing,
+            );
+            await tester.tap(media);
+            await tester.pumpAndSettle();
+            expect(
+              find.bySemanticsLabel(
+                RegExp(locale == 'zh' ? '隐藏操作栏' : 'Hide controls'),
+              ),
+              findsOneWidget,
+            );
+            await tester.tap(addTag);
+            await tester.pumpAndSettle();
+            expect(
+              find.byKey(const Key('android-inline-tag-input')),
+              findsOneWidget,
+            );
+            expect(tester.takeException(), isNull);
+          } finally {
+            semantics.dispose();
+          }
+        },
+      );
+    }
+  }
+
+  testWidgets('media swipes animate through a shared pager', (tester) async {
+    await tester.pumpWidget(_app([_image(1), _image(2)]));
+    await tester.pump();
+
+    expect(find.byType(PageView), findsOneWidget);
+    final pager = tester.widget<PageView>(find.byType(PageView));
+    await tester.drag(
+      find.byKey(const Key('android-detail-media')),
+      const Offset(-250, 0),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 70));
+
+    expect(pager.controller!.page, greaterThan(0));
+    expect(pager.controller!.page, lessThan(1));
+    await tester.pumpAndSettle();
+    expect(pager.controller!.page, 1);
+    expect(find.text('2 / 2'), findsOneWidget);
+  });
+
   testWidgets('detail uses a light overlay, single-line filename and swipe', (
     tester,
   ) async {
@@ -140,19 +225,25 @@ void main() {
     },
   );
 
+  registerAndroidDetailLayoutTests();
+}
+
+void registerAndroidDetailLayoutTests() {
   for (final locale in ['en', 'zh']) {
     for (final brightness in Brightness.values) {
       testWidgets(
         '$locale $brightness narrow large text metadata remains usable',
         (tester) async {
-          tester.view.devicePixelRatio = 1;
-          tester.view.physicalSize = const Size(320, 720);
-          addTearDown(tester.view.resetPhysicalSize);
-          addTearDown(tester.view.resetDevicePixelRatio);
+          await useLayoutTestViewport(tester, const Size(320, 720));
           await tester.pumpWidget(
             _app([_image(1)], locale: locale, brightness: brightness, scale: 2),
           );
           await tester.pump();
+          expect(
+            tester.getSize(find.byType(Scaffold).first).width,
+            320,
+            reason: 'The matrix must render at its requested viewport.',
+          );
           expect(
             find.text('Full custom tag without truncation'),
             findsOneWidget,
@@ -188,7 +279,13 @@ Widget _app(
     GlobalWidgetsLocalizations.delegate,
     GlobalCupertinoLocalizations.delegate,
   ],
-  theme: ThemeData(brightness: brightness),
+  theme: androidTheme('ocean').copyWith(
+    brightness: brightness,
+    colorScheme: ColorScheme.fromSeed(
+      seedColor: const Color(0xff5577e8),
+      brightness: brightness,
+    ),
+  ),
   builder: (context, child) => MediaQuery(
     data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(scale)),
     child: child!,

@@ -328,6 +328,8 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
           compactTagDisplay: previous.compactTagDisplay,
           autoPlayVideo: true,
           autoSyncOnLaunch: false,
+          notifyOnAutoSync: previous.notifyOnAutoSync,
+          showSplatoonSchedule: previous.showSplatoonSchedule,
           closeBehavior: previous.closeBehavior,
           customFontPaths: const [],
           syncPolicy: previous.syncPolicy,

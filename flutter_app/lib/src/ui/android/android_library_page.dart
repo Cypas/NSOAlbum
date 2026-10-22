@@ -39,7 +39,6 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
   final selected = <int>{};
   bool selecting = false;
   bool busy = false;
-  bool searchExpanded = false;
   AppBackend get backend => widget.controller.backend;
 
   @override
@@ -52,15 +51,6 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
   void applySearch() {
     FocusManager.instance.primaryFocus?.unfocus();
     widget.controller.searchFor(search.text);
-    setState(() => searchExpanded = false);
-  }
-
-  void cancelSearch() {
-    FocusManager.instance.primaryFocus?.unfocus();
-    setState(() {
-      search.text = widget.controller.search;
-      searchExpanded = false;
-    });
   }
 
   @override
@@ -414,19 +404,19 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
               OutlinedButton.icon(
                 icon: const Icon(Icons.date_range),
                 label: Text(
-                  context.l10n.select(zh: '拍摄日期', en: 'Capture dates'),
+                  context.l10n.select(
+                    zh: _captureRangeLabel(state),
+                    en: _captureRangeLabel(state, english: true),
+                  ),
                 ),
                 onPressed: () async {
-                  final range = await showDateRangePicker(
-                    context: context,
-                    firstDate: DateTime(2000),
-                    lastDate: DateTime(2100),
-                  );
+                  final range = await _chooseCaptureRange(context, state);
                   if (range != null) {
-                    state.capturedFrom = range.start;
-                    state.capturedUntil = range.end.add(
-                      const Duration(days: 1),
-                    );
+                    update(() {
+                      state.capturedFrom = range.from;
+                      state.capturedUntil = range.until;
+                      state.capturedOnThisDay = range.anniversary;
+                    });
                   }
                 },
               ),
@@ -436,6 +426,7 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                   state.gameNames = [];
                   state.capturedFrom = null;
                   state.capturedUntil = null;
+                  state.capturedOnThisDay = null;
                 }),
                 child: Text(
                   context.l10n.select(zh: '清除筛选', en: 'Clear filters'),
@@ -453,6 +444,182 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
     if (mounted) await state.reload();
   }
 
+  Future<_CaptureDateSelection?> _chooseCaptureRange(
+    BuildContext context,
+    LibraryController state,
+  ) async {
+    return showModalBottomSheet<_CaptureDateSelection>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      builder: (context) => SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              context.l10n.select(zh: '选择时间范围', en: 'Choose date range'),
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            if (state.capturedFrom != null ||
+                state.capturedUntil != null ||
+                state.capturedOnThisDay != null)
+              Text(
+                context.l10n.select(
+                  zh: '当前：${_formatDateRange(state)}',
+                  en: 'Current: ${_formatDateRange(state, english: true)}',
+                ),
+              ),
+            const SizedBox(height: 12),
+            Text(
+              context.l10n.select(zh: '快速时间范围', en: 'Quick date ranges'),
+              style: Theme.of(context).textTheme.labelLarge,
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final entry in _quickRanges(context).entries)
+                  OutlinedButton(
+                    key: Key('android-filter-${entry.key}'),
+                    onPressed: () => Navigator.pop(
+                      context,
+                      _CaptureDateSelection.range(
+                        entry.value.$1,
+                        entry.value.$2,
+                      ),
+                    ),
+                    child: Text(entry.value.$3),
+                  ),
+                OutlinedButton(
+                  key: const Key('android-filter-anniversary'),
+                  onPressed: () {
+                    final now = DateTime.now();
+                    Navigator.pop(
+                      context,
+                      _CaptureDateSelection.anniversary(
+                        CapturedOnThisDay(
+                          month: now.month,
+                          day: now.day,
+                          beforeYear: now.year,
+                          utcOffsetSeconds: now.timeZoneOffset.inSeconds,
+                        ),
+                      ),
+                    );
+                  },
+                  child: Text(
+                    context.l10n.select(zh: '那年今日', en: 'This date in history'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.edit_calendar_outlined),
+              label: Text(
+                context.l10n.select(zh: '自定义日期范围', en: 'Custom date range'),
+              ),
+              onPressed: () async {
+                final range = await showDateRangePicker(
+                  context: context,
+                  firstDate: DateTime(2000),
+                  lastDate: DateTime(2100),
+                );
+                if (!context.mounted || range == null) return;
+                Navigator.pop(
+                  context,
+                  _CaptureDateSelection.range(
+                    _dayStart(range.start),
+                    DateTime(
+                      range.end.year,
+                      range.end.month,
+                      range.end.day + 1,
+                    ),
+                  ),
+                );
+              },
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, null),
+              child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  DateTime _dayStart(DateTime value) =>
+      DateTime(value.year, value.month, value.day);
+
+  String _formatDate(DateTime value, {bool english = false}) => english
+      ? '${value.year}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}'
+      : '${value.year}/${value.month}/${value.day}';
+
+  String _formatDateRange(LibraryController state, {bool english = false}) {
+    final anniversary = state.capturedOnThisDay;
+    if (anniversary != null) {
+      return english
+          ? 'On this day · ${anniversary.month}/${anniversary.day} in previous years'
+          : '那年今日 · 往年 ${anniversary.month}/${anniversary.day}';
+    }
+    final from = state.capturedFrom;
+    final until = state.capturedUntil;
+    if (from == null && until == null) {
+      return context.l10n.select(zh: '不限', en: 'Any date');
+    }
+    final end = until?.subtract(const Duration(days: 1));
+    return [
+      if (from != null) _formatDate(from, english: english),
+      if (end != null) _formatDate(end, english: english),
+    ].join(english ? ' to ' : ' 至 ');
+  }
+
+  String _captureRangeLabel(LibraryController state, {bool english = false}) {
+    if (state.capturedFrom == null &&
+        state.capturedUntil == null &&
+        state.capturedOnThisDay == null) {
+      return context.l10n.select(zh: '拍摄日期', en: 'Capture dates');
+    }
+    return _formatDateRange(state, english: english);
+  }
+
+  Map<String, (DateTime, DateTime, String)> _quickRanges(BuildContext context) {
+    final now = DateTime.now();
+    final today = _dayStart(now);
+    final tomorrow = DateTime(today.year, today.month, today.day + 1);
+    final monday = DateTime(
+      today.year,
+      today.month,
+      today.day - today.weekday + 1,
+    );
+    final nextMonday = DateTime(monday.year, monday.month, monday.day + 7);
+    final previousMonday = DateTime(monday.year, monday.month, monday.day - 7);
+    final monthStart = DateTime(today.year, today.month);
+    final nextMonth = DateTime(today.year, today.month + 1);
+    return {
+      'today': (today, tomorrow, context.l10n.select(zh: '本日', en: 'Today')),
+      'this-week': (
+        monday,
+        nextMonday,
+        context.l10n.select(zh: '本周', en: 'This week'),
+      ),
+      'this-month': (
+        monthStart,
+        nextMonth,
+        context.l10n.select(zh: '本月', en: 'This month'),
+      ),
+      'last-week': (
+        previousMonday,
+        monday,
+        context.l10n.select(zh: '上周', en: 'Last week'),
+      ),
+    };
+  }
+
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: Listenable.merge([widget.controller, widget.settings]),
@@ -464,25 +631,16 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
           .toList();
       return PopScope<Object?>(
         canPop:
-            !selecting &&
-            !busy &&
-            !searchExpanded &&
-            MediaQuery.viewInsetsOf(context).bottom == 0,
+            !selecting && !busy && MediaQuery.viewInsetsOf(context).bottom == 0,
         onPopInvokedWithResult: (didPop, _) {
           if (didPop) return;
           if (MediaQuery.viewInsetsOf(context).bottom > 0) {
             FocusManager.instance.primaryFocus?.unfocus();
             return;
           }
-          if (searchExpanded && !selecting && !busy) {
-            // Back only collapses the panel. A draft is not an applied query.
-            setState(() => searchExpanded = false);
-            return;
-          }
           if (!didPop && selecting && !busy) {
             setState(() {
               selecting = false;
-              searchExpanded = false;
               selected.clear();
             });
           }
@@ -505,7 +663,6 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                   }
                   setState(() {
                     selecting = false;
-                    searchExpanded = false;
                     selected.clear();
                   });
                 }
@@ -515,18 +672,20 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
           actions: [
             if (!selecting) ...[
               IconButton(
-                key: const Key('android-library-search-toggle'),
-                tooltip: context.l10n.select(zh: '展开搜索', en: 'Expand search'),
-                onPressed: () {
-                  FocusManager.instance.primaryFocus?.unfocus();
-                  setState(() => searchExpanded = !searchExpanded);
-                },
-                icon: Icon(searchExpanded ? Icons.close : Icons.search),
-              ),
-              IconButton(
+                key: const Key('android-library-filter'),
                 tooltip: context.l10n.select(zh: '筛选', en: 'Filter'),
                 onPressed: filters,
-                icon: const Icon(Icons.filter_list),
+                icon: Icon(
+                  Icons.filter_list,
+                  color:
+                      state.favoriteOnly ||
+                          state.gameNames.isNotEmpty ||
+                          state.capturedFrom != null ||
+                          state.capturedUntil != null ||
+                          state.capturedOnThisDay != null
+                      ? Theme.of(context).colorScheme.primary
+                      : null,
+                ),
               ),
               IconButton(
                 key: const Key('android-select-media'),
@@ -603,91 +762,32 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                             child: TextField(
                               key: const Key('android-library-search'),
                               controller: search,
-                              readOnly: !searchExpanded,
+                              textInputAction: TextInputAction.search,
                               decoration: InputDecoration(
                                 prefixIcon: const Icon(Icons.search),
                                 hintText: context.l10n.select(
                                   zh: '搜索游戏、标签、备注',
                                   en: 'Search games, tags, notes',
                                 ),
+                                suffixIcon: search.text.isEmpty
+                                    ? null
+                                    : IconButton(
+                                        tooltip: context.l10n.select(
+                                          zh: '清除搜索',
+                                          en: 'Clear search',
+                                        ),
+                                        onPressed: () {
+                                          search.clear();
+                                          applySearch();
+                                          setState(() {});
+                                        },
+                                        icon: const Icon(Icons.clear),
+                                      ),
                               ),
-                              onTap: () {
-                                if (!searchExpanded) {
-                                  setState(() => searchExpanded = true);
-                                }
-                              },
+                              onChanged: (_) => setState(() {}),
                               onSubmitted: (_) => applySearch(),
                             ),
                           ),
-                          if (searchExpanded) ...[
-                            const SizedBox(height: 8),
-                            Align(
-                              alignment: Alignment.centerLeft,
-                              child: Text(
-                                context.l10n.select(
-                                  zh: '搜索范围：文件名、游戏、标签和备注',
-                                  en: 'Search in filenames, games, tags and notes',
-                                ),
-                              ),
-                            ),
-                            Align(
-                              alignment: Alignment.centerLeft,
-                              child: Text(
-                                [
-                                  widget.album?.name ??
-                                      context.l10n.select(
-                                        zh: '全部图库',
-                                        en: 'Entire library',
-                                      ),
-                                  if (state.favoriteOnly)
-                                    context.l10n.select(
-                                      zh: '仅收藏',
-                                      en: 'Favorites only',
-                                    ),
-                                  ...state.gameNames,
-                                  if (state.capturedFrom != null ||
-                                      state.capturedUntil != null)
-                                    context.l10n.select(
-                                      zh: '拍摄日期筛选',
-                                      en: 'Capture date filter',
-                                    ),
-                                ].join(' · '),
-                              ),
-                            ),
-                            Align(
-                              alignment: Alignment.centerRight,
-                              child: Wrap(
-                                spacing: 8,
-                                children: [
-                                  TextButton(
-                                    key: const Key(
-                                      'android-library-search-cancel',
-                                    ),
-                                    onPressed: cancelSearch,
-                                    child: Text(
-                                      context.l10n.select(
-                                        zh: '取消',
-                                        en: 'Cancel',
-                                      ),
-                                    ),
-                                  ),
-                                  FilledButton.icon(
-                                    key: const Key(
-                                      'android-library-search-confirm',
-                                    ),
-                                    onPressed: applySearch,
-                                    icon: const Icon(Icons.check),
-                                    label: Text(
-                                      context.l10n.select(
-                                        zh: '应用搜索',
-                                        en: 'Apply search',
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
                           const SizedBox(height: 8),
                           SegmentedButton<GalleryKindFilter>(
                             key: const Key('android-kind-filter'),
@@ -729,7 +829,9 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                           ),
                           if (state.favoriteOnly ||
                               state.gameNames.isNotEmpty ||
-                              state.capturedFrom != null)
+                              state.capturedFrom != null ||
+                              state.capturedUntil != null ||
+                              state.capturedOnThisDay != null)
                             Text(
                               context.l10n.select(
                                 zh: '已应用筛选',
@@ -832,4 +934,15 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
       );
     },
   );
+}
+
+class _CaptureDateSelection {
+  const _CaptureDateSelection.range(this.from, this.until) : anniversary = null;
+  const _CaptureDateSelection.anniversary(this.anniversary)
+    : from = null,
+      until = null;
+
+  final DateTime? from;
+  final DateTime? until;
+  final CapturedOnThisDay? anniversary;
 }

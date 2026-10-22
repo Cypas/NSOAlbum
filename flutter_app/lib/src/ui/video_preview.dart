@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../l10n/app_localizations.dart';
@@ -16,13 +18,21 @@ class VideoFirstFrameCover extends StatefulWidget {
     required this.firstFrame,
     required this.thumbnail,
     required this.child,
+    this.playbackErrors,
+    this.decoderReady,
+    this.decoderInitiallyReady = true,
     this.error,
+    this.showLoadingIndicator = true,
   });
   final Object identity;
   final Future<void> firstFrame;
   final Future<VideoThumbnailData> thumbnail;
   final Widget child;
+  final Stream<String>? playbackErrors;
+  final Stream<bool>? decoderReady;
+  final bool decoderInitiallyReady;
   final Object? error;
+  final bool showLoadingIndicator;
 
   @override
   State<VideoFirstFrameCover> createState() => _VideoFirstFrameCoverState();
@@ -31,7 +41,11 @@ class VideoFirstFrameCover extends StatefulWidget {
 class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
   int generation = 0;
   bool rendered = false;
+  bool decoded = false;
   bool failed = false;
+  String? playbackError;
+  StreamSubscription<String>? errors;
+  StreamSubscription<bool>? decoder;
   VideoThumbnailData? poster;
 
   @override
@@ -49,14 +63,48 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
   void _watch() {
     final ticket = ++generation;
     rendered = false;
+    decoded = widget.decoderInitiallyReady;
     failed = false;
+    playbackError = null;
     poster = null;
+    unawaited(errors?.cancel());
+    unawaited(decoder?.cancel());
+    decoder = widget.decoderReady?.listen((ready) {
+      if (mounted && ticket == generation && ready) {
+        setState(() {
+          decoded = true;
+          playbackError = null;
+        });
+      }
+    });
+    errors = widget.playbackErrors?.listen((value) {
+      if (mounted && ticket == generation && value.isNotEmpty) {
+        // Android hardware probing can report this after software fallback has
+        // already produced decoded output and a frame. Do not cover that frame
+        // again; all other errors and unproven decoder states remain visible.
+        if (widget.decoderReady != null &&
+            rendered &&
+            decoded &&
+            !failed &&
+            value.trim() == 'Could not open codec.') {
+          return;
+        }
+        setState(() => playbackError = value);
+      }
+    });
     // No timeout here: a paused video can legitimately have no rendered frame.
     // Native/open failures arrive separately, rather than faking readiness.
     unawaited(
       widget.firstFrame.then(
         (_) {
-          if (mounted && ticket == generation) setState(() => rendered = true);
+          if (mounted && ticket == generation) {
+            setState(() {
+              rendered = true;
+              // A real decoded frame proves recovery from an opening decoder
+              // failure (for example a hardware-to-software fallback).
+              if (decoded) playbackError = null;
+            });
+          }
         },
         onError: (Object _, StackTrace _) {
           if (mounted && ticket == generation) setState(() => failed = true);
@@ -76,12 +124,19 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
   }
 
   @override
+  void dispose() {
+    unawaited(errors?.cancel());
+    unawaited(decoder?.cancel());
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final error = failed || widget.error != null;
+    final error = failed || playbackError != null || widget.error != null;
     return Stack(
       fit: StackFit.expand,
       children: [
-        if (!rendered || error)
+        if (!rendered || !decoded || error)
           Positioned.fill(
             child: IgnorePointer(
               child: ColoredBox(
@@ -96,14 +151,19 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
                         fit: BoxFit.contain,
                         gaplessPlayback: false,
                         cacheWidth: 1280,
-                        errorBuilder: (_, _, _) => const Center(
-                          child: SizedBox.square(
-                            dimension: 28,
-                            child: CircularProgressIndicator(
-                              key: Key('video-preview-loading'),
-                              strokeWidth: 2,
-                            ),
-                          ),
+                        errorBuilder: (_, _, _) => Center(
+                          child: widget.showLoadingIndicator
+                              ? const SizedBox.square(
+                                  dimension: 28,
+                                  child: CircularProgressIndicator(
+                                    key: Key('video-preview-loading'),
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(
+                                  Icons.movie_outlined,
+                                  key: Key('video-preview-placeholder'),
+                                ),
                         ),
                       ),
                     if (error)
@@ -128,13 +188,18 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
                             zh: '正在准备视频',
                             en: 'Preparing video',
                           ),
-                          child: const SizedBox.square(
-                            dimension: 28,
-                            child: CircularProgressIndicator(
-                              key: Key('video-preview-loading'),
-                              strokeWidth: 2,
-                            ),
-                          ),
+                          child: widget.showLoadingIndicator
+                              ? const SizedBox.square(
+                                  dimension: 28,
+                                  child: CircularProgressIndicator(
+                                    key: Key('video-preview-loading'),
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(
+                                  Icons.movie_outlined,
+                                  key: Key('video-preview-placeholder'),
+                                ),
                         ),
                       ),
                   ],
@@ -142,10 +207,56 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
               ),
             ),
           ),
-        // Keep this slot stable; cover arrival must not reset control state.
-        Positioned.fill(child: widget.child),
+        // The preceding cover is conditional. Key this slot so its removal
+        // cannot recycle that Positioned and remount the playback controls.
+        Positioned.fill(
+          key: const ValueKey('video-preview-controls-slot'),
+          child: widget.child,
+        ),
       ],
     );
+  }
+}
+
+bool hasDecodedVideo(VideoParams params) =>
+    params.pixelformat?.isNotEmpty == true &&
+    (params.w ?? 0) > 0 &&
+    (params.h ?? 0) > 0;
+
+Future<void> warmVideoPreview({
+  required Player player,
+  required Future<void> firstFrame,
+  required Future<void> interrupted,
+  required bool requireDecodedOutput,
+}) async {
+  final volume = player.state.volume;
+  final decoded = Completer<void>();
+  StreamSubscription<VideoParams>? parameters;
+  if (requireDecodedOutput) {
+    parameters = player.stream.videoParams.listen((value) {
+      if (!decoded.isCompleted && hasDecodedVideo(value)) decoded.complete();
+    });
+    if (hasDecodedVideo(player.state.videoParams)) decoded.complete();
+  } else {
+    decoded.complete();
+  }
+  final prepared = Future.any<void>([
+    Future.wait([firstFrame, decoded.future]).then((_) {}),
+    interrupted,
+  ]);
+  // The native play command may finish after an early frame failure.
+  unawaited(prepared.catchError((Object _, StackTrace _) {}));
+  try {
+    await player.setVolume(0);
+    await player.play();
+    await prepared.timeout(const Duration(seconds: 2));
+  } finally {
+    await parameters?.cancel();
+    try {
+      await player.pause();
+    } finally {
+      await player.setVolume(volume);
+    }
   }
 }
 
@@ -158,11 +269,13 @@ class VideoPreview extends StatefulWidget {
     required this.cover,
     this.controls = AdaptiveVideoControls,
     this.error,
+    this.showLoadingIndicator = true,
   });
   final VideoController controller;
   final MediaAsset cover;
   final VideoControlsBuilder? controls;
   final Object? error;
+  final bool showLoadingIndicator;
 
   @override
   State<VideoPreview> createState() => _VideoPreviewState();
@@ -172,8 +285,7 @@ class _VideoPreviewState extends State<VideoPreview> {
   late PreviewRequest<VideoThumbnailData> request;
   late Future<VideoThumbnailData> thumbnail;
   late Future<void> firstFrame;
-  StreamSubscription<String>? errors;
-  Object? playbackError;
+  late Stream<bool>? decoderReady;
 
   Future<VideoThumbnailData> _load() {
     request = VideoThumbnailCache.request(
@@ -189,18 +301,13 @@ class _VideoPreviewState extends State<VideoPreview> {
     super.initState();
     thumbnail = _load();
     firstFrame = widget.controller.waitUntilFirstFrameRendered;
-    _listen();
+    _watchDecoder();
   }
 
-  void _listen() {
-    unawaited(errors?.cancel());
-    playbackError = null;
-    final controller = widget.controller;
-    errors = controller.player.stream.error.listen((value) {
-      if (mounted && controller == widget.controller && value.isNotEmpty) {
-        setState(() => playbackError = true);
-      }
-    });
+  void _watchDecoder() {
+    decoderReady = Platform.isAndroid
+        ? widget.controller.player.stream.videoParams.map(hasDecodedVideo)
+        : null;
   }
 
   @override
@@ -212,13 +319,12 @@ class _VideoPreviewState extends State<VideoPreview> {
     }
     if (oldWidget.controller != widget.controller) {
       firstFrame = widget.controller.waitUntilFirstFrameRendered;
-      _listen();
+      _watchDecoder();
     }
   }
 
   @override
   void dispose() {
-    unawaited(errors?.cancel());
     request.cancel();
     super.dispose();
   }
@@ -232,7 +338,13 @@ class _VideoPreviewState extends State<VideoPreview> {
       identity: (widget.controller, widget.cover.sha256),
       firstFrame: firstFrame,
       thumbnail: thumbnail,
-      error: widget.error ?? playbackError,
+      error: widget.error,
+      playbackErrors: widget.controller.player.stream.error,
+      decoderReady: decoderReady,
+      decoderInitiallyReady:
+          !Platform.isAndroid ||
+          hasDecodedVideo(widget.controller.player.state.videoParams),
+      showLoadingIndicator: widget.showLoadingIndicator,
       child: widget.controls?.call(state) ?? const SizedBox.expand(),
     ),
   );
@@ -267,6 +379,7 @@ class _VideoPosterState extends State<VideoPoster> {
     identity: widget.asset.sha256,
     firstFrame: _pendingFrame,
     thumbnail: thumbnail,
+    showLoadingIndicator: false,
     child: const SizedBox.expand(),
   );
 }

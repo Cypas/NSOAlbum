@@ -1,3 +1,21 @@
+import 'nintendo_account_tools_backend.dart';
+
+int _operationSequence = 0;
+
+String accountToolOperationId(String kind) =>
+    '$kind-${DateTime.now().microsecondsSinceEpoch}-${_operationSequence++}';
+
+Future<void> cancelAccountToolQuietly(
+  NintendoAccountToolsBackend backend,
+  String operationId,
+) async {
+  try {
+    await backend.cancelAccountToolOperation(operationId);
+  } catch (_) {
+    // A retired consumer also ignores any result that arrives afterwards.
+  }
+}
+
 /// Invalidates work across asynchronous credential reads and account removal.
 /// Network cancellation itself remains in Rust.
 class AccountToolRequests {

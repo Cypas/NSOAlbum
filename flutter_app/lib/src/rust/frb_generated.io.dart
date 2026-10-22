@@ -96,6 +96,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool dco_decode_box_autoadd_bool(dynamic raw);
 
   @protected
+  CapturedOnThisDay dco_decode_box_autoadd_captured_on_this_day(dynamic raw);
+
+  @protected
   ChangeCounts dco_decode_box_autoadd_change_counts(dynamic raw);
 
   @protected
@@ -163,6 +166,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt dco_decode_box_autoadd_usize(dynamic raw);
+
+  @protected
+  CapturedOnThisDay dco_decode_captured_on_this_day(dynamic raw);
 
   @protected
   ChangeCounts dco_decode_change_counts(dynamic raw);
@@ -284,6 +290,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<NintendoFriend> dco_decode_list_nintendo_friend(dynamic raw);
 
   @protected
+  List<NintendoFriendGame> dco_decode_list_nintendo_friend_game(dynamic raw);
+
+  @protected
   Int64List dco_decode_list_prim_i_64_strict(dynamic raw);
 
   @protected
@@ -332,6 +341,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   NintendoFriend dco_decode_nintendo_friend(dynamic raw);
 
   @protected
+  NintendoFriendCodeSnapshot dco_decode_nintendo_friend_code_snapshot(
+    dynamic raw,
+  );
+
+  @protected
+  NintendoFriendCodeUser dco_decode_nintendo_friend_code_user(dynamic raw);
+
+  @protected
+  NintendoFriendGame dco_decode_nintendo_friend_game(dynamic raw);
+
+  @protected
+  NintendoFriendRequestResult dco_decode_nintendo_friend_request_result(
+    dynamic raw,
+  );
+
+  @protected
   NintendoFriendsSnapshot dco_decode_nintendo_friends_snapshot(dynamic raw);
 
   @protected
@@ -364,6 +389,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
+
+  @protected
+  CapturedOnThisDay? dco_decode_opt_box_autoadd_captured_on_this_day(
+    dynamic raw,
+  );
 
   @protected
   ChangeCounts? dco_decode_opt_box_autoadd_change_counts(dynamic raw);
@@ -614,6 +644,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool sse_decode_box_autoadd_bool(SseDeserializer deserializer);
 
   @protected
+  CapturedOnThisDay sse_decode_box_autoadd_captured_on_this_day(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ChangeCounts sse_decode_box_autoadd_change_counts(
     SseDeserializer deserializer,
   );
@@ -707,6 +742,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt sse_decode_box_autoadd_usize(SseDeserializer deserializer);
+
+  @protected
+  CapturedOnThisDay sse_decode_captured_on_this_day(
+    SseDeserializer deserializer,
+  );
 
   @protected
   ChangeCounts sse_decode_change_counts(SseDeserializer deserializer);
@@ -854,6 +894,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<NintendoFriendGame> sse_decode_list_nintendo_friend_game(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Int64List sse_decode_list_prim_i_64_strict(SseDeserializer deserializer);
 
   @protected
@@ -914,6 +959,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   NintendoFriend sse_decode_nintendo_friend(SseDeserializer deserializer);
 
   @protected
+  NintendoFriendCodeSnapshot sse_decode_nintendo_friend_code_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  NintendoFriendCodeUser sse_decode_nintendo_friend_code_user(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  NintendoFriendGame sse_decode_nintendo_friend_game(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  NintendoFriendRequestResult sse_decode_nintendo_friend_request_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   NintendoFriendsSnapshot sse_decode_nintendo_friends_snapshot(
     SseDeserializer deserializer,
   );
@@ -954,6 +1019,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer);
+
+  @protected
+  CapturedOnThisDay? sse_decode_opt_box_autoadd_captured_on_this_day(
+    SseDeserializer deserializer,
+  );
 
   @protected
   ChangeCounts? sse_decode_opt_box_autoadd_change_counts(
@@ -1263,6 +1333,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_captured_on_this_day(
+    CapturedOnThisDay self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_change_counts(
     ChangeCounts self,
     SseSerializer serializer,
@@ -1387,6 +1463,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_autoadd_usize(BigInt self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_captured_on_this_day(
+    CapturedOnThisDay self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_change_counts(ChangeCounts self, SseSerializer serializer);
@@ -1575,6 +1657,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_nintendo_friend_game(
+    List<NintendoFriendGame> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_prim_i_64_strict(
     Int64List self,
     SseSerializer serializer,
@@ -1656,6 +1744,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_nintendo_friend_code_snapshot(
+    NintendoFriendCodeSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_nintendo_friend_code_user(
+    NintendoFriendCodeUser self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_nintendo_friend_game(
+    NintendoFriendGame self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_nintendo_friend_request_result(
+    NintendoFriendRequestResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_nintendo_friends_snapshot(
     NintendoFriendsSnapshot self,
     SseSerializer serializer,
@@ -1708,6 +1820,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_captured_on_this_day(
+    CapturedOnThisDay? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_box_autoadd_change_counts(

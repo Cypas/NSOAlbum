@@ -707,7 +707,10 @@ impl<P: MediaProvider, D: MediaDownloader> SyncEngine<P, D> {
 fn is_temporary_download_error(error: &CoreError) -> bool {
     matches!(
         error,
-        CoreError::RateLimited { .. } | CoreError::Network(_) | CoreError::Io(_)
+        CoreError::RateLimited { .. }
+            | CoreError::Network(_)
+            | CoreError::NetworkRequest { .. }
+            | CoreError::Io(_)
     )
 }
 
@@ -728,6 +731,22 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::AtomicUsize;
     use std::sync::Mutex;
+
+    #[test]
+    fn classified_transport_failures_keep_existing_media_retry_semantics() {
+        assert!(is_temporary_download_error(&CoreError::NetworkRequest {
+            stage: "http_request",
+            reason: "timeout",
+            proxy: "default",
+            elapsed_ms: 30000,
+            url: "https://example.invalid/<redacted-path>".into(),
+            code_kind: "none",
+            code: "none".into(),
+        }));
+        assert!(!is_temporary_download_error(&CoreError::Provider(
+            "nso_membership_required".into()
+        )));
+    }
 
     struct StaticProvider {
         items: Vec<MediaCandidate>,

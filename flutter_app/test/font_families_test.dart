@@ -220,6 +220,8 @@ AppSettings _withFonts(FakeBackend backend, List<String> paths) {
     compactTagDisplay: value.compactTagDisplay,
     autoPlayVideo: value.autoPlayVideo,
     autoSyncOnLaunch: value.autoSyncOnLaunch,
+    notifyOnAutoSync: value.notifyOnAutoSync,
+    showSplatoonSchedule: value.showSplatoonSchedule,
     closeBehavior: value.closeBehavior,
     customFontPaths: paths,
     syncPolicy: value.syncPolicy,

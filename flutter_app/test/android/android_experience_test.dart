@@ -14,8 +14,13 @@ import 'package:squid_album/src/ui/android/android_media_card.dart';
 import 'package:squid_album/src/ui/android/android_media_viewer.dart';
 import 'package:squid_album/src/ui/android/android_page_frame.dart';
 import 'package:squid_album/src/ui/platform_ui.dart';
+import 'package:squid_album/src/state/settings_copy.dart';
+import 'package:squid_album/src/state/settings_controller.dart';
+import 'package:squid_album/src/ui/android/android_albums_page.dart';
+import 'package:squid_album/src/ui/android/android_theme.dart';
 
 import '../home_shell_test.dart' show FakeBackend;
+import '../layout_viewport.dart';
 
 class StorageBackend extends FakeBackend implements MobileStorageBackend {
   @override
@@ -47,7 +52,120 @@ MediaAsset media(int id, {bool unknownDates = false}) => MediaAsset(
   note: 'Hidden card note',
 );
 
-void main() {
+void main() => registerAndroidExperienceTests();
+
+void registerAndroidExperienceTests({bool layoutOnly = false}) {
+  for (final language in ['zh', 'en']) {
+    for (final width in [320.0, 360.0, 412.0]) {
+      for (final scale in [1.0, 2.0]) {
+        testWidgets(
+          'compact album card preserves preview at $language $width scale=$scale',
+          (tester) async {
+            await useLayoutTestViewport(tester, Size(width, 1100));
+            final backend = FakeBackend(
+              albumItems: [
+                AlbumSummary(
+                  id: 2,
+                  name: 'A long album title that wraps',
+                  description: '',
+                  albumType: 'normal',
+                  pinned: false,
+                  mediaCount: BigInt.zero,
+                  sourceDeviceName: 'Synthetic source',
+                ),
+              ],
+            );
+            final settings = SettingsController(backend);
+            addTearDown(settings.dispose);
+            await tester.pumpWidget(
+              MaterialApp(
+                locale: Locale(language),
+                supportedLocales: AppLocalizations.supportedLocales,
+                localizationsDelegates: const [
+                  AppLocalizations.delegate,
+                  GlobalMaterialLocalizations.delegate,
+                  GlobalWidgetsLocalizations.delegate,
+                  GlobalCupertinoLocalizations.delegate,
+                ],
+                theme: androidTheme('ocean'),
+                builder: (context, child) => MediaQuery(
+                  data: MediaQuery.of(context)
+                      .copyWith(textScaler: TextScaler.linear(scale)),
+                  child: child!,
+                ),
+                home: AndroidAlbumsPage(backend: backend, settings: settings),
+              ),
+            );
+            await tester.pumpAndSettle();
+            expect(
+              tester.getSize(find.byType(Scaffold).first).width,
+              width,
+              reason: 'The matrix must render at its requested viewport.',
+            );
+            final card = find.byKey(const ValueKey('android-album-2'));
+            final preview = find.descendant(
+              of: card,
+              matching: find.byType(AspectRatio),
+            );
+            final previewSize = tester.getSize(preview);
+            expect(
+              previewSize.width / previewSize.height,
+              closeTo(16 / 9, .01),
+            );
+            final name = find.text('A long album title that wraps');
+            expect(
+              tester.getRect(name).bottom,
+              lessThanOrEqualTo(tester.getRect(card).bottom),
+            );
+            expect(tester.takeException(), isNull);
+          },
+        );
+      }
+    }
+  }
+
+  if (layoutOnly) return;
+
+  for (final language in ['zh', 'en']) {
+    testWidgets(
+      'Android account errors distinguish unlinked users ($language)',
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            locale: Locale(language),
+            localizationsDelegates: const [
+              AppLocalizations.delegate,
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: Builder(
+              builder: (context) => Text(
+                androidReadableError(
+                  context,
+                  'provider failed: nintendo_account_not_linked (status 9407)',
+                ),
+              ),
+            ),
+          ),
+        );
+        expect(
+          find.text(
+            language == 'zh'
+                ? '此 Nintendo Account 尚未关联 Switch 用户。请在主机上完成关联后重试。'
+                : 'This Nintendo Account is not linked to a Switch user. Link it on your console and try again.',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining('nintendo_account_not_linked'),
+          findsNothing,
+        );
+      },
+    );
+  }
+
   for (final locale in ['zh', 'en']) {
     testWidgets(
       'unknown imported detail survives inline edits and navigation in $locale',
@@ -202,6 +320,22 @@ void main() {
         .widgetList<AndroidMediaThumbnail>(find.byType(AndroidMediaThumbnail))
         .toList();
     expect(covers.map((cover) => cover.asset.id), [1, 2]);
+    final cardRect = tester.getRect(
+      find.byKey(const ValueKey('android-album-1')),
+    );
+    final coverFinder = find.descendant(
+      of: find.byKey(const ValueKey('android-album-1')),
+      matching: find.byType(AndroidMediaThumbnail),
+    );
+    final coverRect = tester.getRect(coverFinder);
+    expect(coverRect.width / coverRect.height, closeTo(16 / 9, .02));
+    expect(cardRect.height, greaterThan(coverRect.height));
+    expect(
+      (grid.gridDelegate as SliverGridDelegateWithFixedCrossAxisCount)
+          .mainAxisExtent,
+      lessThan(coverRect.height + 130),
+      reason: 'The compact height applies to the full card, not the preview.',
+    );
   });
   testWidgets('network errors use an upper bubble without exposing raw URLs', (
     tester,
@@ -369,7 +503,7 @@ void main() {
       1,
     );
   });
-  testWidgets('media cards show truncated tags rather than filename and note', (
+  testWidgets('media cards show truncated tags and a one-line note preview', (
     tester,
   ) async {
     final backend = FakeBackend(mediaItems: [media(1)]);
@@ -378,11 +512,67 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('private-file-1.png'), findsNothing);
-    expect(find.text('Hidden card note'), findsNothing);
+    expect(find.text('Hidden card not…'), findsOneWidget);
     expect(find.text('超级马力欧..'), findsOneWidget);
     expect(find.text('abcdefghij..'), findsOneWidget);
     expect(find.byType(AndroidMediaCard), findsOneWidget);
   });
+  testWidgets(
+    'card note stops at fifteen complete characters and obeys its setting',
+    (tester) async {
+      final asset = MediaAsset(
+        id: 87,
+        sha256: 'note-preview',
+        originalName: 'note.png',
+        storagePath: 'missing.png',
+        kind: MediaKind.image,
+        gameName: '',
+        favorite: false,
+        tags: const [],
+        note: '  一二三四五六七八九十甲乙丙丁👨‍👩‍👧‍👦戊己  ',
+      );
+      final backend = FakeBackend();
+      Widget card(bool show) => MaterialApp(
+        locale: const Locale('en'),
+        supportedLocales: AppLocalizations.supportedLocales,
+        localizationsDelegates: const [
+          AppLocalizations.delegate,
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 180,
+              child: AndroidMediaCard(
+                asset: asset,
+                settings: copyAppSettings(
+                  backend.settings,
+                  showNotePreview: show,
+                ),
+                onOpen: () {},
+                onMenu: () {},
+                onFavorite: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpWidget(card(true));
+      await tester.pumpAndSettle();
+      final note = find.text('一二三四五六七八九十甲乙丙丁👨‍👩‍👧‍👦…');
+      expect(note, findsOneWidget);
+      final text = tester.widget<Text>(note);
+      expect(text.maxLines, 1);
+      expect(text.overflow, TextOverflow.ellipsis);
+      expect(tester.getSize(note).width, lessThanOrEqualTo(180));
+      await tester.pumpWidget(card(false));
+      await tester.pumpAndSettle();
+      expect(note, findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
   testWidgets(
     'navigation disappears in a secondary route and returns after back',
     (tester) async {

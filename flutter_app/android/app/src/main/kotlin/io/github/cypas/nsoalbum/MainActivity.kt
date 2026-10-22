@@ -4,6 +4,9 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -15,6 +18,30 @@ import java.io.File
 class MainActivity : FlutterActivity() {
     private var notificationPermissionResult: MethodChannel.Result? = null
     private var deviceSyncSaf: DeviceSyncSafChannel? = null
+    private val syncNotificationPermissions by lazy {
+        val preferences = getSharedPreferences("nsoalbum-notifications", MODE_PRIVATE)
+        SyncNotificationPermissionCoordinator(
+            sdkInt = Build.VERSION.SDK_INT,
+            permissionGranted = {
+                Build.VERSION.SDK_INT < 33 ||
+                    checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                        PackageManager.PERMISSION_GRANTED
+            },
+            alreadyRequested = {
+                preferences.getBoolean("sync-permission-requested", false)
+            },
+            markRequested = {
+                preferences.edit().putBoolean("sync-permission-requested", true).apply()
+            },
+            requestPermission = {
+                requestPermissions(
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    SyncNotificationPermissionCoordinator.SYNC_REQUEST_CODE,
+                )
+            },
+            post = { title, body -> postSyncNotification(title, body) },
+        )
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -73,7 +100,7 @@ class MainActivity : FlutterActivity() {
                         if (Build.VERSION.SDK_INT >= 33 &&
                             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
                                 PackageManager.PERMISSION_GRANTED) {
-                            if (notificationPermissionResult != null) {
+                            if (!syncNotificationPermissions.beginExternalRequest(9216)) {
                                 result.error("PERMISSION_REQUEST_BUSY", "A permission request is already open.", null)
                             } else {
                                 notificationPermissionResult = result
@@ -84,7 +111,10 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             } catch (failure: Exception) {
-                if (notificationPermissionResult === result) notificationPermissionResult = null
+                if (notificationPermissionResult === result) {
+                    notificationPermissionResult = null
+                    syncNotificationPermissions.cancel(9216)
+                }
                 val code = when (failure) {
                     is AndroidUpdateException -> failure.code
                     is IllegalArgumentException -> if (failure.message == "VERSION_NOT_NEWER")
@@ -94,6 +124,56 @@ class MainActivity : FlutterActivity() {
                 result.error(code, "The update operation could not be completed.", null)
             }
         }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
+            "io.github.cypas.nsoalbum/notifications").setMethodCallHandler { call, result ->
+            if (call.method != "syncCompleted") {
+                result.notImplemented()
+                return@setMethodCallHandler
+            }
+            try {
+                val args = call.arguments as? Map<*, *> ?: throw IllegalArgumentException("INVALID_NOTIFICATION")
+                syncNotificationPermissions.syncCompleted(
+                    title = (args["title"] as? String) ?: "鱿型相册 · 自动同步完成",
+                    body = (args["body"] as? String) ?: "",
+                )
+                result.success(null)
+            } catch (failure: Exception) {
+                result.error("NOTIFICATION_FAILED", null, null)
+            }
+        }
+    }
+
+    private fun postSyncNotification(
+        title: String,
+        body: String,
+    ) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED) return
+        val manager = getSystemService(NotificationManager::class.java)
+        val channelId = "sync-completed"
+        if (Build.VERSION.SDK_INT >= 26) {
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    channelId,
+                    "同步完成 / Sync completed",
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                ),
+            )
+        }
+        val builder = if (Build.VERSION.SDK_INT >= 26) {
+            Notification.Builder(this, channelId)
+        } else {
+            Notification.Builder(this)
+        }
+        manager.notify(
+            7301,
+            builder.setSmallIcon(applicationInfo.icon)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setAutoCancel(true)
+                .build(),
+        )
     }
 
     override fun onRequestPermissionsResult(
@@ -105,6 +185,15 @@ class MainActivity : FlutterActivity() {
         if (requestCode == 9216) {
             notificationPermissionResult?.success(AndroidUpdateController.get(this).notificationAllowed())
             notificationPermissionResult = null
+        }
+        if (requestCode == 9216 ||
+            requestCode == SyncNotificationPermissionCoordinator.SYNC_REQUEST_CODE) {
+            try {
+                syncNotificationPermissions.complete(requestCode)
+            } catch (_: Exception) {
+                android.util.Log.w("NSOAlbum",
+                    "[sync] stage=notification_failed reason=system_delivery_failed")
+            }
         }
     }
 
@@ -122,6 +211,7 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         deviceSyncSaf?.close()
         deviceSyncSaf = null
+        syncNotificationPermissions.close()
         notificationPermissionResult?.success(false)
         notificationPermissionResult = null
         super.onDestroy()

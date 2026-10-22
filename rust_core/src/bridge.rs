@@ -544,6 +544,144 @@ pub async fn nintendo_friend_avatar(
     }
 }
 
+pub async fn nintendo_friend_play_log(
+    account_id: String,
+    session_token: String,
+    friend_id: String,
+    operation_id: String,
+    proxy_url: Option<String>,
+) -> Result<Vec<crate::models::NintendoFriendGame>, String> {
+    match core()?
+        .account_tool(
+            account_id,
+            session_token,
+            operation_id,
+            proxy_url,
+            crate::nso::account_tools::ToolRequest::FriendPlayLog(friend_id),
+        )
+        .await
+        .map_err(error_text)?
+    {
+        crate::nso::account_tools::ToolResponse::FriendPlayLog(value) => Ok(value),
+        _ => unreachable!("friend play log response"),
+    }
+}
+
+pub async fn nintendo_game_image(
+    account_id: String,
+    session_token: String,
+    game_name: String,
+    operation_id: String,
+    proxy_url: Option<String>,
+) -> Result<Vec<u8>, String> {
+    match core()?
+        .account_tool(
+            account_id,
+            session_token,
+            operation_id,
+            proxy_url,
+            crate::nso::account_tools::ToolRequest::GameImage(game_name),
+        )
+        .await
+        .map_err(error_text)?
+    {
+        crate::nso::account_tools::ToolResponse::GameImage(value) => Ok(value),
+        _ => unreachable!("game image response"),
+    }
+}
+
+pub async fn nintendo_friend_code(
+    account_id: String,
+    session_token: String,
+    operation_id: String,
+    proxy_url: Option<String>,
+) -> Result<crate::models::NintendoFriendCodeSnapshot, String> {
+    match core()?
+        .account_tool(
+            account_id,
+            session_token,
+            operation_id,
+            proxy_url,
+            crate::nso::account_tools::ToolRequest::FriendCode,
+        )
+        .await
+        .map_err(error_text)?
+    {
+        crate::nso::account_tools::ToolResponse::FriendCode(value) => Ok(value),
+        _ => unreachable!("friend code tool response"),
+    }
+}
+
+pub async fn nintendo_friend_lookup(
+    account_id: String,
+    session_token: String,
+    friend_code: String,
+    operation_id: String,
+    proxy_url: Option<String>,
+) -> Result<crate::models::NintendoFriendCodeUser, String> {
+    match core()?
+        .account_tool(
+            account_id,
+            session_token,
+            operation_id,
+            proxy_url,
+            crate::nso::account_tools::ToolRequest::FriendLookup(friend_code),
+        )
+        .await
+        .map_err(error_text)?
+    {
+        crate::nso::account_tools::ToolResponse::FriendLookup(value) => Ok(value),
+        _ => unreachable!("friend lookup tool response"),
+    }
+}
+
+pub async fn nintendo_send_friend_request(
+    account_id: String,
+    session_token: String,
+    friend_id: String,
+    operation_id: String,
+    proxy_url: Option<String>,
+) -> Result<crate::models::NintendoFriendRequestResult, String> {
+    match core()?
+        .account_tool(
+            account_id,
+            session_token,
+            operation_id,
+            proxy_url,
+            crate::nso::account_tools::ToolRequest::FriendRequest(friend_id),
+        )
+        .await
+        .map_err(error_text)?
+    {
+        crate::nso::account_tools::ToolResponse::FriendRequest(value) => Ok(value),
+        _ => unreachable!("friend request tool response"),
+    }
+}
+
+pub async fn nintendo_update_friend_note(
+    account_id: String,
+    session_token: String,
+    friend_id: String,
+    note: String,
+    operation_id: String,
+    proxy_url: Option<String>,
+) -> Result<(), String> {
+    match core()?
+        .account_tool(
+            account_id,
+            session_token,
+            operation_id,
+            proxy_url,
+            crate::nso::account_tools::ToolRequest::FriendNote { friend_id, note },
+        )
+        .await
+        .map_err(error_text)?
+    {
+        crate::nso::account_tools::ToolResponse::FriendNote => Ok(()),
+        _ => unreachable!("friend note tool response"),
+    }
+}
+
 pub async fn prepare_splatnet_session(
     account_id: String,
     session_token: String,

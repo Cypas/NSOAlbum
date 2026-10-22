@@ -27,7 +27,7 @@ pub(crate) struct CachedNintendoIdentity {
 
 impl CachedNintendoIdentity {
     fn usable(&self, now: chrono::DateTime<Utc>) -> bool {
-        self.expires_at > now + chrono::Duration::seconds(30)
+        super::token_expiry::reusable(self.expires_at, now)
     }
 }
 
@@ -129,6 +129,7 @@ impl<A: AttestationService> CoralSessionClient<A> {
                     "Coral rejected account authentication".into(),
                 ));
             }
+            super::conditions::ensure_coral_success(&decoded)?;
             let mut session = parse_session(&decoded, profile)?;
             if let Some(avatar_url) = session.avatar_url.as_deref() {
                 session.avatar_bytes = self
@@ -165,10 +166,10 @@ impl<A: AttestationService> CoralSessionClient<A> {
 }
 
 fn is_attestation_rejection(value: &Value) -> bool {
+    if let Some(status) = value.get("status").and_then(Value::as_i64) {
+        return matches!(status, 9403 | 9599);
+    }
     matches!(
-        value.get("status").and_then(Value::as_i64),
-        Some(9403 | 9599)
-    ) || matches!(
         value.get("errorMessage").and_then(Value::as_str),
         Some("Invalid token." | "Unexpected error.")
     )
@@ -227,8 +228,23 @@ fn parse_session(value: &Value, profile: &crate::nso::NintendoProfile) -> CoreRe
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+
+    pub(crate) fn synthetic_identity() -> CachedNintendoIdentity {
+        CachedNintendoIdentity {
+            tokens: super::super::NintendoTokens {
+                access_token: "synthetic-access".into(),
+                id_token: "synthetic-id".into(),
+            },
+            profile: serde_json::from_value(json!({
+                "id": "account-a", "nickname": "Synthetic",
+                "language": "ja-JP", "country": "JP", "birthday": "2000-01-01"
+            }))
+            .unwrap(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+        }
+    }
 
     #[test]
     fn nintendo_identity_cache_requires_expiry_safety_window() {
@@ -244,13 +260,25 @@ mod tests {
                 "language": "en-GB", "country": "GB", "birthday": "2000-01-01"
             }))
             .unwrap(),
-            expires_at: now + chrono::Duration::seconds(31),
+            expires_at: now + chrono::Duration::seconds(301),
         };
         assert!(identity.usable(now));
-        identity.expires_at = now + chrono::Duration::seconds(30);
+        identity.expires_at = now + chrono::Duration::seconds(300);
         assert!(!identity.usable(now));
         identity.expires_at = now - chrono::Duration::seconds(1);
         assert!(!identity.usable(now));
+    }
+
+    #[test]
+    fn explicit_account_and_rate_errors_never_retry_based_on_generic_token_text() {
+        for status in [429, 9437, 9407, 9424, 9428, 9450] {
+            assert!(
+                !is_attestation_rejection(
+                    &json!({"status": status, "errorMessage": "Invalid token."})
+                ),
+                "{status}"
+            );
+        }
     }
 
     #[test]

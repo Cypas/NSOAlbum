@@ -120,10 +120,13 @@ class _AndroidAlbumsPageState extends State<AndroidAlbumsPage> {
                   crossAxisCount: columns,
                   crossAxisSpacing: spacing,
                   mainAxisSpacing: spacing,
+                  // Keep the preview at 16:9, but reduce the total card
+                  // height reserved for the metadata/actions below it.
+                  // This is intentionally separate from the preview ratio.
                   mainAxisExtent:
                       tileWidth * 9 / 16 +
-                      MediaQuery.textScalerOf(context).scale(16) * 6 +
-                      54,
+                      MediaQuery.textScalerOf(context).scale(16) * 5 +
+                      32,
                 ),
                 itemCount: values.length,
                 itemBuilder: (context, index) {

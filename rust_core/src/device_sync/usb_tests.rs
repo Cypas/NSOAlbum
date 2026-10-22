@@ -295,12 +295,12 @@ async fn usb_native_owner_rejects_ambiguous_local_device_ids_from_real_child() {
 }
 
 #[tokio::test]
-async fn usb_same_endpoint_moves_real_tls_over_129_blocks_and_acks_final_commit_before_close() {
+async fn usb_same_endpoint_aggregates_over_128_tls_drains_and_acks_final_commit_before_close() {
     real_tls_over_native_window(false, false).await;
 }
 
 #[tokio::test]
-async fn usb_phone_control_moves_real_tls_over_129_blocks_and_acks_final_commit_before_close() {
+async fn usb_phone_control_aggregates_over_128_tls_drains_and_acks_final_commit_before_close() {
     real_tls_over_native_window(true, false).await;
 }
 
@@ -344,6 +344,13 @@ async fn real_tls_over_native_window(phone_controlled: bool, small_files: bool) 
     let phone = headless::client_usb(&libraries[1], &host.invitation, "Phone").unwrap();
     let endpoints = [host.handle, phone];
     let mut boxes = [BTreeMap::<String, Vec<u8>>::new(), BTreeMap::new()];
+    let mut decoders = [
+        super::mailbox::bundle::BundleDecoder::default(),
+        super::mailbox::bundle::BundleDecoder::default(),
+    ];
+    let mut tls_drains = [0, 0];
+    let mut carrier_reads = [0_u64, 0];
+    let mut io_trace = std::collections::VecDeque::new();
     let mut writes = [0, 0];
     let mut full = [0, 0];
     let mut held: [Option<(UsbAction, UsbReply, std::time::Instant)>; 2] = [None, None];
@@ -409,7 +416,13 @@ async fn real_tls_over_native_window(phone_controlled: bool, small_files: bool) 
             )
             .await
             {
-                let peer = 1 - index;
+                if io_trace.len() == 80 {
+                    io_trace.pop_front();
+                }
+                io_trace.push_back(format!(
+                    "{index}:{:?}:{:?}:{:?}",
+                    action.kind, action.direction, action.name
+                ));
                 let mut reply = UsbReply::empty(&action);
                 match action.kind {
                     UsbActionKind::Open => {}
@@ -421,7 +434,28 @@ async fn real_tls_over_native_window(phone_controlled: bool, small_files: bool) 
                         reply.names = boxes[box_index].keys().cloned().collect();
                     }
                     UsbActionKind::Read => {
-                        reply.bytes = boxes[peer][action.name.as_ref().unwrap()].clone()
+                        let name = action.name.as_ref().unwrap();
+                        let box_index = match action.direction {
+                            super::native_io::Direction::Desktop => 0,
+                            super::native_io::Direction::Mobile => 1,
+                        };
+                        reply.bytes = boxes[box_index][name].clone();
+                        tls_drains[box_index] += decoders[box_index]
+                            .decode(name, &reply.bytes)
+                            .unwrap_or_else(|error| {
+                                panic!(
+                                    "successful publications must preserve exact carrier order: \
+                                     side={index} direction={box_index} name={name} \
+                                     expected={:016x}.block error={error:?} writes={writes:?} \
+                                     boxes={:?} trace={io_trace:?}",
+                                    carrier_reads[box_index],
+                                    boxes
+                                        .each_ref()
+                                        .map(|entries| entries.keys().collect::<Vec<_>>())
+                                )
+                            })
+                            .len();
+                        carrier_reads[box_index] += 1;
                     }
                     UsbActionKind::Acknowledge => {
                         // Delay real deletion, not a falsely successful receipt.
@@ -549,11 +583,11 @@ async fn real_tls_over_native_window(phone_controlled: bool, small_files: bool) 
     }
     if !small_files {
         assert!(
-            writes[0] > 16 && writes[0] < 129,
-            "large carriers must stream many logical chunks through multiple bounded windows"
+            tls_drains[0] > 128 && writes[0] < 129,
+            "large carriers must aggregate logical TLS drains without requiring small physical files"
         );
     }
-    println!("USB synthetic writes={writes:?} WindowFull={full:?}");
+    println!("USB synthetic writes={writes:?} drains={tls_drains:?} WindowFull={full:?}");
     if !small_files {
         assert!(
             full.iter().all(|count| *count > 0),

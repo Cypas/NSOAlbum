@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:network_info_plus/network_info_plus.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:permission_handler_platform_interface/permission_handler_platform_interface.dart';
 
 enum DeviceWifiMatch { sameName, differentName, unknown }
 
@@ -41,15 +41,20 @@ final class DeviceNetworkReader {
   final Future<bool> Function() _requestAccess;
   final Future<String?> Function() _readName, _readAddress;
 
-  static Future<bool> _requestAndroidAccess() async =>
-      (await Permission.locationWhenInUse.request()).isGranted;
+  static Future<bool> _requestAndroidAccess() async {
+    final statuses = await PermissionHandlerPlatform.instance
+        .requestPermissions([Permission.locationWhenInUse]);
+    return statuses[Permission.locationWhenInUse]?.isGranted ?? false;
+  }
 
   Future<DeviceWifiSnapshot> read({bool requestPermission = false}) async {
     try {
       if (_android) {
         final granted = requestPermission
             ? await _requestAccess()
-            : (await Permission.locationWhenInUse.status).isGranted;
+            : (await PermissionHandlerPlatform.instance.checkPermissionStatus(
+                Permission.locationWhenInUse,
+              )).isGranted;
         if (!granted) return const DeviceWifiSnapshot();
       }
       final first = _normalize(await _readName());

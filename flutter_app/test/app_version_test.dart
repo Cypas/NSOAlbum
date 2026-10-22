@@ -9,6 +9,17 @@ void main() {
     expect(formatPackageVersion('0.1.29', '30'), '0.1.29+30');
   });
 
+  test('only Debug display versions receive a build-mode label', () {
+    expect(
+      formatApplicationVersionForDisplay('2.4.6+135', debugMode: true),
+      '2.4.6+135 Debug',
+    );
+    expect(
+      formatApplicationVersionForDisplay('2.4.6+135', debugMode: false),
+      '2.4.6+135',
+    );
+  });
+
   test('loads the version and build number from platform metadata', () async {
     PackageInfo.setMockInitialValues(
       appName: 'NSOAlbum',

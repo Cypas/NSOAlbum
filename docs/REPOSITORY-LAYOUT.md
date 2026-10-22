@@ -39,14 +39,24 @@
 | --- | --- | --- |
 | Flutter 启动入口 | `flutter_app/lib/main.dart` | 是 |
 | Android 独立页面和移动布局 | `flutter_app/lib/src/ui/android/` | 是 |
-| Android 日志查看与图库搜索确认面板 | `flutter_app/lib/src/ui/android/` | 是；日志仅私有目录存储，诊断必须脱敏 |
+| Android 日志查看与常驻图库搜索 | `flutter_app/lib/src/ui/android/` | 是；日志按事件保留堆栈归属，局部选择/每错误块脱敏复制；搜索使用输入框提交 |
 | 桌面界面与共享展示组件 | `flutter_app/lib/src/ui/` 中对应模块 | 是 |
-| 视频首帧封面与受控邻近封面预取 | `flutter_app/lib/src/ui/video_preview*.dart` | 是；复用缩略图缓存，不预启动邻近播放器；测试位于 `flutter_app/test/` |
+| 视频首帧封面与受控邻近封面预取 | `flutter_app/lib/src/ui/video_preview*.dart` | 是；复用缩略图缓存；播放器准备归各媒体详情 PageView 所有，不由封面预取器创建；测试位于 `flutter_app/test/` |
 | Dart 后端门面、状态控制器 | `flutter_app/lib/src/backend/`、`flutter_app/lib/src/state/` | 是 |
+| 自动同步通知汇总与系统展示 | `flutter_app/lib/src/state/sync_notification_content.dart`、`lib/src/platform/sync_notifications.dart`；各平台 runner 窄通道 | 是；只发送汇总数，不发送账号或媒体内容；共享回归在 `test/state/` 与 `test/sync_controller_test.dart` |
+| Windows 通知身份、COM 唤起与 DOM 展示 | `flutter_app/windows/runner/sync_notifications.{h,cpp}` | 是；使用系统 SDK，无第三方 toast 插件；COM 回调只投递既有无负载窗口唤起消息，退役后失效；真实 SDK DOM/线程/生命周期回归在 `test/windows_sync_notifications_test.dart` 和 `test/fixtures/notifications/native/`，合成探针不打开账号/图库 |
+| Windows WebView 的系统 DLL 依赖与退出对照 | `flutter_app/windows/CMakeLists.txt`、`windows/runner/main.cpp`、`test/windows_webview_loader_test.dart`、`test/fixtures/webview_lifetime/` | 是；先可选加载系统 provider，再延迟加载 WebView 消费者，成品 PE 回归在原生验收阶段显式启用；SDK 子进程探针对照动态加载/导入/预加载与退出，不改依赖缓存、不增加 COM 引用、不访问图库或账号 |
+| 视频页暂停/恢复/释放边界 | `flutter_app/lib/src/ui/video_viewer_lifecycle.dart` | 是；串行管理详情当前及相邻播放器的激活/暂停/销毁，不改变文件仓库；回归在 `test/video_viewer_lifecycle_test.dart` |
+| Android 视频输出退役屏障 | `flutter_app/lib/src/ui/android/android_video_retirement.dart` | 是；停止当前版本插件的 surface/参数观察并排空既有锁内回调，再走正常 Player 清理；不修改依赖缓存；回归在 `test/android/android_video_retirement_test.dart` |
+| Android 合成媒体原生页面时序回归 | `flutter_app/test/android/android_media_viewer_device_test.dart` | 是；用 Live widget binding 与自制视频运行正式详情/编辑及原生解码，覆盖暂停队列、过期编辑取消、失败后翻页与自动/手动播放；宿主套件明确跳过，不初始化 Rust 或读取个人图库/账号，临时测试包运行后恢复普通 Debug 包 |
+| Android 普通页面真机布局矩阵 | `flutter_app/test/android/android_ordinary_layout_device_test.dart` | 是；显式 Live Debug 复用现有中英/窄屏/大字号回归，只用合成后端，不改系统字号、账号或图库，运行后恢复普通包；渲染/交互与人工视觉验收分别记录 |
+| Windows 合成媒体原生页面时序回归 | `flutter_app/test/windows_media_viewer_device_test.dart` | 是；仅显式 Live Debug 运行正式播放器与自制视频，核对编辑时暂停和翻页取消过期编辑；普通宿主套件明确跳过，不初始化 Rust/账号/个人库，原生退出证据与用例断言分开记录 |
 | 启动准备、桌面等待式关闭、受控设备恢复与启动反馈 | `flutter_app/lib/src/startup/`、`lib/src/backend/device_sync/`、`lib/src/ui/device_sync/` | 是，账号材料仅由后端安全存储拥有 |
 | Windows 引擎前单实例选主与无负载窗口唤起 | `flutter_app/windows/runner/native_single_instance.{h,cpp}` | 是，锁文件属于系统用户本地数据，不放仓库 |
 | Windows 单实例真实子进程回归 | `flutter_app/test/windows_native_single_instance_test.dart`、`test/fixtures/desktop_instance/native/` | 是，夹具使用独立临时目录，不启动个人图库 |
 | 跨平台账号好友、观星与内嵌网页组件 | `flutter_app/lib/src/ui/account_tools/` | 是，平台外框与原生策略分离 |
+| 好友头像展示复用、游戏图片公共缓存与保存预览 | `flutter_app/lib/src/state/account_tool_images.dart`、`lib/src/ui/account_tools/avatar_preview.dart`、`rust_core/src/nso/game_images.rs` | 是；网络仍通过 Rust transport，头像按账号隔离，公共游戏图片按游戏名和 URL 有界复用；好友码仅存系统安全存储 |
+| Nintendo/Coral/SplatNet 特殊返回分类 | `rust_core/src/nso/conditions.rs`、`session.rs`、`auth.rs`、`splatnet.rs` 与共享 UI `account_tool_errors.dart` | 是；按请求阶段识别固定状态，不输出远端错误正文或凭据，不将未关联/会员/受限混作过期；合成回归归各模块及 `test/account_tools/` |
 | 跨设备同步安全会话、清单与传输 | `rust_core/src/device_sync/` | 是，数据库访问仍集中 `database.rs` |
 | 累计媒体回执、字节窗口和小文件批次 | `rust_core/src/device_sync/driver/flow.rs`、`files.rs` | 是；只管理当前会话流控，媒体校验及数据库应用仍由暂存/接收模块负责 |
 | 同步网络到本地应用的一次性权限和取消裁决 | `rust_core/src/device_sync/local_apply.rs`、`local_apply/`、`driver/local_apply_tests.rs` | 是，权限仅内存持有，不放入缓存或普通备份；源码存在不代表设备验收完成 |
@@ -67,7 +77,9 @@
 | Flutter 单元/widget 测试 | `flutter_app/test/`，Android 测试放其 `android/` 子目录 | 是 |
 | Android JVM 测试 | `flutter_app/android/app/src/test/` | 是 |
 | 可重复使用的合成测试夹具 | `flutter_app/test/fixtures/<模块>/` | 是 |
+| Windows 系统通知显式 Live 验收 | `flutter_app/test/windows_sync_notifications_device_test.dart`、`test/fixtures/notifications/native/` | 是；仅合成摘要、不初始化账号/图库，系统通知历史仅比对本次摘要，不输出其他内容 |
 | 构建、打包、校验和生成脚本 | `flutter_app/tool/` | 是 |
+| Windows 固定插件的退出所有权兼容 | `flutter_app/tool/windows_plugin_lifetime.cmake` | 是；仅在构建树生成派生源码、精确匹配失败即停止，不修改依赖缓存 |
 | 桌面 MTP helper 构建、Cargo 来源报告和无设备验包工具 | `flutter_app/tool/build_desktop_native.dart`、`desktop_mtp_worker.cmake`、`build_macos_mtp_worker.sh`、`verify_mtp_worker.dart`、`test_mtp_worker_bundle.dart` | 是，不改上游 Cargokit |
 | 桌面 helper 行为回归及受控工具链夹具 | `flutter_app/test/mtp_worker_*_test.dart`、`test/fixtures/ci/` | 是，合成产物不进入应用包 |
 | 无账号 WebView 原生生命周期探针 | `flutter_app/tool/account_tools_webview_smoke.dart` | 是，独立开发入口，不访问账号/图库 |

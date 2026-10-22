@@ -82,7 +82,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 758067148;
+  int get rustContentHash => 124399239;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -476,9 +476,57 @@ abstract class RustLibApi extends BaseApi {
     String? proxyUrl,
   });
 
+  Future<NintendoFriendCodeSnapshot> crateBridgeNintendoFriendCode({
+    required String accountId,
+    required String sessionToken,
+    required String operationId,
+    String? proxyUrl,
+  });
+
+  Future<NintendoFriendCodeUser> crateBridgeNintendoFriendLookup({
+    required String accountId,
+    required String sessionToken,
+    required String friendCode,
+    required String operationId,
+    String? proxyUrl,
+  });
+
+  Future<List<NintendoFriendGame>> crateBridgeNintendoFriendPlayLog({
+    required String accountId,
+    required String sessionToken,
+    required String friendId,
+    required String operationId,
+    String? proxyUrl,
+  });
+
   Future<NintendoFriendsSnapshot> crateBridgeNintendoFriends({
     required String accountId,
     required String sessionToken,
+    required String operationId,
+    String? proxyUrl,
+  });
+
+  Future<Uint8List> crateBridgeNintendoGameImage({
+    required String accountId,
+    required String sessionToken,
+    required String gameName,
+    required String operationId,
+    String? proxyUrl,
+  });
+
+  Future<NintendoFriendRequestResult> crateBridgeNintendoSendFriendRequest({
+    required String accountId,
+    required String sessionToken,
+    required String friendId,
+    required String operationId,
+    String? proxyUrl,
+  });
+
+  Future<void> crateBridgeNintendoUpdateFriendNote({
+    required String accountId,
+    required String sessionToken,
+    required String friendId,
+    required String note,
     required String operationId,
     String? proxyUrl,
   });
@@ -3690,7 +3738,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<NintendoFriendsSnapshot> crateBridgeNintendoFriends({
+  Future<NintendoFriendCodeSnapshot> crateBridgeNintendoFriendCode({
     required String accountId,
     required String sessionToken,
     required String operationId,
@@ -3712,6 +3760,139 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
+          decodeSuccessData: sse_decode_nintendo_friend_code_snapshot,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateBridgeNintendoFriendCodeConstMeta,
+        argValues: [accountId, sessionToken, operationId, proxyUrl],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateBridgeNintendoFriendCodeConstMeta =>
+      const TaskConstMeta(
+        debugName: "nintendo_friend_code",
+        argNames: ["accountId", "sessionToken", "operationId", "proxyUrl"],
+      );
+
+  @override
+  Future<NintendoFriendCodeUser> crateBridgeNintendoFriendLookup({
+    required String accountId,
+    required String sessionToken,
+    required String friendCode,
+    required String operationId,
+    String? proxyUrl,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(accountId, serializer);
+          sse_encode_String(sessionToken, serializer);
+          sse_encode_String(friendCode, serializer);
+          sse_encode_String(operationId, serializer);
+          sse_encode_opt_String(proxyUrl, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 94,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_nintendo_friend_code_user,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateBridgeNintendoFriendLookupConstMeta,
+        argValues: [accountId, sessionToken, friendCode, operationId, proxyUrl],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateBridgeNintendoFriendLookupConstMeta =>
+      const TaskConstMeta(
+        debugName: "nintendo_friend_lookup",
+        argNames: [
+          "accountId",
+          "sessionToken",
+          "friendCode",
+          "operationId",
+          "proxyUrl",
+        ],
+      );
+
+  @override
+  Future<List<NintendoFriendGame>> crateBridgeNintendoFriendPlayLog({
+    required String accountId,
+    required String sessionToken,
+    required String friendId,
+    required String operationId,
+    String? proxyUrl,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(accountId, serializer);
+          sse_encode_String(sessionToken, serializer);
+          sse_encode_String(friendId, serializer);
+          sse_encode_String(operationId, serializer);
+          sse_encode_opt_String(proxyUrl, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 95,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_nintendo_friend_game,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateBridgeNintendoFriendPlayLogConstMeta,
+        argValues: [accountId, sessionToken, friendId, operationId, proxyUrl],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateBridgeNintendoFriendPlayLogConstMeta =>
+      const TaskConstMeta(
+        debugName: "nintendo_friend_play_log",
+        argNames: [
+          "accountId",
+          "sessionToken",
+          "friendId",
+          "operationId",
+          "proxyUrl",
+        ],
+      );
+
+  @override
+  Future<NintendoFriendsSnapshot> crateBridgeNintendoFriends({
+    required String accountId,
+    required String sessionToken,
+    required String operationId,
+    String? proxyUrl,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(accountId, serializer);
+          sse_encode_String(sessionToken, serializer);
+          sse_encode_String(operationId, serializer);
+          sse_encode_opt_String(proxyUrl, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 96,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
           decodeSuccessData: sse_decode_nintendo_friends_snapshot,
           decodeErrorData: sse_decode_String,
         ),
@@ -3726,6 +3907,157 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     debugName: "nintendo_friends",
     argNames: ["accountId", "sessionToken", "operationId", "proxyUrl"],
   );
+
+  @override
+  Future<Uint8List> crateBridgeNintendoGameImage({
+    required String accountId,
+    required String sessionToken,
+    required String gameName,
+    required String operationId,
+    String? proxyUrl,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(accountId, serializer);
+          sse_encode_String(sessionToken, serializer);
+          sse_encode_String(gameName, serializer);
+          sse_encode_String(operationId, serializer);
+          sse_encode_opt_String(proxyUrl, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 97,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateBridgeNintendoGameImageConstMeta,
+        argValues: [accountId, sessionToken, gameName, operationId, proxyUrl],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateBridgeNintendoGameImageConstMeta =>
+      const TaskConstMeta(
+        debugName: "nintendo_game_image",
+        argNames: [
+          "accountId",
+          "sessionToken",
+          "gameName",
+          "operationId",
+          "proxyUrl",
+        ],
+      );
+
+  @override
+  Future<NintendoFriendRequestResult> crateBridgeNintendoSendFriendRequest({
+    required String accountId,
+    required String sessionToken,
+    required String friendId,
+    required String operationId,
+    String? proxyUrl,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(accountId, serializer);
+          sse_encode_String(sessionToken, serializer);
+          sse_encode_String(friendId, serializer);
+          sse_encode_String(operationId, serializer);
+          sse_encode_opt_String(proxyUrl, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 98,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_nintendo_friend_request_result,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateBridgeNintendoSendFriendRequestConstMeta,
+        argValues: [accountId, sessionToken, friendId, operationId, proxyUrl],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateBridgeNintendoSendFriendRequestConstMeta =>
+      const TaskConstMeta(
+        debugName: "nintendo_send_friend_request",
+        argNames: [
+          "accountId",
+          "sessionToken",
+          "friendId",
+          "operationId",
+          "proxyUrl",
+        ],
+      );
+
+  @override
+  Future<void> crateBridgeNintendoUpdateFriendNote({
+    required String accountId,
+    required String sessionToken,
+    required String friendId,
+    required String note,
+    required String operationId,
+    String? proxyUrl,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(accountId, serializer);
+          sse_encode_String(sessionToken, serializer);
+          sse_encode_String(friendId, serializer);
+          sse_encode_String(note, serializer);
+          sse_encode_String(operationId, serializer);
+          sse_encode_opt_String(proxyUrl, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 99,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateBridgeNintendoUpdateFriendNoteConstMeta,
+        argValues: [
+          accountId,
+          sessionToken,
+          friendId,
+          note,
+          operationId,
+          proxyUrl,
+        ],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateBridgeNintendoUpdateFriendNoteConstMeta =>
+      const TaskConstMeta(
+        debugName: "nintendo_update_friend_note",
+        argNames: [
+          "accountId",
+          "sessionToken",
+          "friendId",
+          "note",
+          "operationId",
+          "proxyUrl",
+        ],
+      );
 
   @override
   Future<SeedExportPayload> crateBridgePrepareSeedExport({
@@ -3745,7 +4077,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 94,
+            funcId: 100,
             port: port_,
           );
         },
@@ -3786,7 +4118,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 95,
+            funcId: 101,
             port: port_,
           );
         },
@@ -3831,7 +4163,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 96,
+            funcId: 102,
             port: port_,
           );
         },
@@ -3862,7 +4194,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 97,
+            funcId: 103,
             port: port_,
           );
         },
@@ -3907,7 +4239,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 98,
+            funcId: 104,
             port: port_,
           );
         },
@@ -3958,7 +4290,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 99,
+            funcId: 105,
             port: port_,
           );
         },
@@ -3991,7 +4323,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 100,
+            funcId: 106,
             port: port_,
           );
         },
@@ -4026,7 +4358,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 101,
+            funcId: 107,
             port: port_,
           );
         },
@@ -4061,7 +4393,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 102,
+            funcId: 108,
             port: port_,
           );
         },
@@ -4095,7 +4427,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 103,
+            funcId: 109,
             port: port_,
           );
         },
@@ -4129,7 +4461,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 104,
+            funcId: 110,
             port: port_,
           );
         },
@@ -4164,7 +4496,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 105,
+            funcId: 111,
             port: port_,
           );
         },
@@ -4194,7 +4526,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 106,
+            funcId: 112,
             port: port_,
           );
         },
@@ -4222,7 +4554,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 107,
+            funcId: 113,
             port: port_,
           );
         },
@@ -4256,7 +4588,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 108,
+            funcId: 114,
             port: port_,
           );
         },
@@ -4290,7 +4622,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 109,
+            funcId: 115,
             port: port_,
           );
         },
@@ -4324,7 +4656,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 110,
+            funcId: 116,
             port: port_,
           );
         },
@@ -4354,7 +4686,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 111,
+            funcId: 117,
             port: port_,
           );
         },
@@ -4387,7 +4719,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 112,
+            funcId: 118,
             port: port_,
           );
         },
@@ -4422,7 +4754,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 113,
+            funcId: 119,
             port: port_,
           );
         },
@@ -4456,7 +4788,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 114,
+            funcId: 120,
             port: port_,
           );
         },
@@ -4493,7 +4825,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 115,
+            funcId: 121,
             port: port_,
           );
         },
@@ -4526,7 +4858,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 116,
+            funcId: 122,
             port: port_,
           );
         },
@@ -4565,7 +4897,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 117,
+            funcId: 123,
             port: port_,
           );
         },
@@ -4646,8 +4978,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   AppSettings dco_decode_app_settings(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 14)
-      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
+    if (arr.length != 16)
+      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
     return AppSettings(
       proxyUrl: dco_decode_opt_String(arr[0]),
       libraryPath: dco_decode_String(arr[1]),
@@ -4660,9 +4992,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       compactTagDisplay: dco_decode_bool(arr[8]),
       autoPlayVideo: dco_decode_bool(arr[9]),
       autoSyncOnLaunch: dco_decode_bool(arr[10]),
-      closeBehavior: dco_decode_String(arr[11]),
-      customFontPaths: dco_decode_list_String(arr[12]),
-      syncPolicy: dco_decode_sync_policy(arr[13]),
+      notifyOnAutoSync: dco_decode_bool(arr[11]),
+      showSplatoonSchedule: dco_decode_bool(arr[12]),
+      closeBehavior: dco_decode_String(arr[13]),
+      customFontPaths: dco_decode_list_String(arr[14]),
+      syncPolicy: dco_decode_sync_policy(arr[15]),
     );
   }
 
@@ -4774,6 +5108,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   bool dco_decode_box_autoadd_bool(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as bool;
+  }
+
+  @protected
+  CapturedOnThisDay dco_decode_box_autoadd_captured_on_this_day(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_captured_on_this_day(raw);
   }
 
   @protected
@@ -4912,6 +5252,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BigInt dco_decode_box_autoadd_usize(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_usize(raw);
+  }
+
+  @protected
+  CapturedOnThisDay dco_decode_captured_on_this_day(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return CapturedOnThisDay(
+      month: dco_decode_u_32(arr[0]),
+      day: dco_decode_u_32(arr[1]),
+      beforeYear: dco_decode_i_32(arr[2]),
+      utcOffsetSeconds: dco_decode_i_32(arr[3]),
+    );
   }
 
   @protected
@@ -5099,8 +5453,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   GalleryQuery dco_decode_gallery_query(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 9)
-      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
     return GalleryQuery(
       kind: dco_decode_gallery_kind_filter(arr[0]),
       limit: dco_decode_u_32(arr[1]),
@@ -5111,6 +5465,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       gameNames: dco_decode_list_String(arr[6]),
       capturedFrom: dco_decode_opt_box_autoadd_Chrono_Utc(arr[7]),
       capturedUntil: dco_decode_opt_box_autoadd_Chrono_Utc(arr[8]),
+      capturedOnThisDay: dco_decode_opt_box_autoadd_captured_on_this_day(
+        arr[9],
+      ),
     );
   }
 
@@ -5348,6 +5705,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<NintendoFriendGame> dco_decode_list_nintendo_friend_game(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_nintendo_friend_game).toList();
+  }
+
+  @protected
   Int64List dco_decode_list_prim_i_64_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dcoDecodeInt64List(raw);
@@ -5500,8 +5863,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   NintendoFriend dco_decode_nintendo_friend(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 10)
-      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    if (arr.length != 16)
+      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
     return NintendoFriend(
       friendId: dco_decode_String(arr[0]),
       nickname: dco_decode_String(arr[1]),
@@ -5510,9 +5873,70 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       isFavorite: dco_decode_bool(arr[4]),
       presence: dco_decode_String(arr[5]),
       gameName: dco_decode_opt_String(arr[6]),
-      totalPlayTimeMinutes: dco_decode_opt_box_autoadd_u_32(arr[7]),
-      logoutAt: dco_decode_opt_box_autoadd_Chrono_Utc(arr[8]),
-      activity: dco_decode_opt_String(arr[9]),
+      gameImageUrl: dco_decode_opt_String(arr[7]),
+      totalPlayTimeMinutes: dco_decode_opt_box_autoadd_u_32(arr[8]),
+      firstPlayedAt: dco_decode_opt_box_autoadd_Chrono_Utc(arr[9]),
+      logoutAt: dco_decode_opt_box_autoadd_Chrono_Utc(arr[10]),
+      activity: dco_decode_opt_String(arr[11]),
+      inGameName: dco_decode_opt_String(arr[12]),
+      friendshipSource: dco_decode_opt_String(arr[13]),
+      friendshipGameName: dco_decode_opt_String(arr[14]),
+      friendCreatedAt: dco_decode_opt_box_autoadd_Chrono_Utc(arr[15]),
+    );
+  }
+
+  @protected
+  NintendoFriendCodeSnapshot dco_decode_nintendo_friend_code_snapshot(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return NintendoFriendCodeSnapshot(
+      friendCode: dco_decode_String(arr[0]),
+      url: dco_decode_String(arr[1]),
+    );
+  }
+
+  @protected
+  NintendoFriendCodeUser dco_decode_nintendo_friend_code_user(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return NintendoFriendCodeUser(
+      friendId: dco_decode_String(arr[0]),
+      nickname: dco_decode_String(arr[1]),
+      avatarUrl: dco_decode_opt_String(arr[2]),
+    );
+  }
+
+  @protected
+  NintendoFriendGame dco_decode_nintendo_friend_game(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return NintendoFriendGame(
+      name: dco_decode_String(arr[0]),
+      imageUrl: dco_decode_opt_String(arr[1]),
+      totalPlayTimeMinutes: dco_decode_opt_box_autoadd_u_32(arr[2]),
+      firstPlayedAt: dco_decode_opt_box_autoadd_Chrono_Utc(arr[3]),
+    );
+  }
+
+  @protected
+  NintendoFriendRequestResult dco_decode_nintendo_friend_request_result(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return NintendoFriendRequestResult(
+      friendId: dco_decode_String(arr[0]),
+      accepted: dco_decode_bool(arr[1]),
     );
   }
 
@@ -5601,6 +6025,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   bool? dco_decode_opt_box_autoadd_bool(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_bool(raw);
+  }
+
+  @protected
+  CapturedOnThisDay? dco_decode_opt_box_autoadd_captured_on_this_day(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_captured_on_this_day(raw);
   }
 
   @protected
@@ -6264,6 +6698,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_compactTagDisplay = sse_decode_bool(deserializer);
     var var_autoPlayVideo = sse_decode_bool(deserializer);
     var var_autoSyncOnLaunch = sse_decode_bool(deserializer);
+    var var_notifyOnAutoSync = sse_decode_bool(deserializer);
+    var var_showSplatoonSchedule = sse_decode_bool(deserializer);
     var var_closeBehavior = sse_decode_String(deserializer);
     var var_customFontPaths = sse_decode_list_String(deserializer);
     var var_syncPolicy = sse_decode_sync_policy(deserializer);
@@ -6279,6 +6715,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       compactTagDisplay: var_compactTagDisplay,
       autoPlayVideo: var_autoPlayVideo,
       autoSyncOnLaunch: var_autoSyncOnLaunch,
+      notifyOnAutoSync: var_notifyOnAutoSync,
+      showSplatoonSchedule: var_showSplatoonSchedule,
       closeBehavior: var_closeBehavior,
       customFontPaths: var_customFontPaths,
       syncPolicy: var_syncPolicy,
@@ -6392,6 +6830,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   bool sse_decode_box_autoadd_bool(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_bool(deserializer));
+  }
+
+  @protected
+  CapturedOnThisDay sse_decode_box_autoadd_captured_on_this_day(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_captured_on_this_day(deserializer));
   }
 
   @protected
@@ -6558,6 +7004,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BigInt sse_decode_box_autoadd_usize(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_usize(deserializer));
+  }
+
+  @protected
+  CapturedOnThisDay sse_decode_captured_on_this_day(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_month = sse_decode_u_32(deserializer);
+    var var_day = sse_decode_u_32(deserializer);
+    var var_beforeYear = sse_decode_i_32(deserializer);
+    var var_utcOffsetSeconds = sse_decode_i_32(deserializer);
+    return CapturedOnThisDay(
+      month: var_month,
+      day: var_day,
+      beforeYear: var_beforeYear,
+      utcOffsetSeconds: var_utcOffsetSeconds,
+    );
   }
 
   @protected
@@ -6794,6 +7257,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_gameNames = sse_decode_list_String(deserializer);
     var var_capturedFrom = sse_decode_opt_box_autoadd_Chrono_Utc(deserializer);
     var var_capturedUntil = sse_decode_opt_box_autoadd_Chrono_Utc(deserializer);
+    var var_capturedOnThisDay = sse_decode_opt_box_autoadd_captured_on_this_day(
+      deserializer,
+    );
     return GalleryQuery(
       kind: var_kind,
       limit: var_limit,
@@ -6804,6 +7270,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       gameNames: var_gameNames,
       capturedFrom: var_capturedFrom,
       capturedUntil: var_capturedUntil,
+      capturedOnThisDay: var_capturedOnThisDay,
     );
   }
 
@@ -7136,6 +7603,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<NintendoFriendGame> sse_decode_list_nintendo_friend_game(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <NintendoFriendGame>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_nintendo_friend_game(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   Int64List sse_decode_list_prim_i_64_strict(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var len_ = sse_decode_i_32(deserializer);
@@ -7336,11 +7817,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_isFavorite = sse_decode_bool(deserializer);
     var var_presence = sse_decode_String(deserializer);
     var var_gameName = sse_decode_opt_String(deserializer);
+    var var_gameImageUrl = sse_decode_opt_String(deserializer);
     var var_totalPlayTimeMinutes = sse_decode_opt_box_autoadd_u_32(
       deserializer,
     );
+    var var_firstPlayedAt = sse_decode_opt_box_autoadd_Chrono_Utc(deserializer);
     var var_logoutAt = sse_decode_opt_box_autoadd_Chrono_Utc(deserializer);
     var var_activity = sse_decode_opt_String(deserializer);
+    var var_inGameName = sse_decode_opt_String(deserializer);
+    var var_friendshipSource = sse_decode_opt_String(deserializer);
+    var var_friendshipGameName = sse_decode_opt_String(deserializer);
+    var var_friendCreatedAt = sse_decode_opt_box_autoadd_Chrono_Utc(
+      deserializer,
+    );
     return NintendoFriend(
       friendId: var_friendId,
       nickname: var_nickname,
@@ -7349,9 +7838,72 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       isFavorite: var_isFavorite,
       presence: var_presence,
       gameName: var_gameName,
+      gameImageUrl: var_gameImageUrl,
       totalPlayTimeMinutes: var_totalPlayTimeMinutes,
+      firstPlayedAt: var_firstPlayedAt,
       logoutAt: var_logoutAt,
       activity: var_activity,
+      inGameName: var_inGameName,
+      friendshipSource: var_friendshipSource,
+      friendshipGameName: var_friendshipGameName,
+      friendCreatedAt: var_friendCreatedAt,
+    );
+  }
+
+  @protected
+  NintendoFriendCodeSnapshot sse_decode_nintendo_friend_code_snapshot(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_friendCode = sse_decode_String(deserializer);
+    var var_url = sse_decode_String(deserializer);
+    return NintendoFriendCodeSnapshot(friendCode: var_friendCode, url: var_url);
+  }
+
+  @protected
+  NintendoFriendCodeUser sse_decode_nintendo_friend_code_user(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_friendId = sse_decode_String(deserializer);
+    var var_nickname = sse_decode_String(deserializer);
+    var var_avatarUrl = sse_decode_opt_String(deserializer);
+    return NintendoFriendCodeUser(
+      friendId: var_friendId,
+      nickname: var_nickname,
+      avatarUrl: var_avatarUrl,
+    );
+  }
+
+  @protected
+  NintendoFriendGame sse_decode_nintendo_friend_game(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_name = sse_decode_String(deserializer);
+    var var_imageUrl = sse_decode_opt_String(deserializer);
+    var var_totalPlayTimeMinutes = sse_decode_opt_box_autoadd_u_32(
+      deserializer,
+    );
+    var var_firstPlayedAt = sse_decode_opt_box_autoadd_Chrono_Utc(deserializer);
+    return NintendoFriendGame(
+      name: var_name,
+      imageUrl: var_imageUrl,
+      totalPlayTimeMinutes: var_totalPlayTimeMinutes,
+      firstPlayedAt: var_firstPlayedAt,
+    );
+  }
+
+  @protected
+  NintendoFriendRequestResult sse_decode_nintendo_friend_request_result(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_friendId = sse_decode_String(deserializer);
+    var var_accepted = sse_decode_bool(deserializer);
+    return NintendoFriendRequestResult(
+      friendId: var_friendId,
+      accepted: var_accepted,
     );
   }
 
@@ -7490,6 +8042,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_bool(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  CapturedOnThisDay? sse_decode_opt_box_autoadd_captured_on_this_day(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_captured_on_this_day(deserializer));
     } else {
       return null;
     }
@@ -8326,6 +8891,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.compactTagDisplay, serializer);
     sse_encode_bool(self.autoPlayVideo, serializer);
     sse_encode_bool(self.autoSyncOnLaunch, serializer);
+    sse_encode_bool(self.notifyOnAutoSync, serializer);
+    sse_encode_bool(self.showSplatoonSchedule, serializer);
     sse_encode_String(self.closeBehavior, serializer);
     sse_encode_list_String(self.customFontPaths, serializer);
     sse_encode_sync_policy(self.syncPolicy, serializer);
@@ -8448,6 +9015,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bool(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_captured_on_this_day(
+    CapturedOnThisDay self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_captured_on_this_day(self, serializer);
   }
 
   @protected
@@ -8646,6 +9222,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_captured_on_this_day(
+    CapturedOnThisDay self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.month, serializer);
+    sse_encode_u_32(self.day, serializer);
+    sse_encode_i_32(self.beforeYear, serializer);
+    sse_encode_i_32(self.utcOffsetSeconds, serializer);
+  }
+
+  @protected
   void sse_encode_change_counts(ChangeCounts self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_u_64(self.added, serializer);
@@ -8809,6 +9397,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_list_String(self.gameNames, serializer);
     sse_encode_opt_box_autoadd_Chrono_Utc(self.capturedFrom, serializer);
     sse_encode_opt_box_autoadd_Chrono_Utc(self.capturedUntil, serializer);
+    sse_encode_opt_box_autoadd_captured_on_this_day(
+      self.capturedOnThisDay,
+      serializer,
+    );
   }
 
   @protected
@@ -9077,6 +9669,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_nintendo_friend_game(
+    List<NintendoFriendGame> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_nintendo_friend_game(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_prim_i_64_strict(
     Int64List self,
     SseSerializer serializer,
@@ -9253,9 +9857,58 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.isFavorite, serializer);
     sse_encode_String(self.presence, serializer);
     sse_encode_opt_String(self.gameName, serializer);
+    sse_encode_opt_String(self.gameImageUrl, serializer);
     sse_encode_opt_box_autoadd_u_32(self.totalPlayTimeMinutes, serializer);
+    sse_encode_opt_box_autoadd_Chrono_Utc(self.firstPlayedAt, serializer);
     sse_encode_opt_box_autoadd_Chrono_Utc(self.logoutAt, serializer);
     sse_encode_opt_String(self.activity, serializer);
+    sse_encode_opt_String(self.inGameName, serializer);
+    sse_encode_opt_String(self.friendshipSource, serializer);
+    sse_encode_opt_String(self.friendshipGameName, serializer);
+    sse_encode_opt_box_autoadd_Chrono_Utc(self.friendCreatedAt, serializer);
+  }
+
+  @protected
+  void sse_encode_nintendo_friend_code_snapshot(
+    NintendoFriendCodeSnapshot self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.friendCode, serializer);
+    sse_encode_String(self.url, serializer);
+  }
+
+  @protected
+  void sse_encode_nintendo_friend_code_user(
+    NintendoFriendCodeUser self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.friendId, serializer);
+    sse_encode_String(self.nickname, serializer);
+    sse_encode_opt_String(self.avatarUrl, serializer);
+  }
+
+  @protected
+  void sse_encode_nintendo_friend_game(
+    NintendoFriendGame self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.name, serializer);
+    sse_encode_opt_String(self.imageUrl, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.totalPlayTimeMinutes, serializer);
+    sse_encode_opt_box_autoadd_Chrono_Utc(self.firstPlayedAt, serializer);
+  }
+
+  @protected
+  void sse_encode_nintendo_friend_request_result(
+    NintendoFriendRequestResult self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.friendId, serializer);
+    sse_encode_bool(self.accepted, serializer);
   }
 
   @protected
@@ -9380,6 +10033,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_bool(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_captured_on_this_day(
+    CapturedOnThisDay? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_captured_on_this_day(self, serializer);
     }
   }
 

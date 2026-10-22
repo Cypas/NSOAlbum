@@ -10,9 +10,16 @@ pub struct NintendoFriend {
     pub is_favorite: bool,
     pub presence: String,
     pub game_name: Option<String>,
+    pub game_image_url: Option<String>,
     pub total_play_time_minutes: Option<u32>,
+    pub first_played_at: Option<DateTime<Utc>>,
     pub logout_at: Option<DateTime<Utc>>,
     pub activity: Option<String>,
+    pub in_game_name: Option<String>,
+    pub friendship_source: Option<String>,
+    #[serde(default)]
+    pub friendship_game_name: Option<String>,
+    pub friend_created_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +27,33 @@ pub struct NintendoFriendsSnapshot {
     pub friends: Vec<NintendoFriend>,
     pub updated_at: DateTime<Utc>,
     pub activity_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NintendoFriendCodeSnapshot {
+    pub friend_code: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NintendoFriendCodeUser {
+    pub friend_id: String,
+    pub nickname: String,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NintendoFriendGame {
+    pub name: String,
+    pub image_url: Option<String>,
+    pub total_play_time_minutes: Option<u32>,
+    pub first_played_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NintendoFriendRequestResult {
+    pub friend_id: String,
+    pub accepted: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -245,6 +279,14 @@ pub enum GalleryKindFilter {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapturedOnThisDay {
+    pub month: u32,
+    pub day: u32,
+    pub before_year: i32,
+    pub utc_offset_seconds: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GalleryQuery {
     pub kind: GalleryKindFilter,
     pub limit: u32,
@@ -256,6 +298,8 @@ pub struct GalleryQuery {
     pub game_names: Vec<String>,
     pub captured_from: Option<DateTime<Utc>>,
     pub captured_until: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub captured_on_this_day: Option<CapturedOnThisDay>,
 }
 
 impl Default for GalleryQuery {
@@ -270,6 +314,7 @@ impl Default for GalleryQuery {
             game_names: Vec::new(),
             captured_from: None,
             captured_until: None,
+            captured_on_this_day: None,
         }
     }
 }

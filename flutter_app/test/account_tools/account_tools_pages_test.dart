@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -11,13 +12,15 @@ import 'package:squid_album/src/rust/models.dart';
 import 'package:squid_album/src/ui/account_tools/nintendo_friends_page.dart';
 import 'package:squid_album/src/ui/account_tools/gear_seed_page.dart';
 import 'package:squid_album/src/ui/account_tools/account_tool_frame.dart';
+import 'package:squid_album/src/ui/android/android_theme.dart';
 
 import '../home_shell_test.dart' show FakeBackend;
+import '../layout_viewport.dart';
 
 const profile = NintendoAccountProfile(accountId: 'clicked-b', nickname: 'B');
 
-Widget app(Widget page) => MaterialApp(
-  locale: const Locale('zh'),
+Widget app(Widget page, {Locale locale = const Locale('zh')}) => MaterialApp(
+  locale: locale,
   localizationsDelegates: const [
     AppLocalizations.delegate,
     GlobalMaterialLocalizations.delegate,
@@ -28,7 +31,390 @@ Widget app(Widget page) => MaterialApp(
   home: page,
 );
 
-void main() {
+void main() => registerAccountToolsPageTests();
+
+void registerAccountToolsPageTests({bool layoutOnly = false}) {
+  for (final language in ['zh', 'en']) {
+    for (final width in [320.0, 360.0, 412.0]) {
+      for (final scale in [1.0, 2.0]) {
+        testWidgets(
+          'mobile friends $language width=$width scale=$scale keep centered avatars and readable rows',
+          (tester) async {
+            await useLayoutTestViewport(tester, Size(width, 1300));
+            final backend = ToolsBackend(
+              friends: List.generate(
+                3,
+                (id) => NintendoFriend(
+                  friendId: 'matrix-$id',
+                  nickname: 'Friend $id',
+                  note: 'Long note with meaningful text',
+                  isFavorite: false,
+                  presence: 'ONLINE',
+                  gameName: 'A deliberately long game name with several words',
+                ),
+              ),
+            );
+            await tester.pumpWidget(
+              MaterialApp(
+                locale: Locale(language),
+                supportedLocales: AppLocalizations.supportedLocales,
+                localizationsDelegates: const [
+                  AppLocalizations.delegate,
+                  GlobalMaterialLocalizations.delegate,
+                  GlobalWidgetsLocalizations.delegate,
+                  GlobalCupertinoLocalizations.delegate,
+                ],
+                theme: androidTheme('ocean'),
+                builder: (context, child) => MediaQuery(
+                  data: MediaQuery.of(context)
+                      .copyWith(textScaler: TextScaler.linear(scale)),
+                  child: child!,
+                ),
+                home: NintendoFriendsPage(
+                  backend: backend,
+                  profile: profile,
+                  mobile: true,
+                ),
+              ),
+            );
+            await tester.pumpAndSettle();
+            expect(
+              tester.getSize(find.byType(Scaffold).first).width,
+              width,
+              reason: 'The matrix must render at its requested viewport.',
+            );
+            final avatar = find.byKey(const ValueKey('matrix-0:'));
+            final card = find
+                .ancestor(of: avatar, matching: find.byType(Card))
+                .first;
+            expect(
+              tester.getCenter(avatar).dx,
+              closeTo(tester.getCenter(card).dx, 1),
+            );
+            final name = tester.widget<Text>(find.text('Friend 0'));
+            expect(name.textAlign, TextAlign.center);
+            final game = tester
+                .widgetList<Text>(
+                  find.text('A deliberately long game name with several words'),
+                )
+                .first;
+            expect(game.maxLines, 2);
+            expect(find.text(language == 'zh' ? '在线' : 'Online'), findsNothing);
+            final firstTop = tester.getTopLeft(find.text('Friend 0')).dy;
+            final thirdTop = tester.getTopLeft(find.text('Friend 2')).dy;
+            if (scale == 1 && width >= 360) {
+              expect(
+                thirdTop,
+                firstTop,
+                reason: 'Normal phone layout should fit three cards.',
+              );
+            } else {
+              expect(
+                thirdTop,
+                greaterThan(firstTop),
+                reason: 'Narrow or enlarged-text layouts reduce columns.',
+              );
+            }
+            expect(tester.takeException(), isNull);
+          },
+        );
+      }
+    }
+  }
+
+  if (layoutOnly) return;
+
+  testWidgets('SplatNet restrictions preserve the ordinary friend list', (
+    tester,
+  ) async {
+    final backend = ToolsBackend()
+      ..friendGate = Completer<NintendoFriendsSnapshot>();
+    await tester.pumpWidget(
+      app(
+        NintendoFriendsPage(backend: backend, profile: profile, mobile: true),
+      ),
+    );
+    await tester.pump();
+    backend.friendGate!.complete(
+      NintendoFriendsSnapshot(
+        friends: const [
+          NintendoFriend(
+            friendId: 'ordinary',
+            nickname: 'Ordinary friend',
+            note: '',
+            isFavorite: false,
+            presence: 'ONLINE',
+          ),
+        ],
+        updatedAt: DateTime.utc(2026, 10, 22),
+        activityError: 'splatnet_access_restricted',
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Ordinary friend'), findsOneWidget);
+    expect(find.textContaining('鱿鱼圈访问受限'), findsOneWidget);
+    expect(find.textContaining('重新登录'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  test('friend-code input is normalized to twelve digits', () {
+    expect(normalizeNintendoFriendCode('123456789012'), '123456789012');
+    expect(normalizeNintendoFriendCode('1234-5678-9012'), '123456789012');
+    expect(normalizeNintendoFriendCode('SW-1234-5678-9012'), '123456789012');
+    expect(normalizeNintendoFriendCode('sw-1234-5678-9012'), '123456789012');
+    expect(normalizeNintendoFriendCode('1234 5678 9012'), '123456789012');
+    expect(normalizeNintendoFriendCode('1234－5678－9012'), '123456789012');
+    expect(normalizeNintendoFriendCode('1234-5678-901'), isNull);
+    expect(normalizeNintendoFriendCode('1234-5678-90123'), isNull);
+    expect(normalizeNintendoFriendCode(''), isNull);
+    expect(normalizeNintendoFriendCode('１２３４５６７８９０１２'), isNull);
+  });
+
+  for (final language in ['zh', 'en']) {
+    testWidgets(
+      'invalid friend code shows lowercase format guidance without querying ($language)',
+      (tester) async {
+        final backend = ToolsBackend();
+        await tester.pumpWidget(
+          app(
+            NintendoFriendsPage(
+              backend: backend,
+              profile: profile,
+              mobile: true,
+            ),
+            locale: Locale(language),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byIcon(Icons.person_add_alt_1));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byType(TextField), 'sw-1234-5678-901');
+        await tester.tap(find.text(language == 'zh' ? '查询' : 'Look up'));
+        await tester.pumpAndSettle();
+        expect(backend.friendCodeLookups, isEmpty);
+        expect(
+          find.text(
+            language == 'zh'
+                ? '请输入 sw-xxxx-xxxx-xxxx 格式的好友码。'
+                : 'Enter a friend code in the format sw-xxxx-xxxx-xxxx.',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.text(language == 'zh' ? '确认发送' : 'Send request'),
+          findsNothing,
+        );
+      },
+    );
+  }
+
+  testWidgets(
+    'friend-code lookup submits twelve digits and waits for confirmation',
+    (tester) async {
+      final backend = ToolsBackend();
+      await tester.pumpWidget(
+        app(
+          NintendoFriendsPage(backend: backend, profile: profile, mobile: true),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.person_add_alt_1));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'SW-1234－5678－9012');
+      await tester.tap(find.text('查询'));
+      await tester.pumpAndSettle();
+      expect(backend.friendCodeLookups, ['clicked-b:123456789012']);
+      expect(find.text('Lookup preview'), findsOneWidget);
+      expect(find.text('确认发送'), findsOneWidget);
+      expect(backend.friendRequests, isEmpty);
+      await tester.tap(find.text('确认发送'));
+      await tester.pumpAndSettle();
+      expect(backend.friendRequests, ['clicked-b:synthetic-lookup']);
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(find.text('好友申请已发送。'), findsOneWidget);
+    },
+  );
+
+  for (final language in ['zh', 'en']) {
+    testWidgets(
+      'existing friend preview shows an avatar and cannot send another request ($language)',
+      (tester) async {
+        final backend = ToolsBackend()..lookupFriendId = '1';
+        await tester.pumpWidget(
+          app(
+            NintendoFriendsPage(
+              backend: backend,
+              profile: profile,
+              mobile: true,
+            ),
+            locale: Locale(language),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byIcon(Icons.person_add_alt_1));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byType(TextField), '1234-5678-9012');
+        await tester.tap(find.text(language == 'zh' ? '查询' : 'Look up'));
+        await tester.pumpAndSettle();
+        expect(find.text('Lookup preview'), findsOneWidget);
+        expect(
+          find.text(language == 'zh' ? '已是好友' : 'Already friends'),
+          findsOneWidget,
+        );
+        expect(
+          find.text(language == 'zh' ? '确认发送' : 'Send request'),
+          findsNothing,
+        );
+        expect(
+          find.descendant(
+            of: find.byType(AlertDialog),
+            matching: find.byType(CircleAvatar),
+          ),
+          findsOneWidget,
+        );
+        expect(backend.friendAccounts, ['clicked-b', 'clicked-b']);
+        expect(backend.friendRequests, isEmpty);
+      },
+    );
+  }
+
+  testWidgets(
+    'editing a queried code invalidates its preview and send action',
+    (tester) async {
+      final backend = ToolsBackend();
+      await tester.pumpWidget(
+        app(
+          NintendoFriendsPage(backend: backend, profile: profile, mobile: true),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.person_add_alt_1));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '123456789012');
+      await tester.tap(find.text('查询'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '123456789013');
+      await tester.pumpAndSettle();
+      expect(find.text('Lookup preview'), findsNothing);
+      expect(find.text('确认发送'), findsNothing);
+      expect(find.text('查询'), findsOneWidget);
+      expect(backend.friendRequests, isEmpty);
+    },
+  );
+
+  testWidgets('a failed friendship check cannot enable the send action', (
+    tester,
+  ) async {
+    final backend = ToolsBackend();
+    await tester.pumpWidget(
+      app(
+        NintendoFriendsPage(backend: backend, profile: profile, mobile: true),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.person_add_alt_1));
+    await tester.pumpAndSettle();
+    backend.failRefresh = true;
+    await tester.enterText(find.byType(TextField), '123456789012');
+    await tester.tap(find.text('查询'));
+    await tester.pumpAndSettle();
+    expect(find.text('确认发送'), findsNothing);
+    expect(find.text('重试'), findsOneWidget);
+    expect(backend.friendRequests, isEmpty);
+    backend.failRefresh = false;
+    await tester.tap(find.text('重试'));
+    await tester.pumpAndSettle();
+    expect(find.text('确认发送'), findsOneWidget);
+  });
+
+  testWidgets('the current account code cannot be used to request itself', (
+    tester,
+  ) async {
+    final backend = ToolsBackend();
+    await tester.pumpWidget(
+      app(
+        NintendoFriendsPage(backend: backend, profile: profile, mobile: true),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.person_add_alt_1));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'sw-1111-2222-3333');
+    await tester.tap(find.text('查询'));
+    await tester.pumpAndSettle();
+    expect(find.text('不能向自己发送好友申请。'), findsOneWidget);
+    expect(find.text('确认发送'), findsNothing);
+    expect(backend.friendCodeLookups, isEmpty);
+    expect(backend.friendRequests, isEmpty);
+  });
+
+  testWidgets('a rejected request preserves the preview and permits retry', (
+    tester,
+  ) async {
+    final backend = ToolsBackend()..requestAccepted = false;
+    await tester.pumpWidget(
+      app(
+        NintendoFriendsPage(backend: backend, profile: profile, mobile: true),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.person_add_alt_1));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '123456789012');
+    await tester.tap(find.text('查询'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认发送'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('Lookup preview'), findsOneWidget);
+    expect(find.text('123456789012'), findsOneWidget);
+    expect(find.text('好友申请已发送。'), findsNothing);
+    backend.requestAccepted = true;
+    backend.becameFriends = true;
+    await tester.tap(find.text('确认发送'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.text('已成为好友。'), findsOneWidget);
+    expect(backend.friendRequests, [
+      'clicked-b:synthetic-lookup',
+      'clicked-b:synthetic-lookup',
+    ]);
+  });
+
+  testWidgets('closing the preview cancels a pending lookup and ignores it', (
+    tester,
+  ) async {
+    final backend = ToolsBackend()
+      ..lookupGate = Completer<NintendoFriendCodeUser>();
+    await tester.pumpWidget(
+      app(
+        NintendoFriendsPage(backend: backend, profile: profile, mobile: true),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.person_add_alt_1));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '123456789012');
+    await tester.tap(find.text('查询'));
+    await tester.pump();
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(
+      backend.cancelled.where((id) => id.startsWith('friend-lookup-')),
+      isNotEmpty,
+    );
+    backend.lookupGate!.complete(
+      const NintendoFriendCodeUser(
+        friendId: 'late-user',
+        nickname: 'Late preview',
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Late preview'), findsNothing);
+    expect(backend.friendRequests, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'two friend cards share a row on a normal phone and grow for text',
     (tester) async {
@@ -68,6 +454,16 @@ void main() {
         tester.getTopLeft(find.text('First')).dx,
         lessThan(tester.getTopLeft(find.text('Second')).dx),
       );
+      final avatar = find.byKey(const ValueKey('a:'));
+      final card = find.ancestor(of: avatar, matching: find.byType(Card)).first;
+      expect(
+        tester.getCenter(avatar).dx,
+        closeTo(tester.getCenter(card).dx, 1),
+      );
+      expect(
+        tester.widget<Text>(find.text('First')).textAlign,
+        TextAlign.center,
+      );
       expect(
         find.ancestor(of: find.text('First'), matching: find.byType(Card)),
         findsOneWidget,
@@ -75,6 +471,398 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+  testWidgets(
+    'the whole friend card opens a detail page with editable metadata',
+    (tester) async {
+      final backend = ToolsBackend(
+        friendPlayLog: [
+          const NintendoFriendGame(
+            name: 'Splatoon 3',
+            imageUrl: 'https://example.invalid/play-log-1.png',
+            totalPlayTimeMinutes: 321,
+          ),
+          const NintendoFriendGame(
+            name: 'Mario Kart 8 Deluxe',
+            imageUrl: 'https://example.invalid/play-log-2.png',
+            totalPlayTimeMinutes: 92,
+          ),
+        ],
+        friends: [
+          NintendoFriend(
+            friendId: 'detail',
+            nickname: 'Detail friend',
+            note: 'old note',
+            isFavorite: true,
+            presence: 'ONLINE',
+            gameName: 'Splatoon 3',
+            gameImageUrl: 'https://example.invalid/splatoon3.png',
+            totalPlayTimeMinutes: 321,
+            firstPlayedAt: DateTime.utc(2024, 3, 4),
+            activity: 'REGULAR',
+            inGameName: 'Inkling',
+            friendshipSource: 'FRIEND_CODE',
+            friendCreatedAt: DateTime.utc(2023, 7, 8),
+          ),
+        ],
+      );
+      await tester.pumpWidget(
+        app(
+          NintendoFriendsPage(backend: backend, profile: profile, mobile: true),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Detail friend'));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 1));
+      expect(backend.friendPlayLogRequests, ['clicked-b:detail']);
+      expect(find.text('好友详情'), findsOneWidget);
+      expect(find.text('Detail friend'), findsOneWidget);
+      expect(find.textContaining('321'), findsAtLeastNWidgets(1));
+      await tester.scrollUntilVisible(find.text('游戏记录'), 180);
+      expect(find.text('游戏记录'), findsOneWidget);
+      expect(find.text('Splatoon 3'), findsOneWidget);
+      expect(
+        find.byKey(
+          const ValueKey(
+            'friend-game-image:https://example.invalid/splatoon3.png',
+          ),
+        ),
+        findsOneWidget,
+      );
+      await tester.scrollUntilVisible(find.textContaining('Inkling'), 180);
+      expect(find.textContaining('Inkling'), findsOneWidget);
+      expect(find.text('Mario Kart 8 Deluxe'), findsOneWidget);
+      expect(find.textContaining('92'), findsOneWidget);
+      await tester.scrollUntilVisible(find.textContaining('好友码'), 180);
+      expect(find.textContaining('好友码'), findsOneWidget);
+      expect(find.textContaining('2023'), findsOneWidget);
+      expect(find.textContaining('2024'), findsOneWidget);
+      await tester.scrollUntilVisible(find.text('好友关系'), 180);
+      expect(find.text('好友关系'), findsOneWidget);
+    },
+  );
+  testWidgets(
+    'saving a friend note keeps the closing editor alive through its animation',
+    (tester) async {
+      final backend = ToolsBackend();
+      await tester.pumpWidget(
+        app(
+          NintendoFriendDetailPage(
+            backend: backend,
+            friend: const NintendoFriend(
+              friendId: 'note-friend',
+              nickname: 'Note friend',
+              note: 'Original',
+              isFavorite: false,
+              presence: 'ONLINE',
+            ),
+            accountId: 'clicked-b',
+            mobile: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('编辑备注'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'Updated');
+      await tester.tap(find.text('保存'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 70));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Updated'), findsOneWidget);
+      expect(backend.notes, ['clicked-b:note-friend:Updated']);
+    },
+  );
+  testWidgets(
+    'friend detail reuses the list avatar and supports a full size preview',
+    (tester) async {
+      final backend = ToolsBackend()
+        ..avatar = base64Decode(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        );
+      await tester.pumpWidget(
+        app(
+          NintendoFriendsPage(backend: backend, profile: profile, mobile: true),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final requests = backend.avatarRequests.length;
+      await tester.tap(find.byKey(const Key('friend-avatar-open-1')));
+      await tester.pumpAndSettle();
+      expect(backend.avatarRequests.length, requests);
+      await tester.tap(find.byType(CircleAvatar).last);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('app-image-viewer-pages')), findsOneWidget);
+      expect(find.byKey(const Key('app-image-viewer-save')), findsOneWidget);
+      expect(find.byType(InteractiveViewer), findsOneWidget);
+    },
+  );
+  testWidgets('a failed note save keeps the draft open for retry or cancel', (
+    tester,
+  ) async {
+    final backend = ToolsBackend()..noteError = StateError('synthetic failure');
+    await tester.pumpWidget(
+      app(
+        NintendoFriendDetailPage(
+          backend: backend,
+          friend: const NintendoFriend(
+            friendId: 'note-friend',
+            nickname: 'Note friend',
+            note: 'Original',
+            isFavorite: false,
+            presence: 'ONLINE',
+          ),
+          accountId: 'clicked-b',
+          mobile: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('编辑备注'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'Keep my draft');
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField), findsOneWidget);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'Keep my draft',
+    );
+    expect(find.text('Original'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField), findsNothing);
+    expect(find.text('Original'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+  testWidgets('retrying a note keeps the draft and uses a fresh request', (
+    tester,
+  ) async {
+    final backend = ToolsBackend()..noteError = StateError('synthetic failure');
+    await tester.pumpWidget(
+      app(
+        NintendoFriendDetailPage(
+          backend: backend,
+          friend: const NintendoFriend(
+            friendId: 'note-friend',
+            nickname: 'Note friend',
+            note: 'Original',
+            isFavorite: false,
+            presence: 'ONLINE',
+          ),
+          accountId: 'clicked-b',
+          mobile: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('编辑备注'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'Retry my draft');
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    backend.noteError = null;
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField), findsNothing);
+    expect(find.text('Retry my draft'), findsOneWidget);
+    expect(backend.noteOperations.toSet(), hasLength(2));
+    expect(tester.takeException(), isNull);
+  });
+  testWidgets('friendship uses the source game and places friends since last', (
+    tester,
+  ) async {
+    final backend = ToolsBackend();
+    await tester.pumpWidget(
+      app(
+        NintendoFriendDetailPage(
+          backend: backend,
+          friend: NintendoFriend(
+            friendId: 'source-friend',
+            nickname: 'Source friend',
+            note: '',
+            isFavorite: false,
+            presence: 'ONLINE',
+            gameName: 'Current game',
+            friendshipSource: 'IN_APP',
+            friendshipGameName: 'Original game',
+            inGameName: 'In game',
+            friendCreatedAt: DateTime.utc(2022, 2, 3),
+          ),
+          accountId: 'clicked-b',
+          mobile: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.textContaining('来源游戏'), 150);
+    final relationship = tester.widget<Text>(find.textContaining('来源游戏')).data!;
+    expect(relationship, contains('Original game'));
+    expect(relationship, isNot(contains('Current game')));
+    expect(relationship.split('\n').last, startsWith('成为好友：'));
+  });
+  testWidgets('game history starts with six games and expands and collapses', (
+    tester,
+  ) async {
+    final backend = ToolsBackend(
+      friendPlayLog: [
+        for (var i = 1; i <= 9; i++) NintendoFriendGame(name: 'Game $i'),
+      ],
+    );
+    await tester.pumpWidget(
+      app(
+        NintendoFriendDetailPage(
+          backend: backend,
+          friend: const NintendoFriend(
+            friendId: 'history',
+            nickname: 'History friend',
+            note: '',
+            isFavorite: false,
+            presence: 'ONLINE',
+          ),
+          accountId: 'clicked-b',
+          mobile: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Game 6'), 150);
+    expect(find.text('Game 7'), findsNothing);
+    await tester.scrollUntilVisible(find.byIcon(Icons.expand_more), 150);
+    await tester.ensureVisible(find.byIcon(Icons.expand_more));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.expand_more));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Game 9'), 150);
+    expect(find.text('Game 9'), findsOneWidget);
+    await tester.scrollUntilVisible(find.byIcon(Icons.expand_less), 150);
+    await tester.ensureVisible(find.byIcon(Icons.expand_less));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.expand_less));
+    await tester.pumpAndSettle();
+    expect(find.text('Game 9'), findsNothing);
+    expect(find.text('记录范围取决于好友的隐私设置。'), findsOneWidget);
+  });
+  testWidgets('game images use the shared backend cache across friends', (
+    tester,
+  ) async {
+    final backend =
+        ToolsBackend(
+            friendPlayLog: const [
+              NintendoFriendGame(
+                name: 'Shared game',
+                imageUrl: 'https://example.invalid/game.png',
+              ),
+              NintendoFriendGame(
+                name: 'Shared game',
+                imageUrl: 'https://example.invalid/game.png',
+              ),
+            ],
+          )
+          ..avatar = base64Decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+          );
+    Future<void> show(String id) async {
+      await tester.pumpWidget(
+        app(
+          NintendoFriendDetailPage(
+            key: ValueKey(id),
+            backend: backend,
+            friend: NintendoFriend(
+              friendId: id,
+              nickname: id,
+              note: '',
+              isFavorite: false,
+              presence: 'ONLINE',
+            ),
+            accountId: 'clicked-b',
+            mobile: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(find.text('Shared game').first, 150);
+      await tester.pumpAndSettle();
+    }
+
+    await show('first-friend');
+    expect(backend.gameImageRequests, ['Shared game']);
+    final image = tester.widget<Image>(
+      find
+          .byKey(
+            const ValueKey(
+              'friend-game-image:https://example.invalid/game.png',
+            ),
+          )
+          .first,
+    );
+    expect(image.image, isA<MemoryImage>());
+    await show('second-friend');
+    expect(backend.gameImageRequests, ['Shared game']);
+  });
+  for (final mobile in [false, true]) {
+    testWidgets('favorite cards have no standalone star row (mobile=$mobile)', (
+      tester,
+    ) async {
+      await useLayoutTestViewport(tester, Size(mobile ? 360 : 800, 1000));
+      final backend = ToolsBackend(
+        friends: [
+          const NintendoFriend(
+            friendId: 'favorite',
+            nickname: 'Favorite',
+            note: 'A note',
+            isFavorite: true,
+            presence: 'ONLINE',
+            gameName: 'Splatoon 3',
+          ),
+          const NintendoFriend(
+            friendId: 'regular',
+            nickname: 'Regular',
+            note: 'A note',
+            isFavorite: false,
+            presence: 'ONLINE',
+            gameName: 'Splatoon 3',
+          ),
+        ],
+      );
+      await tester.pumpWidget(
+        app(
+          NintendoFriendsPage(
+            backend: backend,
+            profile: profile,
+            mobile: mobile,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final favorite = find.byKey(const Key('friend-card-open-favorite'));
+      final regular = find.byKey(const Key('friend-card-open-regular'));
+      expect(
+        find.descendant(of: favorite, matching: find.byIcon(Icons.star)),
+        findsNothing,
+      );
+      expect(tester.getSize(favorite).height, tester.getSize(regular).height);
+      expect(find.text('特别关注'), findsOneWidget);
+      expect(
+        tester.getTopLeft(favorite).dy,
+        lessThan(tester.getTopLeft(regular).dy),
+      );
+      expect(
+        find.descendant(of: favorite, matching: find.text('Splatoon 3')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: favorite, matching: find.text('A note')),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const Key('friend-avatar-open-favorite')));
+      await tester.pumpAndSettle();
+      expect(find.byType(NintendoFriendDetailPage), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets(
     'friends are starred-first with stable names and hidden presence is explicit',
     (tester) async {
@@ -132,8 +920,17 @@ void main() {
       await tester.scrollUntilVisible(find.text('离线好友'), 160);
       await tester.tap(find.text('离线好友'));
       await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(find.text('状态未公开'), 140);
-      expect(find.text('状态未公开'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('android-friend-status-hidden')),
+        140,
+      );
+      expect(find.text('状态未公开'), findsNothing);
+      expect(
+        tester
+            .getSemantics(find.byKey(const Key('android-friend-status-hidden')))
+            .label,
+        contains('状态未公开'),
+      );
       expect(find.textContaining('上次在线：'), findsNothing);
     },
   );
@@ -294,9 +1091,25 @@ void main() {
   });
 }
 
-class ToolsBackend extends FakeBackend implements NintendoAccountToolsBackend {
-  ToolsBackend({this.friends}) : super(mediaItems: []);
+class ToolsBackend extends FakeBackend
+    implements NintendoAccountToolsBackend, NintendoGameImageBackend {
+  ToolsBackend({this.friends, this.friendPlayLog = const []})
+    : super(mediaItems: []);
   final List<NintendoFriend>? friends;
+  final List<NintendoFriendGame> friendPlayLog;
+  final friendPlayLogRequests = <String>[];
+  final friendCodeLookups = <String>[];
+  final friendRequests = <String>[];
+  final avatarRequests = <String>[];
+  final gameImageRequests = <String>[];
+  final notes = <String>[];
+  final noteOperations = <String>[];
+  Object? noteError;
+  Uint8List avatar = Uint8List(0);
+  String lookupFriendId = 'synthetic-lookup';
+  Completer<NintendoFriendCodeUser>? lookupGate;
+  bool requestAccepted = true;
+  bool becameFriends = false;
   Completer<NintendoFriendsSnapshot>? friendGate;
   bool failRefresh = false;
   final friendAccounts = <String>[];
@@ -320,6 +1133,14 @@ class ToolsBackend extends FakeBackend implements NintendoAccountToolsBackend {
       friends:
           friends ??
           [
+            if (becameFriends && friendRequests.isNotEmpty)
+              NintendoFriend(
+                friendId: lookupFriendId,
+                nickname: 'Lookup preview',
+                note: '',
+                isFavorite: false,
+                presence: 'OFFLINE',
+              ),
             NintendoFriend(
               friendId: '1',
               nickname: 'Online friend',
@@ -345,7 +1166,77 @@ class ToolsBackend extends FakeBackend implements NintendoAccountToolsBackend {
     String accountId,
     String friendId,
     String operationId,
-  ) async => Uint8List(0);
+  ) async {
+    avatarRequests.add('$accountId:$friendId');
+    return avatar;
+  }
+
+  @override
+  Future<Uint8List> loadNintendoGameImage(
+    String accountId,
+    String gameName,
+    String operationId,
+  ) async {
+    gameImageRequests.add(gameName);
+    return avatar;
+  }
+
+  @override
+  Future<List<NintendoFriendGame>> loadNintendoFriendPlayLog(
+    String accountId,
+    String friendId,
+    String operationId,
+  ) async {
+    friendPlayLogRequests.add('$accountId:$friendId');
+    return friendPlayLog;
+  }
+
+  @override
+  Future<NintendoFriendCodeSnapshot> loadNintendoFriendCode(
+    String accountId,
+    String operationId,
+  ) async =>
+      const NintendoFriendCodeSnapshot(friendCode: '1111-2222-3333', url: '');
+
+  @override
+  Future<NintendoFriendCodeUser> lookupNintendoFriendCode(
+    String accountId,
+    String friendCode,
+    String operationId,
+  ) async {
+    friendCodeLookups.add('$accountId:$friendCode');
+    if (lookupGate != null) return lookupGate!.future;
+    return NintendoFriendCodeUser(
+      friendId: lookupFriendId,
+      nickname: 'Lookup preview',
+    );
+  }
+
+  @override
+  Future<NintendoFriendRequestResult> sendNintendoFriendRequest(
+    String accountId,
+    String friendId,
+    String operationId,
+  ) async {
+    friendRequests.add('$accountId:$friendId');
+    return NintendoFriendRequestResult(
+      friendId: friendId,
+      accepted: requestAccepted,
+    );
+  }
+
+  @override
+  Future<void> updateNintendoFriendNote(
+    String accountId,
+    String friendId,
+    String note,
+    String operationId,
+  ) async {
+    noteOperations.add(operationId);
+    final error = noteError;
+    if (error != null) throw error;
+    notes.add('$accountId:$friendId:$note');
+  }
 
   @override
   Future<SeedExportPayload> prepareSeedExport(

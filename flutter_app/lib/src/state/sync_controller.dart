@@ -101,8 +101,12 @@ class SyncController extends ChangeNotifier {
         await _runAccountQueue(automatic: automatic, accountIds: accountIds);
       } else {
         await _runLegacySync();
+        if (automatic && summary != null) {
+          await _notifyAutomaticCompletion([summary!]);
+        }
       }
     } catch (exception, stackTrace) {
+      if (_disposed) return;
       if (_cancelRequested || syncFailureStatus(exception) == 'cancelled') {
         state = SyncState.cancelled;
       } else {
@@ -136,7 +140,7 @@ class SyncController extends ChangeNotifier {
 
   Future<void> _runLegacySync() async {
     final result = await _backend.syncNintendoAlbum();
-    if (_cancelRequested) return;
+    if (_cancelRequested || _disposed) return;
     summary = result;
     if (_backend case final SyncScheduleBackend backend) {
       try {
@@ -161,13 +165,14 @@ class SyncController extends ChangeNotifier {
   }) async {
     final backend = _backend as AccountSyncBackend;
     final profiles = await _backend.listNintendoAccounts();
-    if (_cancelRequested) return;
+    if (_cancelRequested || _disposed) return;
     final available = profiles.map((profile) => profile.accountId).toSet();
     accountSchedules.removeWhere((id, _) => !available.contains(id));
     var queue = accountIds == null
         ? profiles.map((profile) => profile.accountId).toList()
         : accountIds.where(available.contains).toSet().toList();
     await refreshAccountScheduleStatuses(accountIds: queue);
+    if (_cancelRequested || _disposed) return;
     queue = queue
         .where(
           (id) =>
@@ -186,7 +191,7 @@ class SyncController extends ChangeNotifier {
     totalAccounts = queue.length;
     _notify();
     for (final accountId in queue) {
-      if (_cancelRequested) break;
+      if (_cancelRequested || _disposed) break;
       accountResults.remove(accountId);
       accountErrors.remove(accountId);
       _authenticationOverrides.remove(accountId);
@@ -195,7 +200,7 @@ class SyncController extends ChangeNotifier {
       _notify();
       try {
         final result = await backend.syncNintendoAccount(accountId);
-        if (_cancelRequested) break;
+        if (_cancelRequested || _disposed) break;
         accountResults[accountId] = result;
         accountErrors.remove(accountId);
         authPausedAccountIds.remove(accountId);
@@ -215,6 +220,7 @@ class SyncController extends ChangeNotifier {
         }
         completedAccounts += 1;
       } catch (exception, stackTrace) {
+        if (_disposed) break;
         if (_cancelRequested || syncFailureStatus(exception) == 'cancelled') {
           _cancelRequested = true;
           break;
@@ -244,6 +250,62 @@ class SyncController extends ChangeNotifier {
       _notify();
     }
     state = _cancelRequested ? SyncState.cancelled : SyncState.completed;
+    if (automatic) {
+      await _notifyAutomaticCompletion(
+        queue
+            .map((id) => accountResults[id])
+            .whereType<SyncSummary>()
+            .toList(growable: false),
+        failedAccountCount: queue.where(accountErrors.containsKey).length,
+      );
+    }
+  }
+
+  Future<void> _notifyAutomaticCompletion(
+    List<SyncSummary> results, {
+    int failedAccountCount = 0,
+  }) async {
+    final notifier = _backend is SyncNotificationBackend
+        ? _backend as SyncNotificationBackend
+        : null;
+    if (!_disposed &&
+        !_cancelRequested &&
+        _backend.settings.notifyOnAutoSync &&
+        notifier != null) {
+      final downloaded = results.fold<BigInt>(
+        BigInt.zero,
+        (sum, value) => sum + value.downloaded,
+      );
+      if (downloaded > BigInt.zero) {
+        final existing = results.fold<BigInt>(
+          BigInt.zero,
+          (sum, value) => sum + value.duplicates + value.skippedRemote,
+        );
+        final failed = results.fold<BigInt>(
+          BigInt.zero,
+          (sum, value) => sum + value.failed,
+        );
+        try {
+          await notifier.notifyAutomaticSyncCompleted(
+            downloaded: downloaded.toInt(),
+            existing: existing.toInt(),
+            failed: failed.toInt(),
+            accountCount: results.length + failedAccountCount,
+            failedAccountCount: failedAccountCount,
+          );
+        } catch (exception, stackTrace) {
+          try {
+            await _backend.logError(
+              '[sync] trigger=automatic stage=notification_failed',
+              exception,
+              stackTrace,
+            );
+          } catch (_) {
+            // Notification diagnostics must not change a completed sync.
+          }
+        }
+      }
+    }
   }
 
   SyncProgress _completedProgress(SyncSummary result) {

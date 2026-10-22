@@ -1,3 +1,4 @@
+use super::game_images::PublicGameImages;
 use super::session::{AuthenticatedCoralSession, CachedNintendoIdentity};
 use super::splatnet::{self, SplatNetSession};
 use super::{
@@ -5,13 +6,14 @@ use super::{
 };
 use crate::error::{CoreError, CoreResult};
 use crate::models::{
-    NintendoFriend, NintendoFriendsSnapshot, SeedExportPayload, SplatNetWebSession,
+    NintendoFriend, NintendoFriendCodeSnapshot, NintendoFriendCodeUser, NintendoFriendGame,
+    NintendoFriendRequestResult, NintendoFriendsSnapshot, SeedExportPayload, SplatNetWebSession,
 };
 use crate::sync::CancellationToken;
 use crate::transport::{nintendo_user_agent, HttpResponseData, HttpTransport};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine};
-use chrono::{Duration, TimeZone, Utc};
+use chrono::{TimeZone, Utc};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, VecDeque};
@@ -69,19 +71,84 @@ fn parse_friends(value: &Value) -> CoreResult<(Vec<NintendoFriend>, HashMap<Stri
                 .unwrap_or(false),
             presence: state.into(),
             game_name: game.get("name").and_then(Value::as_str).map(str::to_owned),
+            game_image_url: game
+                .get("imageUri")
+                .and_then(Value::as_str)
+                .filter(|url| !url.is_empty())
+                .map(str::to_owned),
             total_play_time_minutes: game
                 .get("totalPlayTime")
                 .and_then(Value::as_u64)
                 .and_then(|v| u32::try_from(v).ok()),
+            first_played_at: game
+                .get("firstPlayedAt")
+                .and_then(Value::as_i64)
+                .filter(|v| *v > 0)
+                .and_then(|v| Utc.timestamp_opt(v, 0).single()),
             logout_at: presence
                 .get("logoutAt")
                 .and_then(Value::as_i64)
                 .filter(|v| *v > 0)
                 .and_then(|v| Utc.timestamp_opt(v, 0).single()),
             activity: None,
+            in_game_name: node
+                .pointer("/route/userName")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
+            friendship_source: node
+                .pointer("/route/channel")
+                .and_then(Value::as_str)
+                .filter(|channel| !channel.is_empty())
+                .map(str::to_owned),
+            friendship_game_name: node
+                .pointer("/route/appName")
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .map(str::to_owned),
+            friend_created_at: node
+                .get("friendCreatedAt")
+                .and_then(Value::as_i64)
+                .filter(|v| *v > 0)
+                .and_then(|v| Utc.timestamp_opt(v, 0).single()),
         });
     }
     Ok((friends, avatars))
+}
+
+fn parse_friend_play_log(value: &Value) -> CoreResult<Vec<NintendoFriendGame>> {
+    let games = value
+        .get("result")
+        .and_then(Value::as_array)
+        .or_else(|| value.as_array())
+        .ok_or_else(|| CoreError::Provider("Nintendo friend game history is unavailable".into()))?;
+    Ok(games
+        .iter()
+        .filter_map(|game| {
+            let name = game
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())?
+                .to_owned();
+            Some(NintendoFriendGame {
+                name,
+                image_url: game
+                    .get("imageUri")
+                    .and_then(Value::as_str)
+                    .filter(|url| !url.is_empty())
+                    .map(str::to_owned),
+                total_play_time_minutes: game
+                    .get("totalPlayTime")
+                    .and_then(Value::as_u64)
+                    .and_then(|minutes| u32::try_from(minutes).ok()),
+                first_played_at: game
+                    .get("firstPlayedAt")
+                    .and_then(Value::as_i64)
+                    .filter(|timestamp| *timestamp > 0)
+                    .and_then(|timestamp| Utc.timestamp_opt(timestamp, 0).single()),
+            })
+        })
+        .collect())
 }
 
 fn supplement_friends(friends: &mut [NintendoFriend], value: &Value) -> CoreResult<()> {
@@ -192,9 +259,52 @@ struct AccountCache {
     splatnet: Option<SplatNetSession>,
     avatars: HashMap<String, String>,
     avatar_bytes: HashMap<String, (String, Vec<u8>)>,
+    lookup_avatar: Option<(String, String)>,
+    game_urls: HashMap<String, String>,
+    game_images: Arc<tokio::sync::Mutex<PublicGameImages>>,
 }
 
 impl AccountCache {
+    fn remember_game(&mut self, name: &str, url: Option<&str>) {
+        if let Some(url) = url.filter(|url| !url.is_empty()) {
+            if self.game_urls.len() >= 512 && !self.game_urls.contains_key(name) {
+                self.game_urls.clear();
+            }
+            self.game_urls.insert(name.to_owned(), url.to_owned());
+        }
+    }
+
+    fn lookup_preview(&mut self, result: &Value) -> CoreResult<NintendoFriendCodeUser> {
+        let friend_id = result
+            .get("nsaId")
+            .and_then(Value::as_str)
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= 128
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+            })
+            .ok_or_else(|| CoreError::Provider("friend lookup has no stable ID".into()))?;
+        let avatar_url = result
+            .get("imageUri")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        self.lookup_avatar = avatar_url
+            .as_ref()
+            .map(|url| (friend_id.to_owned(), url.to_owned()));
+        Ok(NintendoFriendCodeUser {
+            friend_id: friend_id.to_owned(),
+            nickname: result
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
+            avatar_url,
+        })
+    }
+
     fn cached_avatar(&self, id: &str, url: &str) -> Option<Vec<u8>> {
         self.avatar_bytes
             .get(id)
@@ -235,12 +345,18 @@ struct AccountEntry {
     cache: tokio::sync::Mutex<AccountCache>,
 }
 impl AccountEntry {
-    fn new(client: NxapiAttestationClient) -> Self {
+    fn new(
+        client: NxapiAttestationClient,
+        game_images: Arc<tokio::sync::Mutex<PublicGameImages>>,
+    ) -> Self {
         Self {
             client,
             identities: Default::default(),
             removed: Default::default(),
-            cache: Default::default(),
+            cache: tokio::sync::Mutex::new(AccountCache {
+                game_images,
+                ..Default::default()
+            }),
         }
     }
 }
@@ -264,6 +380,7 @@ pub(crate) struct AccountTools {
     registry: Mutex<Registry>,
     authenticator: Arc<dyn AccountAuthenticator>,
     protocol: Arc<dyn ToolProtocol>,
+    game_images: Arc<tokio::sync::Mutex<PublicGameImages>>,
 }
 impl Default for AccountTools {
     fn default() -> Self {
@@ -271,6 +388,7 @@ impl Default for AccountTools {
             registry: Mutex::new(Registry::default()),
             authenticator: Arc::new(ProtocolAuthenticator),
             protocol: Arc::new(NetworkProtocol),
+            game_images: Default::default(),
         }
     }
 }
@@ -308,12 +426,27 @@ impl Drop for Operation<'_> {
 pub(crate) enum ToolRequest {
     Friends,
     Avatar(String),
+    GameImage(String),
+    FriendPlayLog(String),
+    FriendCode,
+    FriendLookup(String),
+    FriendRequest(String),
+    FriendNote { friend_id: String, note: String },
     Web { force_refresh: bool },
     Seed,
 }
 pub(crate) enum ToolResponse {
     Friends(NintendoFriendsSnapshot),
+    // Internal protocol result: AccountTools owns the single recovery budget
+    // before converting this into the public friends snapshot.
+    FriendsWithActivity(Vec<NintendoFriend>, CoreResult<Value>),
     Avatar(Vec<u8>),
+    GameImage(Vec<u8>),
+    FriendPlayLog(Vec<NintendoFriendGame>),
+    FriendCode(NintendoFriendCodeSnapshot),
+    FriendLookup(NintendoFriendCodeUser),
+    FriendRequest(NintendoFriendRequestResult),
+    FriendNote,
     Web(SplatNetWebSession),
     Seed(SeedExportPayload),
 }
@@ -451,6 +584,16 @@ impl AccountTools {
         Ok(())
     }
 
+    pub(crate) fn invalidate_network_context(&self) -> CoreResult<()> {
+        let mut registry = self.registry.lock().map_err(|_| poisoned())?;
+        // In-flight operations keep their Arc and finish on the transport they
+        // started with; new operations must establish fresh proxy-scoped state.
+        registry.entries.clear();
+        registry.clients.clear();
+        registry.client_accounts.clear();
+        Ok(())
+    }
+
     fn context(
         &self,
         token: &str,
@@ -482,12 +625,10 @@ impl AccountTools {
                     .cloned()
             })
             .unwrap_or_else(|| template.isolated_credentials());
-        let entry = Arc::clone(
-            registry
-                .entries
-                .entry(key)
-                .or_insert_with(|| Arc::new(AccountEntry::new(client))),
-        );
+        let entry =
+            Arc::clone(registry.entries.entry(key).or_insert_with(|| {
+                Arc::new(AccountEntry::new(client, Arc::clone(&self.game_images)))
+            }));
         if let Some(account) = account {
             let identities = entry.identities.lock().map_err(|_| poisoned())?;
             if !identities.is_empty() && !identities.contains(account) {
@@ -509,14 +650,14 @@ impl AccountTools {
     ) -> CoreResult<AuthenticatedCoralSession> {
         entry.removed.check()?;
         if force {
+            // Only the Coral credential was rejected by the caller's request.
+            // Its Nintendo parent and separately valid children remain reusable.
             cache.auth = None;
-            cache.splatnet = None;
-            cache.nintendo = None;
         }
         let valid = cache.auth.as_ref().is_some_and(|auth| {
             auth.session
                 .expires_at
-                .is_some_and(|expiry| expiry > Utc::now() + Duration::seconds(60))
+                .is_some_and(|expiry| super::token_expiry::reusable(expiry, Utc::now()))
         });
         if !valid {
             let auth = self
@@ -557,14 +698,21 @@ impl AccountTools {
                 ));
             }
             let service = input.client.service_key();
-            for id in &actual_ids {
-                let key = account_attestation_key(id, &service, input.proxy);
-                registry.clients.insert(key.clone(), input.client.clone());
-                registry.client_accounts.insert(key, actual_ids.clone());
+            if registry
+                .entries
+                .values()
+                .any(|current| std::ptr::eq(current.as_ref(), entry))
+            {
+                for id in &actual_ids {
+                    let key = account_attestation_key(id, &service, input.proxy);
+                    registry.clients.insert(key.clone(), input.client.clone());
+                    registry.client_accounts.insert(key, actual_ids.clone());
+                }
             }
             *identities = actual_ids;
             cache.auth = Some(auth);
-            cache.splatnet = None;
+            // Normal renewal of a verified parent does not revoke a separately
+            // valid child. Rejections retire only the stage that used it.
         }
         let auth = cache
             .auth
@@ -662,16 +810,85 @@ impl AccountTools {
                 _ = entry.removed.cancelled() => Err(CoreError::Cancelled),
                 result = async {
                     let mut cache = entry.cache.lock().await;
-                    let force = matches!(request, ToolRequest::Web { force_refresh: true });
+                    if matches!(request, ToolRequest::Web { force_refresh: true }) {
+                        // A web refresh retires its own descendants, not valid
+                        // Nintendo/Coral credentials used by friends and albums.
+                        cache.splatnet = None;
+                    }
+                    let mut force_authentication = false;
+                    let mut friends_fallback = None;
                     for attempt in 0..2 {
-                        let auth = self.authenticate_locked(&mut cache, &entry, AuthenticationInput {
-                            token, account: Some(account), transport: &transport, client: &client, proxy, generation,
-                        }, force || attempt > 0).await?;
+                        let child_usable = !force_authentication
+                            && cache.splatnet.as_ref().is_some_and(|session| match request {
+                                ToolRequest::Web { .. } => session.reusable_web(Utc::now()),
+                                ToolRequest::Seed => session.reusable_bullet(Utc::now())
+                                    || session.reusable_web(Utc::now()),
+                                _ => false,
+                            });
+                        let cached_auth = child_usable.then(|| cache.auth.clone()).flatten();
+                        let auth = if let Some(auth) = cached_auth {
+                            // A valid child is independent of its parent's TTL.
+                            // The parent is only sent when a new child is needed.
+                            verify_identity(&auth.session, Some(account))?;
+                            auth
+                        } else {
+                            let authentication = self.authenticate_locked(&mut cache, &entry, AuthenticationInput {
+                                token, account: Some(account), transport: &transport, client: &client, proxy, generation,
+                            }, force_authentication).await;
+                            match authentication {
+                                Ok(auth) => auth,
+                                Err(error) => {
+                                    entry.removed.check()?;
+                                    operation.check()?;
+                                    return match friends_fallback {
+                                        Some(friends) => finish_friends(friends, Err(error)).map(ToolResponse::Friends),
+                                        None => Err(error),
+                                    };
+                                }
+                            }
+                        };
                         let result = self.protocol.execute(&transport, &client, &auth, &mut cache, &request).await;
                         entry.removed.check()?;
                         operation.check()?;
                         match result {
-                            Err(CoreError::Authentication(_)) if attempt == 0 => continue,
+                            Ok(ToolResponse::FriendsWithActivity(friends, activity)) => {
+                                if let Err(ref error @ CoreError::Authentication(_)) = activity {
+                                    let child_rejected = splatnet::retire_rejected_credential(
+                                        &mut cache.splatnet, error,
+                                    );
+                                    if !child_rejected {
+                                        cache.auth = None;
+                                    }
+                                    if attempt == 0 {
+                                        friends_fallback = Some(friends);
+                                        force_authentication = !child_rejected;
+                                        continue;
+                                    }
+                                }
+                                return finish_friends(friends, activity).map(ToolResponse::Friends);
+                            },
+                            Err(error) if friends_fallback.is_some() => {
+                                if matches!(error, CoreError::Authentication(_))
+                                    && !splatnet::retire_rejected_credential(&mut cache.splatnet, &error)
+                                {
+                                    cache.auth = None;
+                                }
+                                return finish_friends(friends_fallback.take().expect("checked fallback"), Err(error))
+                                    .map(ToolResponse::Friends);
+                            },
+                            Err(ref error @ CoreError::Authentication(_)) => {
+                                let child_rejected = splatnet::retire_rejected_credential(
+                                    &mut cache.splatnet, error,
+                                );
+                                if !child_rejected {
+                                    cache.auth = None;
+                                }
+                                if attempt == 0 {
+                                    force_authentication = !child_rejected;
+                                    continue;
+                                }
+                                return result;
+                            },
                             other => return other,
                         }
                     }
@@ -740,6 +957,18 @@ pub(crate) async fn coral_call<A: AttestationService>(
     parameter: Value,
     method: u8,
 ) -> CoreResult<Value> {
+    // /encrypt-request takes a complete Coral JSON body. /f instead takes
+    // token-operation fields, and CreateFriendCodeUrl explicitly has no parameter.
+    let parameter = if method == 0
+        && parameter.get("parameter").is_none()
+        && !url::Url::parse(url)
+            .ok()
+            .is_some_and(|url| url.path() == "/v3/Friend/CreateFriendCodeUrl")
+    {
+        json!({"parameter": parameter})
+    } else {
+        parameter
+    };
     let encrypted = attestation
         .encrypt_request(
             url,
@@ -768,7 +997,7 @@ pub(crate) async fn coral_call<A: AttestationService>(
     ensure_response(&response, "Nintendo account request")?;
     let value = attestation.decrypt_response(&response.body).await?;
     let status = value.get("status").and_then(Value::as_i64).unwrap_or(0);
-    if status == 429 {
+    if matches!(status, 429 | 9437) {
         return Err(CoreError::RateLimited {
             retry_after_seconds: 60,
         });
@@ -779,19 +1008,10 @@ pub(crate) async fn coral_call<A: AttestationService>(
             .is_some_and(|url| url.path() == "/v4/Game/GetWebServiceToken")
         && value.get("errorMessage").and_then(Value::as_str) == Some("Membership required error.")
     {
-        return Err(CoreError::Provider(
-            "Nintendo Switch Online membership is required for SplatNet 3".into(),
-        ));
+        return Err(CoreError::Provider("nso_membership_required".into()));
     }
-    match status {
-        0 => Ok(value),
-        9403 | 9404 | 9599 => Err(CoreError::Authentication(
-            "Nintendo account session has expired".into(),
-        )),
-        status => Err(CoreError::Provider(format!(
-            "Nintendo account request failed (status {status})"
-        ))),
-    }
+    super::conditions::ensure_coral_success(&value)?;
+    Ok(value)
 }
 
 async fn execute_tool(
@@ -813,35 +1033,33 @@ async fn execute_tool(
             )
             .await?;
             let (friends, avatars) = parse_friends(&raw)?;
+            for friend in &friends {
+                if let Some(name) = friend.game_name.as_deref() {
+                    cache.remember_game(name, friend.game_image_url.as_deref());
+                }
+            }
             cache
                 .avatar_bytes
                 .retain(|id, (url, _)| avatars.get(id) == Some(url));
             cache.avatars = avatars;
             let activity = async {
-                for attempt in 0..2 {
-                    let result = async {
-                        let session =
-                            splatnet::session(transport, client, auth, &mut cache.splatnet).await?;
-                        splatnet::query(transport, &session, splatnet::Query::Friends).await
-                    }
-                    .await;
-                    match result {
-                        Err(CoreError::Authentication(_)) if attempt == 0 => cache.splatnet = None,
-                        other => return other,
-                    }
-                }
-                unreachable!("bounded SplatNet activity refresh")
+                let session =
+                    splatnet::session(transport, client, auth, &mut cache.splatnet).await?;
+                splatnet::query(transport, &session, splatnet::Query::Friends).await
             }
             .await;
-            Ok(ToolResponse::Friends(finish_friends(friends, activity)?))
+            Ok(ToolResponse::FriendsWithActivity(friends, activity))
         }
         ToolRequest::Avatar(id) => {
             let url = cache
-                .avatars
-                .get(id)
+                .lookup_avatar
+                .as_ref()
+                .filter(|(lookup_id, _)| lookup_id == id)
+                .map(|(_, url)| url)
+                .or_else(|| cache.avatars.get(id))
                 .ok_or_else(|| {
                     CoreError::InvalidConfig(
-                        "Load the friend list before opening this avatar".into(),
+                        "Load a friend list or lookup preview before opening this avatar".into(),
                     )
                 })?
                 .clone();
@@ -856,6 +1074,122 @@ async fn execute_tool(
                 .await?;
             cache.remember_avatar(id, &url, &bytes);
             Ok(ToolResponse::Avatar(bytes))
+        }
+        ToolRequest::FriendPlayLog(friend_id) => {
+            if friend_id.trim().is_empty() || friend_id.len() > 128 {
+                return Err(CoreError::InvalidConfig("invalid friend identity".into()));
+            }
+            let raw = coral_call(
+                transport,
+                client,
+                &auth.session,
+                &format!("{CORAL_ORIGIN}/v4/User/PlayLog/Show"),
+                json!({"nsaId": friend_id}),
+                0,
+            )
+            .await?;
+            let games = parse_friend_play_log(&raw)?;
+            for game in &games {
+                cache.remember_game(&game.name, game.image_url.as_deref());
+            }
+            Ok(ToolResponse::FriendPlayLog(games))
+        }
+        ToolRequest::GameImage(name) => {
+            let url = cache.game_urls.get(name).ok_or_else(|| {
+                CoreError::InvalidConfig("Load game information before opening its image".into())
+            })?;
+            let mut images = cache.game_images.lock().await;
+            let bytes = images
+                .load(name, url, async {
+                    let version = client.nso_version().await?;
+                    transport
+                        .clone()
+                        .with_nso_downloads(&version)
+                        .download_avatar(url)
+                        .await
+                })
+                .await?;
+            Ok(ToolResponse::GameImage(bytes))
+        }
+        ToolRequest::FriendCode => {
+            let raw = coral_call(
+                transport,
+                client,
+                &auth.session,
+                &format!("{CORAL_ORIGIN}/v3/Friend/CreateFriendCodeUrl"),
+                json!({}),
+                0,
+            )
+            .await?;
+            let result = raw.get("result").unwrap_or(&raw);
+            let friend_code = result
+                .get("friendCode")
+                .and_then(Value::as_str)
+                .filter(|value| value.len() == 14)
+                .ok_or_else(|| CoreError::Provider("Nintendo friend code is unavailable".into()))?;
+            let url = result
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            Ok(ToolResponse::FriendCode(NintendoFriendCodeSnapshot {
+                friend_code: friend_code.to_owned(),
+                url,
+            }))
+        }
+        ToolRequest::FriendLookup(code) => {
+            if !is_friend_code(code) {
+                return Err(CoreError::InvalidConfig("invalid friend code".into()));
+            }
+            let raw = coral_call(
+                transport,
+                client,
+                &auth.session,
+                &format!("{CORAL_ORIGIN}/v3/Friend/GetUserByFriendCode"),
+                json!({"friendCode": format!("{}-{}-{}", &code[..4], &code[4..8], &code[8..])}),
+                0,
+            )
+            .await?;
+            let result = raw.get("result").unwrap_or(&raw);
+            Ok(ToolResponse::FriendLookup(cache.lookup_preview(result)?))
+        }
+        ToolRequest::FriendRequest(friend_id) => {
+            if friend_id.trim().is_empty() || friend_id.len() > 128 {
+                return Err(CoreError::InvalidConfig("invalid friend identity".into()));
+            }
+            coral_call(
+                transport,
+                client,
+                &auth.session,
+                &format!("{CORAL_ORIGIN}/v4/FriendRequest/Create"),
+                json!({"nsaId": friend_id, "channel": "FRIEND_CODE"}),
+                0,
+            )
+            .await?;
+            Ok(ToolResponse::FriendRequest(NintendoFriendRequestResult {
+                friend_id: friend_id.clone(),
+                accepted: true,
+            }))
+        }
+        ToolRequest::FriendNote { friend_id, note } => {
+            if friend_id.trim().is_empty() || friend_id.len() > 128 {
+                return Err(CoreError::InvalidConfig("invalid friend identity".into()));
+            }
+            if note.chars().count() > 20 {
+                return Err(CoreError::InvalidConfig(
+                    "friend note cannot be longer than 20 characters".into(),
+                ));
+            }
+            coral_call(
+                transport,
+                client,
+                &auth.session,
+                &format!("{CORAL_ORIGIN}/v4/Friend/Note/Update"),
+                json!({"friendNsaId": friend_id, "note": note}),
+                0,
+            )
+            .await?;
+            Ok(ToolResponse::FriendNote)
         }
         ToolRequest::Web { .. } => {
             let session =
@@ -876,7 +1210,14 @@ async fn execute_tool(
     }
 }
 
+fn is_friend_code(value: &str) -> bool {
+    value.len() == 12 && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 fn safe_activity_error(error: &CoreError) -> &'static str {
+    if let Some(condition) = super::conditions::safe_activity_condition(error) {
+        return condition;
+    }
     match error {
         CoreError::RateLimited { .. } => "splatnet_rate_limited",
         CoreError::Authentication(_) => "splatnet_authentication_failed",
@@ -917,6 +1258,7 @@ pub(crate) mod test_support {
             registry: Mutex::new(registry),
             authenticator,
             protocol: Arc::new(NetworkProtocol),
+            game_images: Default::default(),
         }
     }
 }
@@ -924,6 +1266,7 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
     use serde_json::json;
 
     #[test]
@@ -949,9 +1292,149 @@ mod tests {
         assert!(first.avatar_bytes.len() <= 128);
     }
 
+    #[tokio::test]
+    async fn game_art_is_public_but_each_account_must_register_its_source() {
+        let transport = HttpTransport::new(Default::default()).unwrap();
+        let client = NxapiAttestationClient::new(transport.clone(), Default::default());
+        let images = Arc::new(tokio::sync::Mutex::new(PublicGameImages::default()));
+        images
+            .lock()
+            .await
+            .load("Game", "https://example.com/game", async {
+                Ok(vec![1, 2, 3])
+            })
+            .await
+            .unwrap();
+        let mut account = AccountCache {
+            game_images: Arc::clone(&images),
+            ..Default::default()
+        };
+        let request = ToolRequest::GameImage("Game".into());
+        assert!(matches!(
+            execute_tool(&transport, &client, &test_auth(), &mut account, &request).await,
+            Err(CoreError::InvalidConfig(_))
+        ));
+        account.remember_game("Game", Some("https://example.com/game"));
+        let result = execute_tool(&transport, &client, &test_auth(), &mut account, &request)
+            .await
+            .unwrap();
+        assert!(matches!(result, ToolResponse::GameImage(bytes) if bytes == vec![1, 2, 3]));
+        let mut second = AccountCache {
+            game_images: images,
+            ..Default::default()
+        };
+        second.remember_game("Game", Some("https://example.com/game"));
+        let result = execute_tool(&transport, &client, &test_auth(), &mut second, &request)
+            .await
+            .unwrap();
+        assert!(matches!(result, ToolResponse::GameImage(bytes) if bytes == vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn lookup_preview_requires_a_valid_stable_id() {
+        for invalid in ["", " ", &"x".repeat(129), "https://example.com/a.png"] {
+            let mut cache = AccountCache::default();
+            let result = cache.lookup_preview(&json!({
+                "nsaId": invalid, "name": "Synthetic lookup"
+            }));
+            assert!(matches!(result, Err(CoreError::Provider(_))), "{invalid}");
+            assert!(cache.lookup_avatar.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn lookup_avatar_uses_the_latest_query_url_and_keeps_accounts_isolated() {
+        let transport = HttpTransport::new(Default::default()).unwrap();
+        let client = NxapiAttestationClient::new(
+            transport.clone(),
+            NxapiConfig {
+                znca_base_url: "http://127.0.0.1:1".into(),
+                ..Default::default()
+            },
+        );
+        let mut cache = AccountCache::default();
+        cache.avatars.insert(
+            "synthetic-lookup".into(),
+            "https://example.com/old.png".into(),
+        );
+        cache.remember_avatar("synthetic-lookup", "https://example.com/old.png", &[1]);
+        let preview = cache
+            .lookup_preview(&json!({
+                "nsaId": "synthetic-lookup", "name": "Synthetic lookup",
+                "imageUri": "https://example.com/new.png"
+            }))
+            .unwrap();
+        assert_eq!(preview.nickname, "Synthetic lookup");
+        assert_eq!(
+            preview.avatar_url.as_deref(),
+            Some("https://example.com/new.png")
+        );
+        cache.remember_avatar("synthetic-lookup", "https://example.com/new.png", &[2]);
+        let request = ToolRequest::Avatar(preview.friend_id);
+        let response = execute_tool(&transport, &client, &test_auth(), &mut cache, &request)
+            .await
+            .unwrap();
+        assert!(matches!(response, ToolResponse::Avatar(bytes) if bytes == vec![2]));
+        let mut other_account = AccountCache::default();
+        assert!(matches!(
+            execute_tool(
+                &transport,
+                &client,
+                &test_auth(),
+                &mut other_account,
+                &request
+            )
+            .await,
+            Err(CoreError::InvalidConfig(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn only_the_latest_lookup_registers_an_unknown_users_avatar() {
+        let transport = HttpTransport::new(Default::default()).unwrap();
+        let client = NxapiAttestationClient::new(transport.clone(), Default::default());
+        let mut cache = AccountCache::default();
+        cache
+            .lookup_preview(&json!({
+                "nsaId": "first", "name": "First", "imageUri": "https://example.com/first.png"
+            }))
+            .unwrap();
+        cache
+            .lookup_preview(&json!({
+                "nsaId": "second", "name": "Second", "imageUri": "https://example.com/second.png"
+            }))
+            .unwrap();
+        assert!(matches!(
+            execute_tool(
+                &transport,
+                &client,
+                &test_auth(),
+                &mut cache,
+                &ToolRequest::Avatar("first".into())
+            )
+            .await,
+            Err(CoreError::InvalidConfig(_))
+        ));
+        cache
+            .lookup_preview(&json!({"nsaId": "third", "name": "Third"}))
+            .unwrap();
+        assert!(matches!(
+            execute_tool(
+                &transport,
+                &client,
+                &test_auth(),
+                &mut cache,
+                &ToolRequest::Avatar("second".into())
+            )
+            .await,
+            Err(CoreError::InvalidConfig(_))
+        ));
+    }
+
     struct OAuthProbe {
         url: String,
         issued: Arc<std::sync::atomic::AtomicUsize>,
+        encryptions: Arc<Mutex<Vec<Value>>>,
         stop: Arc<std::sync::atomic::AtomicBool>,
         worker: Option<std::thread::JoinHandle<()>>,
     }
@@ -964,8 +1447,10 @@ mod tests {
             listener.set_nonblocking(true).unwrap();
             let url = format!("http://{}", listener.local_addr().unwrap());
             let issued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let encryptions = Arc::new(Mutex::new(Vec::new()));
             let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let thread_issued = Arc::clone(&issued);
+            let thread_encryptions = Arc::clone(&encryptions);
             let thread_stop = Arc::clone(&stop);
             let worker = std::thread::spawn(move || {
                 let mut bindings = HashMap::<String, String>::new();
@@ -1021,24 +1506,39 @@ mod tests {
                             let parameter: Value =
                                 serde_json::from_slice(&request[header_end..header_end + length])
                                     .unwrap();
-                            let account = parameter["na_id"].as_str().unwrap();
-                            let bearer = headers
-                                .lines()
-                                .find_map(|line| {
-                                    let (name, value) = line.split_once(':')?;
-                                    name.eq_ignore_ascii_case("authorization")
-                                        .then(|| value.trim().to_owned())
-                                })
-                                .unwrap();
-                            let owner = bindings.entry(bearer).or_insert_with(|| account.into());
-                            if owner == account {
-                                (200, json!({"encrypted_token_request": "dGVzdA=="}))
+                            if parameter["hash_method"] == 2 {
+                                thread_encryptions.lock().unwrap().push(parameter);
+                                (400, json!({"error": "invalid_request"}))
                             } else {
-                                (
-                                    400,
-                                    json!({"error": "invalid_request", "error_description": "synthetic token belongs to another user"}),
-                                )
+                                let account = parameter["na_id"].as_str().unwrap();
+                                let bearer = headers
+                                    .lines()
+                                    .find_map(|line| {
+                                        let (name, value) = line.split_once(':')?;
+                                        name.eq_ignore_ascii_case("authorization")
+                                            .then(|| value.trim().to_owned())
+                                    })
+                                    .unwrap();
+                                let owner =
+                                    bindings.entry(bearer).or_insert_with(|| account.into());
+                                if owner == account {
+                                    (200, json!({"encrypted_token_request": "dGVzdA=="}))
+                                } else {
+                                    (
+                                        400,
+                                        json!({"error": "invalid_request", "error_description": "synthetic token belongs to another user"}),
+                                    )
+                                }
                             }
+                        }
+                        "/encrypt-request" => {
+                            thread_encryptions.lock().unwrap().push(
+                                serde_json::from_slice(&request[header_end..header_end + length])
+                                    .unwrap(),
+                            );
+                            // Stop at the synthetic encryption service. No request may
+                            // continue to Nintendo or mutate a real account.
+                            (400, json!({"error": "invalid_request"}))
                         }
                         _ => panic!("unexpected synthetic request: {path}"),
                     };
@@ -1054,6 +1554,7 @@ mod tests {
             Self {
                 url,
                 issued,
+                encryptions,
                 stop,
                 worker: Some(worker),
             }
@@ -1065,6 +1566,82 @@ mod tests {
             self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
             self.worker.take().unwrap().join().unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn coral_tools_send_complete_request_bodies_to_nxapi_before_encryption() {
+        let probe = OAuthProbe::new();
+        let transport = HttpTransport::new(Default::default()).unwrap();
+        let client = NxapiAttestationClient::new(
+            transport.clone(),
+            NxapiConfig {
+                znca_base_url: probe.url.clone(),
+                oauth_url: format!("{}/oauth", probe.url),
+                ..Default::default()
+            },
+        );
+        let auth = test_auth();
+        let mut cache = AccountCache::default();
+        let cases = [
+            (
+                ToolRequest::FriendPlayLog("synthetic-friend".into()),
+                "/v4/User/PlayLog/Show",
+                json!({"parameter": {"nsaId": "synthetic-friend"}}),
+            ),
+            (
+                ToolRequest::FriendLookup("123456789012".into()),
+                "/v3/Friend/GetUserByFriendCode",
+                json!({"parameter": {"friendCode": "1234-5678-9012"}}),
+            ),
+            (
+                ToolRequest::FriendRequest("synthetic-friend".into()),
+                "/v4/FriendRequest/Create",
+                json!({"parameter": {"nsaId": "synthetic-friend", "channel": "FRIEND_CODE"}}),
+            ),
+            (
+                ToolRequest::FriendNote {
+                    friend_id: "synthetic-friend".into(),
+                    note: "synthetic note".into(),
+                },
+                "/v4/Friend/Note/Update",
+                json!({"parameter": {"friendNsaId": "synthetic-friend", "note": "synthetic note"}}),
+            ),
+            (
+                ToolRequest::Friends,
+                "/v4/Friend/List",
+                json!({"parameter": {}}),
+            ),
+            (
+                ToolRequest::FriendCode,
+                "/v3/Friend/CreateFriendCodeUrl",
+                json!({}),
+            ),
+        ];
+        for (request, path, expected) in cases {
+            let result = execute_tool(&transport, &client, &auth, &mut cache, &request).await;
+            assert!(
+                matches!(result, Err(CoreError::Provider(_))),
+                "the synthetic NXAPI service must stop the request before Nintendo"
+            );
+            let captured = probe.encryptions.lock().unwrap().pop().unwrap();
+            assert_eq!(captured["url"], format!("{CORAL_ORIGIN}{path}"));
+            assert_eq!(captured["token"], "coral-only");
+            let plaintext: Value =
+                serde_json::from_str(captured["data"].as_str().unwrap()).unwrap();
+            assert_eq!(plaintext, expected, "{path}");
+        }
+
+        use super::super::provider::{CoralAlbumProvider, MediaProvider};
+        let album = CoralAlbumProvider::new(transport, client, auth.session);
+        assert!(matches!(
+            album.list_recent(None).await,
+            Err(CoreError::Provider(_))
+        ));
+        let captured = probe.encryptions.lock().unwrap().pop().unwrap();
+        assert_eq!(captured["url"], format!("{CORAL_ORIGIN}/v4/Media/List"));
+        assert_eq!(captured["token"], "coral-only");
+        let plaintext: Value = serde_json::from_str(captured["data"].as_str().unwrap()).unwrap();
+        assert_eq!(plaintext, json!({"parameter": {}}));
     }
 
     #[tokio::test]
@@ -1263,7 +1840,10 @@ mod tests {
     fn friend_mapping_keeps_unknown_presence_and_does_not_match_names() {
         let (mut friends, avatars) = parse_friends(&json!({"result":{"friends":[
             {"nsaId":"a","name":"same","note":"one","isFavoriteFriend":true,
-             "imageUri":"https://example.com/a.png","presence":{"state":"ONLINE","game":{"name":"Splatoon 3","totalPlayTime":123}}},
+             "imageUri":"https://example.com/a.png","friendCreatedAt":1700000000,
+             "route":{"channel":"FRIEND_CODE","userName":"inkling","appName":"Source game"},
+             "presence":{"state":"ONLINE","game":{"name":"Splatoon 3","imageUri":"https://example.com/game.png",
+             "shopUri":"https://example.com/shop","firstPlayedAt":1690000000,"totalPlayTime":123}}},
             {"nsaId":"b","name":"same","presence":{"state":"NEW_STATE"}}
         ]}})).unwrap();
         supplement_friends(
@@ -1278,12 +1858,74 @@ mod tests {
         assert_eq!(friends[1].activity, None);
         assert_eq!(friends[1].presence, "UNKNOWN");
         assert_eq!(friends[0].total_play_time_minutes, Some(123));
+        assert_eq!(friends[0].in_game_name.as_deref(), Some("inkling"));
+        assert_eq!(friends[0].friendship_source.as_deref(), Some("FRIEND_CODE"));
+        assert_eq!(
+            serde_json::to_value(&friends[0]).unwrap()["friendship_game_name"],
+            "Source game"
+        );
+        assert_eq!(
+            friends[0].game_image_url.as_deref(),
+            Some("https://example.com/game.png")
+        );
+        assert_eq!(
+            friends[0].friend_created_at,
+            Some(Utc.timestamp_opt(1_700_000_000, 0).single().unwrap())
+        );
+        assert_eq!(
+            friends[0].first_played_at,
+            Some(Utc.timestamp_opt(1_690_000_000, 0).single().unwrap())
+        );
         assert_eq!(avatars["a"], "https://example.com/a.png");
         assert_eq!(
             friends[0].avatar_url.as_deref(),
             Some("https://example.com/a.png")
         );
         assert_eq!(friends[1].avatar_url, None);
+    }
+
+    #[test]
+    fn friend_play_log_maps_only_service_returned_games_and_times() {
+        let games = parse_friend_play_log(&json!({"result":[
+            {
+                "name":"Splatoon 3",
+                "imageUri":"https://example.com/splatoon3.png",
+                "totalPlayTime":123,
+                "firstPlayedAt":1690000000
+            },
+            {
+                "name":"Game without optional metadata",
+                "totalPlayTime":0,
+                "firstPlayedAt":0
+            }
+        ]}))
+        .unwrap();
+
+        assert_eq!(games.len(), 2);
+        assert_eq!(games[0].name, "Splatoon 3");
+        assert_eq!(
+            games[0].image_url.as_deref(),
+            Some("https://example.com/splatoon3.png")
+        );
+        assert_eq!(games[0].total_play_time_minutes, Some(123));
+        assert_eq!(
+            games[0].first_played_at,
+            Some(Utc.timestamp_opt(1_690_000_000, 0).single().unwrap())
+        );
+        assert_eq!(games[1].image_url, None);
+        assert_eq!(games[1].first_played_at, None);
+    }
+
+    #[test]
+    fn friend_code_validation_accepts_only_twelve_ascii_digits() {
+        assert!(is_friend_code("123456789012"));
+        assert!(!is_friend_code("1234-5678-9012"));
+        assert!(!is_friend_code("SW-1234-5678-9012"));
+        assert!(!is_friend_code("12345678901"));
+        assert!(!is_friend_code("1234567890123"));
+        assert!(!is_friend_code("12345678901a"));
+        assert!(!is_friend_code("１２３４５６７８９０１２"));
+        assert!(!is_friend_code(""));
     }
 
     #[test]
@@ -1416,6 +2058,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn coral_known_account_and_service_states_are_not_expired_tokens() {
+        for (status, code) in [
+            (9407, "nintendo_account_not_linked"),
+            (9424, "nintendo_user_not_activated"),
+            (9428, "nintendo_account_disabled"),
+            (9450, "nso_membership_required"),
+            (9427, "nintendo_client_update_required"),
+            (9499, "nintendo_service_closed"),
+            (9501, "nintendo_service_unavailable"),
+            (9511, "nintendo_service_maintenance"),
+        ] {
+            let error = coral_error_response(
+                "/v4/Friend/List",
+                200,
+                json!({"status":status, "errorMessage":"must-not-echo", "token":"private"}),
+            )
+            .await;
+            assert!(matches!(error, CoreError::Provider(_)), "{status}");
+            assert!(error.to_string().contains(code), "{status}: {error}");
+            assert!(!error.to_string().contains("must-not-echo"));
+            assert!(!error.to_string().contains("private"));
+        }
+        let error = coral_error_response(
+            "/v4/Friend/List",
+            200,
+            json!({"status":9437, "errorMessage":"private"}),
+        )
+        .await;
+        assert!(matches!(error, CoreError::RateLimited { .. }));
+    }
+
+    #[tokio::test]
     async fn coral_membership_unavailable_is_a_safe_provider_error_not_expired_authentication() {
         let error = coral_error_response("/v4/Game/GetWebServiceToken", 200,
             json!({"status":9403,"errorMessage":"Membership required error.","secret":"must-not-echo"})).await;
@@ -1426,6 +2100,7 @@ mod tests {
         assert!(error.to_string().contains("membership"));
         assert!(!error.to_string().contains("must-not-echo"));
         assert!(!error.to_string().contains("Membership required error."));
+        assert_eq!(safe_activity_error(&error), "nso_membership_required");
     }
 
     #[tokio::test]
@@ -1543,6 +2218,7 @@ mod tests {
             AccountTools {
                 registry: Mutex::new(Registry::default()),
                 protocol: Arc::new(NetworkProtocol),
+                game_images: Default::default(),
                 authenticator: Arc::new(TestAuthenticator {
                     calls: Arc::clone(&calls),
                     pause,
@@ -1550,6 +2226,71 @@ mod tests {
             },
             calls,
         )
+    }
+
+    #[tokio::test]
+    async fn proxy_change_drops_reusable_sessions_without_cancelling_inflight_entries() {
+        let (service, _) = test_service(None);
+        let transport = HttpTransport::new(Default::default()).unwrap();
+        let (old, _, _) = service
+            .context(
+                "same-session",
+                Some("account-a"),
+                Some("http://proxy.example:8080"),
+                &transport,
+            )
+            .unwrap();
+        old.cache.lock().await.auth = Some(test_auth());
+
+        service.invalidate_network_context().unwrap();
+
+        assert!(old.removed.check().is_ok());
+        assert!(
+            old.cache.lock().await.auth.is_some(),
+            "an in-flight operation may finish with its original cache and transport"
+        );
+        let (fresh, _, _) = service
+            .context(
+                "same-session",
+                Some("account-a"),
+                Some("http://proxy.example:8080"),
+                &transport,
+            )
+            .unwrap();
+        assert!(!Arc::ptr_eq(&old, &fresh));
+        assert!(fresh.cache.lock().await.auth.is_none());
+    }
+
+    #[tokio::test]
+    async fn late_authentication_does_not_republish_clients_after_proxy_cache_invalidation() {
+        let pause = Arc::new(tokio::sync::Notify::new());
+        let (service, calls) = test_service(Some(Arc::clone(&pause)));
+        let transport = HttpTransport::new(Default::default()).unwrap();
+        let cancellation = CancellationToken::default();
+        let login = service.authenticate(
+            "same-session",
+            Some("account-a"),
+            None,
+            transport,
+            &cancellation,
+        );
+        let invalidate = async {
+            while calls.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+            service.invalidate_network_context().unwrap();
+            pause.notify_one();
+        };
+        let (result, ()) = tokio::join!(login, invalidate);
+
+        assert!(
+            result.is_ok(),
+            "the in-flight request keeps its original route"
+        );
+        assert!(
+            service.registry.lock().unwrap().clients.is_empty(),
+            "late old-proxy authentication must not repopulate shared OAuth caches"
+        );
     }
 
     #[tokio::test]
@@ -1600,6 +2341,293 @@ mod tests {
             Err(CoreError::Authentication(_))
         ));
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn near_expiry_sync_and_friend_requests_share_one_refresh_and_send_the_current_token() {
+        use super::super::provider::{CoralAlbumProvider, MediaProvider};
+        use std::sync::atomic::Ordering;
+
+        // The listener rejects encryption before any Nintendo request can run.
+        // Assert actual plaintext token/route submissions, not just a mock's
+        // refresh count. A cached session inside the safety window must never
+        // escape to FriendCode, Play Log or the album provider.
+        for (seconds_left, wanted_token, wanted_logins) in [
+            (600, "previous-coral", 1),
+            (300, "coral-only", 2),
+            (299, "coral-only", 2),
+        ] {
+            let probe = OAuthProbe::new();
+            let transport = HttpTransport::new(Default::default()).unwrap();
+            let client = NxapiAttestationClient::new(
+                transport.clone(),
+                NxapiConfig {
+                    znca_base_url: probe.url.clone(),
+                    oauth_url: format!("{}/oauth", probe.url),
+                    ..Default::default()
+                },
+            );
+            let (mut service, calls) = test_service(None);
+            service
+                .registry
+                .get_mut()
+                .unwrap()
+                .clients
+                .insert(hex::encode(Sha256::digest(b"")), client);
+            let cancel = CancellationToken::default();
+            service
+                .authenticate(
+                    "session-a",
+                    Some("account-a"),
+                    None,
+                    transport.clone(),
+                    &cancel,
+                )
+                .await
+                .unwrap();
+            let (entry, _, _) = service
+                .context("session-a", Some("account-a"), None, &transport)
+                .unwrap();
+            {
+                let mut cache = entry.cache.lock().await;
+                let auth = cache.auth.as_mut().unwrap();
+                auth.session.access_token = "previous-coral".into();
+                auth.session.expires_at = Some(Utc::now() + Duration::seconds(seconds_left));
+            }
+            let (sync, code, play_log) = tokio::join!(
+                service.authenticate("session-a", None, None, transport.clone(), &cancel),
+                service.execute(
+                    "account-a",
+                    "session-a",
+                    "friend-code",
+                    None,
+                    transport.clone(),
+                    ToolRequest::FriendCode
+                ),
+                service.execute(
+                    "account-a",
+                    "session-a",
+                    "play-log",
+                    None,
+                    transport.clone(),
+                    ToolRequest::FriendPlayLog("synthetic-friend".into())
+                ),
+            );
+            assert!(matches!(code, Err(CoreError::Provider(_))));
+            assert!(matches!(play_log, Err(CoreError::Provider(_))));
+            let session = sync.unwrap();
+            assert_eq!(session.access_token, wanted_token);
+            let attestation = service.attestation(&session, None, &transport).unwrap();
+            let provider = CoralAlbumProvider::new(transport, attestation, session);
+            assert!(matches!(
+                provider.list_recent(None).await,
+                Err(CoreError::Provider(_))
+            ));
+            assert_eq!(calls.load(Ordering::SeqCst), wanted_logins);
+            assert_eq!(probe.issued.load(Ordering::SeqCst), 1);
+            let captured = probe.encryptions.lock().unwrap();
+            assert_eq!(captured.len(), 3);
+            for request in captured.iter() {
+                assert_eq!(request["token"], wanted_token);
+            }
+            let mut routes: Vec<_> = captured
+                .iter()
+                .map(|request| request["url"].as_str().unwrap().to_owned())
+                .collect();
+            routes.sort();
+            assert_eq!(
+                routes,
+                [
+                    format!("{CORAL_ORIGIN}/v3/Friend/CreateFriendCodeUrl"),
+                    format!("{CORAL_ORIGIN}/v4/Media/List"),
+                    format!("{CORAL_ORIGIN}/v4/User/PlayLog/Show"),
+                ]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn usable_web_session_survives_parent_expiry_and_normal_renewal() {
+        use std::sync::atomic::Ordering;
+        for renew_parent in [false, true] {
+            let probe = OAuthProbe::new();
+            let (mut service, logins) = test_service(None);
+            let transport = HttpTransport::new(Default::default()).unwrap();
+            let client = NxapiAttestationClient::new(
+                transport.clone(),
+                NxapiConfig {
+                    znca_base_url: probe.url.clone(),
+                    oauth_url: format!("{}/oauth", probe.url),
+                    ..Default::default()
+                },
+            );
+            service
+                .registry
+                .get_mut()
+                .unwrap()
+                .clients
+                .insert(hex::encode(Sha256::digest(b"")), client);
+            let cancellation = CancellationToken::default();
+            service
+                .authenticate(
+                    "session-a",
+                    Some("account-a"),
+                    None,
+                    transport.clone(),
+                    &cancellation,
+                )
+                .await
+                .unwrap();
+            let (entry, _, _) = service
+                .context("session-a", Some("account-a"), None, &transport)
+                .unwrap();
+            {
+                let mut cache = entry.cache.lock().await;
+                let auth = cache.auth.as_mut().unwrap();
+                auth.session.expires_at = Some(Utc::now() - Duration::seconds(1));
+                cache.splatnet = Some(
+                    SplatNetWebSession {
+                        game_web_token: "still-valid-child".into(),
+                        expires_at: Utc::now() + Duration::minutes(10),
+                        language: "ja-JP".into(),
+                        country: "JP".into(),
+                    }
+                    .into(),
+                );
+            }
+            if renew_parent {
+                service
+                    .authenticate(
+                        "session-a",
+                        Some("account-a"),
+                        None,
+                        transport.clone(),
+                        &cancellation,
+                    )
+                    .await
+                    .unwrap();
+            }
+            let result = service
+                .execute(
+                    "account-a",
+                    "session-a",
+                    "cached-web",
+                    None,
+                    transport,
+                    ToolRequest::Web {
+                        force_refresh: false,
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                result,
+                ToolResponse::Web(web) if web.game_web_token == "still-valid-child"
+            ));
+            assert_eq!(
+                logins.load(Ordering::SeqCst),
+                if renew_parent { 2 } else { 1 }
+            );
+            assert!(probe.encryptions.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn web_refresh_keeps_valid_coral_credentials_for_friends_and_sync() {
+        use std::sync::atomic::Ordering;
+
+        for (seconds_left, wanted_token, wanted_logins) in [
+            (600, "previous-coral", 1),
+            (300, "coral-only", 2),
+            (299, "coral-only", 2),
+        ] {
+            let probe = OAuthProbe::new();
+            let transport = HttpTransport::new(Default::default()).unwrap();
+            let client = NxapiAttestationClient::new(
+                transport.clone(),
+                NxapiConfig {
+                    znca_base_url: probe.url.clone(),
+                    oauth_url: format!("{}/oauth", probe.url),
+                    ..Default::default()
+                },
+            );
+            let (mut service, logins) = test_service(None);
+            service
+                .registry
+                .get_mut()
+                .unwrap()
+                .clients
+                .insert(hex::encode(Sha256::digest(b"")), client);
+            let cancellation = CancellationToken::default();
+            service
+                .authenticate(
+                    "session-a",
+                    Some("account-a"),
+                    None,
+                    transport.clone(),
+                    &cancellation,
+                )
+                .await
+                .unwrap();
+            let (entry, _, _) = service
+                .context("session-a", Some("account-a"), None, &transport)
+                .unwrap();
+            {
+                let mut cache = entry.cache.lock().await;
+                let auth = cache.auth.as_mut().unwrap();
+                auth.session.access_token = "previous-coral".into();
+                auth.session.expires_at = Some(Utc::now() + Duration::seconds(seconds_left));
+            }
+            for (id, request) in [
+                (
+                    "refresh-web",
+                    ToolRequest::Web {
+                        force_refresh: true,
+                    },
+                ),
+                ("next-friend-code", ToolRequest::FriendCode),
+            ] {
+                assert!(matches!(
+                    service
+                        .execute(
+                            "account-a",
+                            "session-a",
+                            id,
+                            None,
+                            transport.clone(),
+                            request,
+                        )
+                        .await,
+                    Err(CoreError::Provider(_))
+                ));
+            }
+            let session = service
+                .authenticate(
+                    "session-a",
+                    Some("account-a"),
+                    None,
+                    transport,
+                    &cancellation,
+                )
+                .await
+                .unwrap();
+            assert_eq!(session.access_token, wanted_token);
+            assert_eq!(logins.load(Ordering::SeqCst), wanted_logins);
+            let requests = probe.encryptions.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            let web = &requests[0];
+            assert_eq!(web["hash_method"], 2);
+            assert_eq!(web["token"], wanted_token);
+            assert_eq!(
+                web["encrypt_token_request"]["url"],
+                format!("{CORAL_ORIGIN}/v4/Game/GetWebServiceToken"),
+            );
+            assert_eq!(
+                web["encrypt_token_request"]["parameter"]["registrationToken"],
+                wanted_token,
+            );
+            assert_eq!(requests[1]["token"], wanted_token);
+        }
     }
 
     #[tokio::test]
@@ -1685,6 +2713,292 @@ mod tests {
         rate_limited: bool,
         always_expired: bool,
     }
+
+    struct RejectedSplatNetProtocol {
+        rejection: &'static str,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        always_rejected: bool,
+    }
+
+    struct CachedIdentityAuthenticator;
+
+    struct FriendActivityProtocol {
+        rejection: &'static str,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        always_rejected: bool,
+    }
+
+    #[async_trait]
+    impl ToolProtocol for FriendActivityProtocol {
+        async fn execute(
+            &self,
+            _: &HttpTransport,
+            _: &NxapiAttestationClient,
+            _: &AuthenticatedCoralSession,
+            _: &mut AccountCache,
+            _: &ToolRequest,
+        ) -> CoreResult<ToolResponse> {
+            let (friends, _) = parse_friends(&json!({"result":{"friends":[{
+                "nsaId":"synthetic-friend", "name":"Retained friend",
+                "presence":{"state":"OFFLINE"}
+            }]}}))?;
+            let activity = if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+                || self.always_rejected
+            {
+                Err(CoreError::Authentication(self.rejection.into()))
+            } else {
+                Ok(json!({"data":{"friends":{"nodes":[]}}}))
+            };
+            Ok(ToolResponse::FriendsWithActivity(friends, activity))
+        }
+    }
+
+    #[tokio::test]
+    async fn friend_activity_shares_one_stage_recovery_and_keeps_basic_friends_on_failure() {
+        use std::sync::atomic::Ordering;
+        for (rejection, wanted_logins, always_rejected) in [
+            ("splatnet_bullet_token_invalid", 1, false),
+            ("splatnet_bullet_token_invalid", 1, true),
+            ("splatnet_game_web_token_invalid (HTTP 401)", 1, false),
+            ("Nintendo account session rejected (status 9403)", 2, false),
+            ("Nintendo account session rejected (status 9403)", 2, true),
+        ] {
+            let (mut service, logins) = test_service(None);
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            service.protocol = Arc::new(FriendActivityProtocol {
+                rejection,
+                calls: Arc::clone(&calls),
+                always_rejected,
+            });
+            let response = service
+                .execute(
+                    "account-a",
+                    "session-a",
+                    "friends",
+                    None,
+                    HttpTransport::new(Default::default()).unwrap(),
+                    ToolRequest::Friends,
+                )
+                .await
+                .unwrap();
+            let ToolResponse::Friends(snapshot) = response else {
+                panic!("internal activity result must become a safe public snapshot");
+            };
+            assert_eq!(snapshot.friends.len(), 1);
+            assert_eq!(snapshot.friends[0].nickname, "Retained friend");
+            assert_eq!(
+                snapshot.activity_error.as_deref(),
+                always_rejected.then_some("splatnet_authentication_failed")
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            assert_eq!(logins.load(Ordering::SeqCst), wanted_logins);
+        }
+    }
+
+    #[async_trait]
+    impl AccountAuthenticator for CachedIdentityAuthenticator {
+        async fn login_cached(
+            &self,
+            _: HttpTransport,
+            _: NxapiAttestationClient,
+            _: &str,
+            cache: &mut Option<CachedNintendoIdentity>,
+        ) -> CoreResult<AuthenticatedCoralSession> {
+            if cache.is_none() {
+                return Err(CoreError::Provider("unexpected Nintendo renewal".into()));
+            }
+            Ok(test_auth())
+        }
+
+        async fn login(
+            &self,
+            _: HttpTransport,
+            _: NxapiAttestationClient,
+            _: &str,
+        ) -> CoreResult<AuthenticatedCoralSession> {
+            panic!("cached authentication must use its identity parent")
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_coral_reuses_nintendo_identity_and_preserves_valid_splatnet_child() {
+        let (mut service, _) = test_service(None);
+        let transport = HttpTransport::new(Default::default()).unwrap();
+        let cancellation = CancellationToken::default();
+        service
+            .authenticate(
+                "session-a",
+                Some("account-a"),
+                None,
+                transport.clone(),
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        let (entry, _, _) = service
+            .context("session-a", Some("account-a"), None, &transport)
+            .unwrap();
+        {
+            let mut cache = entry.cache.lock().await;
+            cache.nintendo = Some(super::super::session::tests::synthetic_identity());
+            cache.auth.as_mut().unwrap().session.access_token = "rejected-coral".into();
+            cache.splatnet = Some(
+                SplatNetWebSession {
+                    game_web_token: "valid-descendant".into(),
+                    expires_at: Utc::now() + Duration::hours(1),
+                    language: "ja-JP".into(),
+                    country: "JP".into(),
+                }
+                .into(),
+            );
+        }
+        service.authenticator = Arc::new(CachedIdentityAuthenticator);
+        let renewed = service
+            .authenticate_with_refresh(
+                "session-a",
+                Some("account-a"),
+                None,
+                transport.clone(),
+                &cancellation,
+                true,
+            )
+            .await
+            .expect("a Coral rejection does not reject its Nintendo parent");
+        assert_eq!(renewed.access_token, "coral-only");
+        let child = service
+            .execute(
+                "account-a",
+                "session-a",
+                "cached-descendant",
+                None,
+                transport,
+                ToolRequest::Web {
+                    force_refresh: false,
+                },
+            )
+            .await
+            .expect("a separately valid descendant survives parent recovery");
+        assert!(matches!(
+            child,
+            ToolResponse::Web(web) if web.game_web_token == "valid-descendant"
+        ));
+    }
+
+    #[async_trait]
+    impl ToolProtocol for RejectedSplatNetProtocol {
+        async fn execute(
+            &self,
+            transport: &HttpTransport,
+            client: &NxapiAttestationClient,
+            auth: &AuthenticatedCoralSession,
+            cache: &mut AccountCache,
+            _: &ToolRequest,
+        ) -> CoreResult<ToolResponse> {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+                || self.always_rejected
+            {
+                return Err(CoreError::Authentication(self.rejection.into()));
+            }
+            splatnet::web_session(transport, client, auth, &mut cache.splatnet)
+                .await
+                .map(ToolResponse::Web)
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_splatnet_child_retains_valid_parent_for_bounded_recovery() {
+        use std::sync::atomic::Ordering;
+        for (rejection, expect_cached_web, always_rejected) in [
+            ("splatnet_bullet_token_invalid", true, false),
+            ("splatnet_game_web_token_invalid (HTTP 401)", false, false),
+            ("splatnet_bullet_token_invalid", true, true),
+            ("splatnet_game_web_token_invalid (HTTP 401)", false, true),
+        ] {
+            let probe = OAuthProbe::new();
+            let (mut service, authentications) = test_service(None);
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            service.protocol = Arc::new(RejectedSplatNetProtocol {
+                rejection,
+                calls: Arc::clone(&calls),
+                always_rejected,
+            });
+            let transport = HttpTransport::new(Default::default()).unwrap();
+            let client = NxapiAttestationClient::new(
+                transport.clone(),
+                NxapiConfig {
+                    znca_base_url: probe.url.clone(),
+                    oauth_url: format!("{}/oauth", probe.url),
+                    ..Default::default()
+                },
+            );
+            service
+                .registry
+                .get_mut()
+                .unwrap()
+                .clients
+                .insert(hex::encode(Sha256::digest(b"")), client);
+            service
+                .authenticate(
+                    "session-a",
+                    Some("account-a"),
+                    None,
+                    transport.clone(),
+                    &CancellationToken::default(),
+                )
+                .await
+                .unwrap();
+            let (entry, _, _) = service
+                .context("session-a", Some("account-a"), None, &transport)
+                .unwrap();
+            {
+                let mut cache = entry.cache.lock().await;
+                cache.auth.as_mut().unwrap().session.access_token = "valid-coral".into();
+                cache.splatnet = Some(
+                    SplatNetWebSession {
+                        game_web_token: "valid-game-web".into(),
+                        expires_at: Utc::now() + Duration::hours(1),
+                        language: "ja-JP".into(),
+                        country: "JP".into(),
+                    }
+                    .into(),
+                );
+            }
+            let result = service
+                .execute(
+                    "account-a",
+                    "session-a",
+                    "recover-child",
+                    None,
+                    transport,
+                    ToolRequest::Seed,
+                )
+                .await;
+            assert_eq!(
+                authentications.load(Ordering::SeqCst),
+                1,
+                "a rejected SplatNet child must not force Coral login: {rejection}"
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            if always_rejected {
+                assert!(matches!(result, Err(CoreError::Authentication(_))));
+                assert!(probe.encryptions.lock().unwrap().is_empty());
+            } else if expect_cached_web {
+                assert!(matches!(
+                    result,
+                    Ok(ToolResponse::Web(web)) if web.game_web_token == "valid-game-web"
+                ));
+                assert!(probe.encryptions.lock().unwrap().is_empty());
+            } else {
+                // The synthetic NXAPI service stops the gtoken exchange before
+                // any Nintendo request. It must receive the existing Coral token.
+                assert!(matches!(result, Err(CoreError::Provider(_))));
+                let requests = probe.encryptions.lock().unwrap();
+                assert_eq!(requests.len(), 1);
+                assert_eq!(requests[0]["token"], "valid-coral");
+            }
+        }
+    }
+
     #[async_trait]
     impl ToolProtocol for FailingProtocol {
         async fn execute(
@@ -1883,6 +3197,7 @@ mod tests {
         let service = AccountTools {
             registry: Mutex::new(Registry::default()),
             protocol: Arc::new(NetworkProtocol),
+            game_images: Default::default(),
             authenticator: Arc::new(FailFirstAuthenticator(std::sync::atomic::AtomicUsize::new(
                 0,
             ))),

@@ -8,9 +8,11 @@ import '../../l10n/app_localizations.dart';
 import '../../rust/models.dart';
 import '../video_runtime.dart';
 import '../video_preview.dart';
+import '../video_viewer_lifecycle.dart';
 import 'android_media_swipe_region.dart';
 import 'android_video_controls.dart';
 import 'android_video_failure_view.dart';
+import 'android_video_retirement.dart';
 
 class AndroidVideoSurface extends StatefulWidget {
   const AndroidVideoSurface({
@@ -18,12 +20,16 @@ class AndroidVideoSurface extends StatefulWidget {
     required this.path,
     required this.cover,
     this.autoPlay = false,
+    this.active = true,
+    this.prewarm = false,
     this.onReady,
     this.onSwipe,
   });
   final String path;
   final MediaAsset cover;
   final bool autoPlay;
+  final bool active;
+  final bool prewarm;
   final ValueChanged<Player>? onReady;
   final ValueChanged<int>? onSwipe;
   @override
@@ -33,47 +39,119 @@ class AndroidVideoSurface extends StatefulWidget {
 class AndroidVideoSurfaceState extends State<AndroidVideoSurface> {
   late final Player player;
   late final VideoController controller;
+  late final playbackLifecycle = VideoViewerLifecycle(
+    initiallyActive: false,
+    pause: player.pause,
+    play: () async {
+      await opening;
+      if (mounted && !released && widget.active) await player.play();
+    },
+    disposePlayer: () async {
+      try {
+        await opening;
+      } catch (_) {
+        // Opening failure does not transfer ownership of the native player.
+      }
+      await retireAndroidVideoOutput(controller.notifier.value, player.dispose);
+    },
+  );
   Object? error;
-  bool released = false;
-  Future<void>? releasing;
+  bool get released => playbackLifecycle.disposed;
+  bool ready = false;
+  late final Future<void> opening;
   @override
   void initState() {
     super.initState();
     VideoRuntime.ensureInitialized();
     player = Player();
     controller = VideoController(player);
-    unawaited(open());
+    opening = open();
+    unawaited(
+      opening
+          .then((_) async {
+            if (!mounted || released) return;
+            setState(() => ready = true);
+            if (widget.active) {
+              await updateActive();
+            } else if (widget.prewarm) {
+              unawaited(prewarm());
+            }
+            if (mounted && !released && widget.active) {
+              widget.onReady?.call(player);
+            }
+          })
+          .catchError((Object exception) {
+            if (mounted) setState(() => error = exception);
+            unawaited(release());
+          }),
+    );
   }
 
   Future<void> open() async {
+    await controller.platform.future.timeout(const Duration(seconds: 15));
+    if (released) return;
+    await player
+        .open(Media(widget.path), play: false)
+        .timeout(const Duration(seconds: 15));
+  }
+
+  Future<void> prewarm() async {
     try {
-      await controller.platform.future.timeout(const Duration(seconds: 15));
-      if (released) return;
-      await player
-          .open(Media(widget.path), play: false)
-          .timeout(const Duration(seconds: 15));
-      if (released) return;
-      if (widget.autoPlay) {
-        await player.play();
-      }
-      if (!released) widget.onReady?.call(player);
-    } catch (exception) {
-      await release();
-      if (mounted) setState(() => error = exception);
+      await playbackLifecycle.prewarm((interrupted) async {
+        if (!mounted || released || widget.active) return;
+        await warmVideoPreview(
+          player: player,
+          firstFrame: controller.waitUntilFirstFrameRendered,
+          interrupted: interrupted,
+          requireDecodedOutput: true,
+        );
+      });
+    } catch (_) {
+      // Neighbor preparation is optional; the selected page owns playback errors.
     }
   }
 
-  Future<void> release() {
-    if (releasing != null) return releasing!;
-    released = true;
-    return releasing = () async {
-      try {
-        await player.pause();
-      } finally {
-        await player.dispose();
-      }
-    }();
+  Future<void> updateActive() async {
+    try {
+      await playbackLifecycle.updateActive(
+        widget.active,
+        autoPlay: widget.autoPlay,
+      );
+    } catch (exception) {
+      if (mounted && !released) setState(() => error = exception);
+    }
   }
+
+  Future<void> pausePlayback() => playbackLifecycle.pause();
+
+  Future<void> _command(Future<void> command) async {
+    try {
+      await command;
+    } catch (exception) {
+      if (mounted && !released) {
+        setState(() => error = exception);
+        unawaited(release());
+      }
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant AndroidVideoSurface oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.active == widget.active || released) return;
+    unawaited(() async {
+      await updateActive();
+      if (widget.active && ready) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && !released && widget.active && ready) {
+            widget.onReady?.call(player);
+          }
+        });
+      }
+    }());
+  }
+
+  Future<void> release() => playbackLifecycle.dispose();
 
   @override
   void dispose() {
@@ -89,57 +167,82 @@ class AndroidVideoSurfaceState extends State<AndroidVideoSurface> {
     return StreamBuilder(
       stream: player.stream.playing,
       initialData: player.state.playing,
-      builder: (context, playing) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Expanded(
-            child: AndroidMediaSwipeRegion(
-              enabled: !released,
-              onSwipe: (delta) => widget.onSwipe?.call(delta),
-              child: VideoPreview(
-                controller: controller,
-                cover: widget.cover,
-                controls: (_) => Stack(
-                  children: [
-                    if (playing.data != true)
-                      Center(
+      builder: (context, playing) => VideoPreview(
+        controller: controller,
+        cover: widget.cover,
+        showLoadingIndicator: false,
+        controls: (_) => Stack(
+          children: [
+            // Siblings, not ancestors of the control bar: its raw pointer
+            // listener must not observe scrubbing as a media-page swipe.
+            Positioned.fill(
+              child: AndroidMediaSwipeRegion(
+                enabled: !released && widget.active,
+                onSwipe: (delta) => widget.onSwipe?.call(delta),
+                child: playing.data != true
+                    ? Center(
                         child: IconButton.filledTonal(
                           key: const Key('android-video-center-play'),
                           tooltip: context.l10n.select(zh: '播放', en: 'Play'),
-                          onPressed: released ? null : player.play,
+                          onPressed: !ready || released || !widget.active
+                              ? null
+                              : () => unawaited(
+                                  _command(playbackLifecycle.play()),
+                                ),
                           icon: const Icon(Icons.play_arrow, size: 42),
                         ),
+                      )
+                    : const SizedBox.expand(),
+              ),
+            ),
+            Positioned(
+              key: const Key('android-video-control-overlay'),
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: StreamBuilder(
+                stream: player.stream.duration,
+                initialData: player.state.duration,
+                builder: (context, duration) => StreamBuilder(
+                  stream: player.stream.position,
+                  initialData: player.state.position,
+                  builder: (context, position) => StreamBuilder(
+                    stream: player.stream.volume,
+                    initialData: player.state.volume,
+                    builder: (context, volume) => AndroidVideoControls(
+                      enabled: ready && !released && widget.active,
+                      playing: playing.data == true,
+                      position: position.data ?? Duration.zero,
+                      duration: duration.data ?? Duration.zero,
+                      muted: (volume.data ?? 100) == 0,
+                      onToggle: () => unawaited(
+                        _command(
+                          playbackLifecycle.runCommand(player.playOrPause),
+                        ),
                       ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          StreamBuilder(
-            stream: player.stream.duration,
-            initialData: player.state.duration,
-            builder: (context, duration) => StreamBuilder(
-              stream: player.stream.position,
-              initialData: player.state.position,
-              builder: (context, position) => StreamBuilder(
-                stream: player.stream.volume,
-                initialData: player.state.volume,
-                builder: (context, volume) => AndroidVideoControls(
-                  enabled: !released,
-                  playing: playing.data == true,
-                  position: position.data ?? Duration.zero,
-                  duration: duration.data ?? Duration.zero,
-                  muted: (volume.data ?? 100) == 0,
-                  onToggle: () => unawaited(player.playOrPause()),
-                  onMute: () => unawaited(
-                    player.setVolume((volume.data ?? 100) == 0 ? 100 : 0),
+                      onMute: () => unawaited(
+                        _command(
+                          playbackLifecycle.runCommand(
+                            () => player.setVolume(
+                              (volume.data ?? 100) == 0 ? 100 : 0,
+                            ),
+                          ),
+                        ),
+                      ),
+                      onSeek: (value) => unawaited(
+                        _command(
+                          playbackLifecycle.runCommand(
+                            () => player.seek(value),
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
-                  onSeek: (value) => unawaited(player.seek(value)),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

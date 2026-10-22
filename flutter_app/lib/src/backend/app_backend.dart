@@ -42,6 +42,7 @@ abstract interface class AppBackend {
     List<String> gameNames = const [],
     DateTime? capturedFrom,
     DateTime? capturedUntil,
+    CapturedOnThisDay? capturedOnThisDay,
   });
 
   Future<List<AlbumSummary>> listAlbums();
@@ -168,6 +169,16 @@ abstract interface class SyncScheduleBackend {
 
 abstract interface class SyncHistoryBackend {
   Future<SyncRuntimeState> loadSyncAccountHistory(String accountId);
+}
+
+abstract interface class SyncNotificationBackend {
+  Future<void> notifyAutomaticSyncCompleted({
+    required int downloaded,
+    required int existing,
+    required int failed,
+    required int accountCount,
+    int failedAccountCount = 0,
+  });
 }
 
 /// Optional capabilities keep desktop and test backends source-compatible.

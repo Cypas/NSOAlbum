@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
@@ -7,6 +8,7 @@ import '../../state/android_update_controller.dart';
 Future<AndroidUpdateAction?> showAndroidReleaseUpdateDialog(
   BuildContext context, {
   required LatestReleaseInfo release,
+  bool allowDownload = kReleaseMode,
 }) => showDialog<AndroidUpdateAction>(
   context: context,
   builder: (context) => AlertDialog(
@@ -26,7 +28,12 @@ Future<AndroidUpdateAction?> showAndroidReleaseUpdateDialog(
             ),
             const SizedBox(height: 12),
             Text(
-              release.androidPackage == null
+              !allowDownload
+                  ? context.l10n.select(
+                      zh: 'Debug 版本可检查更新，但不下载或安装正式更新包。',
+                      en: 'Debug builds can check for updates, but cannot download or install release packages.',
+                    )
+                  : release.androidPackage == null
                   ? context.l10n.select(
                       zh: '暂时没有可验证的 Android 安装包，请稍后再检查。',
                       en: 'No verified Android package is available yet. Check again later.',
@@ -62,7 +69,7 @@ Future<AndroidUpdateAction?> showAndroidReleaseUpdateDialog(
           context.l10n.select(zh: '忽略此版本', en: 'Ignore this version'),
         ),
       ),
-      if (release.androidPackage != null)
+      if (allowDownload && release.androidPackage != null)
         FilledButton.icon(
           key: const Key('android-update-download'),
           onPressed: () => Navigator.pop(context, AndroidUpdateAction.download),

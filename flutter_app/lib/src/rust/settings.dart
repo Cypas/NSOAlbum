@@ -19,6 +19,8 @@ class AppSettings {
   final bool compactTagDisplay;
   final bool autoPlayVideo;
   final bool autoSyncOnLaunch;
+  final bool notifyOnAutoSync;
+  final bool showSplatoonSchedule;
   final String closeBehavior;
   final List<String> customFontPaths;
   final SyncPolicy syncPolicy;
@@ -35,6 +37,8 @@ class AppSettings {
     required this.compactTagDisplay,
     required this.autoPlayVideo,
     required this.autoSyncOnLaunch,
+    required this.notifyOnAutoSync,
+    required this.showSplatoonSchedule,
     required this.closeBehavior,
     required this.customFontPaths,
     required this.syncPolicy,
@@ -53,6 +57,8 @@ class AppSettings {
       compactTagDisplay.hashCode ^
       autoPlayVideo.hashCode ^
       autoSyncOnLaunch.hashCode ^
+      notifyOnAutoSync.hashCode ^
+      showSplatoonSchedule.hashCode ^
       closeBehavior.hashCode ^
       customFontPaths.hashCode ^
       syncPolicy.hashCode;
@@ -73,6 +79,8 @@ class AppSettings {
           compactTagDisplay == other.compactTagDisplay &&
           autoPlayVideo == other.autoPlayVideo &&
           autoSyncOnLaunch == other.autoSyncOnLaunch &&
+          notifyOnAutoSync == other.notifyOnAutoSync &&
+          showSplatoonSchedule == other.showSplatoonSchedule &&
           closeBehavior == other.closeBehavior &&
           customFontPaths == other.customFontPaths &&
           syncPolicy == other.syncPolicy;

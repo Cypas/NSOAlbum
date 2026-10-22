@@ -2,6 +2,7 @@ import Cocoa
 import FlutterMacOS
 import Network
 import WebKit
+import UserNotifications
 
 class MainFlutterWindow: NSWindow {
   override func awakeFromNib() {
@@ -14,8 +15,56 @@ class MainFlutterWindow: NSWindow {
 
     RegisterGeneratedPlugins(registry: flutterViewController)
     configureSplatNetNetwork(flutterViewController)
+    configureSyncNotifications(flutterViewController)
 
     super.awakeFromNib()
+  }
+
+  private func configureSyncNotifications(_ controller: FlutterViewController) {
+    let channel = FlutterMethodChannel(
+      name: "io.github.cypas.nsoalbum/notifications",
+      binaryMessenger: controller.engine.binaryMessenger)
+    channel.setMethodCallHandler { call, result in
+      guard call.method == "syncCompleted",
+            let args = call.arguments as? [String: Any],
+            let title = args["title"] as? String,
+            let body = args["body"] as? String else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      let reply: FlutterResult = { value in
+        DispatchQueue.main.async { result(value) }
+      }
+      let center = UNUserNotificationCenter.current()
+      center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+        if error != nil {
+          reply(FlutterError(code: "NOTIFICATION_FAILED",
+                             message: "The notification could not be scheduled.",
+                             details: nil))
+          return
+        }
+        guard granted else {
+          reply(nil)
+          return
+        }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        let request = UNNotificationRequest(
+          identifier: "nsoalbum.automatic-sync",
+          content: content,
+          trigger: nil)
+        center.add(request) { error in
+          if error != nil {
+            reply(FlutterError(code: "NOTIFICATION_FAILED",
+                               message: "The notification could not be scheduled.",
+                               details: nil))
+          } else {
+            reply(nil)
+          }
+        }
+      }
+    }
   }
 
   private func configureSplatNetNetwork(_ controller: FlutterViewController) {

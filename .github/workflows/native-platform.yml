@@ -343,6 +343,16 @@ jobs:
             # Transfer metadata is CI-only, not an installed application file.
             Remove-Item -LiteralPath (Join-Path $directory '.nso-ci-bundle.json')
           }
+      - name: Verify the packaged Windows WebView loader lifetime contract
+        if: inputs.platform == 'windows-x64'
+        working-directory: flutter_app
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          NSO_VERIFY_WINDOWS_WEBVIEW_LOADER: "1"
+        run: |
+          $env:NSO_WINDOWS_WEBVIEW_BUNDLE = (Resolve-Path -LiteralPath "../dist/NSOAlbum-Windows-x64-$env:PACKAGE_VERSION").Path
+          flutter test test/windows_webview_loader_test.dart --reporter expanded
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged WebView loader lifetime validation failed.' }
       - name: Smoke test the packaged Windows executable
         if: inputs.platform == 'windows-x64'
         working-directory: flutter_app
