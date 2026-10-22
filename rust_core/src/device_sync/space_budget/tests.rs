@@ -110,7 +110,7 @@ fn fixed_and_five_percent_margin_boundary_and_checked_overflow() {
 
 #[test]
 fn real_directories_group_by_volume_not_path_and_reject_missing_and_links() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let a = root.path().join("a");
     let b = root.path().join("b");
     std::fs::create_dir(&a).unwrap();
@@ -129,7 +129,7 @@ fn real_directories_group_by_volume_not_path_and_reject_missing_and_links() {
 
 #[test]
 fn same_volume_mount_alias_probe_merges_all_three_real_paths() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let paths = ["stage", "originals", "database"].map(|p| root.path().join(p));
     for path in &paths {
         std::fs::create_dir(path).unwrap();

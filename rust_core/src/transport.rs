@@ -288,8 +288,12 @@ pub(crate) mod test_support {
     use super::*;
 
     pub async fn download_bytes(root: &Path, bytes: &[u8]) -> DownloadedMedia {
+        // This helper writes into a controlled test directory, not a linked
+        // input under test. Keep OS temporary aliases out of the fixture.
+        std::fs::create_dir_all(root).unwrap();
+        let root = root.canonicalize().unwrap();
         let mut writer = StreamingDownloadWriter::create(
-            root,
+            &root,
             Some(bytes.len() as u64),
             DEFAULT_MAX_DOWNLOAD_BYTES,
             CancellationToken::default(),
@@ -967,7 +971,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn streaming_writer_hashes_chunks_without_buffering_the_whole_media() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let token = CancellationToken::default();
         let mut writer = StreamingDownloadWriter::create(directory.path(), Some(6), 8, token)
             .await
@@ -987,7 +991,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn streaming_writer_removes_part_on_limit_error_or_cancellation() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let token = CancellationToken::default();
         let mut too_large =
             StreamingDownloadWriter::create(directory.path(), None, 4, token.clone())
@@ -1019,7 +1023,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn streaming_writer_rejects_length_mismatch_and_removes_part() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let mut writer = StreamingDownloadWriter::create(
             directory.path(),
             Some(5),
@@ -1043,7 +1047,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn completed_part_is_removed_when_download_result_is_dropped() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let mut writer = StreamingDownloadWriter::create(
             directory.path(),
             Some(4),
@@ -1063,7 +1067,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn review_fix1_r2_symbolic_temporary_root_is_rejected_without_deleting_other_files() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let target = parent.path().join("target");
         std::fs::create_dir_all(&target).unwrap();
         let sentinel = target.join("unowned.jpg");

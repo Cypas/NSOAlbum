@@ -1219,7 +1219,7 @@ mod tests {
         Manifest,
         SyncPlan,
     ) {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let database =
             Arc::new(Database::open(root.path().join("database/library.sqlite3")).unwrap());
         let target = local_manifest(&database);
@@ -1807,7 +1807,7 @@ mod tests {
         database: &Database,
         target: &Path,
     ) -> (tempfile::TempDir, std::path::PathBuf) {
-        let holder = tempfile::tempdir().unwrap();
+        let holder = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let alias = holder.path().join("configured-root");
         link_directory(target, &alias);
         let settings = crate::settings::AppSettings {

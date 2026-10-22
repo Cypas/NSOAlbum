@@ -1923,6 +1923,13 @@ fn driver_real_tcp_loopback_same_protocol_applies_and_closes_on_success() {
         let (server, _) = listener.accept().unwrap();
         let mut host_probe = server.try_clone().unwrap();
         let mut phone_probe = socket.try_clone().unwrap();
+        // Configure while connected: Darwin may reject SO_RCVTIMEO after
+        // shutdown. The final read must still be bounded and prove real EOF.
+        for probe in [&host_probe, &phone_probe] {
+            probe
+                .set_read_timeout(Some(std::time::Duration::from_millis(100)))
+                .unwrap();
+        }
         drop(listener);
         let host = Driver::new(
             invitation.accept(Role::Sender, "Desktop", time).unwrap(),
@@ -1999,9 +2006,6 @@ fn driver_real_tcp_loopback_same_protocol_applies_and_closes_on_success() {
         }
         for probe in [&mut host_probe, &mut phone_probe] {
             probe.set_nonblocking(false).unwrap();
-            probe
-                .set_read_timeout(Some(std::time::Duration::from_millis(100)))
-                .unwrap();
             // Completed objects stay alive; success itself must close actual I/O.
             assert_eq!(probe.read(&mut [0]).unwrap(), 0);
         }
