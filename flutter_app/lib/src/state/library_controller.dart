@@ -25,6 +25,14 @@ class LibraryController extends ChangeNotifier {
   String? _visibleSearch;
   List<MediaAsset> _visibleCache = [];
 
+  bool get hasFilters =>
+      kind != GalleryKindFilter.all ||
+      favoriteOnly ||
+      gameNames.isNotEmpty ||
+      capturedFrom != null ||
+      capturedUntil != null ||
+      capturedOnThisDay != null;
+
   List<MediaAsset> get visible {
     if (identical(_visibleSource, items) && _visibleSearch == search) {
       return _visibleCache;

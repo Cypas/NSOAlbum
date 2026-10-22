@@ -422,6 +422,7 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
               ),
               TextButton(
                 onPressed: () => update(() {
+                  state.kind = GalleryKindFilter.all;
                   state.favoriteOnly = false;
                   state.gameNames = [];
                   state.capturedFrom = null;
@@ -671,20 +672,20 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
               : () => Navigator.of(context).maybePop(),
           actions: [
             if (!selecting) ...[
-              IconButton(
-                key: const Key('android-library-filter'),
-                tooltip: context.l10n.select(zh: '筛选', en: 'Filter'),
-                onPressed: filters,
-                icon: Icon(
-                  Icons.filter_list,
-                  color:
-                      state.favoriteOnly ||
-                          state.gameNames.isNotEmpty ||
-                          state.capturedFrom != null ||
-                          state.capturedUntil != null ||
-                          state.capturedOnThisDay != null
-                      ? Theme.of(context).colorScheme.primary
-                      : null,
+              MergeSemantics(
+                child: Semantics(
+                  selected: state.hasFilters,
+                  child: IconButton(
+                    key: const Key('android-library-filter'),
+                    tooltip: context.l10n.select(zh: '筛选', en: 'Filter'),
+                    onPressed: filters,
+                    icon: Icon(
+                      Icons.filter_list,
+                      color: state.hasFilters
+                          ? Theme.of(context).colorScheme.primary
+                          : null,
+                    ),
+                  ),
                 ),
               ),
               IconButton(
@@ -827,11 +828,7 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                                 ),
                             ],
                           ),
-                          if (state.favoriteOnly ||
-                              state.gameNames.isNotEmpty ||
-                              state.capturedFrom != null ||
-                              state.capturedUntil != null ||
-                              state.capturedOnThisDay != null)
+                          if (state.hasFilters)
                             Text(
                               context.l10n.select(
                                 zh: '已应用筛选',

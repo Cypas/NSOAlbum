@@ -101,6 +101,145 @@ void registerAndroidBatchFeatureTests({bool layoutOnly = false}) {
     }
   }
 
+  for (final locale in ['zh', 'en']) {
+    for (final kind in [GalleryKindFilter.image, GalleryKindFilter.video]) {
+      testWidgets(
+        '$locale $kind media type filter marks and announces the filter button',
+        (tester) async {
+          final semantics = tester.ensureSemantics();
+          try {
+            await useLayoutTestViewport(tester, const Size(360, 720));
+            final backend = FakeBackend(mediaItems: [_image()]);
+            final settings = SettingsController(backend);
+            final library = _library(backend)..kind = kind;
+            addTearDown(library.dispose);
+            addTearDown(settings.dispose);
+            await tester.pumpWidget(
+              MaterialApp(
+                locale: Locale(locale),
+                localizationsDelegates: _delegates,
+                supportedLocales: AppLocalizations.supportedLocales,
+                theme: androidTheme('ocean'),
+                home: AndroidLibraryPage(
+                  controller: library,
+                  settings: settings,
+                ),
+              ),
+            );
+            await tester.pumpAndSettle();
+            final filter = find.byKey(const Key('android-library-filter'));
+            expect(
+              (tester.widget<IconButton>(filter).icon as Icon).color,
+              Theme.of(tester.element(filter)).colorScheme.primary,
+            );
+            expect(
+              tester
+                  .getSemantics(filter)
+                  .flagsCollection
+                  .isSelected
+                  .toBoolOrNull(),
+              isTrue,
+            );
+            expect(
+              find.text(locale == 'zh' ? '已应用筛选' : 'Filters applied'),
+              findsOneWidget,
+            );
+            expect(tester.takeException(), isNull);
+          } finally {
+            semantics.dispose();
+          }
+        },
+      );
+      testWidgets(
+        '$locale $kind media type filter clears all conditions but keeps search and order',
+        (tester) async {
+          final semantics = tester.ensureSemantics();
+          try {
+            await useLayoutTestViewport(tester, const Size(360, 720));
+            final backend = FakeBackend(mediaItems: [_image()]);
+            final settings = SettingsController(backend);
+            final library = _library(backend)
+              ..kind = kind
+              ..favoriteOnly = true
+              ..gameNames = ['Game']
+              ..newestFirst = false
+              ..search = 'kept query';
+            if (kind == GalleryKindFilter.image) {
+              library.capturedOnThisDay = const CapturedOnThisDay(
+                month: 10,
+                day: 22,
+                beforeYear: 2026,
+                utcOffsetSeconds: 0,
+              );
+            } else {
+              library.capturedFrom = DateTime(2026, 10, 21);
+              library.capturedUntil = DateTime(2026, 10, 22);
+            }
+            addTearDown(library.dispose);
+            addTearDown(settings.dispose);
+            await tester.pumpWidget(
+              MaterialApp(
+                locale: Locale(locale),
+                localizationsDelegates: _delegates,
+                supportedLocales: AppLocalizations.supportedLocales,
+                theme: androidTheme('ocean'),
+                home: AndroidLibraryPage(
+                  controller: library,
+                  settings: settings,
+                ),
+              ),
+            );
+            await tester.pumpAndSettle();
+            final filter = find.byKey(const Key('android-library-filter'));
+            await tester.tap(filter);
+            await tester.pumpAndSettle();
+            final clear = find.text(locale == 'zh' ? '清除筛选' : 'Clear filters');
+            await tester.ensureVisible(clear);
+            await tester.tap(clear);
+            await tester.pumpAndSettle();
+            final apply = find.text(locale == 'zh' ? '应用' : 'Apply');
+            await tester.ensureVisible(apply);
+            await tester.tap(apply);
+            await tester.pumpAndSettle();
+            expect(library.kind, GalleryKindFilter.all);
+            expect(backend.lastKind, GalleryKindFilter.all);
+            expect(library.favoriteOnly, isFalse);
+            expect(backend.lastFavoriteOnly, isFalse);
+            expect(library.gameNames, isEmpty);
+            expect(library.capturedFrom, isNull);
+            expect(library.capturedUntil, isNull);
+            expect(library.capturedOnThisDay, isNull);
+            expect(backend.lastCapturedFrom, isNull);
+            expect(backend.lastCapturedUntil, isNull);
+            expect(backend.lastCapturedOnThisDay, isNull);
+            expect(library.search, 'kept query');
+            expect(library.newestFirst, isFalse);
+            expect(backend.lastNewestFirst, isFalse);
+            expect(
+              (tester.widget<IconButton>(filter).icon as Icon).color,
+              isNull,
+            );
+            expect(
+              tester
+                  .getSemantics(filter)
+                  .flagsCollection
+                  .isSelected
+                  .toBoolOrNull(),
+              isFalse,
+            );
+            expect(
+              find.text(locale == 'zh' ? '已应用筛选' : 'Filters applied'),
+              findsNothing,
+            );
+            expect(tester.takeException(), isNull);
+          } finally {
+            semantics.dispose();
+          }
+        },
+      );
+    }
+  }
+
   if (layoutOnly) return;
 
   testWidgets('settings log viewer shows recent filtered and copy controls', (

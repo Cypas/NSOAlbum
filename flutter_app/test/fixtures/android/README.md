@@ -134,7 +134,9 @@ flutter run --debug --target test/android/android_ordinary_layout_device_test.da
 ```
 
 It checks friend cards, compact account headers, full album cards, media-detail
-metadata and date choices with Chinese/English text and enlarged text. Controlled
+metadata and date choices with Chinese/English text and enlarged text. It also
+checks image/video-only filter indication, the filter button's selected semantics,
+and clearing all filter conditions without losing search text or sorting. Controlled
 Flutter viewport and text-scaler overrides do not change device settings.
 Backends contain only synthetic data; this entry point does not initialize Rust,
 read secure credentials or change a personal library. Host suites explicitly skip
