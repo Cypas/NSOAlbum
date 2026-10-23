@@ -63,9 +63,17 @@ function Assert-AndroidBadging {
     }
     foreach ($feature in @('android.hardware.camera', 'android.hardware.camera.autofocus')) {
         $escaped = [regex]::Escape($feature)
-        if ($Badging -notmatch "(?m)^uses-feature-not-required: name='$escaped'(?:\s|$)" -or
-                $Badging -match "(?m)^uses-(?:implied-)?feature: name='$escaped'(?:\s|$)") {
-            throw "Scanner hardware must remain optional in the final Release APK: $feature."
+        if ($Badging -notmatch "(?m)^\s*uses-feature-not-required: name='$escaped'(?:\s|$)" -or
+                $Badging -match "(?m)^\s*uses-(?:implied-)?feature: name='$escaped'(?:\s|$)") {
+            $featureLines = @($Badging -split "`r?`n" | Where-Object {
+                $_ -match "^\s*uses-(?:implied-)?feature(?:-not-required)?: name='$escaped'(?:\s|$)"
+            })
+            $actual = if ($featureLines.Count -gt 0) {
+                ($featureLines -join '; ') -replace '[\r\n]+', ' '
+            } else {
+                '(no matching uses-feature lines)'
+            }
+            throw "Scanner hardware must remain optional in the final Release APK: $feature. Actual badging: $actual"
         }
     }
     foreach ($denied in @('MANAGE_EXTERNAL_STORAGE', 'FOREGROUND_SERVICE')) {

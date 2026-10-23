@@ -55,8 +55,8 @@ uses-permission: name='android.permission.INTERNET'
 uses-permission: name='android.permission.POST_NOTIFICATIONS'
 uses-permission: name='android.permission.REQUEST_INSTALL_PACKAGES'
 uses-permission: name='android.permission.CAMERA'
-uses-feature-not-required: name='android.hardware.camera'
-uses-feature-not-required: name='android.hardware.camera.autofocus'
+  uses-feature-not-required: name='android.hardware.camera'
+  uses-feature-not-required: name='android.hardware.camera.autofocus'
 launchable-activity: name='io.github.cypas.nsoalbum.MainActivity' label='NSOAlbum' icon=''
 native-code: 'arm64-v8a'
 "@
@@ -75,9 +75,19 @@ native-code: 'arm64-v8a'
     foreach ($feature in @('android.hardware.camera', 'android.hardware.camera.autofocus')) {
         Assert-Rejected { Assert-AndroidBadging ($badging.Replace("uses-feature-not-required: name='$feature'", '')) '0.2.14' '47' } "missing optional $feature declaration"
         Assert-Rejected { Assert-AndroidBadging ($badging.Replace("uses-feature-not-required: name='$feature'", "uses-feature: name='$feature'")) '0.2.14' '47' } "required $feature excludes camera-less devices"
-        Assert-Rejected { Assert-AndroidBadging "$badging`nuses-feature: name='$feature'" '0.2.14' '47' } "conflicting required $feature declaration"
-        Assert-Rejected { Assert-AndroidBadging "$badging`nuses-implied-feature: name='$feature' reason='scanner permission'" '0.2.14' '47' } "implicitly required $feature declaration"
+        Assert-Rejected { Assert-AndroidBadging "$badging`n  uses-feature: name='$feature'" '0.2.14' '47' } "conflicting required $feature declaration"
+        Assert-Rejected { Assert-AndroidBadging "$badging`n  uses-implied-feature: name='$feature' reason='scanner permission'" '0.2.14' '47' } "implicitly required $feature declaration"
     }
+    $featureDiagnostic = ''
+    try {
+        Assert-AndroidBadging "$badging`n  uses-implied-feature: name='android.hardware.camera' reason='scanner permission'" '0.2.14' '47'
+    } catch {
+        $featureDiagnostic = $_.Exception.Message
+    }
+    if ($featureDiagnostic -notmatch "uses-implied-feature: name='android\.hardware\.camera'") {
+        throw 'Rejected scanner hardware badging must include the exact conflicting camera feature lines.'
+    }
+    $script:caseCount++
     Assert-Rejected { Assert-AndroidBadging "$badging`napplication-debuggable" '0.2.14' '47' } 'debuggable APK'
     Assert-Rejected { Assert-AndroidBadging "$badging`nuses-permission: name='android.permission.MANAGE_EXTERNAL_STORAGE'" '0.2.14' '47' } 'all-files permission'
     Assert-Rejected { Assert-AndroidBadging ($badging.Replace("native-code: 'arm64-v8a'", "native-code: 'arm64-v8a' 'x86'")) '0.2.14' '47' } 'multiple packaged ABIs'

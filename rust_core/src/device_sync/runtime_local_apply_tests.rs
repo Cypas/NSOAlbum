@@ -313,16 +313,23 @@ impl Pair {
             target: 0,
         }
     }
-    async fn wait(&self, predicate: impl Fn() -> bool) {
-        let until = Instant::now() + Duration::from_secs(10);
-        while !predicate() {
-            assert!(
-                Instant::now() < until,
-                "owner deadline: {:?}, {:?}",
-                status(&self.endpoints[0]),
-                status(&self.endpoints[1])
-            );
-            tokio::time::sleep(Duration::from_millis(2)).await;
+    #[track_caller]
+    fn wait<'a>(
+        &'a self,
+        predicate: impl Fn() -> bool + 'a,
+    ) -> impl std::future::Future<Output = ()> + 'a {
+        let caller = std::panic::Location::caller();
+        async move {
+            let until = Instant::now() + Duration::from_secs(10);
+            while !predicate() {
+                assert!(
+                    Instant::now() < until,
+                    "owner deadline at {caller}: {:?}, {:?}",
+                    status(&self.endpoints[0]),
+                    status(&self.endpoints[1])
+                );
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
         }
     }
     async fn approve_accounts(&self) -> Uuid {

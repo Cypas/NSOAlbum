@@ -119,7 +119,11 @@ jobs:
       matrix:
         include:
           - platform: windows-x64
-            runner: windows-latest
+            # flutter_inappwebview_windows pins Microsoft.Windows.CppWinRT 2.0,
+            # which adds the deprecated MSVC /await mode to its C++17 target.
+            # Keep native validation on the supported VS 2022 toolset until
+            # that dependency updates its coroutine build contract.
+            runner: windows-2022
             architecture: X64
             target: x86_64-pc-windows-msvc
             mac_arch: ""
