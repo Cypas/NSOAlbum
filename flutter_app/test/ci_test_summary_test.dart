@@ -153,7 +153,12 @@ void main() {
       }
       expect((await summarize()).exitCode, 0);
       final flutter = await report();
-      expect((flutter['Categories'] as Map)['Android']['Total'], 2);
+      expect(
+        (flutter['Categories'] as Map)['Android']['Total'],
+        2,
+        reason:
+            'root=${root.path}; suites=${events.where((e) => e['type'] == 'suite').toList()}; categories=${flutter['Categories']}',
+      );
     });
   }
 

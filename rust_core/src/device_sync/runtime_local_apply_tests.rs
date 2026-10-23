@@ -40,6 +40,8 @@ async fn runtime_local_transport_only_signal_preserves_real_external_journal() {
             .stage,
         "finalized"
     );
+    pair.wait(|| status(&pair.endpoints[1]).unwrap().state == "Completed")
+        .await;
     assert_eq!(status(&pair.endpoints[1]).unwrap().state, "Completed");
 }
 
@@ -547,6 +549,9 @@ async fn usb_failure_keeps_local_commands(fault: u8) {
             .stage,
         "finalized"
     );
+    // The command reply precedes the owner's nonblocking status publication.
+    pair.wait(|| status(&pair.endpoints[1]).unwrap().state == "Completed")
+        .await;
     assert_eq!(status(&pair.endpoints[1]).unwrap().state, "Completed");
     assert!(!owner_test_tools::runtime_api(&pair.libraries[1])
         .database()
@@ -594,6 +599,8 @@ async fn runtime_local_native_child_io_failure_keeps_real_local_owner_and_finali
             .stage,
         "finalized"
     );
+    pair.wait(|| status(&pair.endpoints[0]).unwrap().state == "Completed")
+        .await;
     assert_eq!(status(&pair.endpoints[0]).unwrap().state, "Completed");
     tokio::time::timeout(Duration::from_secs(1), shutdown_async(&pair.endpoints[0]))
         .await
@@ -764,7 +771,29 @@ async fn runtime_local_shutdown_settles_native_not_future_coordinator_and_keeps_
         assert_eq!(error.code, ReadError::Cancelled);
         assert!(!error.executed, "cancelled writes never enter their action");
     }
-    assert!(read_endpoint(&pair.endpoints[1]).value.is_some());
+    // Settlement keeps the owner available to the original coordinator.
+    // Its publication may briefly hold the lock used by the nonblocking reader.
+    // Exercise that legitimate Busy result deterministically, then still require
+    // a real snapshot before compensating or retiring the endpoint.
+    let mut observed = {
+        let owner = endpoint(&pair.endpoints[1]).unwrap();
+        let _publication = owner.owner.lock().unwrap();
+        let observed = read_endpoint(&pair.endpoints[1]);
+        assert_eq!(observed.error, Some(ReadError::Busy));
+        assert!(observed.value.is_none());
+        observed
+    };
+    let read_until = Instant::now() + Duration::from_secs(10);
+    while observed.error == Some(ReadError::Busy) {
+        assert!(
+            Instant::now() < read_until,
+            "settled endpoint remained busy before compensation"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        observed = read_endpoint(&pair.endpoints[1]);
+    }
+    assert!(observed.error.is_none(), "{observed:?}");
+    assert!(observed.value.is_some());
     assert_eq!(
         compensate(&pair.libraries[1], &operation).unwrap().stage,
         "rolled_back"
@@ -839,7 +868,22 @@ async fn runtime_local_signal_uses_installed_lifecycle_without_waiting_for_owner
     assert!(!owner_test_tools::runtime_api(&pair.libraries[1])
         .database()
         .device_sync_recovery_pending());
-    assert!(read_endpoint(&pair.endpoints[1]).value.is_some());
+    // Settlement does not retire the runtime owner. Its next publication may
+    // briefly hold the mutex used by this intentionally nonblocking reader.
+    let read_until = Instant::now() + Duration::from_secs(10);
+    let observed = loop {
+        let observed = read_endpoint(&pair.endpoints[1]);
+        if observed.error != Some(ReadError::Busy) {
+            break observed;
+        }
+        assert!(
+            Instant::now() < read_until,
+            "cancelled endpoint remained busy after shutdown"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    };
+    assert!(observed.error.is_none(), "{observed:?}");
+    assert!(observed.value.is_some());
 }
 
 #[tokio::test]

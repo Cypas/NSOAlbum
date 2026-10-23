@@ -103,7 +103,10 @@ impl TcpDriver {
             .stream
             .as_mut()
             .ok_or(DriverError::Channel(SessionError::Terminal))?;
-        match if self.driver.ready_for_input() {
+        // A peer may close just after sending its last control. Drain already
+        // authenticated TLS payloads before observing EOF; one poll still
+        // handles only the driver's existing bounded message budget.
+        match if self.driver.ready_for_input() && self.driver.session.peek_payload().is_none() {
             stream.read(&mut input)
         } else {
             Err(std::io::Error::from(ErrorKind::WouldBlock))

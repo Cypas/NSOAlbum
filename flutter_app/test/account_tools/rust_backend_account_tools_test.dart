@@ -234,7 +234,7 @@ void main() {
       await ensureRustLibInitialized();
       final backend = await open();
       expect(backend.settings.language, 'en');
-      expect(rust.initializedRoots, [root.path]);
+      expect(rust.initializedRoots, [await root.resolveSymbolicLinks()]);
     },
   );
 

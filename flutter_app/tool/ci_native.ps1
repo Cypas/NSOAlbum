@@ -275,8 +275,18 @@ if ([string]::IsNullOrWhiteSpace($FlutterMachineLog) -or [string]::IsNullOrWhite
     throw 'Pass -FlutterMachineLog and -RustLog, or use -SelfTest.'
 }
 $suiteCategories = @{}
+$incomingProjectRoot = if ([System.IO.Path]::IsPathFullyQualified($ProjectDirectory)) {
+    $ProjectDirectory
+} else {
+    [System.IO.Path]::Combine((Get-Location).Path, $ProjectDirectory)
+}
 $projectRoot = [System.IO.Path]::GetFullPath($ProjectDirectory)
-foreach ($file in Get-ChildItem -LiteralPath (Join-Path $projectRoot 'test') -Filter '*_test.dart' -Recurse -File) {
+# Enumerate relative names: Windows FullName can expand only some 8.3 parent
+# segments, making GetRelativePath compare two spellings of the same directory.
+foreach ($name in Get-ChildItem -LiteralPath (Join-Path $projectRoot 'test') -Filter '*_test.dart' -Recurse -File -Name) {
+    $relative = Join-Path 'test' $name
+    $requestedPath = [System.IO.Path]::Combine($projectRoot, $relative)
+    $file = Get-Item -LiteralPath $requestedPath
     $category = 'Common'
     $source = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
     $annotation = [regex]::Match($source, '@Tags\s*\(\s*\[(.*?)\]\s*\)', [System.Text.RegularExpressions.RegexOptions]::Singleline)
@@ -286,11 +296,13 @@ foreach ($file in Get-ChildItem -LiteralPath (Join-Path $projectRoot 'test') -Fi
         elseif ($tags -match '["'']platform-macos["'']') { $category = 'macOS' }
         elseif ($tags -match '["''](?:platform-android|native-android)["'']') { $category = 'Android' }
     }
-    $relative = [System.IO.Path]::GetRelativePath($projectRoot, $file.FullName)
     $suiteCategories[$file.FullName] = $category
     $suiteCategories[$file.FullName.Replace('\', '/')] = $category
     $suiteCategories[$relative] = $category
     $suiteCategories[$relative.Replace('\', '/')] = $category
+    $suiteCategories[$requestedPath.Replace('\', '/')] = $category
+    $incomingPath = [System.IO.Path]::Combine($incomingProjectRoot, $relative)
+    $suiteCategories[$incomingPath.Replace('\', '/')] = $category
 }
 $flutter = New-UnavailableTestSummary -Status 'not-run'
 if (Test-Path -LiteralPath $FlutterMachineLog -PathType Leaf) {

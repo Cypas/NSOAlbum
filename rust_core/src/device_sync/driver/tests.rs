@@ -1900,6 +1900,65 @@ async fn driver_ordered_mailbox_uses_same_two_library_flow_and_waits_for_real_ca
 }
 
 #[test]
+fn driver_tcp_eof_drains_authenticated_controls_but_still_rejects_truncation() {
+    use super::pump::TcpDriver;
+    use std::net::{Shutdown, TcpListener, TcpStream};
+    for include_abort in [false, true] {
+        let roots = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+        let a = CoreApi::open(roots[0].path()).unwrap();
+        let b = CoreApi::open(roots[1].path()).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (_, mut host, mut phone, time) = crate::device_sync::tests::pair(
+            crate::device_sync::Transport::Tcp(address),
+            Role::Sender,
+        );
+        crate::device_sync::tests::pump(&mut host, &mut phone, time).unwrap();
+        host.confirm(time).unwrap();
+        phone.confirm(time).unwrap();
+        crate::device_sync::tests::pump(&mut host, &mut phone, time).unwrap();
+        let mut host = Driver::new(host, a.database(), "Desktop", TestClock::new()).unwrap();
+        let mut phone = Driver::new(phone, b.database(), "Phone", TestClock::new()).unwrap();
+        host.configure(Direction::DesktopToPhone, SyncMode::Merge, false)
+            .unwrap();
+        if include_abort {
+            host.enqueue(Message::Abort {}).unwrap();
+        }
+        host.poll().unwrap();
+        loop {
+            let bytes = host.drain_ciphertext().unwrap();
+            if bytes.is_empty() {
+                if host.outbox.is_empty() {
+                    break;
+                }
+                host.poll().unwrap();
+                continue;
+            }
+            phone.ingest_ciphertext(&bytes).unwrap();
+            host.ciphertext_written(bytes.len()).unwrap();
+        }
+        assert!(phone.session.peek_payload().is_some());
+        let socket = TcpStream::connect(address).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let mut phone = TcpDriver::from_stream(socket, phone).unwrap();
+        server.shutdown(Shutdown::Write).unwrap();
+        // An EOF must not overtake controls already authenticated by TLS.
+        phone
+            .poll()
+            .expect("buffered configuration must be processed before EOF");
+        let failure = phone.poll().unwrap_err();
+        if include_abort {
+            assert!(matches!(failure, DriverError::Cancelled), "{failure:?}");
+        } else {
+            assert!(
+                matches!(failure, DriverError::Channel(SessionError::Io)),
+                "{failure:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn driver_real_tcp_loopback_same_protocol_applies_and_closes_on_success() {
     use super::pump::TcpDriver;
     use crate::device_sync::{Invitation, Qr, Transport};

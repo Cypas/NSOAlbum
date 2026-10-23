@@ -124,6 +124,8 @@ void main() {
     () async {
       final reader = DeviceNetworkReader(
         android: true,
+        windows: false,
+        macos: false,
         requestAccess: () async => false,
         readName: () async => fail('Denied access must not read SSID'),
         readAddress: () async => fail('Denied access must not read IP'),
@@ -139,6 +141,8 @@ void main() {
     () async {
       final reader = DeviceNetworkReader(
         android: true,
+        windows: false,
+        macos: false,
         requestAccess: () async => true,
         readName: () async => '" Home "',
         readAddress: () async => '192.168.1.5',
@@ -153,7 +157,9 @@ void main() {
     'Windows plugin raw UTF-8 bytes are decoded before SSID comparison',
     () async {
       final reader = DeviceNetworkReader(
+        android: false,
         windows: true,
+        macos: false,
         readName: () async => String.fromCharCodes(utf8.encode('家里的 Wi-Fi')),
         readAddress: () async => '192.168.1.5',
       );
@@ -166,18 +172,27 @@ void main() {
     () async {
       for (final name in ['<unknown ssid>', '', 'bad\nname', '网' * 11]) {
         final reader = DeviceNetworkReader(
+          android: false,
+          windows: false,
+          macos: false,
           readName: () async => name,
           readAddress: () async => '192.168.1.5',
         );
         expect((await reader.read()).ssid, isNull);
       }
       final failed = DeviceNetworkReader(
+        android: false,
+        windows: false,
+        macos: false,
         readName: () async => throw StateError('private network diagnostic'),
         readAddress: () async => '192.168.1.5',
       );
       expect((await failed.read()).ssid, isNull);
       var reads = 0;
       final changed = DeviceNetworkReader(
+        android: false,
+        windows: false,
+        macos: false,
         readName: () async => reads++ == 0 ? 'Home' : 'Other',
         readAddress: () async => '192.168.1.5',
       );

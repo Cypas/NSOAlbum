@@ -1,6 +1,7 @@
 #include "sync_notifications.h"
 #include "native_single_instance.h"
 
+#include <coroutine>
 #include <notificationactivationcallback.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.UI.Notifications.h>
@@ -10,6 +11,9 @@
 #include <stdexcept>
 #include <thread>
 #include <vector>
+
+static_assert(_MSVC_LANG >= 202002L,
+              "Notification WinRT must use standard C++20 coroutines.");
 
 using winrt::Windows::Data::Xml::Dom::XmlDocument;
 
@@ -61,8 +65,8 @@ int wmain(int argc, wchar_t** argv) {
     if (argc < 2) return 2;
     const auto scenario = winrt::to_string(argv[1]);
     if (scenario == "content") {
-      const std::string title = u8"NSOAlbum · A & <B>";
-      const std::string body = u8"新增 2 · 已存在 5 · 失败 1 · 2 个账号";
+      const std::string title = "NSOAlbum · A & <B>";
+      const std::string body = "新增 2 · 已存在 5 · 失败 1 · 2 个账号";
       const auto document = BuildSyncNotificationDocument(title, body);
       const auto nodes = document.GetElementsByTagName(L"text");
       if (nodes.Length() != 2 ||
