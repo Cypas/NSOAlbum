@@ -75,9 +75,16 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     }
   }
 
-  // Initialize COM, so that it is available for use in the library and/or
-  // plugins.
-  ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  // WebView2 must be created on the runner's STA UI thread. Do not continue
+  // after a conflicting apartment initialization: that would surface later as
+  // a misleading "CoInitialize has not been called" environment failure.
+  const HRESULT com_result =
+      ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  if (FAILED(com_result)) {
+    std::fprintf(stderr, "NSOAlbum: STA COM initialization failed: 0x%08lx\n",
+                 static_cast<unsigned long>(com_result));
+    return static_cast<int>(com_result);
+  }
 
   // WebView loads its system compositor dynamically, but its static COM
   // resources survive until DLL detach. Initialize the optional provider before
@@ -110,6 +117,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
   if (!window.Create(L"NSOAlbum", origin, size)) {
+    ::CoUninitialize();
     return EXIT_FAILURE;
   }
   if (!smoke && !desktop_instance.Attach(window.GetHandle())) {

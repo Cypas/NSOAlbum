@@ -298,7 +298,19 @@ codesign --verify --deep --strict "$MOUNTED_APP"
 dart run "$SCRIPT_DIR/verify_mtp_worker.dart" --bundle "$MOUNTED_APP" --platform "macos-$ARCH" \
   --build-record "$WORKER_FINAL_RECORD"
 run_smoke --launch-app "$MOUNTED_APP" --reports-dir "$REPORTS/dmg"
-hdiutil detach "$MOUNT" -quiet
+if ! DETACH_OUTPUT="$(hdiutil detach "$MOUNT" 2>&1)"; then
+  echo "Normal DMG detach failed for the temporary smoke mount; retrying forced detach." >&2
+  [[ -z "$DETACH_OUTPUT" ]] || printf '%s\n' "$DETACH_OUTPUT" >&2
+  # This mount point was created above for this exact generated DMG. The
+  # smoke processes have completed and their reports were validated before
+  # reaching this cleanup boundary.
+  if ! FORCE_DETACH_OUTPUT="$(hdiutil detach -force "$MOUNT" 2>&1)"; then
+    echo "Forced DMG detach failed for $MOUNT." >&2
+    [[ -z "$FORCE_DETACH_OUTPUT" ]] || printf '%s\n' "$FORCE_DETACH_OUTPUT" >&2
+    exit 1
+  fi
+  [[ -z "$FORCE_DETACH_OUTPUT" ]] || printf '%s\n' "$FORCE_DETACH_OUTPUT"
+fi
 rmdir "$MOUNT"
 MOUNT=""
 trap - EXIT

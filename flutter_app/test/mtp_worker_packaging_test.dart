@@ -34,15 +34,16 @@ void main() {
 
   setUpAll(() async {
     final evidence = Directory(
-      p.absolute('build', 'test-fixtures', 'mtp-worker-packaging'),
+      Platform.environment['NSO_MTP_TEST_EVIDENCE'] ??
+          p.absolute('build', 'test-fixtures', 'mtp-worker-packaging'),
     );
-    for (final relative in [
-      'build',
-      p.join('build', 'test-fixtures'),
-      p.join('build', 'test-fixtures', 'mtp-worker-packaging'),
+    for (final path in [
+      evidence.parent.parent.path,
+      evidence.parent.path,
+      evidence.path,
     ]) {
       if (await FileSystemEntity.type(
-            p.absolute(relative),
+            path,
             followLinks: false,
           ) ==
           FileSystemEntityType.link) {
@@ -215,6 +216,7 @@ void main() {
   });
   Future<ProcessResult> package({
     bool isolated = true,
+    bool useExistingFlutterBuild = true,
     Map<String, String> environment = const {},
     String? output,
   }) => Process.run(
@@ -225,7 +227,7 @@ void main() {
       p.join(project.path, 'tool', 'package_windows.ps1'),
       '-SkipTests',
       '-SkipBridgeGeneration',
-      '-UseExistingFlutterBuild',
+      if (useExistingFlutterBuild) '-UseExistingFlutterBuild',
       if (isolated) ...['-PackageDirectory', output ?? destination.path],
     ],
     environment: {

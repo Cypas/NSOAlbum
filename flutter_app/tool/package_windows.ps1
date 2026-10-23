@@ -310,6 +310,25 @@ if (-not $nativeBuild.cargoSuccess -or $nativeBuild.target -ne 'x86_64-pc-window
     throw 'The current Cargo invocation did not report the required Release DLL/helper.'
 }
 
+# Cargo's explicit build report points into target/. Flutter's later Cargokit
+# invocation can rebuild the same target and replace those bytes. Snapshot the
+# exact, recorded artifacts before Flutter runs so the package never depends on
+# a mutable Cargo target path after that boundary.
+$authoritativeNative = Join-Path $nativeReports 'authoritative'
+New-Item -ItemType Directory -Path $authoritativeNative -Force | Out-Null
+$authoritativeWorker = Join-Path $authoritativeNative 'nsoalbum_mtp_worker.exe'
+$authoritativeDll = Join-Path $authoritativeNative 'squid_album_core.dll'
+Copy-Item -LiteralPath $nativeBuild.worker.path -Destination $authoritativeWorker -Force
+Copy-Item -LiteralPath $rustDll -Destination $authoritativeDll -Force
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $authoritativeWorker).Hash -ne
+    $nativeBuild.worker.sha256) {
+    throw 'The staged MTP helper differs from the explicit Cargo build record.'
+}
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $authoritativeDll).Hash -ne
+    $nativeBuild.library.sha256) {
+    throw 'The staged Rust DLL differs from the explicit Cargo build record.'
+}
+
 if ($UseExistingFlutterBuild) {
     Write-Warning 'Reusing the existing Flutter Windows build. The Rust DLL and helper are still rebuilt, replaced, and verified.'
 }
@@ -330,13 +349,12 @@ foreach ($staleName in @('FreshAlbum.exe', 'squid_album.exe')) {
     }
 }
 
-# Cargokit can leave a stale native library behind if its custom build step fails.
-# Always replace it with the library built from the current generated Rust source.
-Copy-Item -LiteralPath $rustDll -Destination $releaseDll -Force
-# A normal Flutter build has its own Cargokit invocation. Restore the pair
-# selected from the explicit successful Cargo build, never a guessed target path.
-Copy-Item -LiteralPath $nativeBuild.worker.path -Destination (Join-Path $releaseRoot 'nsoalbum_mtp_worker.exe') -Force
-$sourceDllHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $rustDll).Hash
+# Cargokit can leave stale or newly rebuilt native outputs in target/. Restore
+# the bytes captured from the successful explicit Cargo invocation, not paths
+# that Flutter may have rewritten since its build started.
+Copy-Item -LiteralPath $authoritativeDll -Destination $releaseDll -Force
+Copy-Item -LiteralPath $authoritativeWorker -Destination (Join-Path $releaseRoot 'nsoalbum_mtp_worker.exe') -Force
+$sourceDllHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $authoritativeDll).Hash
 $releaseDllHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseDll).Hash
 if ($sourceDllHash -ne $releaseDllHash) {
     throw 'The packaged Rust DLL does not match the freshly built DLL.'

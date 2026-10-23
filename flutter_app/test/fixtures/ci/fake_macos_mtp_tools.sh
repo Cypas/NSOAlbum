@@ -130,7 +130,14 @@ case "$tool" in
         cp -R "$NSO_FAKE_APP" "$mount/NSOAlbum.app"
         ;;
       detach)
-        mount="$2"
+        mount="${!#}"
+        if [[ "$NSO_FAKE_FAIL" == detach-once &&
+              ! -e "$NSO_FAKE_STATE/detach-retried" &&
+              "$*" != *-force* ]]; then
+          touch "$NSO_FAKE_STATE/detach-retried"
+          echo "hdiutil: detach: Resource busy" >&2
+          exit 16
+        fi
         case "$mount" in
           "$NSO_FAKE_ROOT"/*) rm -rf -- "$mount/NSOAlbum.app" ;;
           *) exit 40 ;;

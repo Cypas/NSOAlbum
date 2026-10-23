@@ -2,21 +2,33 @@
 # Exact source fragments deliberately fail closed when an upstream owner changes.
 function(nso_stage_lifetime_source target relative before after)
   get_target_property(plugin_root ${target} SOURCE_DIR)
-  file(READ "${plugin_root}/${relative}" original)
+  set(upstream "${plugin_root}/${relative}")
+  file(READ "${upstream}" original)
   string(REPLACE "\r\n" "\n" original "${original}")
-  string(FIND "${original}" "${before}" match)
+  string(FIND "${original}" "${before}" upstream_match)
+  if(upstream_match EQUAL -1)
+    message(FATAL_ERROR
+      "The ${target} lifetime compatibility patch needs upstream-source review.")
+  endif()
+
+  string(REPLACE "/" "_" staged_key "${relative}")
+  set(staged_property "NSO_STAGED_${target}_${staged_key}")
+  get_property(current_set GLOBAL PROPERTY "${staged_property}" SET)
+  if(current_set)
+    get_property(current GLOBAL PROPERTY "${staged_property}")
+  else()
+    set(current "${original}")
+  endif()
+  string(FIND "${current}" "${before}" match)
   if(match EQUAL -1)
     message(FATAL_ERROR
       "The ${target} lifetime compatibility patch needs upstream-source review.")
   endif()
-  string(REPLACE "${before}" "${after}" patched "${original}")
+  string(REPLACE "${before}" "${after}" patched "${current}")
+  set_property(GLOBAL PROPERTY "${staged_property}" "${patched}")
   set(generated "${CMAKE_BINARY_DIR}/nsoalbum-plugin-lifetime/${target}/${relative}")
   get_filename_component(generated_parent "${generated}" DIRECTORY)
   file(MAKE_DIRECTORY "${generated_parent}")
-  set(current "")
-  if(EXISTS "${generated}")
-    file(READ "${generated}" current)
-  endif()
   if(NOT current STREQUAL patched)
     file(WRITE "${generated}" "${patched}")
   endif()
@@ -24,7 +36,7 @@ function(nso_stage_lifetime_source target relative before after)
   set(replaced FALSE)
   set(updated_sources "")
   foreach(source IN LISTS sources)
-    if(source STREQUAL relative OR source STREQUAL "${plugin_root}/${relative}")
+    if(source STREQUAL relative OR source STREQUAL "${plugin_root}/${relative}" OR source STREQUAL "${generated}")
       list(APPEND updated_sources "${generated}")
       set(replaced TRUE)
     else()
@@ -40,6 +52,18 @@ function(nso_stage_lifetime_source target relative before after)
 endfunction()
 
 if(TARGET flutter_inappwebview_windows_plugin)
+  set(before "#include \"webview_environment.h\"")
+  set(after "#include \"webview_environment.h\"\n#include \"runner/nso_webview_com.h\"")
+  nso_stage_lifetime_source(flutter_inappwebview_windows_plugin
+    "webview_environment/webview_environment.cpp" "${before}" "${after}")
+  target_include_directories(flutter_inappwebview_windows_plugin PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+
+  set(before "    if (!plugin) {")
+  set(after "    // WebView2 requires an STA apartment. Preserve the actual COM error\n    // (notably RPC_E_CHANGED_MODE) so a wrong Flutter callback thread is diagnosable.\n    const auto comResult = nsoalbum::EnsureWebViewComApartment();\n    if (FAILED(comResult)) {\n      if (completionHandler) completionHandler(comResult);\n      return;\n    }\n    if (!plugin) {")
+  nso_stage_lifetime_source(flutter_inappwebview_windows_plugin
+    "webview_environment/webview_environment.cpp" "${before}" "${after}")
+
   set(before [=[
     windowWebViews.clear();
     UnregisterClass(windowClass_.lpszClassName, nullptr);

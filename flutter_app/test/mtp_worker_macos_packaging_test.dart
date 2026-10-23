@@ -36,7 +36,10 @@ void main() {
   }
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp('nso-mac-mtp-synthetic-');
+    final tempRoot = Directory(
+      Platform.environment['NSO_TEST_TEMP_ROOT'] ?? Directory.systemTemp.path,
+    );
+    root = await tempRoot.createTemp('nso-mac-mtp-synthetic-');
     project = Directory(p.join(root.path, 'flutter_app'));
     app = Directory(
       p.join(project.path, 'build/macos/Build/Products/Release/NSOAlbum.app'),
@@ -126,7 +129,11 @@ void main() {
   });
   tearDown(() => root.delete(recursive: true));
 
-  Future<ProcessResult> run({bool reuse = false, String fail = ''}) async {
+  Future<ProcessResult> run({
+    bool reuse = false,
+    bool buildOnly = true,
+    String fail = '',
+  }) async {
     final process = await Process.start(
       bash,
       [
@@ -142,7 +149,11 @@ void main() {
         '47',
         '--reports',
         shellPath(p.join(root.path, reuse ? 'reuse-reports' : 'reports')),
-        if (reuse) ...['--reuse-app', shellPath(app.path)] else '--build-only',
+        if (reuse) ...[
+          '--reuse-app',
+          shellPath(app.path),
+        ] else if (buildOnly)
+          '--build-only',
       ],
       environment: {...environment, 'NSO_FAKE_FAIL': fail},
     );
@@ -232,6 +243,24 @@ void main() {
     },
     skip: skip,
   );
+
+  test('a busy temporary DMG mount retries with scoped forced detach and reports the cause', () async {
+    final result = await run(buildOnly: false, fail: 'detach-once');
+    expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+    expect(result.stderr, contains('Resource busy'));
+    final commands = await log.readAsLines();
+    final detachCalls = commands.where(
+      (line) => line.startsWith('hdiutil detach'),
+    );
+    expect(detachCalls.length, 2);
+    expect(detachCalls.first, contains('nsoalbum-dmg.'));
+    expect(detachCalls.last, contains('-force'));
+    expect(
+      File(p.join(root.path, 'dist/NSOAlbum-macOS-arm64-0.2.14.dmg'))
+          .existsSync(),
+      isTrue,
+    );
+  }, skip: skip);
 
   for (final failure in [
     'build',

@@ -173,6 +173,24 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Dart analysis failed.' }
           flutter test --machine --no-pub 1> (Join-Path $env:RUNNER_TEMP 'flutter-tests.jsonl') 2> (Join-Path $env:RUNNER_TEMP 'flutter-tests-stderr.log')
           if ($LASTEXITCODE -ne 0) { throw 'Flutter tests failed; see structured test summary.' }
+      - name: Verify the Windows WebView COM apartment contract
+        if: inputs.platform == 'windows-x64'
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $vsRoot = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vsRoot)) {
+            throw 'Cannot locate the Visual C++ x64 toolchain for the WebView COM contract test.'
+          }
+          $vcvars = Join-Path $vsRoot 'VC/Auxiliary/Build/vcvars64.bat'
+          $testRoot = Join-Path $env:RUNNER_TEMP 'nso-webview-com-contract'
+          New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+          $exe = Join-Path $testRoot 'nso_webview_com_test.exe'
+          $source = [System.IO.Path]::GetFullPath('flutter_app/windows/runner/nso_webview_com_test.cpp')
+          $compile = "call `"$vcvars`" >nul && cl /nologo /std:c++20 /EHsc `"$source`" ole32.lib /Fe:`"$exe`""
+          cmd.exe /d /s /c $compile
+          if ($LASTEXITCODE -ne 0) { throw 'Compiling the Windows WebView COM contract test failed.' }
+          & $exe
+          if ($LASTEXITCODE -ne 0) { throw 'The Windows WebView COM apartment contract test failed.' }
       - name: Verify and summarize actual test totals
         if: always()
         run: |
