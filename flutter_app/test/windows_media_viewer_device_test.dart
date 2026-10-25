@@ -7,6 +7,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -40,6 +41,69 @@ Future<void> main() async {
   group(
     'Windows synthetic native media viewer',
     () {
+      testWidgets(
+        'immersive action shares video controls without replacing the player',
+        (tester) async {
+          final (assets, backend) = await _fixture();
+          final mouse = await tester.createGesture(
+            kind: PointerDeviceKind.mouse,
+          );
+          try {
+            await tester.pumpWidget(_app(backend, assets));
+            final active = await _readyVideo(tester, assets.first.id);
+            final media = find.byType(VideoPreview).first;
+            await mouse.addPointer(location: tester.getCenter(media));
+            await mouse.moveTo(tester.getCenter(media));
+            final action = find.byKey(const Key('media-viewer-immersive'));
+            await _pumpUntil(
+              tester,
+              () => action.hitTestable().evaluate().length == 1,
+            );
+            final rect = tester.getRect(media);
+            final button = tester.getCenter(action);
+            expect(rect.contains(button), isTrue);
+            expect(button.dx, greaterThan(rect.center.dx));
+            expect(button.dy, greaterThan(rect.center.dy));
+            final previousPlayer = active.player;
+            final previousController = active.controller;
+            final position = active.player.state.position;
+            await tester.tap(action);
+            await _pumpUntil(
+              tester,
+              () =>
+                  find.byKey(const Key('media-viewer-note')).evaluate().isEmpty,
+            );
+            final retained = await _readyVideo(tester, assets.first.id);
+            expect(identical(retained.player, previousPlayer), isTrue);
+            expect(identical(retained.controller, previousController), isTrue);
+            expect(retained.player.state.position, position);
+            await mouse.moveTo(const Offset(2, 2));
+            await _pumpUntil(
+              tester,
+              () => action.hitTestable().evaluate().isEmpty,
+            );
+            await mouse.moveTo(tester.getCenter(media));
+            await _pumpUntil(
+              tester,
+              () => action.hitTestable().evaluate().length == 1,
+            );
+            await tester.tap(action);
+            await _pumpUntil(
+              tester,
+              () => find
+                  .byKey(const Key('media-viewer-note'))
+                  .evaluate()
+                  .isNotEmpty,
+            );
+            expect(tester.takeException(), isNull);
+          } finally {
+            await mouse.removePointer();
+            await _releaseViewer(tester);
+          }
+        },
+        timeout: const Timeout(Duration(minutes: 2)),
+      );
+
       for (final language in ['zh', 'en']) {
         for (final width in [640.0, 800.0]) {
           testWidgets(
@@ -176,7 +240,7 @@ Future<void> main() async {
           await tester.pump(const Duration(seconds: 1));
           staleEditor = find.byType(VideoEditorPage).evaluate().isNotEmpty;
           selectedNext = find
-              .text('2 / 2', skipOffstage: false)
+              .text(assets[1].originalName, skipOffstage: false)
               .evaluate()
               .isNotEmpty;
         } finally {
@@ -235,11 +299,7 @@ Future<void> main() async {
                 tester,
                 () =>
                     find.byType(VideoEditorPage).evaluate().isEmpty &&
-                    find
-                            .text(overwrite ? '1 / 2' : '2 / 3')
-                            .evaluate()
-                            .length ==
-                        1,
+                    find.text(replacement.originalName).evaluate().length == 1,
               );
               if (!overwrite) {
                 await tester.tap(
@@ -247,7 +307,9 @@ Future<void> main() async {
                 );
                 await _pumpUntil(
                   tester,
-                  () => find.text('1 / 3').evaluate().length == 1,
+                  () =>
+                      find.text(assets.first.originalName).evaluate().length ==
+                      1,
                 );
               }
               final current = await _readyVideo(tester, assets.first.id);
@@ -287,7 +349,8 @@ Future<void> main() async {
               }
               await _pumpUntil(
                 tester,
-                () => find.text('${index + 1} / 5').evaluate().length == 1,
+                () =>
+                    find.text(assets[index].originalName).evaluate().isNotEmpty,
               );
               final current = await _readyVideo(tester, assets[index].id);
               await _pumpUntil(

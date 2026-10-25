@@ -5,18 +5,29 @@ import 'package:flutter/material.dart';
 import '../../l10n/app_localizations.dart';
 import '../../rust/models.dart';
 import '../../rust/settings.dart';
+import '../video_preview_cache.dart';
 import '../video_thumbnail.dart';
 import 'android_tag.dart';
 
 class AndroidMediaThumbnail extends StatefulWidget {
-  const AndroidMediaThumbnail({super.key, required this.asset});
+  const AndroidMediaThumbnail({
+    super.key,
+    required this.asset,
+    @visibleForTesting this.requestFactory,
+  });
   final MediaAsset asset;
+  @visibleForTesting
+  final PreviewRequest<VideoThumbnailData> Function(MediaAsset asset)?
+  requestFactory;
+
   @override
   State<AndroidMediaThumbnail> createState() => _AndroidMediaThumbnailState();
 }
 
 class _AndroidMediaThumbnailState extends State<AndroidMediaThumbnail> {
   Future<VideoThumbnailData>? thumbnail;
+  PreviewRequest<VideoThumbnailData>? thumbnailRequest;
+
   @override
   void initState() {
     super.initState();
@@ -26,13 +37,35 @@ class _AndroidMediaThumbnailState extends State<AndroidMediaThumbnail> {
   @override
   void didUpdateWidget(AndroidMediaThumbnail oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.asset.sha256 != widget.asset.sha256) load();
+    if (oldWidget.asset.sha256 != widget.asset.sha256 ||
+        oldWidget.asset.kind != widget.asset.kind) {
+      load();
+    }
   }
 
   void load() {
-    thumbnail = widget.asset.kind == MediaKind.video
-        ? VideoThumbnailCache.load(widget.asset, onError: (_, _) async {})
-        : null;
+    thumbnailRequest?.cancel();
+    thumbnailRequest = null;
+    if (widget.asset.kind != MediaKind.video) {
+      thumbnail = null;
+      return;
+    }
+    final request =
+        widget.requestFactory?.call(widget.asset) ??
+        VideoThumbnailCache.request(widget.asset, onError: (_, _) async {});
+    thumbnailRequest = request;
+    thumbnail = request.future
+        .then(
+          (data) => data ?? const VideoThumbnailData(),
+          onError: (Object _, StackTrace _) => const VideoThumbnailData(),
+        )
+        .whenComplete(request.cancel);
+  }
+
+  @override
+  void dispose() {
+    thumbnailRequest?.cancel();
+    super.dispose();
   }
 
   @override
@@ -138,12 +171,10 @@ class AndroidMediaCard extends StatelessWidget {
                   top: 0,
                   right: 0,
                   child: IconButton.filledTonal(
-                    style: selecting
-                        ? null
-                        : IconButton.styleFrom(
-                            minimumSize: const Size(26, 26),
-                            padding: const EdgeInsets.all(4),
-                          ),
+                    style: IconButton.styleFrom(
+                      minimumSize: const Size(26, 26),
+                      padding: const EdgeInsets.all(4),
+                    ),
                     tooltip: context.l10n.select(
                       zh: selecting ? '选择媒体' : '收藏',
                       en: selecting ? 'Select media' : 'Favorite',
@@ -157,7 +188,7 @@ class AndroidMediaCard extends StatelessWidget {
                           : (asset.favorite
                                 ? Icons.favorite
                                 : Icons.favorite_border),
-                      size: selecting ? null : 16,
+                      size: selecting ? 16 : 22,
                       color: !selecting && asset.favorite ? Colors.red : null,
                     ),
                   ),

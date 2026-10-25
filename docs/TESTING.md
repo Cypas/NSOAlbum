@@ -7,7 +7,8 @@
 `test/windows_media_viewer_device_test.dart` 需显式使用
 `flutter run --debug -d windows -t test/windows_media_viewer_device_test.dart`
 运行；它采用 Live binding、自制视频和内存后端，检查正式详情页的暂停、
-过期编辑取消、编辑结果交接及有界相邻预载。普通宿主 `flutter test`
+过期编辑取消、编辑结果交接及有界相邻预载，并检查视频沉浸按钮在真实控制栏内的
+位置/显隐和切换时播放器实例保持。普通宿主 `flutter test`
 明确跳过这些原生用例。用例断言和原生进程退出分别记账，不能用测试输出成功
 掩盖非零退出或用该入口代替 Rust 入库验收。运行后重新构建普通主入口。
 `flutter run` 自身退出0也不能证明原生子进程退出0。验证普通窗口关闭时须先确认
@@ -15,6 +16,29 @@
 不能向用户普通窗口或仅按进程名匹配的窗口发送关闭请求。
 
 ## 本地构建空间约定
+
+图库生成 Bridge 的实际 DLL 回归位于 `test/gallery_query_bridge_test.dart`。
+仅在已验证为当前源码/生成接口的 Debug 库后，将其绝对路径放入
+`NSOALBUM_DEVICE_SYNC_TEST_LIBRARY`，再单独执行该测试。它通过正式 Rust API
+建立全新合成库，检查分页、录入日期/拍摄顺序、相册窄计数及媒体来源，不访问
+安全凭据或个人图库；SQLite 进程句柄退出前可能仍占用文件，因此合成夹具保留在
+约定的 C 盘 TEMP 内，不抢先删除。默认完整套件显式 skip，此单独结果另外记账，
+不能据此声称系统窗口、播放器或手机已验收。
+
+同一环境变量也可显式启用 `test/device_sync/account_bridge_test.dart`。它通过
+实际 DLL、TLS/SQLite/journal 及内存安全存储边界验证账号 v2 名称历史传递、
+v1 规范字节接收、授权、显式恢复及四键写入/读回故障补偿；不读取或写入真实
+账号。`bridge_fault_matrix.dart` 属于该回归的辅助夹具，不是应用入口。
+名称历史的纯 Dart 冲突规则在 `test/account_name_history_test.dart`，包括
+保留原 RFC3339 精度以及亚微秒更新比较；宿主通过不代表系统安全存储或设备
+多端互连已经验收。
+
+异常已配对会话的本地持久状态回归位于 Rust `device_sync/startup_recovery.rs`、
+`database.rs` 与 driver/headless 测试，覆盖精确会话清理、受控部分文件与缓存保留。
+Flutter 的 `test/device_sync/startup_lifecycle_test.dart` 和
+`startup_desktop_close_test.dart` 分别验证异常才显示校验提示、干净启动隔离、
+关闭保留同一应用树、必要等待和失败后的显式重试；不能以这些合成结果声称
+已验证系统杀进程、真实账号补偿或 macOS 窗口退出。
 
 本地 Windows、Android 和 macOS Debug/原生验证优先在 C 盘独立构建副本中执行，
 不要把大型 Rust target、Flutter build、Gradle 中间目录长期写入 F 盘源码工作区。
@@ -242,6 +266,13 @@ flutter test
 CI 使用完整测试套件，不通过排除平台测试隐藏不支持的平台行为。
 
 ### Windows WebView DLL 生命周期
+
+Windows 原生验证固定运行于 `windows-2022`：当前锁定的
+`flutter_inappwebview_windows` / `Microsoft.Windows.CppWinRT` 组合会在 C++17
+target 上自动添加 `/await`；VS 2026 STL 已对该依赖包含的
+`<experimental/coroutine>` 报 STL1011 编译错误。不要通过关闭诊断、提高整个旧插件
+到其不兼容的 C++20 语法或绕过编译来放行；更换 runner 前须先升级/修复该依赖并以
+Windows 最新 runner 完整构建验证。
 
 Windows runner 先从 System32 可选加载 CoreMessaging，再通过延迟加载注册
 WebView 消费者，使 provider 先初始化、后卸载。未提供该系统组件时保留插件

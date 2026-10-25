@@ -16,7 +16,8 @@ import '../rust/models.dart';
 import '../rust/settings.dart';
 import '../search/search_normalizer.dart';
 import '../state/settings_controller.dart';
-import '../state/library_controller.dart';
+import '../state/gallery_page_controller.dart';
+import '../platform/gallery_notification_navigation.dart';
 import '../state/transfer_controller.dart';
 import '../state/sync_controller.dart';
 import '../startup/startup_diagnostics.dart';
@@ -32,6 +33,7 @@ import 'account_tools/account_tools_expander.dart';
 import 'account_tools/account_tool_errors.dart';
 import 'nxapi_disclosure_card.dart';
 import 'macos_update_dialog.dart';
+import '../platform/windows_system_fonts.dart';
 import 'device_sync/album_source_label.dart';
 import 'device_sync/multi_device_sync_page.dart';
 
@@ -339,6 +341,7 @@ class HomeShell extends StatefulWidget {
     this.latestReleaseVersion,
     this.updateStatus,
     this.updateStatusError,
+    this.notificationNavigation,
   });
 
   final AppBackend backend;
@@ -354,6 +357,7 @@ class HomeShell extends StatefulWidget {
   final String? latestReleaseVersion;
   final UpdateStatusKind? updateStatus;
   final Object? updateStatusError;
+  final GalleryNotificationNavigation? notificationNavigation;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -373,10 +377,21 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
+    widget.notificationNavigation?.addListener(_openGalleryFromNotification);
     ownsSyncController = widget.syncController == null;
     sync = widget.syncController ?? SyncController(widget.backend);
     _lastSyncState = sync.state;
     sync.addListener(_handleSyncStateChanged);
+  }
+
+  void _openGalleryFromNotification() {
+    if (!mounted) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    libraryKey.currentState?._reload();
+    setState(() {
+      openedAlbum = null;
+      index = 0;
+    });
   }
 
   void _handleSyncStateChanged() {
@@ -428,6 +443,7 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   void dispose() {
+    widget.notificationNavigation?.removeListener(_openGalleryFromNotification);
     sync.removeListener(_handleSyncStateChanged);
     if (ownsSyncController) sync.dispose();
     super.dispose();
@@ -790,6 +806,10 @@ class _PageFrame extends StatelessWidget {
     this.leading,
     this.action,
     this.fixedHeader = false,
+    this.controller,
+    this.bodySliver,
+    this.onPointerMove,
+    this.onPointerUp,
   });
 
   final String title;
@@ -798,6 +818,10 @@ class _PageFrame extends StatelessWidget {
   final Widget? leading;
   final Widget? action;
   final bool fixedHeader;
+  final ScrollController? controller;
+  final Widget? bodySliver;
+  final PointerMoveEventListener? onPointerMove;
+  final PointerUpEventListener? onPointerUp;
 
   Widget _header(BuildContext context) => Padding(
     padding: const EdgeInsets.fromLTRB(24, 6, 24, 4),
@@ -858,6 +882,7 @@ class _PageFrame extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final content = CustomScrollView(
+      controller: controller,
       slivers: [
         if (fixedHeader)
           SliverPersistentHeader(
@@ -878,9 +903,20 @@ class _PageFrame extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
           sliver: SliverToBoxAdapter(child: child),
         ),
+        if (bodySliver != null)
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
+            sliver: bodySliver,
+          ),
       ],
     );
-    return SafeArea(child: content);
+    return SafeArea(
+      child: Listener(
+        onPointerMove: onPointerMove,
+        onPointerUp: onPointerUp,
+        child: content,
+      ),
+    );
   }
 }
 
@@ -1243,6 +1279,15 @@ class _GameTagFiltersState extends State<_GameTagFilters> {
 String _shortDate(DateTime value) =>
     '${value.year.toString().padLeft(4, '0')}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
 
+class _CreationDateSelection {
+  const _CreationDateSelection.range(this.range) : anniversary = null;
+
+  const _CreationDateSelection.anniversary(this.anniversary) : range = null;
+
+  final DateTimeRange? range;
+  final CapturedOnThisDay? anniversary;
+}
+
 class _CreationDateRangeDialog extends StatefulWidget {
   const _CreationDateRangeDialog({
     required this.firstDate,
@@ -1355,6 +1400,57 @@ class _CreationDateRangeDialogState extends State<_CreationDateRangeDialog> {
               ),
             ),
             const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 10, 20, 4),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  context.l10n.select(zh: '快速时间范围', en: 'Quick date ranges'),
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final entry in _quickRanges(context).entries)
+                    OutlinedButton(
+                      key: Key('creation-date-quick-${entry.key}'),
+                      onPressed: () => Navigator.pop(
+                        context,
+                        _CreationDateSelection.range(entry.value.$1),
+                      ),
+                      child: Text(entry.value.$2),
+                    ),
+                  OutlinedButton(
+                    key: const Key('creation-date-quick-anniversary'),
+                    onPressed: () {
+                      final now = DateTime.now();
+                      Navigator.pop(
+                        context,
+                        _CreationDateSelection.anniversary(
+                          CapturedOnThisDay(
+                            month: now.month,
+                            day: now.day,
+                            beforeYear: now.year,
+                            utcOffsetSeconds: now.timeZoneOffset.inSeconds,
+                          ),
+                        ),
+                      );
+                    },
+                    child: Text(
+                      context.l10n.select(
+                        zh: '那年今日',
+                        en: 'This date in history',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
             Expanded(
               child: CalendarDatePicker(
                 key: ValueKey(
@@ -1420,9 +1516,11 @@ class _CreationDateRangeDialogState extends State<_CreationDateRangeDialog> {
     final selectedStart = start ?? selected;
     Navigator.pop(
       context,
-      selected.isBefore(selectedStart)
-          ? DateTimeRange(start: selected, end: selectedStart)
-          : DateTimeRange(start: selectedStart, end: selected),
+      _CreationDateSelection.range(
+        selected.isBefore(selectedStart)
+            ? DateTimeRange(start: selected, end: selectedStart)
+            : DateTimeRange(start: selectedStart, end: selected),
+      ),
     );
   }
 
@@ -1430,6 +1528,46 @@ class _CreationDateRangeDialogState extends State<_CreationDateRangeDialog> {
     if (value.isBefore(widget.firstDate)) return widget.firstDate;
     if (value.isAfter(widget.lastDate)) return widget.lastDate;
     return value;
+  }
+
+  Map<String, (DateTimeRange, String)> _quickRanges(BuildContext context) {
+    final today = DateUtils.dateOnly(DateTime.now());
+    final tomorrow = today.add(const Duration(days: 1));
+    final monday = today.subtract(Duration(days: today.weekday - 1));
+    final nextMonday = monday.add(const Duration(days: 7));
+    final previousMonday = monday.subtract(const Duration(days: 7));
+    final monthStart = DateTime(today.year, today.month);
+    final nextMonth = DateTime(today.year, today.month + 1);
+    return {
+      'today': (
+        DateTimeRange(
+          start: today,
+          end: tomorrow.subtract(const Duration(days: 1)),
+        ),
+        context.l10n.select(zh: '本日', en: 'Today'),
+      ),
+      'this-week': (
+        DateTimeRange(
+          start: monday,
+          end: nextMonday.subtract(const Duration(days: 1)),
+        ),
+        context.l10n.select(zh: '本周', en: 'This week'),
+      ),
+      'this-month': (
+        DateTimeRange(
+          start: monthStart,
+          end: nextMonth.subtract(const Duration(days: 1)),
+        ),
+        context.l10n.select(zh: '本月', en: 'This month'),
+      ),
+      'last-week': (
+        DateTimeRange(
+          start: previousMonday,
+          end: monday.subtract(const Duration(days: 1)),
+        ),
+        context.l10n.select(zh: '上周', en: 'Last week'),
+      ),
+    };
   }
 }
 
@@ -1485,6 +1623,7 @@ class _LibraryPageState extends State<LibraryPage> {
   Timer? searchDebounce;
   String search = '';
   DateTimeRange? capturedRange;
+  CapturedOnThisDay? capturedOnThisDay;
   final Set<String> selectedGameTags = {};
   List<MediaAsset> latestMedia = const [];
   List<MediaAsset>? cachedMedia;
@@ -1499,6 +1638,8 @@ class _LibraryPageState extends State<LibraryPage> {
   final Set<int> _selectionDragVisited = {};
   Timer? _selectionAutoScrollTimer;
   double _selectionAutoScrollVelocity = 0;
+  final ScrollController _galleryScroll = ScrollController();
+  late final _pages = GalleryPageController(widget.backend);
   late Future<List<MediaAsset>> media = _load();
   late Future<List<GameTagSummary>> gameTags = _loadGameTags();
 
@@ -1507,6 +1648,18 @@ class _LibraryPageState extends State<LibraryPage> {
     super.initState();
     widget.settings.addListener(_handleSettingsChanged);
     searchController.addListener(_onSearchControllerChanged);
+    _galleryScroll.addListener(_loadMoreWhenNearEnd);
+  }
+
+  void _loadMoreWhenNearEnd() {
+    if (!_galleryScroll.hasClients ||
+        _galleryScroll.position.extentAfter > 900 ||
+        _pages.loadingNext ||
+        _pages.error != null ||
+        !_pages.hasAfter) {
+      return;
+    }
+    unawaited(_loadNextMediaPage());
   }
 
   void _handleSettingsChanged() {
@@ -1515,37 +1668,19 @@ class _LibraryPageState extends State<LibraryPage> {
 
   Future<List<GameTagSummary>> _loadGameTags() async {
     if (widget.albumId == null) return widget.backend.listGameTags();
-    final results = await Future.wait([
-      widget.backend.listGameTags(),
-      widget.backend.listMedia(albumId: widget.albumId, limit: 100000),
-    ]);
-    final global = results[0] as List<GameTagSummary>;
-    final albumMedia = results[1] as List<MediaAsset>;
-    final counts = <String, (int, int)>{};
-    for (final item in albumMedia) {
-      final current = counts[item.gameName] ?? (0, 0);
-      counts[item.gameName] = item.kind == MediaKind.image
-          ? (current.$1 + 1, current.$2)
-          : (current.$1, current.$2 + 1);
-    }
-    final usage = {for (final item in global) item.name: item.selectionCount};
-    final values = counts.entries
+    final counts = await widget.backend.listGameMediaCounts(
+      albumId: widget.albumId,
+    );
+    final values = counts
         .map(
-          (entry) => GameTagSummary(
-            name: entry.key,
-            imageCount: BigInt.from(entry.value.$1),
-            videoCount: BigInt.from(entry.value.$2),
-            selectionCount: usage[entry.key] ?? BigInt.zero,
+          (item) => GameTagSummary(
+            name: item.gameName,
+            imageCount: item.imageCount,
+            videoCount: item.videoCount,
+            selectionCount: item.selectionCount,
           ),
         )
         .toList(growable: false);
-    values.sort((left, right) {
-      final byUsage = right.selectionCount.compareTo(left.selectionCount);
-      if (byUsage != 0) return byUsage;
-      return (right.imageCount + right.videoCount).compareTo(
-        left.imageCount + left.videoCount,
-      );
-    });
     return values;
   }
 
@@ -1553,23 +1688,24 @@ class _LibraryPageState extends State<LibraryPage> {
     final generation = ++loadGeneration;
     late final List<MediaAsset> items;
     try {
-      items = await LibraryController.query(
-        widget.backend,
-        kind: kind,
-        favoriteOnly: favoritesOnly,
-        albumId: widget.albumId,
-        newestFirst: newestFirst,
-        gameNames: selectedGameTags.toList(growable: false),
-        capturedFrom: capturedRange == null
+      final term = search;
+      await _pages.reload(
+        _galleryQuery(pageSize: 60),
+        filter: term.isEmpty
             ? null
-            : DateUtils.dateOnly(capturedRange!.start).toUtc(),
-        capturedUntil: capturedRange == null
-            ? null
-            : DateUtils.dateOnly(capturedRange!.end)
-                  .add(const Duration(days: 1))
-                  .toUtc(),
-        limit: 500,
-      ).timeout(const Duration(seconds: 25));
+            : (item) => normalizedTextContains(
+                [
+                  item.originalName,
+                  item.gameName,
+                  item.note ?? '',
+                  ...item.tags,
+                ].join(' '),
+                term,
+              ),
+      );
+      if (generation != loadGeneration || !mounted) return const [];
+      if (_pages.error case final error?) throw error;
+      items = _pages.items;
     } catch (error, stackTrace) {
       if (!startupGalleryQueryLogged) {
         startupGalleryQueryLogged = true;
@@ -1590,8 +1726,30 @@ class _LibraryPageState extends State<LibraryPage> {
       );
     }
     if (generation == loadGeneration) cachedMedia = items;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && generation == loadGeneration) _loadMoreWhenNearEnd();
+    });
     return items;
   }
+
+  GalleryQuery _galleryQuery({required int pageSize}) => GalleryQuery(
+    kind: kind,
+    limit: pageSize,
+    offset: 0,
+    favoriteOnly: favoritesOnly,
+    albumId: widget.albumId,
+    newestFirst: newestFirst,
+    gameNames: selectedGameTags.toList(growable: false),
+    importedFrom: capturedRange == null
+        ? null
+        : DateUtils.dateOnly(capturedRange!.start).toUtc(),
+    importedUntil: capturedRange == null
+        ? null
+        : DateUtils.dateOnly(capturedRange!.end)
+              .add(const Duration(days: 1))
+              .toUtc(),
+    capturedOnThisDay: capturedOnThisDay,
+  );
 
   void _reload() => setState(() {
     media = _load();
@@ -1635,10 +1793,28 @@ class _LibraryPageState extends State<LibraryPage> {
     widget.settings.removeListener(_handleSettingsChanged);
     searchDebounce?.cancel();
     _selectionAutoScrollTimer?.cancel();
+    _galleryScroll.dispose();
+    _pages.dispose();
     searchController
       ..removeListener(_onSearchControllerChanged)
       ..dispose();
     super.dispose();
+  }
+
+  Future<void> _loadNextMediaPage() async {
+    if (_pages.loadingNext || !_pages.hasAfter) return;
+    final generation = loadGeneration;
+    final pending = _pages.loadNext();
+    setState(() {});
+    await pending;
+    if (!mounted || generation != loadGeneration) return;
+    setState(() {
+      cachedMedia = _pages.items;
+      media = Future.value(cachedMedia);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && generation == loadGeneration) _loadMoreWhenNearEnd();
+    });
   }
 
   void _onSearchControllerChanged() =>
@@ -1657,7 +1833,10 @@ class _LibraryPageState extends State<LibraryPage> {
     if (value.composing.isValid && !value.composing.isCollapsed) return;
     final submitted = value.text.trim();
     if (submitted == search || !mounted) return;
-    setState(() => search = submitted);
+    setState(() {
+      search = submitted;
+      media = _load();
+    });
   }
 
   void _setKind(GalleryKindFilter value) => setState(() {
@@ -1785,7 +1964,7 @@ class _LibraryPageState extends State<LibraryPage> {
 
   Future<void> _selectCapturedRange() async {
     final now = DateTime.now();
-    final selected = await showDialog<DateTimeRange>(
+    final selected = await showDialog<_CreationDateSelection>(
       context: context,
       builder: (context) => _CreationDateRangeDialog(
         firstDate: DateTime(2000),
@@ -1793,9 +1972,16 @@ class _LibraryPageState extends State<LibraryPage> {
         initialRange: capturedRange,
       ),
     );
-    if (selected != null && mounted) {
+    if (selected?.anniversary != null && mounted) {
       setState(() {
-        capturedRange = selected;
+        capturedRange = null;
+        capturedOnThisDay = selected!.anniversary;
+        media = _load();
+      });
+    } else if (selected?.range != null && mounted) {
+      setState(() {
+        capturedRange = selected!.range;
+        capturedOnThisDay = null;
         media = _load();
       });
     }
@@ -2533,6 +2719,10 @@ class _LibraryPageState extends State<LibraryPage> {
           ),
     action: _buildHeaderActions(context),
     fixedHeader: true,
+    controller: _galleryScroll,
+    onPointerMove: (event) => _updateSelectionAutoScroll(event.position),
+    onPointerUp: (_) => _endSelectionPointer(),
+    bodySliver: _buildMediaSliver(),
     child: Column(
       children: [
         if (widget.albumId != null && widget.albumSystemKey != 'favorites')
@@ -2647,15 +2837,21 @@ class _LibraryPageState extends State<LibraryPage> {
               ),
               avatar: const Icon(Icons.date_range_rounded, size: 18),
               label: Text(
-                capturedRange == null
+                capturedOnThisDay != null
+                    ? context.l10n.select(
+                        zh: '那年今日 · ${capturedOnThisDay!.month}/${capturedOnThisDay!.day}',
+                        en: 'This date in history · ${capturedOnThisDay!.month}/${capturedOnThisDay!.day}',
+                      )
+                    : capturedRange == null
                     ? context.l10n.select(zh: '创建时间', en: 'Creation date')
                     : '${_shortDate(capturedRange!.start)} – ${_shortDate(capturedRange!.end)}',
               ),
               onPressed: _selectCapturedRange,
-              onDeleted: capturedRange == null
+              onDeleted: capturedRange == null && capturedOnThisDay == null
                   ? null
                   : () => setState(() {
                       capturedRange = null;
+                      capturedOnThisDay = null;
                       media = _load();
                     }),
             ),
@@ -2781,212 +2977,209 @@ class _LibraryPageState extends State<LibraryPage> {
           },
         ),
         const SizedBox(height: 8),
-        FutureBuilder<List<MediaAsset>>(
-          future: media,
-          builder: (context, snapshot) {
-            final source = snapshot.data ?? cachedMedia;
-            if (source == null &&
-                snapshot.connectionState != ConnectionState.done) {
-              return const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(48),
-                  child: CircularProgressIndicator(),
-                ),
-              );
-            }
-            if (source == null && snapshot.hasError) {
-              return _ErrorPanel(
-                message: context.l10n.select(
-                  zh: '图库读取失败：${snapshot.error}',
-                  en: 'Failed to load library: ${snapshot.error}',
-                ),
-                onRetry: _reload,
-              );
-            }
-            final currentItems = source!
-                .map(_withFavoriteOverride)
-                .toList(growable: false);
-            latestMedia = currentItems;
-            _preloadVideoThumbnails(currentItems);
-            final rows = currentItems.where((item) {
-              if ((favoritesOnly || widget.albumSystemKey == 'favorites') &&
-                  !item.favorite) {
-                return false;
-              }
-              final text = [
-                item.originalName,
-                item.gameName,
-                item.note ?? '',
-                ...item.tags,
-              ].join(' ');
-              return normalizedTextContains(text, search);
-            }).toList();
-            final columns = widget.settings.value.galleryColumns.clamp(2, 7);
-            _preloadGalleryImages(rows, columns);
-            visibleMediaIds = rows
-                .map((item) => item.id)
-                .toList(growable: false);
-            final Widget mediaContent;
-            if (rows.isEmpty) {
-              mediaContent = _EmptyPanel(
-                icon: Icons.photo_library_outlined,
-                message: context.l10n.select(
-                  zh: '当前条件下没有媒体',
-                  en: 'No media matches the current filters',
-                ),
-              );
-            } else {
-              mediaContent = LayoutBuilder(
-                builder: (context, constraints) {
-                  final previewRows = _isDesktop
-                      ? 3
-                      : widget.settings.value.galleryRows.clamp(2, 8);
-                  final cardHeight = (420 / previewRows + 130).clamp(
-                    210.0,
-                    520.0,
-                  );
-                  return Listener(
-                    behavior: HitTestBehavior.translucent,
-                    onPointerMove: (event) =>
-                        _updateSelectionAutoScroll(event.position),
-                    onPointerUp: (_) => _endSelectionPointer(),
-                    child: GridView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: columns,
-                        crossAxisSpacing: 16,
-                        mainAxisSpacing: 16,
-                        mainAxisExtent: cardHeight,
-                      ),
-                      itemCount: rows.length,
-                      itemBuilder: (context, index) => _MediaCard(
-                        asset: rows[index],
-                        settings: widget.settings.value,
-                        onVideoThumbnailError: (error, stackTrace) =>
-                            widget.backend.logError(
-                              'Failed to generate video thumbnail for media ${rows[index].id}',
-                              error,
-                              stackTrace,
-                            ),
-                        selecting: selecting,
-                        enableVideoFeatures: widget.enableVideoFeatures,
-                        selected: selectedMediaIds.contains(rows[index].id),
-                        onSelect: () => _toggleSelected(rows[index].id),
-                        onSelectionPointerDown: (position) =>
-                            _beginSelectionPointer(rows[index].id, position),
-                        onSelectionPointerEnter: (position) =>
-                            _enterSelectionPointer(rows[index].id, position),
-                        onSelectionPointerUp: _endSelectionPointer,
-                        onFavorite: favoriteBusy.contains(rows[index].id)
-                            ? null
-                            : () => _toggleFavorite(rows[index]),
-                        onPreview: selecting
-                            ? () => _handleSelectionTap(rows[index].id)
-                            : rows[index].kind == MediaKind.video &&
-                                  !widget.enableVideoFeatures
-                            ? () => ScaffoldMessenger.of(context).showSnackBar(
-                                _messageSnackBar(
-                                  context.l10n.select(
-                                    zh: '安全模式已禁用视频预览。',
-                                    en: 'Video preview is disabled in safe mode.',
-                                  ),
-                                  error: true,
-                                ),
-                              )
-                            : () => MediaViewer.open(
-                                context,
-                                backend: widget.backend,
-                                items: rows,
-                                initialIndex: index,
-                                autoPlayVideo:
-                                    widget.settings.value.autoPlayVideo,
-                                compactTagDisplay:
-                                    widget.settings.value.compactTagDisplay,
-                                onMetadataChanged: _reload,
-                              ),
-                        onSecondaryTapDown: (details) =>
-                            _showSingleMediaMenu(rows[index], details),
-                        onEdit: () async {
-                          final changed =
-                              await showModalBottomSheet<MediaMetadataUpdate>(
-                                context: context,
-                                showDragHandle: true,
-                                isScrollControlled: true,
-                                constraints: const BoxConstraints(
-                                  maxWidth: 680,
-                                ),
-                                builder: (_) => MediaMetadataEditor(
-                                  backend: widget.backend,
-                                  asset: rows[index],
-                                ),
-                              );
-                          if (changed != null) _reload();
-                        },
-                      ),
-                    ),
-                  );
-                },
-              );
-            }
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SizedBox(
-                  height: 7,
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 180),
-                    child: snapshot.connectionState == ConnectionState.done
-                        ? const SizedBox.shrink(
-                            key: ValueKey('gallery-filter-idle'),
-                          )
-                        : const LinearProgressIndicator(
-                            key: Key('gallery-filter-progress'),
-                            minHeight: 3,
-                          ),
-                  ),
-                ),
-                if (snapshot.hasError)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: Text(
-                      context.l10n.select(
-                        zh: '筛选更新失败，正在显示上一次结果：${snapshot.error}',
-                        en: 'Filter update failed; showing the previous results: ${snapshot.error}',
-                      ),
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                    ),
-                  ),
-                AnimatedSize(
-                  duration: const Duration(milliseconds: 320),
-                  reverseDuration: const Duration(milliseconds: 240),
-                  curve: Curves.easeOutCubic,
-                  alignment: Alignment.topCenter,
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 320),
-                    reverseDuration: const Duration(milliseconds: 220),
-                    switchInCurve: Curves.easeOutCubic,
-                    switchOutCurve: Curves.easeInCubic,
-                    transitionBuilder: (child, animation) =>
-                        FadeTransition(opacity: animation, child: child),
-                    layoutBuilder: (currentChild, previousChildren) => Stack(
-                      alignment: Alignment.topCenter,
-                      children: [...previousChildren, ?currentChild],
-                    ),
-                    child: KeyedSubtree(
-                      key: ValueKey(rows.map((item) => item.id).join(',')),
-                      child: mediaContent,
-                    ),
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
       ],
     ),
+  );
+
+  Widget _buildMediaSliver() => FutureBuilder<List<MediaAsset>>(
+    future: media,
+    builder: (context, snapshot) {
+      // A completed append must be visible in this very frame. Keeping the
+      // preceding FutureBuilder snapshot for a frame would remove the footer
+      // before extending the sliver and clamp a bottom-edge scroll position.
+      final source = !_pages.loading && _pages.error == null
+          ? _pages.items
+          : snapshot.data ?? cachedMedia;
+      if (source == null && snapshot.connectionState != ConnectionState.done) {
+        return const SliverToBoxAdapter(
+          child: Center(
+            child: Padding(
+              padding: EdgeInsets.all(48),
+              child: CircularProgressIndicator(),
+            ),
+          ),
+        );
+      }
+      if (source == null && snapshot.hasError) {
+        return SliverToBoxAdapter(
+          child: _ErrorPanel(
+            message: context.l10n.select(
+              zh: '图库读取失败：${snapshot.error}',
+              en: 'Failed to load library: ${snapshot.error}',
+            ),
+            onRetry: _reload,
+          ),
+        );
+      }
+      final currentItems = source!
+          .map(_withFavoriteOverride)
+          .toList(growable: false);
+      latestMedia = currentItems;
+      _preloadVideoThumbnails(currentItems);
+      final rows = currentItems.where((item) {
+        if ((favoritesOnly || widget.albumSystemKey == 'favorites') &&
+            !item.favorite) {
+          return false;
+        }
+        final text = [
+          item.originalName,
+          item.gameName,
+          item.note ?? '',
+          ...item.tags,
+        ].join(' ');
+        return normalizedTextContains(text, search);
+      }).toList();
+      final columns = widget.settings.value.galleryColumns.clamp(2, 7);
+      _preloadGalleryImages(rows, columns);
+      visibleMediaIds = rows.map((item) => item.id).toList(growable: false);
+      final Widget mediaContent;
+      if (rows.isEmpty) {
+        mediaContent = SliverToBoxAdapter(
+          child: _EmptyPanel(
+            icon: Icons.photo_library_outlined,
+            message: context.l10n.select(
+              zh: '当前条件下没有媒体',
+              en: 'No media matches the current filters',
+            ),
+          ),
+        );
+      } else {
+        final previewRows = _isDesktop
+            ? 3
+            : widget.settings.value.galleryRows.clamp(2, 8);
+        final cardHeight = (420 / previewRows + 130).clamp(210.0, 520.0);
+        mediaContent = SliverGrid(
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: columns,
+            crossAxisSpacing: 16,
+            mainAxisSpacing: 16,
+            mainAxisExtent: cardHeight,
+          ),
+          delegate: SliverChildBuilderDelegate(
+            (context, index) => _MediaCard(
+              asset: rows[index],
+              settings: widget.settings.value,
+              onVideoThumbnailError: (error, stackTrace) => widget.backend.logError(
+                'Failed to generate video thumbnail for media ${rows[index].id}',
+                error,
+                stackTrace,
+              ),
+              selecting: selecting,
+              enableVideoFeatures: widget.enableVideoFeatures,
+              selected: selectedMediaIds.contains(rows[index].id),
+              onSelect: () => _toggleSelected(rows[index].id),
+              onSelectionPointerDown: (position) =>
+                  _beginSelectionPointer(rows[index].id, position),
+              onSelectionPointerEnter: (position) =>
+                  _enterSelectionPointer(rows[index].id, position),
+              onSelectionPointerUp: _endSelectionPointer,
+              onFavorite: favoriteBusy.contains(rows[index].id)
+                  ? null
+                  : () => _toggleFavorite(rows[index]),
+              onPreview: selecting
+                  ? () => _handleSelectionTap(rows[index].id)
+                  : rows[index].kind == MediaKind.video &&
+                        !widget.enableVideoFeatures
+                  ? () => ScaffoldMessenger.of(context).showSnackBar(
+                      _messageSnackBar(
+                        context.l10n.select(
+                          zh: '安全模式已禁用视频预览。',
+                          en: 'Video preview is disabled in safe mode.',
+                        ),
+                        error: true,
+                      ),
+                    )
+                  : () => MediaViewer.open(
+                      context,
+                      backend: widget.backend,
+                      items: rows,
+                      initialIndex: index,
+                      autoPlayVideo: widget.settings.value.autoPlayVideo,
+                      compactTagDisplay:
+                          widget.settings.value.compactTagDisplay,
+                      onMetadataChanged: _reload,
+                      galleryQuery: _pages.query,
+                      initialPage: _pages.snapshot,
+                      mediaFilter: _pages.accept,
+                    ),
+              onSecondaryTapDown: (details) =>
+                  _showSingleMediaMenu(rows[index], details),
+              onEdit: () async {
+                final changed = await showModalBottomSheet<MediaMetadataUpdate>(
+                  context: context,
+                  showDragHandle: true,
+                  isScrollControlled: true,
+                  constraints: const BoxConstraints(maxWidth: 680),
+                  builder: (_) => MediaMetadataEditor(
+                    backend: widget.backend,
+                    asset: rows[index],
+                  ),
+                );
+                if (changed != null) _reload();
+              },
+            ),
+            childCount: rows.length,
+          ),
+        );
+      }
+      return SliverMainAxisGroup(
+        slivers: [
+          SliverToBoxAdapter(
+            child: SizedBox(
+              height: 7,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                child: snapshot.connectionState == ConnectionState.done
+                    ? const SizedBox.shrink(
+                        key: ValueKey('gallery-filter-idle'),
+                      )
+                    : const LinearProgressIndicator(
+                        key: Key('gallery-filter-progress'),
+                        minHeight: 3,
+                      ),
+              ),
+            ),
+          ),
+          if (snapshot.hasError)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Text(
+                  context.l10n.select(
+                    zh: '筛选更新失败，正在显示上一次结果：${snapshot.error}',
+                    en: 'Filter update failed; showing the previous results: ${snapshot.error}',
+                  ),
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
+            ),
+          SliverIgnorePointer(ignoring: _pages.loading, sliver: mediaContent),
+          if (_pages.loadingNext)
+            const SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.all(12),
+                child: LinearProgressIndicator(
+                  key: Key('gallery-loading-next'),
+                ),
+              ),
+            ),
+          if (_pages.error != null && !_pages.loading)
+            SliverToBoxAdapter(
+              child: TextButton.icon(
+                key: const Key('gallery-page-retry'),
+                onPressed: _loadNextMediaPage,
+                icon: const Icon(Icons.refresh),
+                label: Text(
+                  context.l10n.select(
+                    zh: '加载失败，重试',
+                    en: 'Loading failed. Retry',
+                  ),
+                ),
+              ),
+            ),
+        ],
+      );
+    },
   );
 
   Future<void> _deleteSelectedMedia({List<int>? mediaIds}) async {
@@ -5108,6 +5301,17 @@ class _TransferPageState extends State<TransferPage>
                               child: AccountToolsExpander(
                                 backend: widget.backend,
                                 profile: profile,
+                                selected:
+                                    profile.accountId == selectedAccountId,
+                                onHeaderTap:
+                                    !loginBusy &&
+                                        widget.sync.state !=
+                                            SyncState.running &&
+                                        widget.sync.state !=
+                                            SyncState.cancelling &&
+                                        profile.accountId != selectedAccountId
+                                    ? () => _selectAccount(profile.accountId)
+                                    : null,
                                 header: _NintendoSyncAccountTile(
                                   key: ValueKey(
                                     'sync-account-${profile.accountId}',
@@ -5115,14 +5319,21 @@ class _TransferPageState extends State<TransferPage>
                                   profile: profile,
                                   history:
                                       accountSyncHistories[profile.accountId],
+                                  result: widget
+                                      .sync
+                                      .accountResults[profile.accountId],
+                                  error: widget
+                                      .sync
+                                      .accountErrors[profile.accountId],
+                                  attemptedAt: widget
+                                      .sync
+                                      .accountAttemptedAt[profile.accountId],
+                                  active:
+                                      widget.sync.running &&
+                                      widget.sync.currentAccountId ==
+                                          profile.accountId,
                                   selected:
                                       profile.accountId == selectedAccountId,
-                                  enabled:
-                                      !loginBusy &&
-                                      widget.sync.state != SyncState.running &&
-                                      widget.sync.state != SyncState.cancelling,
-                                  onSelect: () =>
-                                      _selectAccount(profile.accountId),
                                   onAvatarTap:
                                       profile.avatarBytes?.isNotEmpty == true
                                       ? () => _showAvatar(profile)
@@ -5156,8 +5367,8 @@ class _TransferPageState extends State<TransferPage>
                                 icon: const Icon(Icons.person_remove_outlined),
                                 label: Text(
                                   context.l10n.select(
-                                    zh: '移除当前账号',
-                                    en: 'Remove current account',
+                                    zh: '移除账号',
+                                    en: 'Remove account',
                                   ),
                                 ),
                               ),
@@ -5263,8 +5474,7 @@ class _TransferPageState extends State<TransferPage>
                           Text(_syncText(context, widget.sync)),
                           const SizedBox(height: 18),
                           if (widget.sync.state == SyncState.running ||
-                              widget.sync.state == SyncState.cancelling ||
-                              widget.sync.state == SyncState.completed) ...[
+                              widget.sync.state == SyncState.cancelling) ...[
                             LinearProgressIndicator(
                               key: const Key('nso-sync-progress'),
                               value: _syncProgressValue(widget.sync.progress),
@@ -5300,8 +5510,8 @@ class _TransferPageState extends State<TransferPage>
                                       en: 'Cancel sync',
                                     )
                                   : context.l10n.select(
-                                      zh: '立即同步',
-                                      en: 'Sync now',
+                                      zh: '同步全部账号',
+                                      en: 'Sync all accounts',
                                     ),
                             ),
                           ),
@@ -5858,16 +6068,65 @@ class _TransferPageState extends State<TransferPage>
   }
 
   Future<void> _signOut() async {
-    final displayName = accountProfile?.nickname.trim();
-    final accountName = displayName?.isNotEmpty == true
-        ? displayName!
+    final available = accounts.isNotEmpty
+        ? accounts
+        : accountProfile == null
+        ? const <NintendoAccountProfile>[]
+        : [accountProfile!];
+    if (available.isEmpty) return;
+    String? accountId;
+    if (available.length == 1) {
+      accountId = available.single.accountId;
+    } else {
+      accountId = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(
+            context.l10n.select(
+              zh: '选择要移除的账号',
+              en: 'Choose an account to remove',
+            ),
+          ),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: RadioGroup<String>(
+              groupValue: null,
+              onChanged: (value) => Navigator.pop(context, value),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final profile in available)
+                    RadioListTile<String>(
+                      value: profile.accountId,
+                      title: Text(profile.nickname),
+                      secondary: _NintendoAccountAvatar(
+                        connected: true,
+                        profile: profile,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
+            ),
+          ],
+        ),
+      );
+    }
+    if (accountId == null || !mounted) return;
+    final profile = available.firstWhere((item) => item.accountId == accountId);
+    final displayName = profile.nickname.trim();
+    final accountName = displayName.isNotEmpty
+        ? displayName
         : 'Nintendo Account';
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text(
-          context.l10n.select(zh: '移除当前账号？', en: 'Remove current account?'),
-        ),
+        title: Text(context.l10n.select(zh: '移除账号？', en: 'Remove account?')),
         content: Text(
           context.l10n.select(
             zh: '将从本机移除 Nintendo Account“$accountName”的登录信息，以后如需同步此账号将需重新登录。已导入图库的图片、视频、标签、备注和相册不会被删除。',
@@ -5895,7 +6154,7 @@ class _TransferPageState extends State<TransferPage>
     if (confirmed != true || !mounted) return;
     setState(() => loginBusy = true);
     try {
-      await widget.backend.signOut();
+      await widget.backend.removeNintendoAccount(accountId);
       await _loadAccountState();
       await widget.onNintendoAccountChanged?.call();
     } finally {
@@ -5937,6 +6196,7 @@ class _TransferPageState extends State<TransferPage>
 
   Future<void> _runSync() async {
     await widget.sync.run();
+    await _loadAccountState();
     widget.onImportComplete();
   }
 
@@ -6541,102 +6801,198 @@ class _NintendoSyncAccountTile extends StatelessWidget {
     super.key,
     required this.profile,
     required this.history,
+    required this.result,
+    required this.error,
+    required this.attemptedAt,
+    required this.active,
     required this.selected,
-    required this.enabled,
-    required this.onSelect,
     required this.onAvatarTap,
   });
 
   final NintendoAccountProfile profile;
   final SyncRuntimeState? history;
+  final SyncSummary? result;
+  final Object? error;
+  final DateTime? attemptedAt;
+  final bool active;
   final bool selected;
-  final bool enabled;
-  final VoidCallback onSelect;
   final VoidCallback? onAvatarTap;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return Material(
-      color: selected
-          ? colorScheme.primaryContainer.withValues(alpha: .55)
-          : colorScheme.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        onTap: enabled && !selected ? onSelect : null,
-        borderRadius: BorderRadius.circular(14),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(
-            children: [
-              _NintendoAccountAvatar(
-                connected: true,
-                profile: profile,
-                onTap: onAvatarTap,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
+    final statusColor = _accountSyncStatusColor(
+      context,
+      active: active,
+      error: error,
+      result: result,
+      history: history?.latestAttempt,
+    );
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        children: [
+          _NintendoAccountAvatar(
+            connected: true,
+            profile: profile,
+            onTap: onAvatarTap,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  profile.nickname.trim().isEmpty
+                      ? context.l10n.select(
+                          zh: 'Nintendo 账号',
+                          en: 'Nintendo Account',
+                        )
+                      : profile.nickname,
+                  key: selected
+                      ? const Key('nintendo-account-display-name')
+                      : null,
+                  style: Theme.of(context).textTheme.titleSmall
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 2),
+                Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      profile.nickname.trim().isEmpty
-                          ? context.l10n.select(
-                              zh: 'Nintendo 账号',
-                              en: 'Nintendo Account',
-                            )
-                          : profile.nickname,
-                      key: selected
-                          ? const Key('nintendo-account-display-name')
-                          : null,
-                      style: Theme.of(context).textTheme.titleSmall
-                          ?.copyWith(fontWeight: FontWeight.w700),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4, right: 7),
+                      child: ExcludeSemantics(
+                        child: Container(
+                          key: Key('sync-status-dot-${profile.accountId}'),
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: statusColor,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ),
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      _accountSyncHistoryText(context, history),
-                      key: Key('sync-history-${profile.accountId}'),
-                      style: Theme.of(context).textTheme.bodySmall
-                          ?.copyWith(color: colorScheme.onSurfaceVariant),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+                    Expanded(
+                      child: Text(
+                        _accountSyncHistoryText(
+                          context,
+                          history,
+                          result: result,
+                          error: error,
+                          attemptedAt: attemptedAt,
+                          active: active,
+                        ),
+                        key: Key('sync-history-${profile.accountId}'),
+                        style: Theme.of(context).textTheme.bodySmall
+                            ?.copyWith(color: colorScheme.onSurfaceVariant),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   ],
                 ),
-              ),
-              const SizedBox(width: 8),
-              if (selected)
-                Chip(
-                  avatar: const Icon(Icons.check_rounded, size: 16),
-                  label: Text(context.l10n.select(zh: '当前', en: 'Selected')),
-                  visualDensity: VisualDensity.compact,
-                  side: BorderSide.none,
-                )
-              else
-                Icon(
-                  Icons.radio_button_unchecked_rounded,
-                  color: enabled
-                      ? colorScheme.outline
-                      : colorScheme.outlineVariant,
-                ),
-            ],
+              ],
+            ),
           ),
-        ),
+        ],
       ),
     );
   }
 }
 
+Color _accountSyncStatusColor(
+  BuildContext context, {
+  required bool active,
+  required Object? error,
+  required SyncSummary? result,
+  required SyncAttemptSummary? history,
+}) {
+  final dark = Theme.of(context).brightness == Brightness.dark;
+  if (active) return dark ? Colors.blue.shade300 : Colors.blue.shade700;
+  if (error != null) return dark ? Colors.red.shade300 : Colors.red.shade700;
+  if (result != null) {
+    if (result.failed > BigInt.zero) {
+      return dark ? Colors.orange.shade300 : Colors.orange.shade800;
+    }
+    return dark ? Colors.green.shade300 : Colors.green.shade700;
+  }
+  if (history != null) {
+    return switch (history.status) {
+      'success' => dark ? Colors.green.shade300 : Colors.green.shade700,
+      'partial_failure' =>
+        dark ? Colors.orange.shade300 : Colors.orange.shade800,
+      'cancelled' => dark ? Colors.grey.shade400 : Colors.grey.shade600,
+      _ => dark ? Colors.red.shade300 : Colors.red.shade700,
+    };
+  }
+  return dark ? Colors.grey.shade400 : Colors.grey.shade600;
+}
+
 String _accountSyncHistoryText(
   BuildContext context,
-  SyncRuntimeState? history,
-) {
+  SyncRuntimeState? history, {
+  SyncSummary? result,
+  Object? error,
+  DateTime? attemptedAt,
+  bool active = false,
+}) {
+  if (active) {
+    return context.l10n.select(zh: '正在同步…', en: 'Syncing…');
+  }
+  if (error != null) {
+    final timestamp = attemptedAt == null
+        ? ''
+        : '${formatNsoAttemptTime(attemptedAt)} · ';
+    final errorText = nintendoConditionText(context.l10n, error) ?? error;
+    return context.l10n.select(
+      zh: '$timestamp账号同步失败：$errorText',
+      en: '${timestamp}Account sync failed: $errorText',
+    );
+  }
+  if (result != null) {
+    final timestamp = attemptedAt ?? history?.latestAttempt?.attemptedAt;
+    final formattedTimestamp = timestamp == null
+        ? null
+        : formatNsoAttemptTime(timestamp);
+    final resultStatus = result.failed > BigInt.zero
+        ? context.l10n.select(zh: '部分失败', en: 'Partial failure')
+        : context.l10n.select(zh: '成功', en: 'Succeeded');
+    if (_isEmptyNsoAlbumResult(result)) {
+      final emptyStatus = context.l10n.select(
+        zh: 'NSO线上相册未上传任何媒体',
+        en: 'No media has been uploaded to the NSO album',
+      );
+      return context.l10n.select(
+        zh: '${formattedTimestamp == null ? '' : '$formattedTimestamp · '}$resultStatus · $emptyStatus',
+        en: '${formattedTimestamp == null ? '' : '$formattedTimestamp · '}$resultStatus · $emptyStatus',
+      );
+    }
+    return context.l10n.select(
+      zh: '${formattedTimestamp == null ? '' : '$formattedTimestamp · '}$resultStatus · 新增 ${result.downloaded} · 已存在 ${result.skippedRemote} · 失败 ${result.failed}',
+      en: '${formattedTimestamp == null ? '' : '$formattedTimestamp · '}$resultStatus · New ${result.downloaded} · Existing ${result.skippedRemote} · Failed ${result.failed}',
+    );
+  }
   final attempt = history?.latestAttempt;
   if (attempt == null) {
     return context.l10n.select(zh: '尚未同步', en: 'Never synced');
   }
   final timestamp = formatNsoAttemptTime(attempt.attemptedAt);
-  final result = switch (attempt.status) {
+  if (_isEmptyNsoAlbumAttempt(attempt)) {
+    final emptyStatus = context.l10n.select(
+      zh: 'NSO线上相册未上传任何媒体',
+      en: 'No media has been uploaded to the NSO album',
+    );
+    final historyStatus = switch (attempt.status) {
+      'success' => context.l10n.select(zh: '成功', en: 'Succeeded'),
+      _ => context.l10n.select(zh: '已完成', en: 'Completed'),
+    };
+    return context.l10n.select(
+      zh: '$timestamp · $historyStatus · $emptyStatus',
+      en: '$timestamp · $historyStatus · $emptyStatus',
+    );
+  }
+  final historyStatus = switch (attempt.status) {
     'success' => context.l10n.select(zh: '成功', en: 'Succeeded'),
     'partial_failure' => context.l10n.select(
       zh: '部分失败',
@@ -6646,10 +7002,26 @@ String _accountSyncHistoryText(
     _ => context.l10n.select(zh: '失败', en: 'Failed'),
   };
   return context.l10n.select(
-    zh: '$timestamp · $result · 新增 ${attempt.downloaded} · 重复 ${attempt.duplicates} · 失败 ${attempt.failed}',
-    en: '$timestamp · $result · New ${attempt.downloaded} · Duplicates ${attempt.duplicates} · Failed ${attempt.failed}',
+    zh: '$timestamp · $historyStatus · 新增 ${attempt.downloaded} · 已存在 ${attempt.skippedRemote ?? '未记录'} · 失败 ${attempt.failed}',
+    en: '$timestamp · $historyStatus · New ${attempt.downloaded} · Existing ${attempt.skippedRemote ?? 'not recorded'} · Failed ${attempt.failed}',
   );
 }
+
+bool _isEmptyNsoAlbumResult(SyncSummary result) =>
+    result.totalFound == BigInt.zero &&
+    result.downloaded == BigInt.zero &&
+    result.duplicates == BigInt.zero &&
+    result.skippedRemote == BigInt.zero &&
+    result.failed == BigInt.zero &&
+    result.errors.isEmpty;
+
+bool _isEmptyNsoAlbumAttempt(SyncAttemptSummary attempt) =>
+    (attempt.status == 'success' || attempt.status == 'completed') &&
+    attempt.totalFound == BigInt.zero &&
+    attempt.downloaded == BigInt.zero &&
+    attempt.duplicates == BigInt.zero &&
+    (attempt.skippedRemote ?? BigInt.zero) == BigInt.zero &&
+    attempt.failed == BigInt.zero;
 
 class _NintendoAccountAvatar extends StatelessWidget {
   const _NintendoAccountAvatar({
@@ -6718,8 +7090,8 @@ String _syncText(BuildContext context, SyncController controller) {
   final summary = controller.summary;
   if (summary != null) {
     return context.l10n.select(
-      zh: '新增 ${summary.downloaded} · 重复 ${summary.duplicates} · 已存在 ${summary.skippedRemote} · 失败 ${summary.failed}',
-      en: 'New ${summary.downloaded} · Duplicates ${summary.duplicates} · Existing ${summary.skippedRemote} · Failed ${summary.failed}',
+      zh: '新增 ${summary.downloaded} · 已存在 ${summary.skippedRemote} · 失败 ${summary.failed}',
+      en: 'New ${summary.downloaded} · Existing ${summary.skippedRemote} · Failed ${summary.failed}',
     );
   }
   if (controller.error != null) {
@@ -6779,6 +7151,75 @@ class _CustomFontDraftEntry {
   final bool isManaged;
 }
 
+class _SystemFontPickerDialog extends StatefulWidget {
+  const _SystemFontPickerDialog({required this.fonts});
+
+  final List<WindowsSystemFont> fonts;
+
+  @override
+  State<_SystemFontPickerDialog> createState() =>
+      _SystemFontPickerDialogState();
+}
+
+class _SystemFontPickerDialogState extends State<_SystemFontPickerDialog> {
+  final selected = <String>{};
+  final previewFamilies = <String, Future<String>>{};
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text(context.l10n.select(zh: '选择系统字体', en: 'Choose system fonts')),
+    content: SizedBox(
+      width: 520,
+      height: 420,
+      child: ListView.builder(
+        itemCount: widget.fonts.length,
+        itemBuilder: (context, index) {
+          final font = widget.fonts[index];
+          final preview = previewFamilies.putIfAbsent(
+            font.path,
+            () => loadCustomFontFamilyForPreview(font.path),
+          );
+          return CheckboxListTile(
+            value: selected.contains(font.path),
+            title: FutureBuilder<String>(
+              future: preview,
+              builder: (context, snapshot) => Text(
+                font.name,
+                style: TextStyle(
+                  fontFamily:
+                      snapshot.data ?? customFontFamilyForPath(font.path),
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            onChanged: (value) => setState(() {
+              if (value == true) {
+                selected.add(font.path);
+              } else {
+                selected.remove(font.path);
+              }
+            }),
+          );
+        },
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
+      ),
+      FilledButton(
+        key: const Key('confirm-system-fonts'),
+        onPressed: selected.isEmpty
+            ? null
+            : () => Navigator.pop(context, selected.toList(growable: false)),
+        child: Text(context.l10n.select(zh: '添加', en: 'Add')),
+      ),
+    ],
+  );
+}
+
 class _SettingsPageState extends State<SettingsPage> {
   bool get _isDesktop =>
       Platform.isWindows || Platform.isMacOS || Platform.isLinux;
@@ -6791,6 +7232,10 @@ class _SettingsPageState extends State<SettingsPage> {
   late List<_CustomFontDraftEntry> _fontDraft;
   bool _fontDraftDirty = false;
   bool _fontBusy = false;
+  final _fontPreviewFamilies = <String, Future<String>>{};
+
+  Future<String> _fontPreviewFamily(String path) => _fontPreviewFamilies
+      .putIfAbsent(path, () => loadCustomFontFamilyForPreview(path));
 
   @override
   void initState() {
@@ -7045,42 +7490,38 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ),
             ),
-            Material(
-              color: Colors.transparent,
-              child: SwitchListTile(
-                key: const Key('nso-auto-sync-notifications'),
-                contentPadding: EdgeInsets.zero,
-                title: Text(
-                  context.l10n.select(
-                    zh: '自动同步新增媒体后通知',
-                    en: 'Notify after automatic sync adds media',
-                  ),
-                ),
-                value: value.notifyOnAutoSync,
-                onChanged: widget.controller.saving
-                    ? null
-                    : (enabled) => _save(
-                        _copySettings(value, notifyOnAutoSync: enabled),
+            Card(
+              key: const Key('notification-settings-card'),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.notifications_outlined),
+                      title: Text(
+                        context.l10n.select(zh: '通知', en: 'Notifications'),
                       ),
-              ),
-            ),
-            Material(
-              color: Colors.transparent,
-              child: SwitchListTile(
-                key: const Key('show-splatoon-schedule'),
-                contentPadding: EdgeInsets.zero,
-                title: Text(
-                  context.l10n.select(
-                    zh: '展示喷三日程',
-                    en: 'Show Splatoon 3 schedule',
-                  ),
-                ),
-                value: value.showSplatoonSchedule,
-                onChanged: widget.controller.saving
-                    ? null
-                    : (enabled) => _save(
-                        _copySettings(value, showSplatoonSchedule: enabled),
+                    ),
+                    SwitchListTile(
+                      key: const Key('nso-auto-sync-notifications'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        context.l10n.select(
+                          zh: '相册同步新增媒体后通知',
+                          en: 'Notify when album sync adds media',
+                        ),
                       ),
+                      value: value.notifyOnAutoSync,
+                      onChanged: widget.controller.saving
+                          ? null
+                          : (enabled) => _save(
+                              _copySettings(value, notifyOnAutoSync: enabled),
+                            ),
+                    ),
+                  ],
+                ),
               ),
             ),
             const SizedBox(height: 16),
@@ -7121,24 +7562,47 @@ class _SettingsPageState extends State<SettingsPage> {
                                       .titleMedium,
                                 ),
                               ),
-                              FilledButton.tonalIcon(
-                                key: const Key('choose-custom-fonts'),
-                                onPressed: _fontBusy ? null : _pickCustomFonts,
-                                icon: const Icon(Icons.add_rounded),
-                                label: Text(
-                                  context.l10n.select(
-                                    zh: '添加字体',
-                                    en: 'Add fonts',
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  FilledButton.tonalIcon(
+                                    key: const Key('choose-custom-fonts'),
+                                    onPressed: _fontBusy
+                                        ? null
+                                        : _pickCustomFonts,
+                                    icon: const Icon(Icons.add_rounded),
+                                    label: Text(
+                                      context.l10n.select(
+                                        zh: '添加字体',
+                                        en: 'Add fonts',
+                                      ),
+                                    ),
                                   ),
-                                ),
+                                  OutlinedButton.icon(
+                                    key: const Key('choose-system-fonts'),
+                                    onPressed: _fontBusy
+                                        ? null
+                                        : _pickSystemFonts,
+                                    icon: const Icon(
+                                      Icons.font_download_outlined,
+                                    ),
+                                    label: Text(
+                                      context.l10n.select(
+                                        zh: '添加系统字体',
+                                        en: 'Add system fonts',
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
                           const SizedBox(height: 6),
                           Text(
                             context.l10n.select(
-                              zh: '支持 TTF/OTF，列表顺序决定字体优先级。留空时使用内置字体，应用后立即生效，无需重启。',
-                              en: 'Supports TTF/OTF. List order determines font priority. Leave empty to use built-in fonts. Changes apply immediately without restarting.',
+                              zh: '支持 TTF/OTF/TTC/OTC，列表顺序决定字体优先级。留空时使用内置字体，应用后立即生效，无需重启。',
+                              en: 'Supports TTF/OTF/TTC/OTC. List order determines font priority. Leave empty to use built-in fonts. Changes apply immediately without restarting.',
                             ),
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
@@ -7167,6 +7631,9 @@ class _SettingsPageState extends State<SettingsPage> {
                               itemBuilder: (context, index) {
                                 final entry = _fontDraft[index];
                                 final path = entry.path;
+                                final displayName = path
+                                    .split(Platform.pathSeparator)
+                                    .last;
                                 return ListTile(
                                   key: ValueKey(path),
                                   leading: ReorderableDragStartListener(
@@ -7175,10 +7642,18 @@ class _SettingsPageState extends State<SettingsPage> {
                                       Icons.drag_handle_rounded,
                                     ),
                                   ),
-                                  title: Text(
-                                    path.split(Platform.pathSeparator).last,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
+                                  title: FutureBuilder<String>(
+                                    future: _fontPreviewFamily(path),
+                                    builder: (context, snapshot) => Text(
+                                      displayName,
+                                      style: TextStyle(
+                                        fontFamily:
+                                            snapshot.data ??
+                                            customFontFamilyForPath(path),
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
                                   ),
                                   subtitle: Text(
                                     context.l10n.select(
@@ -7658,11 +8133,74 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _pickCustomFonts() async {
+    await _pickFonts(
+      dialogTitle: context.l10n.select(zh: '选择字体文件', en: 'Choose font files'),
+    );
+  }
+
+  Future<void> _pickSystemFonts() async {
+    if (_fontBusy) return;
+    setState(() => _fontBusy = true);
+    try {
+      final fonts = await const WindowsSystemFonts().list();
+      if (!mounted) return;
+      if (fonts.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          _messageSnackBar(
+            context.l10n.select(
+              zh: '没有找到可读取的系统字体（支持 TTF/OTF/TTC/OTC）。',
+              en: 'No readable system fonts found (TTF/OTF/TTC/OTC only).',
+            ),
+            error: true,
+          ),
+        );
+        return;
+      }
+      final selected = await showDialog<List<String>>(
+        context: context,
+        builder: (context) => _SystemFontPickerDialog(fonts: fonts),
+      );
+      if (!mounted || selected == null || selected.isEmpty) return;
+      await validateCustomFontFiles(selected);
+      setState(() {
+        for (final path in selected) {
+          if (!_fontDraft.any((entry) => entry.path == path)) {
+            _fontDraft.add(_CustomFontDraftEntry(path, isManaged: false));
+          }
+        }
+        _fontDraftDirty = true;
+      });
+    } catch (error, stackTrace) {
+      await widget.controller.logError(
+        'Failed to enumerate system fonts',
+        error,
+        stackTrace,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        _messageSnackBar(
+          context.l10n.select(
+            zh: '系统字体读取失败：$error',
+            en: 'Failed to read system fonts: $error',
+          ),
+          error: true,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _fontBusy = false);
+    }
+  }
+
+  Future<void> _pickFonts({
+    String? initialDirectory,
+    required String dialogTitle,
+  }) async {
     if (_fontBusy) return;
     final result = await FilePicker.pickFiles(
       type: FileType.custom,
-      allowedExtensions: const ['ttf', 'otf'],
-      dialogTitle: context.l10n.select(zh: '选择字体文件', en: 'Choose font files'),
+      allowedExtensions: const ['ttf', 'otf', 'ttc', 'otc'],
+      initialDirectory: initialDirectory,
+      dialogTitle: dialogTitle,
     );
     if (!mounted) return;
     final paths = result

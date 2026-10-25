@@ -31,32 +31,25 @@ void main() {
     expect(access.hosts.single.address, '192.168.5.1');
     await endPage(tester);
   });
-  testWidgets('pair again reloads Wi-Fi adapters without a manual refresh', (
-    tester,
-  ) async {
-    final access = _MixedLanAccess();
-    await openPage(tester, access);
-    await reveal(tester, find.byKey(const Key('device-create-code')));
-    await tester.tap(find.byKey(const Key('device-create-code')));
-    await tester.pump();
-    access.sessions.single.update(endpoint(driver.State.completed));
-    await tester.pump();
-    await reveal(tester, find.byKey(const Key('device-new-pairing')));
-    await tester.tap(find.byKey(const Key('device-new-pairing')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('device-address-dropdown')), findsOneWidget);
-    await reveal(tester, find.byKey(const Key('device-create-code')));
-    expect(
-      tester
-          .widget<FilledButton>(find.byKey(const Key('device-create-code')))
-          .onPressed,
-      isNotNull,
-    );
-    await tester.tap(find.byKey(const Key('device-create-code')));
-    await tester.pump();
-    expect(access.hosts.last.address, '192.168.5.1');
-    await endPage(tester);
-  });
+  testWidgets(
+    'completed sync returns to the parent sync page instead of pairing again',
+    (tester) async {
+      final access = _MixedLanAccess();
+      await openPage(tester, access);
+      await reveal(tester, find.byKey(const Key('device-create-code')));
+      await tester.tap(find.byKey(const Key('device-create-code')));
+      await tester.pump();
+      access.sessions.single.update(endpoint(driver.State.completed));
+      await tester.pump();
+      await reveal(tester, find.byKey(const Key('device-sync-complete')));
+      expect(find.byKey(const Key('device-sync-complete')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('device-sync-complete')));
+      await tester.pumpAndSettle();
+      expect(find.byType(DeviceSyncPage), findsNothing);
+      expect(find.byKey(const Key('open-page')), findsOneWidget);
+      expect(access.sessions.single.closed, isTrue);
+    },
+  );
   testWidgets(
     'phone controller automatically reviews either transfer direction once',
     (tester) async {
@@ -106,6 +99,9 @@ void main() {
       await tester.tap(find.byKey(const Key('device-end-session')));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('device-confirm-leave')), findsOneWidget);
+      expect(find.text('End sync'), findsOneWidget);
+      expect(find.text('结束同步'), findsNothing);
+      expect(find.text('End and wait'), findsNothing);
       await tester.tap(find.byKey(const Key('device-confirm-leave')));
       await tester.pumpAndSettle();
       expect(access.sessions.single.closed, isTrue);
@@ -208,16 +204,39 @@ void main() {
       endpoint(driver.State.completed, host: true, controller: false),
     );
     await tester.pump(const Duration(seconds: 1));
-    await tester.ensureVisible(find.byKey(const Key('device-new-pairing')));
-    await tester.tap(find.byKey(const Key('device-new-pairing')));
-    await tester.pump();
-    await createHost(tester);
+    await tester.ensureVisible(find.byKey(const Key('device-sync-complete')));
+    await tester.tap(find.byKey(const Key('device-sync-complete')));
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('device-include-accounts')), findsNothing);
     expect(find.byKey(const Key('device-confirm-pair')), findsNothing);
     expect(access.sessions.first.closed, isTrue);
-    expect(access.sessions.length, 2);
-    await endPage(tester);
+    expect(access.sessions.length, 1);
+    expect(find.byType(DeviceSyncPage), findsNothing);
   });
+
+  testWidgets(
+    'successful sync cannot be left through completion until safe cleanup settles',
+    (tester) async {
+      final session = PanelSession()
+        ..state = endpoint(driver.State.completed, cleanupPending: true);
+      final access = PageAccess()..sessionFactory = () => session;
+      await openPage(tester, access);
+      await createHost(tester);
+
+      expect(find.byKey(const Key('device-sync-complete')), findsNothing);
+      expect(find.byKey(const Key('device-cleanup-pending')), findsOneWidget);
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.byKey(const Key('device-cleanup-pending')),
+            )
+            .onPressed,
+        isNull,
+      );
+      expect(find.textContaining('Cleanup is still pending'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets('back waits a late opening and retires its endpoint', (
     tester,

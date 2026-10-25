@@ -40,10 +40,21 @@ abstract interface class AppBackend {
     int? albumId,
     bool newestFirst = true,
     List<String> gameNames = const [],
+    DateTime? importedFrom,
+    DateTime? importedUntil,
     DateTime? capturedFrom,
     DateTime? capturedUntil,
     CapturedOnThisDay? capturedOnThisDay,
   });
+
+  Future<GalleryPage> listMediaPage(GalleryPageRequest request) =>
+      Future.error(UnsupportedError('Media paging is unavailable'));
+
+  Future<List<GameMediaCount>> listGameMediaCounts({int? albumId}) =>
+      Future.error(UnsupportedError('Game media counts are unavailable'));
+
+  Future<MediaDetails> loadMediaDetails(int mediaId) =>
+      Future.error(UnsupportedError('Media details are unavailable'));
 
   Future<List<AlbumSummary>> listAlbums();
 

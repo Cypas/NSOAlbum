@@ -4,8 +4,17 @@ use std::collections::HashSet;
 /// Physical USB carrier only; TLS drain and logical message limits are unchanged.
 pub const MAX_BLOCK: usize = 8 * 1024 * 1024;
 pub const MAX_ENTRIES: usize = 128;
-/// JSON payload, excluding its four-byte framing prefix.
-pub const MAX_IPC: usize = 12 * 1024 * 1024;
+/// IPC is a bounded JSON control header plus an optional raw ciphertext body.
+pub const MAX_IPC_HEADER: usize = 64 * 1024;
+const IPC_ENVELOPE_BYTES: usize = 16;
+const IPC_MAGIC: &[u8; 8] = b"NSOMTP2\0";
+pub const MAX_IPC: usize = MAX_BLOCK + MAX_IPC_HEADER + IPC_ENVELOPE_BYTES;
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct IpcPacket {
+    pub header: Vec<u8>,
+    pub payload: Vec<u8>,
+}
 
 /// One serialized native operation, not permission to parallelize device I/O.
 #[derive(Default)]
@@ -158,8 +167,7 @@ pub struct NativeDevice {
     pub name: String,
     pub storages: Vec<NativeStorage>,
 }
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields, tag = "method", rename_all = "snake_case")]
+#[derive(Debug, PartialEq, Eq)]
 pub enum NativeRequest {
     Enumerate,
     Discover {
@@ -187,7 +195,46 @@ pub enum NativeRequest {
         operation: String,
         session: String,
         name: String,
-        bytes: String,
+        bytes: Vec<u8>,
+    },
+    Acknowledge {
+        operation: String,
+        session: String,
+        direction: Direction,
+        name: String,
+    },
+    Close,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields, tag = "method", rename_all = "snake_case")]
+enum NativeRequestHeader {
+    Enumerate,
+    Discover {
+        operation: String,
+        session: String,
+    },
+    Open {
+        device: String,
+        storage: String,
+        operation: String,
+        session: String,
+    },
+    List {
+        operation: String,
+        session: String,
+        direction: Direction,
+    },
+    Read {
+        operation: String,
+        session: String,
+        direction: Direction,
+        name: String,
+    },
+    Write {
+        operation: String,
+        session: String,
+        name: String,
+        payload_length: usize,
     },
     Acknowledge {
         operation: String,
@@ -199,31 +246,342 @@ pub enum NativeRequest {
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NativeResponse {
+pub struct NativeResponseHeader {
     pub value: Result<serde_json::Value, NativeError>,
+    pub payload_length: usize,
+}
+#[derive(Debug, PartialEq)]
+pub struct NativeResponse {
+    pub value: serde_json::Value,
+    pub payload: Vec<u8>,
 }
 
-pub fn read_packet(reader: &mut impl std::io::Read) -> Result<Vec<u8>, NativeError> {
-    let mut header = [0; 4];
+impl NativeRequest {
+    pub fn into_packet(self) -> Result<IpcPacket, NativeError> {
+        let (header, payload) = match self {
+            Self::Enumerate => (NativeRequestHeader::Enumerate, Vec::new()),
+            Self::Discover { operation, session } => (
+                NativeRequestHeader::Discover { operation, session },
+                Vec::new(),
+            ),
+            Self::Open {
+                device,
+                storage,
+                operation,
+                session,
+            } => (
+                NativeRequestHeader::Open {
+                    device,
+                    storage,
+                    operation,
+                    session,
+                },
+                Vec::new(),
+            ),
+            Self::List {
+                operation,
+                session,
+                direction,
+            } => (
+                NativeRequestHeader::List {
+                    operation,
+                    session,
+                    direction,
+                },
+                Vec::new(),
+            ),
+            Self::Read {
+                operation,
+                session,
+                direction,
+                name,
+            } => (
+                NativeRequestHeader::Read {
+                    operation,
+                    session,
+                    direction,
+                    name,
+                },
+                Vec::new(),
+            ),
+            Self::Write {
+                operation,
+                session,
+                name,
+                bytes,
+            } => {
+                if bytes.is_empty() || bytes.len() > MAX_BLOCK {
+                    return Err(NativeError::Bounds);
+                }
+                let payload_length = bytes.len();
+                (
+                    NativeRequestHeader::Write {
+                        operation,
+                        session,
+                        name,
+                        payload_length,
+                    },
+                    bytes,
+                )
+            }
+            Self::Acknowledge {
+                operation,
+                session,
+                direction,
+                name,
+            } => (
+                NativeRequestHeader::Acknowledge {
+                    operation,
+                    session,
+                    direction,
+                    name,
+                },
+                Vec::new(),
+            ),
+            Self::Close => (NativeRequestHeader::Close, Vec::new()),
+        };
+        let header = serde_json::to_vec(&header).map_err(|_| NativeError::Bounds)?;
+        if header.len() > MAX_IPC_HEADER {
+            return Err(NativeError::Bounds);
+        }
+        Ok(IpcPacket { header, payload })
+    }
+
+    pub fn from_packet(packet: IpcPacket) -> Result<Self, NativeError> {
+        if packet.header.is_empty()
+            || packet.header.len() > MAX_IPC_HEADER
+            || packet.payload.len() > MAX_BLOCK
+        {
+            return Err(NativeError::Bounds);
+        }
+        let header: NativeRequestHeader =
+            serde_json::from_slice(&packet.header).map_err(|_| NativeError::Io)?;
+        let no_payload = || {
+            if packet.payload.is_empty() {
+                Ok(())
+            } else {
+                Err(NativeError::InvalidBlock)
+            }
+        };
+        match header {
+            NativeRequestHeader::Enumerate => {
+                no_payload()?;
+                Ok(Self::Enumerate)
+            }
+            NativeRequestHeader::Discover { operation, session } => {
+                no_payload()?;
+                Ok(Self::Discover { operation, session })
+            }
+            NativeRequestHeader::Open {
+                device,
+                storage,
+                operation,
+                session,
+            } => {
+                no_payload()?;
+                Ok(Self::Open {
+                    device,
+                    storage,
+                    operation,
+                    session,
+                })
+            }
+            NativeRequestHeader::List {
+                operation,
+                session,
+                direction,
+            } => {
+                no_payload()?;
+                Ok(Self::List {
+                    operation,
+                    session,
+                    direction,
+                })
+            }
+            NativeRequestHeader::Read {
+                operation,
+                session,
+                direction,
+                name,
+            } => {
+                no_payload()?;
+                Ok(Self::Read {
+                    operation,
+                    session,
+                    direction,
+                    name,
+                })
+            }
+            NativeRequestHeader::Write {
+                operation,
+                session,
+                name,
+                payload_length,
+            } => {
+                if payload_length == 0
+                    || payload_length > MAX_BLOCK
+                    || payload_length != packet.payload.len()
+                {
+                    return Err(NativeError::Bounds);
+                }
+                Ok(Self::Write {
+                    operation,
+                    session,
+                    name,
+                    bytes: packet.payload,
+                })
+            }
+            NativeRequestHeader::Acknowledge {
+                operation,
+                session,
+                direction,
+                name,
+            } => {
+                no_payload()?;
+                Ok(Self::Acknowledge {
+                    operation,
+                    session,
+                    direction,
+                    name,
+                })
+            }
+            NativeRequestHeader::Close => {
+                no_payload()?;
+                Ok(Self::Close)
+            }
+        }
+    }
+}
+
+pub fn response_packet(
+    value: Result<serde_json::Value, NativeError>,
+    payload: Vec<u8>,
+) -> Result<IpcPacket, NativeError> {
+    if payload.len() > MAX_BLOCK || (value.is_err() && !payload.is_empty()) {
+        return Err(NativeError::Bounds);
+    }
+    if !payload.is_empty() && !value.as_ref().is_ok_and(serde_json::Value::is_null) {
+        return Err(NativeError::InvalidBlock);
+    }
+    let header = serde_json::to_vec(&NativeResponseHeader {
+        value,
+        payload_length: payload.len(),
+    })
+    .map_err(|_| NativeError::Bounds)?;
+    if header.len() > MAX_IPC_HEADER {
+        return Err(NativeError::Bounds);
+    }
+    Ok(IpcPacket { header, payload })
+}
+
+pub fn response_from_packet(packet: IpcPacket) -> Result<NativeResponse, NativeError> {
+    if packet.header.is_empty()
+        || packet.header.len() > MAX_IPC_HEADER
+        || packet.payload.len() > MAX_BLOCK
+    {
+        return Err(NativeError::Bounds);
+    }
+    let header: NativeResponseHeader =
+        serde_json::from_slice(&packet.header).map_err(|_| NativeError::Io)?;
+    if header.payload_length != packet.payload.len() || packet.payload.len() > MAX_BLOCK {
+        return Err(NativeError::Bounds);
+    }
+    match header.value {
+        Ok(value) if value.is_null() || packet.payload.is_empty() => Ok(NativeResponse {
+            value,
+            payload: packet.payload,
+        }),
+        Ok(_) => Err(NativeError::InvalidBlock),
+        Err(error) if packet.payload.is_empty() => Err(error),
+        Err(_) => Err(NativeError::InvalidBlock),
+    }
+}
+
+pub fn validate_response_payload(
+    response: NativeResponse,
+    payload_expected: bool,
+) -> Result<NativeResponse, NativeError> {
+    let valid = if payload_expected {
+        response.value.is_null() && !response.payload.is_empty()
+    } else {
+        response.payload.is_empty()
+    };
+    if valid {
+        Ok(response)
+    } else {
+        Err(NativeError::InvalidBlock)
+    }
+}
+
+pub fn read_packet(reader: &mut impl std::io::Read) -> Result<IpcPacket, NativeError> {
+    let mut length_header = [0; 4];
+    reader
+        .read_exact(&mut length_header)
+        .map_err(|_| NativeError::Io)?;
+    let length = u32::from_be_bytes(length_header) as usize;
+    if !(IPC_ENVELOPE_BYTES..=MAX_IPC).contains(&length) {
+        return Err(NativeError::Bounds);
+    }
+    let mut envelope = [0; IPC_ENVELOPE_BYTES];
+    reader
+        .read_exact(&mut envelope)
+        .map_err(|_| NativeError::Io)?;
+    if &envelope[..8] != IPC_MAGIC {
+        return Err(NativeError::Io);
+    }
+    let header_length = u32::from_be_bytes(envelope[8..12].try_into().unwrap()) as usize;
+    let payload_length = u32::from_be_bytes(envelope[12..16].try_into().unwrap()) as usize;
+    if header_length == 0
+        || header_length > MAX_IPC_HEADER
+        || payload_length > MAX_BLOCK
+        || IPC_ENVELOPE_BYTES
+            .checked_add(header_length)
+            .and_then(|size| size.checked_add(payload_length))
+            != Some(length)
+    {
+        return Err(NativeError::Bounds);
+    }
+    let mut header = vec![0; header_length];
+    let mut payload = vec![0; payload_length];
     reader
         .read_exact(&mut header)
         .map_err(|_| NativeError::Io)?;
-    let length = u32::from_be_bytes(header) as usize;
-    if length == 0 || length > MAX_IPC {
-        return Err(NativeError::Bounds);
-    }
-    let mut bytes = vec![0; length];
-    reader.read_exact(&mut bytes).map_err(|_| NativeError::Io)?;
-    Ok(bytes)
-}
-pub fn write_packet(writer: &mut impl std::io::Write, bytes: &[u8]) -> Result<(), NativeError> {
-    if bytes.is_empty() || bytes.len() > MAX_IPC {
-        return Err(NativeError::Bounds);
-    }
-    writer
-        .write_all(&(bytes.len() as u32).to_be_bytes())
+    reader
+        .read_exact(&mut payload)
         .map_err(|_| NativeError::Io)?;
-    writer.write_all(bytes).map_err(|_| NativeError::Io)?;
+    Ok(IpcPacket { header, payload })
+}
+pub fn write_packet(
+    writer: &mut impl std::io::Write,
+    packet: &IpcPacket,
+) -> Result<(), NativeError> {
+    if packet.header.is_empty()
+        || packet.header.len() > MAX_IPC_HEADER
+        || packet.payload.len() > MAX_BLOCK
+    {
+        return Err(NativeError::Bounds);
+    }
+    let length = IPC_ENVELOPE_BYTES
+        .checked_add(packet.header.len())
+        .and_then(|size| size.checked_add(packet.payload.len()))
+        .filter(|size| *size <= MAX_IPC)
+        .ok_or(NativeError::Bounds)?;
+    writer
+        .write_all(&(length as u32).to_be_bytes())
+        .map_err(|_| NativeError::Io)?;
+    writer.write_all(IPC_MAGIC).map_err(|_| NativeError::Io)?;
+    writer
+        .write_all(&(packet.header.len() as u32).to_be_bytes())
+        .map_err(|_| NativeError::Io)?;
+    writer
+        .write_all(&(packet.payload.len() as u32).to_be_bytes())
+        .map_err(|_| NativeError::Io)?;
+    writer
+        .write_all(&packet.header)
+        .map_err(|_| NativeError::Io)?;
+    writer
+        .write_all(&packet.payload)
+        .map_err(|_| NativeError::Io)?;
     writer.flush().map_err(|_| NativeError::Io)
 }
 

@@ -30,6 +30,64 @@ pub const MAX_CHUNK_BYTES: usize = super::wire::MEDIA_CHUNK;
 const CHECKSUM_BUFFER_BYTES: usize = 65_536;
 pub const MAX_RECEIVING_FILES: usize = 4;
 
+/// Only exact UUID-owned private parts are removed; never originals or cache.
+pub(crate) fn cleanup_interrupted_operation(
+    database: &Database,
+    operation: uuid::Uuid,
+) -> crate::error::CoreResult<()> {
+    let (runtime, _) = database.device_sync_file_roots()?;
+    let directory = runtime.join(operation.to_string());
+    match std::fs::symlink_metadata(&directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+    let held = paths::HeldDirectory::open(&directory).map_err(core_cleanup_error)?;
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(&directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name
+            .to_str()
+            .ok_or_else(|| core_cleanup_error(StagingError::UnsafePath))?;
+        if files.len() >= MAX_RECEIVING_FILES
+            || name.len() < 43
+            || name.len() > 128
+            || !name.is_ascii()
+            || !name.ends_with(".part")
+            || name.as_bytes()[36] != b'-'
+            || uuid::Uuid::parse_str(&name[..36]).is_err()
+        {
+            return Err(core_cleanup_error(StagingError::UnsafePath));
+        }
+        let file = paths::open_regular(&entry.path()).map_err(core_cleanup_error)?;
+        paths::require_single_link(&file).map_err(core_cleanup_error)?;
+        files.push((
+            entry.path(),
+            paths::FileIdentity::of(&file).map_err(core_cleanup_error)?,
+        ));
+    }
+    for (path, identity) in files {
+        held.inspect().map_err(core_cleanup_error)?;
+        let file = paths::open_regular(&path).map_err(core_cleanup_error)?;
+        if paths::FileIdentity::of(&file).map_err(core_cleanup_error)? != identity {
+            return Err(core_cleanup_error(StagingError::UnsafePath));
+        }
+        drop(file);
+        std::fs::remove_file(path)?;
+    }
+    held.inspect().map_err(core_cleanup_error)?;
+    drop(held);
+    std::fs::remove_dir(directory)?;
+    Ok(())
+}
+
+fn core_cleanup_error(_: StagingError) -> crate::error::CoreError {
+    crate::error::CoreError::InvalidConfig(
+        "interrupted staging cleanup could not be proven safe".into(),
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StagingError {
     #[error("device-sync file operation is not in the required state")]
@@ -499,6 +557,12 @@ impl StagingOperation {
         let id = uuid::Uuid::new_v4();
         let directory = runtime.join(id.to_string());
         work.check().map_err(core_error)?;
+        // Persist ownership before creating any private directory or part.
+        if let Some(session) = work.sync_session {
+            database
+                .device_sync_bind_session_staging(session, id)
+                .map_err(core_error)?;
+        }
         paths::create_operation(&directory).inspect_err(|error| {
             diagnostics::receiver(
                 Boundary::StageOperationCreate,

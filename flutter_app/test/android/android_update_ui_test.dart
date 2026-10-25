@@ -52,11 +52,12 @@ void main() {
         ),
       );
       final button = find.byKey(const Key('android-check-updates'));
-      await tester.scrollUntilVisible(button, 400);
-      await Scrollable.ensureVisible(
-        tester.element(button),
-        alignment: 0.5,
+      await tester.scrollUntilVisible(
+        button,
+        400,
+        scrollable: find.byType(Scrollable).first,
       );
+      await Scrollable.ensureVisible(tester.element(button), alignment: 0.5);
       await tester.pumpAndSettle();
       await tester.tap(button);
       await tester.pumpAndSettle();

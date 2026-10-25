@@ -111,6 +111,7 @@ class DeviceSyncStartupLifecycle extends ChangeNotifier {
   DeviceStartupPhase phase = DeviceStartupPhase.unchecked;
   AccountRecoveryState? recovery;
   Object? error;
+  bool interruptedRecovery = false;
   bool get ready =>
       phase == DeviceStartupPhase.ready && !_gate.recoveryRequired;
   bool get deferred => phase == DeviceStartupPhase.deferred;
@@ -154,6 +155,7 @@ class DeviceSyncStartupLifecycle extends ChangeNotifier {
 
   Future<void> _run() async {
     error = null;
+    interruptedRecovery = false;
     recovery = null;
     _set(DeviceStartupPhase.checking);
     if (_closed) return;
@@ -166,11 +168,20 @@ class DeviceSyncStartupLifecycle extends ChangeNotifier {
         _coordinator ??= _coordinatorFactory(_library!);
         final before = await native.deviceSyncLibraryInfo(library_: _library!);
         if (_closed) return;
-        if (before.pendingOperation != null) {
+        final interrupted = before.interruptedSessions ?? const <String>[];
+        if (before.pendingOperation != null || interrupted.isNotEmpty) {
+          interruptedRecovery = true;
           _set(DeviceStartupPhase.restoring);
         }
         if (_closed) return;
-        var result = await _coordinator!.recoverStartup();
+        void detectedRecovery() {
+          interruptedRecovery = true;
+          _set(DeviceStartupPhase.restoring);
+        }
+
+        var result = await _coordinator!.recoverStartup(
+          onRecoveryDetected: detectedRecovery,
+        );
         if (_closed) return;
         if (result.status == 'library_pending') {
           recovery = result;
@@ -193,13 +204,22 @@ class DeviceSyncStartupLifecycle extends ChangeNotifier {
             operation: operation,
           );
           if (_closed) return;
-          result = await _coordinator!.recoverStartup();
+          result = await _coordinator!.recoverStartup(
+            onRecoveryDetected: detectedRecovery,
+          );
           if (_closed) return;
         }
         recovery = result;
         if (!result.ready) {
           _set(DeviceStartupPhase.actionRequired);
           return;
+        }
+        if (interrupted.isNotEmpty) {
+          await native.deviceSyncRecoverInterruptedSessions(
+            library_: _library!,
+            sessions: interrupted,
+          );
+          if (_closed) return;
         }
       }
       if (!_initialized) {

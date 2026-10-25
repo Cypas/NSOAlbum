@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../backend/device_sync/account_gate.dart' show DeviceSyncBusy;
@@ -6,7 +8,6 @@ import '../../l10n/app_localizations.dart';
 import '../../rust/device_sync/driver.dart' as driver;
 import '../../rust/device_sync/planner.dart' as plan;
 import '../../rust/device_sync/read_model.dart' as read;
-import '../../rust/device_sync/space_budget.dart' as budget;
 import '../../rust/device_sync/work.dart';
 import '../display_time.dart';
 import 'capacity_format.dart';
@@ -26,7 +27,11 @@ class DeviceSyncSessionPanel extends StatefulWidget {
 class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
   bool _acting = false, _configured = false, _consentMade = false;
   bool _phoneToDesktop = false, _overwrite = false, _accounts = false;
+  bool _autoAccountConsentStarted = false, _accountConsentFailed = false;
   bool _approved = false, _previewInvalid = false;
+  bool _approveQueued = false, _pairingQueued = false;
+  Completer<void>? _operationDone, _externalBusyWaiter;
+  VoidCallback? _externalBusyListener;
   Object? _error;
   driver.State? _errorStage;
   List<plan.Conflict>? _conflicts;
@@ -54,6 +59,7 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
   @override
   void dispose() {
     widget.session.removeListener(_sessionChanged);
+    _removeExternalBusyWaiter();
     super.dispose();
   }
 
@@ -104,7 +110,12 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
   }
 
   Future<void> _act(Future<void> Function() action) async {
-    if (_acting || widget.session.busy || widget.session.closed) return;
+    if (widget.session.closed) return;
+    if (_acting || widget.session.busy) {
+      return;
+    }
+    final operation = Completer<void>();
+    _operationDone = operation;
     setState(() {
       _acting = true;
       _error = null;
@@ -120,8 +131,93 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
         });
       }
     } finally {
+      if (identical(_operationDone, operation)) _operationDone = null;
+      operation.complete();
       if (mounted) setState(() => _acting = false);
     }
+  }
+
+  Future<void> _waitForSessionIdle() {
+    if (!widget.session.busy) return Future<void>.value();
+    final pending = _externalBusyWaiter;
+    if (pending != null) return pending.future;
+
+    final waiter = Completer<void>();
+    void onChanged() {
+      if (widget.session.busy || waiter.isCompleted) return;
+      widget.session.removeListener(onChanged);
+      if (identical(_externalBusyListener, onChanged)) {
+        _externalBusyListener = null;
+        _externalBusyWaiter = null;
+      }
+      waiter.complete();
+    }
+
+    _externalBusyListener = onChanged;
+    _externalBusyWaiter = waiter;
+    widget.session.addListener(onChanged);
+    onChanged();
+    return waiter.future;
+  }
+
+  void _removeExternalBusyWaiter() {
+    final listener = _externalBusyListener;
+    if (listener != null) widget.session.removeListener(listener);
+    _externalBusyListener = null;
+    final waiter = _externalBusyWaiter;
+    _externalBusyWaiter = null;
+    if (waiter != null && !waiter.isCompleted) waiter.complete();
+  }
+
+  Future<void> _requestApproval(DeviceSyncPreviewView shown) async {
+    if (widget.session.closed || _approved || _previewInvalid) return;
+    if (_acting || widget.session.busy) {
+      if (_approveQueued) return;
+      _approveQueued = true;
+      final operation = _operationDone;
+      if (operation != null) {
+        await operation.future;
+      } else {
+        await _waitForSessionIdle();
+      }
+      _approveQueued = false;
+      if (!mounted ||
+          widget.session.closed ||
+          widget.session.busy ||
+          !identical(widget.session.preview, shown) ||
+          widget.session.snapshot?.value?.stage !=
+              driver.State.awaitingApproval ||
+          _approved ||
+          _previewInvalid) {
+        return;
+      }
+    }
+    await _act(() => _approve(shown));
+  }
+
+  Future<void> _requestPairingConfirmation() async {
+    if (widget.session.closed || widget.session.confirmedLocally) return;
+    if (_acting || widget.session.busy) {
+      if (_pairingQueued) return;
+      _pairingQueued = true;
+      final operation = _operationDone;
+      if (operation != null) {
+        await operation.future;
+      } else {
+        await _waitForSessionIdle();
+      }
+      _pairingQueued = false;
+      final view = widget.session.snapshot?.value;
+      if (!mounted ||
+          widget.session.closed ||
+          widget.session.busy ||
+          view?.pairing != read.PairingStage.awaitingConfirmation ||
+          view?.confirmationAvailable != true ||
+          widget.session.confirmedLocally) {
+        return;
+      }
+    }
+    await _act(widget.session.confirmPairing);
   }
 
   Future<void> _review() async {
@@ -134,6 +230,41 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
       _conflictPreview = null;
     });
   }
+
+  bool get _phoneSelectedAccountSync {
+    final view = widget.session.snapshot?.value;
+    return view != null &&
+        view.phoneControlled &&
+        view.controller &&
+        view.pairing == read.PairingStage.confirmed &&
+        view.stage == driver.State.awaitingAccountConsent &&
+        widget.session.confirmedLocally &&
+        widget.session.proposedConfiguration?.includeAccounts == true &&
+        !view.accountsConsentAuthorized &&
+        !widget.session.accountsAuthorized;
+  }
+
+  void _schedulePhoneAccountConsent() {
+    if (!_phoneSelectedAccountSync || _autoAccountConsentStarted) return;
+    _autoAccountConsentStarted = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_phoneSelectedAccountSync) return;
+      unawaited(_submitPhoneAccountConsent());
+    });
+  }
+
+  Future<void> _submitPhoneAccountConsent() async {
+    _accountConsentFailed = false;
+    await _act(() async {
+      await widget.session.consentAccounts(accepted: true);
+      if (mounted) setState(() => _consentMade = true);
+    });
+    if (mounted && _error != null) {
+      setState(() => _accountConsentFailed = true);
+    }
+  }
+
+
 
   Future<void> _loadConflicts(DeviceSyncPreviewView shown) async {
     final page = await widget.session.conflicts(
@@ -200,6 +331,7 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
 
   @override
   Widget build(BuildContext context) {
+    _schedulePhoneAccountConsent();
     final session = widget.session;
     final value = session.snapshot;
     final view = value?.value;
@@ -254,7 +386,6 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
           Text(context.l10n.select(zh: '对端设备：$name', en: 'Peer device: $name')),
         if (view.configuration case final config?)
           _configuration(
-            config.phoneToDesktop,
             config.mode == plan.SyncMode.overwrite,
             config.includeAccounts,
           ),
@@ -316,10 +447,21 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
         if (!session.confirmedLocally && (!delegated || controlling))
           FilledButton(
             key: const Key('device-confirm-pair'),
-            onPressed: disabled ? null : () => _act(session.confirmPairing),
-            child: Text(
-              context.l10n.select(zh: '确认两端相同', en: 'Confirm matching codes'),
-            ),
+            onPressed: workActive || session.closed
+                ? null
+                : _requestPairingConfirmation,
+            child: _acting || session.busy
+                ? const SizedBox.square(
+                    key: Key('device-confirm-pair-progress'),
+                    dimension: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Text(
+                    context.l10n.select(
+                      zh: '确认两端相同',
+                      en: 'Confirm matching codes',
+                    ),
+                  ),
           )
         else
           Text(
@@ -380,17 +522,37 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
           view?.stage == driver.State.awaitingAccountConsent) ...[
         if (session.proposedConfiguration case final proposed?)
           _configuration(
-            proposed.phoneToDesktop,
             proposed.mode == plan.SyncMode.overwrite,
             proposed.includeAccounts,
           ),
         Text(
           context.l10n.select(
-            zh: '此操作包含来源设备全部已保存账号及其登录凭据，凭据只保存在系统安全存储中。本次授权同时允许来源设备读取及接收设备保存账号；选择仅同步图库则不传输账号。',
-            en: 'This includes every saved account and sign-in credential on the source device, kept only in protected system storage. Consent allows the source to read and the receiver to save accounts for this sync. Choose library only to exclude accounts.',
+            zh: '此操作包含来源设备全部已保存账号、登录凭据及历史账号显示名称，资料只保存在系统安全存储中。本次授权同时允许来源设备读取及接收设备保存这些资料；选择仅同步图库则不传输账号或名称历史。两端需支持账号名称历史同步。',
+            en: 'This includes saved accounts, sign-in credentials and account display-name history, kept only in protected system storage. Consent allows the source to read and the receiver to save this data. Library-only sync excludes accounts and name history. Both devices must support account name-history sync.',
           ),
         ),
-        if (!_consentMade && !session.accountsAuthorized) ...[
+        if (_phoneSelectedAccountSync)
+          if (_accountConsentFailed && !_acting)
+            OutlinedButton.icon(
+              key: const Key('device-retry-account-consent'),
+              onPressed: disabled ? null : _submitPhoneAccountConsent,
+              icon: const Icon(Icons.refresh),
+              label: Text(
+                context.l10n.select(zh: '重试安全授权', en: 'Retry secure consent'),
+              ),
+            )
+          else
+            Semantics(
+              key: const Key('device-auto-account-consent-progress'),
+              liveRegion: true,
+              child: Text(
+                context.l10n.select(
+                  zh: '正在安全处理本次账号同步授权…',
+                  en: 'Securing account-sync authorization for this session…',
+                ),
+              ),
+            )
+        else if (!_consentMade && !session.accountsAuthorized) ...[
           FilledButton(
             key: const Key('device-allow-accounts'),
             onPressed: disabled
@@ -467,7 +629,7 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
     );
   }
 
-  Widget _configuration(bool phoneToDesktop, bool overwrite, bool accounts) {
+  Widget _configuration(bool overwrite, bool accounts) {
     final mode = overwrite
         ? context.l10n.select(zh: '覆盖', en: 'Overwrite')
         : context.l10n.select(zh: '融合', en: 'Merge');
@@ -478,17 +640,17 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
       spacing: 8,
       runSpacing: 4,
       crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        DeviceSyncDirectionLabel(phoneToDesktop: phoneToDesktop),
-        Text('$mode · $scope'),
-      ],
+      children: [Text('$mode · $scope')],
     );
   }
 
   List<Widget> _preview(DeviceSyncPreviewView shown, bool disabled) {
     final summary = shown.library;
     final conflicts = summary.conflicts;
+    final configuration = widget.session.snapshot?.value?.configuration;
     return [
+      if (configuration case final agreed?)
+        DeviceSyncDirectionLabel(phoneToDesktop: agreed.phoneToDesktop),
       const Divider(),
       DeviceChangeCounts(
         title: context.l10n.select(zh: '媒体', en: 'Media'),
@@ -500,6 +662,7 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
         icon: Icons.collections_bookmark_outlined,
       ),
       ListTile(
+        key: const Key('device-actual-media-transfer'),
         contentPadding: EdgeInsets.zero,
         leading: const Icon(Icons.swap_vert),
         title: Text(
@@ -508,41 +671,6 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
             en: 'To transfer: ${formatDeviceCapacity(summary.space.newStagingBytes)}',
           ),
         ),
-      ),
-      if (summary.receiverBudget case final receiver?) ...[
-        for (final volume in receiver.volumes)
-          Text(
-            context.l10n.select(
-              zh: '${_storageRoles(volume.roles)}：预计所需 ${formatDeviceCapacity(volume.requiredBytes)} · 剩余 ${formatDeviceCapacity(volume.availableBytes)}。',
-              en: '${_storageRoles(volume.roles)}: estimated required ${formatDeviceCapacity(volume.requiredBytes)} · available ${formatDeviceCapacity(volume.availableBytes)}.',
-            ),
-          ),
-        Text(
-          context.l10n.select(
-            zh: '接收预算已包含元数据、文件分配估计与安全余量；实际可用空间仍可能变化。',
-            en: 'The receiving budget includes metadata, allocation estimates and a safety margin. Available space can still change.',
-          ),
-        ),
-      ],
-      ExpansionTile(
-        key: const Key('device-space-details'),
-        leading: const Icon(Icons.storage_outlined),
-        title: Text(context.l10n.select(zh: '空间明细', en: 'Storage details')),
-        children: [
-          Text(
-            context.l10n.select(
-              zh: '可复用 ${formatDeviceCapacity(summary.space.reusableOriginalBytes)} · 备份原件 ${formatDeviceCapacity(summary.space.backupOriginalBytes)} · 备份复制 ${formatDeviceCapacity(summary.space.backupBytesIfCopied)} · 内容总量 ${formatDeviceCapacity(summary.space.conservativeContentBytes)}',
-              en: 'Reusable ${formatDeviceCapacity(summary.space.reusableOriginalBytes)} · backup originals ${formatDeviceCapacity(summary.space.backupOriginalBytes)} · backup copy ${formatDeviceCapacity(summary.space.backupBytesIfCopied)} · content total ${formatDeviceCapacity(summary.space.conservativeContentBytes)}',
-            ),
-          ),
-          if (summary.space.excludesMetadataAndFilesystemOverhead)
-            Text(
-              context.l10n.select(
-                zh: '原件统计不含元数据和文件系统开销，以接收预算为准。',
-                en: 'Original sizes exclude metadata and filesystem overhead. Use the receiving budget.',
-              ),
-            ),
-        ],
       ),
       if (conflicts.unknownRevision +
               conflicts.equalRevision +
@@ -606,37 +734,25 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
           ),
       FilledButton(
         key: const Key('device-approve-preview'),
-        onPressed: disabled || _previewInvalid
+        onPressed:
+            _structure.workActive || widget.session.closed || _previewInvalid
             ? null
-            : () => _act(() => _approve(shown)),
-        child: Text(
-          context.l10n.select(
-            zh: '确认同步并在接收端应用',
-            en: 'Confirm sync and apply on the receiver',
-          ),
-        ),
+            : () => _requestApproval(shown),
+        child: _acting || widget.session.busy
+            ? const SizedBox.square(
+                key: Key('device-approve-progress'),
+                dimension: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : Text(
+                context.l10n.select(
+                  zh: '确认同步并在接收端应用',
+                  en: 'Confirm sync and apply on the receiver',
+                ),
+              ),
       ),
     ];
   }
-
-  String _storageRoles(List<budget.StorageRole> roles) => roles
-      .map(
-        (role) => switch (role) {
-          budget.StorageRole.staging => context.l10n.select(
-            zh: '暂存',
-            en: 'Staging',
-          ),
-          budget.StorageRole.originals => context.l10n.select(
-            zh: '图库',
-            en: 'Library',
-          ),
-          budget.StorageRole.database => context.l10n.select(
-            zh: '数据库',
-            en: 'Database',
-          ),
-        },
-      )
-      .join(' / ');
 
   String _conflictText(plan.Conflict item) {
     final reason = switch (item.reason) {

@@ -3,6 +3,60 @@ use super::accounts::{AccountCollector, AccountSet, MAX_ACCOUNTS, MAX_ACCOUNT_BY
 const PAYLOAD: &str = r#"{"version":1,"accounts":[{"account_id":"a","nickname":"Alice","session_token":"synthetic-secret"}]}"#;
 
 #[test]
+fn account_v2_history_is_independent_of_credentials_and_bound_into_digest() {
+    let bytes = br#"{"version":2,"accounts":[],"display_names":[{"account_id":"removed","nickname":"Previous user","updated_at":null}]}"#;
+    let accounts = AccountSet::from_json(bytes).unwrap();
+    assert_eq!(accounts.len(), 0);
+    assert_eq!(&*accounts.to_json().unwrap(), bytes);
+    let changed = String::from_utf8(bytes.to_vec())
+        .unwrap()
+        .replace("Previous user", "New name");
+    assert_ne!(
+        accounts.digest().unwrap(),
+        AccountSet::from_json(changed.as_bytes())
+            .unwrap()
+            .digest()
+            .unwrap()
+    );
+    assert!(!format!("{accounts:?}").contains("Previous user"));
+    for invalid in [
+        String::from_utf8(bytes.to_vec()).unwrap().replace("\"version\":2", "\"version\":1"),
+        String::from_utf8(bytes.to_vec()).unwrap().replace("null", "\"not-a-date\""),
+        String::from_utf8(bytes.to_vec()).unwrap().replace("\"updated_at\":null", "\"updated_at\":null,\"session_token\":\"synthetic-secret\""),
+        r#"{"version":2,"accounts":[]}"#.into(),
+        r#"{"version":2,"accounts":[],"display_names":[{"account_id":"a","nickname":"A","updated_at":null},{"account_id":"a","nickname":"B","updated_at":null}]}"#.into(),
+    ] {
+        assert!(AccountSet::from_json(invalid.as_bytes()).is_err());
+    }
+    let mut names: Vec<_> = (0..1024)
+        .map(|index| {
+            serde_json::json!({
+                "account_id": format!("synthetic-{index:04}"),
+                "nickname": "Synthetic",
+                "updated_at": "2026-10-24T00:00:00Z"
+            })
+        })
+        .collect();
+    assert!(AccountSet::from_json(
+        &serde_json::to_vec(&serde_json::json!({
+            "version": 2, "accounts": [], "display_names": names
+        }))
+        .unwrap()
+    )
+    .is_ok());
+    names.push(serde_json::json!({
+        "account_id": "synthetic-1024", "nickname": "Extra", "updated_at": null
+    }));
+    assert!(AccountSet::from_json(
+        &serde_json::to_vec(&serde_json::json!({
+            "version": 2, "accounts": [], "display_names": names
+        }))
+        .unwrap()
+    )
+    .is_err());
+}
+
+#[test]
 fn account_payload_projects_only_versioned_identity_nickname_and_token() {
     let accounts = AccountSet::from_json(PAYLOAD.as_bytes()).unwrap();
     assert_eq!(accounts.len(), 1);

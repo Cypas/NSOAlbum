@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../account_name_history.dart';
+
 const legacySessionKey = 'nintendo.session_token';
 const accountTokensKey = 'nintendo.account_tokens.v1';
 const accountProfilesKey = 'nintendo.account_profiles.v1';
@@ -90,8 +92,17 @@ class AccountCredential {
 }
 
 class AccountPayload {
-  AccountPayload(List<AccountCredential> values)
-    : accounts = List.unmodifiable(values) {
+  AccountPayload(
+    List<AccountCredential> values, {
+    this.version = 1,
+    List<NintendoAccountNameRecord> displayNames = const [],
+    bool enforceTransferLimits = true,
+  }) : accounts = List.unmodifiable(values),
+       displayNames = List.unmodifiable(displayNames) {
+    if (version != 1 && version != 2 ||
+        version == 1 && displayNames.isNotEmpty) {
+      throw AccountPayloadInvalid();
+    }
     if (accounts.length > maxAccountCount) throw AccountPayloadInvalid();
     String? previous;
     for (final account in accounts) {
@@ -100,11 +111,22 @@ class AccountPayload {
       }
       previous = account.accountId;
     }
-    if (utf8.encode(toJson()).length > maxAccountPayloadBytes) {
-      throw AccountPayloadInvalid();
+    previous = null;
+    for (final record in displayNames) {
+      if (!validAccountNameField(record.accountId, 128) ||
+          !validAccountNameField(record.nickname, 256, empty: true) ||
+          (record.serializedUpdatedAt != null &&
+              parseAccountNameTimestamp(record.serializedUpdatedAt!) == null) ||
+          (previous != null && previous.compareTo(record.accountId) >= 0)) {
+        throw AccountPayloadInvalid();
+      }
+      previous = record.accountId;
     }
+    if (enforceTransferLimits) toJson();
   }
   final List<AccountCredential> accounts;
+  final int version;
+  final List<NintendoAccountNameRecord> displayNames;
   factory AccountPayload.parse(String json) {
     if (json.length > maxAccountPayloadBytes ||
         utf8.encode(json).length > maxAccountPayloadBytes) {
@@ -112,35 +134,80 @@ class AccountPayload {
     }
     try {
       final value = _map(json);
-      if (value.length != 2 ||
-          value['version'] != 1 ||
+      final version = value['version'];
+      if (!(version == 1 && value.length == 2 ||
+              version == 2 &&
+                  value.length == 3 &&
+                  value['display_names'] is List) ||
           value['accounts'] is! List ||
-          (value['accounts'] as List).length > maxAccountCount) {
+          (value['accounts'] as List).length > maxAccountCount ||
+          (version == 2 && (value['display_names'] as List).length > 1024)) {
         throw AccountPayloadInvalid();
       }
-      return AccountPayload([
-        for (final account in value['accounts'] as List)
-          if (account is Map<String, dynamic> &&
-              account.length == 3 &&
-              account['account_id'] is String &&
-              account['nickname'] is String &&
-              account['session_token'] is String)
-            AccountCredential(
-              account['account_id'] as String,
-              account['nickname'] as String,
-              account['session_token'] as String,
-            )
-          else
-            throw AccountPayloadInvalid(),
-      ]);
+      return AccountPayload(
+        [
+          for (final account in value['accounts'] as List)
+            if (account is Map<String, dynamic> &&
+                account.length == 3 &&
+                account['account_id'] is String &&
+                account['nickname'] is String &&
+                account['session_token'] is String)
+              AccountCredential(
+                account['account_id'] as String,
+                account['nickname'] as String,
+                account['session_token'] as String,
+              )
+            else
+              throw AccountPayloadInvalid(),
+        ],
+        version: version as int,
+        displayNames: version == 1
+            ? const []
+            : [
+                for (final record in value['display_names'] as List)
+                  if (record is Map<String, dynamic> &&
+                      record.length == 3 &&
+                      record['account_id'] is String &&
+                      record['nickname'] is String &&
+                      record.containsKey('updated_at') &&
+                      (record['updated_at'] == null ||
+                          record['updated_at'] is String &&
+                              parseAccountNameTimestamp(
+                                    record['updated_at'] as String,
+                                  ) !=
+                                  null))
+                    NintendoAccountNameRecord(
+                      accountId: record['account_id'] as String,
+                      nickname: record['nickname'] as String,
+                      updatedAt: record['updated_at'] == null
+                          ? null
+                          : parseAccountNameTimestamp(
+                              record['updated_at'] as String,
+                            ),
+                      originalUpdatedAt: record['updated_at'] as String?,
+                    )
+                  else
+                    throw AccountPayloadInvalid(),
+              ],
+      );
     } catch (_) {
       throw AccountPayloadInvalid();
     }
   }
-  String toJson() => jsonEncode({
-    'version': 1,
-    'accounts': [for (final a in accounts) a._json()],
-  });
+  String toJson() {
+    if (displayNames.length > 1024) throw AccountPayloadInvalid();
+    final json = jsonEncode({
+      'version': version,
+      'accounts': [for (final a in accounts) a._json()],
+      if (version == 2)
+        'display_names': [for (final record in displayNames) record.toJson()],
+    });
+    if (utf8.encode(json).length > maxAccountPayloadBytes) {
+      throw AccountPayloadInvalid();
+    }
+    return json;
+  }
+
   @override
   String toString() => 'AccountPayload(count: ${accounts.length}, [REDACTED])';
 }
@@ -152,6 +219,7 @@ class AccountSnapshot {
       });
   AccountSnapshot._(Map<String, String?> values)
     : raw = Map.unmodifiable(values) {
+    validateRawAccountSize(raw);
     final tokens = _map(raw[accountTokensKey]);
     final legacy = raw[legacySessionKey];
     if (tokens.isEmpty && legacy != null && legacy.isNotEmpty) {
@@ -160,18 +228,25 @@ class AccountSnapshot {
     final profiles = _map(raw[accountProfilesKey]);
     final ids = tokens.keys.toList()..sort();
     if (ids.length > maxAccountCount) throw AccountPayloadInvalid();
-    payload = AccountPayload([
-      for (final id in ids)
-        AccountCredential(
-          id,
-          profiles[id] is Map && (profiles[id] as Map)['nickname'] is String
-              ? (profiles[id] as Map)['nickname'] as String
-              : '',
-          tokens[id] is String
-              ? tokens[id] as String
-              : throw AccountPayloadInvalid(),
-        ),
-    ]);
+    final names = accountNamesFromProfiles(profiles).values.toList()
+      ..sort((a, b) => a.accountId.compareTo(b.accountId));
+    payload = AccountPayload(
+      [
+        for (final id in ids)
+          AccountCredential(
+            id,
+            profiles[id] is Map && (profiles[id] as Map)['nickname'] is String
+                ? (profiles[id] as Map)['nickname'] as String
+                : '',
+            tokens[id] is String
+                ? tokens[id] as String
+                : throw AccountPayloadInvalid(),
+          ),
+      ],
+      version: 2,
+      displayNames: names,
+      enforceTransferLimits: false,
+    );
   }
   final Map<String, String?> raw;
   late final AccountPayload payload;
@@ -187,6 +262,55 @@ class AccountSnapshot {
 
   @override
   String toString() => 'AccountSnapshot([REDACTED])';
+}
+
+void validateRawAccountSize(Map<String, String?> raw) {
+  var total = 0;
+  for (final key in accountActiveKeys) {
+    final value = raw[key];
+    if (value == null) continue;
+    if (value.length > maxAccountRawBytes) throw AccountPayloadInvalid();
+    total += utf8.encode(value).length;
+    if (total > maxAccountRawBytes) throw AccountPayloadInvalid();
+  }
+}
+
+/// Restore the exact credential/selection keys while retaining newer names.
+/// The resulting four-key candidate is journaled and rolled back as one unit.
+Map<String, String?> restoreAccountStateWithNameHistory({
+  required Map<String, String?> current,
+  required Map<String, String?> saved,
+}) {
+  final savedSnapshot = AccountSnapshot.fromRaw(saved);
+  final profiles = _map(saved[accountProfilesKey]);
+  final names = mergeAccountNameHistory(
+    local: accountNamesFromProfiles(_map(current[accountProfilesKey])),
+    incoming: accountNamesFromProfiles(profiles).values,
+  );
+  final restoredIds = savedSnapshot.payload.accounts
+      .map((account) => account.accountId)
+      .toSet();
+  final restoredProfiles = <String, dynamic>{
+    for (final entry in profiles.entries)
+      if (restoredIds.contains(entry.key)) entry.key: entry.value,
+  };
+  for (final record in names.values) {
+    restoredProfiles[record.accountId] = {
+      if (restoredProfiles[record.accountId] is Map)
+        ...Map<String, dynamic>.from(restoredProfiles[record.accountId] as Map),
+      'nickname': record.nickname,
+      if (record.serializedUpdatedAt != null)
+        'name_updated_at': record.serializedUpdatedAt,
+    };
+  }
+  final candidate = {
+    for (final key in accountActiveKeys) key: saved[key],
+    accountProfilesKey: restoredProfiles.isEmpty
+        ? null
+        : jsonEncode(restoredProfiles),
+  };
+  validateRawAccountSize(candidate);
+  return Map.unmodifiable(candidate);
 }
 
 Future<Map<String, String?>> readRawAccountKeys(
@@ -238,12 +362,53 @@ class AccountChange {
     };
     if (merged.length > maxAccountCount) throw AccountPayloadInvalid();
     final ids = merged.keys.toList()..sort();
-    final profiles = overwrite
-        ? <String, dynamic>{}
-        : _map(target.raw[accountProfilesKey]);
-    profiles.removeWhere((key, _) => !merged.containsKey(key));
+    final profiles = _map(target.raw[accountProfilesKey]);
+    final incomingNames = {
+      for (final record in source.displayNames) record.accountId: record,
+    };
     for (final account in source.accounts) {
-      profiles[account.accountId] = {'nickname': account.nickname};
+      incomingNames.putIfAbsent(
+        account.accountId,
+        () => NintendoAccountNameRecord(
+          accountId: account.accountId,
+          nickname: account.nickname,
+          updatedAt: null,
+        ),
+      );
+    }
+    final names = mergeAccountNameHistory(
+      local: accountNamesFromProfiles(profiles),
+      incoming: incomingNames.values,
+    );
+    for (final id in profiles.keys.toList()) {
+      if (!merged.containsKey(id)) {
+        final record = names[id];
+        if (record == null) {
+          profiles.remove(id);
+        } else {
+          profiles[id] = {
+            'nickname': record.nickname,
+            if (record.serializedUpdatedAt != null)
+              'name_updated_at': record.serializedUpdatedAt,
+          };
+        }
+      }
+    }
+    for (final record in names.values) {
+      profiles[record.accountId] = {
+        if (merged.containsKey(record.accountId) &&
+            profiles[record.accountId] is Map)
+          ...Map<String, dynamic>.from(profiles[record.accountId] as Map),
+        'nickname': record.nickname,
+        if (record.serializedUpdatedAt != null)
+          'name_updated_at': record.serializedUpdatedAt,
+      };
+    }
+    for (final account in merged.values) {
+      profiles.putIfAbsent(
+        account.accountId,
+        () => {'nickname': account.nickname},
+      );
     }
     final selected = target.raw[selectedAccountKey];
     final candidate = <String, String?>{
@@ -251,13 +416,14 @@ class AccountChange {
       accountTokensKey: ids.isEmpty
           ? null
           : jsonEncode({for (final id in ids) id: merged[id]!.sessionToken}),
-      accountProfilesKey: ids.isEmpty ? null : jsonEncode(profiles),
+      accountProfilesKey: profiles.isEmpty ? null : jsonEncode(profiles),
       selectedAccountKey: ids.isEmpty
           ? null
           : merged.containsKey(selected)
           ? selected
           : ids.first,
     };
+    validateRawAccountSize(candidate);
     final added = incoming.keys.where((id) => !old.containsKey(id)).toList()
       ..sort();
     final replaced =

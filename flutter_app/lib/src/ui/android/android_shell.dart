@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../backend/app_backend.dart';
 import '../../l10n/app_localizations.dart';
+import '../../platform/gallery_notification_navigation.dart';
 import '../../release_update.dart';
 import '../../state/library_controller.dart';
 import '../../state/settings_controller.dart';
@@ -27,6 +28,7 @@ class AndroidShell extends StatefulWidget {
     this.latestReleaseVersion,
     this.updateStatus,
     this.updateController,
+    this.notificationNavigation,
   });
   final AppBackend backend;
   final SettingsController settings;
@@ -36,6 +38,7 @@ class AndroidShell extends StatefulWidget {
   final String? latestReleaseVersion;
   final UpdateStatusKind? updateStatus;
   final AndroidUpdateController? updateController;
+  final GalleryNotificationNavigation? notificationNavigation;
   @override
   State<AndroidShell> createState() => _AndroidShellState();
 }
@@ -62,9 +65,19 @@ class _AndroidShellState extends State<AndroidShell> {
   @override
   void initState() {
     super.initState();
+    widget.notificationNavigation?.addListener(openGalleryFromNotification);
     unawaited(transfer.refresh());
     widget.sync.addListener(syncChanged);
     unawaited(warnUnavailableStorage());
+  }
+
+  void openGalleryFromNotification() {
+    if (!mounted) return;
+    library.reload();
+    destination.value = 0;
+    if (navigator.currentState?.canPop() ?? false) {
+      navigator.currentState?.popUntil((route) => route.isFirst);
+    }
   }
 
   Future<void> warnUnavailableStorage() async {
@@ -123,6 +136,7 @@ class _AndroidShellState extends State<AndroidShell> {
 
   @override
   void dispose() {
+    widget.notificationNavigation?.removeListener(openGalleryFromNotification);
     widget.sync.removeListener(syncChanged);
     library.dispose();
     transfer.dispose();

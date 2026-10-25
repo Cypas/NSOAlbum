@@ -148,7 +148,6 @@ class _AndroidMetadataEditorState extends State<AndroidMetadataEditor> {
             icon: const Icon(Icons.save_outlined),
             label: Text(context.l10n.select(zh: '保存', en: 'Save')),
           ),
-          SelectableText(widget.asset.storagePath),
           if (error != null) Text(androidReadableError(context, error!)),
         ],
       ),

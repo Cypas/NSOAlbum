@@ -58,7 +58,8 @@ public static class MtpWorkerFixture {
         }
         var behavior = Path.GetFileNameWithoutExtension(
             System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName).StartsWith("hang")
-            ? "hang" : Environment.GetEnvironmentVariable("NSO_MTP_FIXTURE_BEHAVIOR") ?? "ok";
+            ? "hang" : Path.GetFileNameWithoutExtension(self).StartsWith("fragmented")
+            ? "fragmented" : Environment.GetEnvironmentVariable("NSO_MTP_FIXTURE_BEHAVIOR") ?? "ok";
         if (behavior == "hang") {
             Thread.Sleep(60000);
             return 0;
@@ -67,7 +68,7 @@ public static class MtpWorkerFixture {
         var header = new byte[4];
         if (input.Read(header, 0, 4) != 4) return 9;
         var length = (header[0] << 24) | (header[1] << 16) | (header[2] << 8) | header[3];
-        if (length < 1 || length > 196608) return 10;
+        if (length < 16 || length > 65552) return 10;
         var bytes = new byte[length];
         var read = 0;
         while (read < length) {
@@ -75,20 +76,49 @@ public static class MtpWorkerFixture {
             if (count <= 0) return 11;
             read += count;
         }
-        if (Encoding.UTF8.GetString(bytes) != "{\"method\":\"close\"}" || args.Length != 0) return 12;
+        if (Encoding.ASCII.GetString(bytes, 0, 8) != "NSOMTP2\0" ||
+                ReadInt(bytes, 8) != length - 16 || ReadInt(bytes, 12) != 0 ||
+                Encoding.UTF8.GetString(bytes, 16, length - 16) != "{\"method\":\"close\"}" ||
+                args.Length != 0) return 12;
         var output = Console.OpenStandardOutput();
         if (behavior == "oversized") {
-            output.Write(new byte[] { 0, 3, 0, 1 }, 0, 4);
+            output.Write(new byte[] { 0, 1, 0, 17 }, 0, 4);
             return 0;
         }
-        var response = behavior == "bad" ? "{\"value\":{\"Ok\":1}}" : "{\"value\":{\"Ok\":null}}";
+        var response = behavior == "bad"
+            ? "{\"value\":{\"Ok\":1},\"payload_length\":0}"
+            : "{\"value\":{\"Ok\":null},\"payload_length\":0}";
+        if (behavior == "legacy") response = "{\"value\":{\"Ok\":null}}";
+        if (behavior == "payload") response = "{\"value\":{\"Ok\":null},\"payload_length\":1}";
         bytes = Encoding.UTF8.GetBytes(response);
-        length = bytes.Length;
+        var binary = behavior != "legacy";
+        length = bytes.Length + (binary ? 16 : 0) + (behavior == "payload" ? 1 : 0);
         output.Write(new byte[] {
             (byte)(length >> 24), (byte)(length >> 16), (byte)(length >> 8), (byte)length
         }, 0, 4);
-        output.Write(bytes, 0, bytes.Length);
+        if (binary) {
+            var magic = Encoding.ASCII.GetBytes(behavior == "wrong-magic" ? "NSOMTP1\0" : "NSOMTP2\0");
+            output.Write(magic, 0, magic.Length);
+            var headerLength = bytes.Length + (behavior == "length-mismatch" ? 1 : 0);
+            output.Write(new byte[] {
+                (byte)(headerLength >> 24), (byte)(headerLength >> 16),
+                (byte)(headerLength >> 8), (byte)headerLength
+            }, 0, 4);
+            output.Write(new byte[] { 0, 0, 0, (byte)(behavior == "payload" ? 1 : 0) }, 0, 4);
+        }
+        if (behavior == "truncated") {
+            output.Write(bytes, 0, bytes.Length - 1);
+        } else if (behavior == "fragmented") {
+            foreach (var item in bytes) { output.WriteByte(item); output.Flush(); }
+        } else {
+            output.Write(bytes, 0, bytes.Length);
+        }
+        if (behavior == "payload" || behavior == "trailing") output.WriteByte(1);
         output.Flush();
         return behavior == "exit-error" ? 8 : 0;
+    }
+    private static int ReadInt(byte[] bytes, int offset) {
+        return (bytes[offset] << 24) | (bytes[offset + 1] << 16) |
+            (bytes[offset + 2] << 8) | bytes[offset + 3];
     }
 }

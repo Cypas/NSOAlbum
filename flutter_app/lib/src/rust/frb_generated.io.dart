@@ -111,6 +111,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   EndpointView dco_decode_box_autoadd_endpoint_view(dynamic raw);
 
   @protected
+  GalleryCursor dco_decode_box_autoadd_gallery_cursor(dynamic raw);
+
+  @protected
+  GalleryPageRequest dco_decode_box_autoadd_gallery_page_request(dynamic raw);
+
+  @protected
   GalleryQuery dco_decode_box_autoadd_gallery_query(dynamic raw);
 
   @protected
@@ -207,10 +213,25 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   EndpointView dco_decode_endpoint_view(dynamic raw);
 
   @protected
+  GalleryCursor dco_decode_gallery_cursor(dynamic raw);
+
+  @protected
   GalleryKindFilter dco_decode_gallery_kind_filter(dynamic raw);
 
   @protected
+  GalleryPage dco_decode_gallery_page(dynamic raw);
+
+  @protected
+  GalleryPageDirection dco_decode_gallery_page_direction(dynamic raw);
+
+  @protected
+  GalleryPageRequest dco_decode_gallery_page_request(dynamic raw);
+
+  @protected
   GalleryQuery dco_decode_gallery_query(dynamic raw);
+
+  @protected
+  GameMediaCount dco_decode_game_media_count(dynamic raw);
 
   @protected
   GameTagAliasSummary dco_decode_game_tag_alias_summary(dynamic raw);
@@ -264,6 +285,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<Conflict> dco_decode_list_conflict(dynamic raw);
 
   @protected
+  List<GameMediaCount> dco_decode_list_game_media_count(dynamic raw);
+
+  @protected
   List<GameTagAliasSummary> dco_decode_list_game_tag_alias_summary(dynamic raw);
 
   @protected
@@ -279,6 +303,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<MediaExportItemError> dco_decode_list_media_export_item_error(
     dynamic raw,
   );
+
+  @protected
+  List<MediaSourceDetails> dco_decode_list_media_source_details(dynamic raw);
 
   @protected
   List<NativeDevice> dco_decode_list_native_device(dynamic raw);
@@ -323,6 +350,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MediaDeletionResult dco_decode_media_deletion_result(dynamic raw);
 
   @protected
+  MediaDetails dco_decode_media_details(dynamic raw);
+
+  @protected
   MediaExportItemError dco_decode_media_export_item_error(dynamic raw);
 
   @protected
@@ -330,6 +360,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   MediaKind dco_decode_media_kind(dynamic raw);
+
+  @protected
+  MediaSourceDetails dco_decode_media_source_details(dynamic raw);
 
   @protected
   NativeDevice dco_decode_native_device(dynamic raw);
@@ -405,6 +438,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   EndpointView? dco_decode_opt_box_autoadd_endpoint_view(dynamic raw);
 
   @protected
+  GalleryCursor? dco_decode_opt_box_autoadd_gallery_cursor(dynamic raw);
+
+  @protected
   PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
 
   @protected
@@ -455,6 +491,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt? dco_decode_opt_box_autoadd_usize(dynamic raw);
+
+  @protected
+  List<String>? dco_decode_opt_list_String(dynamic raw);
 
   @protected
   Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
@@ -669,6 +708,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  GalleryCursor sse_decode_box_autoadd_gallery_cursor(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  GalleryPageRequest sse_decode_box_autoadd_gallery_page_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   GalleryQuery sse_decode_box_autoadd_gallery_query(
     SseDeserializer deserializer,
   );
@@ -787,12 +836,31 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   EndpointView sse_decode_endpoint_view(SseDeserializer deserializer);
 
   @protected
+  GalleryCursor sse_decode_gallery_cursor(SseDeserializer deserializer);
+
+  @protected
   GalleryKindFilter sse_decode_gallery_kind_filter(
     SseDeserializer deserializer,
   );
 
   @protected
+  GalleryPage sse_decode_gallery_page(SseDeserializer deserializer);
+
+  @protected
+  GalleryPageDirection sse_decode_gallery_page_direction(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  GalleryPageRequest sse_decode_gallery_page_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   GalleryQuery sse_decode_gallery_query(SseDeserializer deserializer);
+
+  @protected
+  GameMediaCount sse_decode_game_media_count(SseDeserializer deserializer);
 
   @protected
   GameTagAliasSummary sse_decode_game_tag_alias_summary(
@@ -856,6 +924,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<Conflict> sse_decode_list_conflict(SseDeserializer deserializer);
 
   @protected
+  List<GameMediaCount> sse_decode_list_game_media_count(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<GameTagAliasSummary> sse_decode_list_game_tag_alias_summary(
     SseDeserializer deserializer,
   );
@@ -875,6 +948,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<MediaExportItemError> sse_decode_list_media_export_item_error(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<MediaSourceDetails> sse_decode_list_media_source_details(
     SseDeserializer deserializer,
   );
 
@@ -937,6 +1015,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  MediaDetails sse_decode_media_details(SseDeserializer deserializer);
+
+  @protected
   MediaExportItemError sse_decode_media_export_item_error(
     SseDeserializer deserializer,
   );
@@ -948,6 +1029,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   MediaKind sse_decode_media_kind(SseDeserializer deserializer);
+
+  @protected
+  MediaSourceDetails sse_decode_media_source_details(
+    SseDeserializer deserializer,
+  );
 
   @protected
   NativeDevice sse_decode_native_device(SseDeserializer deserializer);
@@ -1041,6 +1127,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  GalleryCursor? sse_decode_opt_box_autoadd_gallery_cursor(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
@@ -1109,6 +1200,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt? sse_decode_opt_box_autoadd_usize(SseDeserializer deserializer);
+
+  @protected
+  List<String>? sse_decode_opt_list_String(SseDeserializer deserializer);
 
   @protected
   Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer);
@@ -1363,6 +1457,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_gallery_cursor(
+    GalleryCursor self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_gallery_page_request(
+    GalleryPageRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_gallery_query(
     GalleryQuery self,
     SseSerializer serializer,
@@ -1522,13 +1628,37 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_endpoint_view(EndpointView self, SseSerializer serializer);
 
   @protected
+  void sse_encode_gallery_cursor(GalleryCursor self, SseSerializer serializer);
+
+  @protected
   void sse_encode_gallery_kind_filter(
     GalleryKindFilter self,
     SseSerializer serializer,
   );
 
   @protected
+  void sse_encode_gallery_page(GalleryPage self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_gallery_page_direction(
+    GalleryPageDirection self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_gallery_page_request(
+    GalleryPageRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_gallery_query(GalleryQuery self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_game_media_count(
+    GameMediaCount self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_game_tag_alias_summary(
@@ -1609,6 +1739,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_list_conflict(List<Conflict> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_game_media_count(
+    List<GameMediaCount> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_game_tag_alias_summary(
     List<GameTagAliasSummary> self,
     SseSerializer serializer,
@@ -1635,6 +1771,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_media_export_item_error(
     List<MediaExportItemError> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_media_source_details(
+    List<MediaSourceDetails> self,
     SseSerializer serializer,
   );
 
@@ -1717,6 +1859,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_media_details(MediaDetails self, SseSerializer serializer);
+
+  @protected
   void sse_encode_media_export_item_error(
     MediaExportItemError self,
     SseSerializer serializer,
@@ -1730,6 +1875,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_media_kind(MediaKind self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_media_source_details(
+    MediaSourceDetails self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_native_device(NativeDevice self, SseSerializer serializer);
@@ -1846,6 +1997,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_gallery_cursor(
+    GalleryCursor? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_i_64(
     PlatformInt64? self,
     SseSerializer serializer,
@@ -1931,6 +2088,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_usize(BigInt? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_list_String(List<String>? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_list_prim_u_8_strict(

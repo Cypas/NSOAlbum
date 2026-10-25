@@ -97,7 +97,26 @@ void main() {
       await tester.pump();
       expect(session.confirmedLocally, isTrue);
       expect(session.configurations, isEmpty);
-      await _endMobile(tester);
+      session.update(
+        endpoint(
+          driver.State.configuring,
+          pairing: read.PairingStage.confirmed,
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+      expect(find.byKey(const Key('device-connection-info')), findsNothing);
+      session.update(
+        endpoint(driver.State.completed, pairing: read.PairingStage.terminal),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+      expect(find.byKey(const Key('device-connection-info')), findsNothing);
+      expect(find.byKey(const Key('device-sync-complete')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('device-sync-complete')));
+      await tester.pumpAndSettle();
+      expect(find.byType(DeviceSyncPage), findsNothing);
+      expect(session.closed, isTrue);
       expect(reason(await request(bridge, 'status')), 'unavailable');
     },
   );

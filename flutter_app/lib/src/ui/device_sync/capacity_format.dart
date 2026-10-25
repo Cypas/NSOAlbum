@@ -1,7 +1,7 @@
 /// Formats native u64 values without first converting them to a lossy double.
 /// Unit names follow the application's existing 1024-based capacity convention.
 String formatDeviceCapacity(BigInt? bytes, {String unknown = '—'}) =>
-    _formatDeviceBytes(bytes, unknown: unknown);
+    _formatDeviceBytes(bytes, unknown: unknown, minimumUnit: 1);
 
 String _formatDeviceBytes(
   BigInt? bytes, {
@@ -19,7 +19,6 @@ String _formatDeviceBytes(
     divisor *= step;
     unit++;
   }
-  if (unit == 0) return '$bytes B';
   final hundred = BigInt.from(100);
   final rounded = (bytes * hundred + divisor ~/ BigInt.two) ~/ divisor;
   final whole = rounded ~/ hundred;

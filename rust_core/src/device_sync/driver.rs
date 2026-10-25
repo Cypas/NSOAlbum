@@ -408,6 +408,7 @@ pub struct Driver {
     pending_ready: Option<ApplyIdentity>,
     source_ack_until: Option<u64>,
     detached: bool,
+    session_cleanup_pending: bool,
     #[cfg(test)]
     fail_local_spawn: bool,
 }
@@ -445,6 +446,16 @@ impl Driver {
         } else {
             State::Pairing
         };
+        let session_id =
+            Uuid::parse_str(session.session_id()).map_err(|_| DriverError::Protocol)?;
+        if session.state() == SessionState::Confirmed {
+            database
+                .device_sync_begin_session(
+                    session_id,
+                    Uuid::parse_str(session.operation_id()).map_err(|_| DriverError::Protocol)?,
+                )
+                .map_err(|_| DriverError::Library)?;
+        }
         Ok(Self {
             session,
             database,
@@ -483,7 +494,7 @@ impl Driver {
             receive_ack: Default::default(),
             last_ack: None,
             recent_acks: VecDeque::new(),
-            work: super::work::WorkControl::new(cancel.clone()),
+            work: super::work::WorkControl::new(cancel.clone()).with_sync_session(session_id),
             preview_summary: None,
             cancel,
             permit,
@@ -534,6 +545,7 @@ impl Driver {
             pending_ready: None,
             source_ack_until: None,
             detached: false,
+            session_cleanup_pending: false,
             #[cfg(test)]
             fail_local_spawn: false,
         })
@@ -703,10 +715,25 @@ impl Driver {
     /// A stopped source can still own a previously issued, unexpired permission.
     /// The cleanup survives page disposal, bounded by that last permission.
     pub fn cleanup_pending(&self) -> bool {
-        self.cleanup.as_ref().is_some_and(|cleanup| cleanup.poll())
+        self.session_cleanup_pending || self.cleanup.as_ref().is_some_and(|cleanup| cleanup.poll())
     }
     pub fn confirm_pairing(&mut self) -> Result<()> {
         self.session.confirm(self.clock.unix_ms() / 1000)?;
+        self.persist_confirmed_pairing()
+    }
+    fn persist_confirmed_pairing(&mut self) -> Result<()> {
+        if self.state == State::Pairing && self.session.state() == SessionState::Confirmed {
+            self.database
+                .device_sync_begin_session(
+                    Uuid::parse_str(self.session.session_id())
+                        .map_err(|_| DriverError::Protocol)?,
+                    Uuid::parse_str(self.session.operation_id())
+                        .map_err(|_| DriverError::Protocol)?,
+                )
+                .map_err(|_| DriverError::Library)?;
+            self.state = State::Configuring;
+            self.deadline = self.clock.monotonic_ms().saturating_add(USER_MS);
+        }
         Ok(())
     }
     pub fn confirmation_code(&mut self) -> Result<String> {
@@ -770,6 +797,7 @@ impl Driver {
         mode: SyncMode,
         accounts: bool,
     ) -> Result<()> {
+        self.persist_confirmed_pairing()?;
         if !self.session.controller()
             || self.session.state() != SessionState::Confirmed
             || self.config.is_some()
@@ -2394,6 +2422,9 @@ impl Driver {
         // displayed state terminal. The durable journal decides the outcome.
         self.poll_finished_local_worker()?;
         self.cleanup_pending();
+        if self.state == State::Completed && self.session.state() == SessionState::Terminal {
+            let _ = self.retire_session_record();
+        }
         if self
             .preparation
             .as_ref()
@@ -2432,10 +2463,7 @@ impl Driver {
         if self.session.state() != SessionState::Confirmed {
             return Ok(());
         }
-        if self.state == State::Pairing {
-            self.state = State::Configuring;
-            self.deadline = now.saturating_add(USER_MS);
-        }
+        self.persist_confirmed_pairing()?;
         if self.source_lease.is_some()
             && (now >= self.source_until || self.source_sql_until.is_some_and(|until| now >= until))
         {
@@ -2811,6 +2839,7 @@ impl Driver {
             return false;
         }
         if self.session.state() == SessionState::Terminal {
+            let _ = self.retire_session_record();
             self.publish_measurements();
             return true;
         }
@@ -2821,6 +2850,7 @@ impl Driver {
         {
             self.publish_measurements();
             self.stop(false);
+            let _ = self.retire_session_record();
             return true;
         }
         false
@@ -2838,7 +2868,7 @@ impl Driver {
             self.stop(false);
             return Err(error.into());
         }
-        Ok(())
+        self.persist_confirmed_pairing()
     }
     fn stop(&mut self, cancelled: bool) {
         if self.local_apply_installed() && !cancelled {
@@ -2907,6 +2937,32 @@ impl Driver {
     pub fn disconnect(&mut self) {
         self.stop(false);
     }
+    pub(crate) fn retire_session_record(&mut self) -> Result<()> {
+        if self.cleanup.as_ref().is_some_and(|cleanup| cleanup.poll())
+            || self.worker.is_some()
+            || self.preparation.is_some()
+            || self.verification.is_some()
+        {
+            return Err(DriverError::Library);
+        }
+        if self.database.device_sync_recovery_pending() {
+            // Unsettled apply is recovered through the real journal, not erased.
+            return Ok(());
+        }
+        let session =
+            Uuid::parse_str(self.session.session_id()).map_err(|_| DriverError::Protocol)?;
+        self.session_cleanup_pending = true;
+        let records = self
+            .database
+            .device_sync_unfinished_sessions()
+            .map_err(|_| DriverError::Library)?;
+        if let Some(record) = records.iter().find(|record| record.session == session) {
+            super::startup_recovery::recover_session(&self.database, record)
+                .map_err(|_| DriverError::Library)?;
+        }
+        self.session_cleanup_pending = false;
+        Ok(())
+    }
     fn detach_transport(&mut self) {
         self.detached = true;
         self.outbox.clear();
@@ -2921,6 +2977,9 @@ impl Driver {
             return Err(DriverError::Protocol);
         }
         self.poll_finished_local_worker()?;
+        if self.state == State::Completed && self.session.state() == SessionState::Terminal {
+            let _ = self.retire_session_record();
+        }
         let cancelled = self.cancel.check().is_err();
         if cancelled && !self.state.terminal() {
             self.stop(true);

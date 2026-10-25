@@ -63,6 +63,7 @@ class _VideoMergePageState extends State<VideoMergePage> {
   VideoController? previewController;
   String? previewPath;
   bool busy = false;
+  bool previewImmersive = false;
   Object? previewError;
 
   @override
@@ -198,134 +199,39 @@ class _VideoMergePageState extends State<VideoMergePage> {
         children: [
           Column(
             children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
-                child: Row(
-                  children: [
-                    IconButton.filledTonal(
-                      key: const Key('video-merge-close'),
-                      onPressed: busy ? null : _close,
-                      tooltip: context.l10n.select(zh: '关闭', en: 'Close'),
-                      icon: const Icon(Icons.close_rounded),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: DesktopWindowDragArea(
-                        key: const Key('video-merge-window-drag-area'),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              context.l10n.select(
-                                zh: '合并视频',
-                                en: 'Merge videos',
-                              ),
-                              style: Theme.of(context).textTheme.titleLarge
-                                  ?.copyWith(fontWeight: FontWeight.w700),
-                            ),
-                            Text(
-                              context.l10n.select(
-                                zh: '${videos.length} 个视频 · 拖拽下方条目调整拼接顺序',
-                                en: '${videos.length} videos · Drag the items below to change their order',
-                              ),
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                          ],
-                        ),
+              if (!previewImmersive)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+                  child: Row(
+                    children: [
+                      IconButton.filledTonal(
+                        key: const Key('video-merge-close'),
+                        onPressed: busy ? null : _close,
+                        tooltip: context.l10n.select(zh: '关闭', en: 'Close'),
+                        icon: const Icon(Icons.close_rounded),
                       ),
-                    ),
-                    OutlinedButton.icon(
-                      key: const Key('video-merge-preview'),
-                      onPressed: busy ? null : _ensurePreview,
-                      icon: const Icon(Icons.play_circle_outline_rounded),
-                      label: Text(context.l10n.select(zh: '预览', en: 'Preview')),
-                    ),
-                    const SizedBox(width: 8),
-                    FilledButton.icon(
-                      key: const Key('video-merge-save-as'),
-                      onPressed: busy ? null : _saveAs,
-                      icon: const Icon(Icons.save_as_rounded),
-                      label: Text(context.l10n.select(zh: '另存', en: 'Save as')),
-                    ),
-                  ],
-                ),
-              ),
-              Expanded(child: _buildPreview(context)),
-              Container(
-                height: 278,
-                color: Theme.of(context).colorScheme.surfaceContainerLow,
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                child: ReorderableListView.builder(
-                  key: const Key('video-merge-order-list'),
-                  scrollDirection: Axis.horizontal,
-                  buildDefaultDragHandles: false,
-                  itemCount: videos.length,
-                  onReorderItem: (oldIndex, newIndex) {
-                    setState(() {
-                      final item = videos.removeAt(oldIndex);
-                      videos.insert(newIndex, item);
-                    });
-                    unawaited(
-                      _invalidatePreview().then((_) {
-                        if (mounted) setState(() {});
-                      }),
-                    );
-                  },
-                  itemBuilder: (context, index) {
-                    final video = videos[index];
-                    return SizedBox(
-                      key: ValueKey(video.id),
-                      width: 248,
-                      child: Card(
-                        margin: const EdgeInsets.only(right: 12),
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: DesktopWindowDragArea(
+                          key: const Key('video-merge-window-drag-area'),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Row(
-                                children: [
-                                  CircleAvatar(child: Text('${index + 1}')),
-                                  const Spacer(),
-                                  ReorderableDragStartListener(
-                                    index: index,
-                                    child: IconButton(
-                                      key: ValueKey(
-                                        'video-merge-drag-${video.id}',
-                                      ),
-                                      tooltip: context.l10n.select(
-                                        zh: '拖拽排序',
-                                        en: 'Drag to reorder',
-                                      ),
-                                      onPressed: null,
-                                      icon: const Icon(
-                                        Icons.drag_indicator_rounded,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 6),
-                              SizedBox(
-                                width: double.infinity,
-                                child: _MergeVideoThumbnail(
-                                  video: video,
-                                  backend: widget.backend,
-                                  onPreview: () => _previewSource(video),
-                                ),
-                              ),
-                              const SizedBox(height: 8),
                               Text(
-                                video.originalName,
-                                maxLines: 2,
+                                context.l10n.select(
+                                  zh: '合并视频',
+                                  en: 'Merge videos',
+                                ),
+                                maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                ),
+                                style: Theme.of(context).textTheme.titleLarge
+                                    ?.copyWith(fontWeight: FontWeight.w700),
                               ),
-                              const SizedBox(height: 4),
                               Text(
-                                video.gameName,
+                                context.l10n.select(
+                                  zh: '${videos.length} 个视频 · 拖拽下方条目调整拼接顺序',
+                                  en: '${videos.length} videos · Drag the items below to change their order',
+                                ),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: Theme.of(context).textTheme.bodySmall,
@@ -334,10 +240,176 @@ class _VideoMergePageState extends State<VideoMergePage> {
                           ),
                         ),
                       ),
-                    );
-                  },
+                      OutlinedButton.icon(
+                        key: const Key('video-merge-preview'),
+                        onPressed: busy ? null : _ensurePreview,
+                        icon: const Icon(Icons.play_circle_outline_rounded),
+                        label: Text(
+                          context.l10n.select(zh: '预览', en: 'Preview'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton.icon(
+                        key: const Key('video-merge-save-as'),
+                        onPressed: busy ? null : _saveAs,
+                        icon: const Icon(Icons.save_as_rounded),
+                        label: Text(
+                          context.l10n.select(zh: '另存', en: 'Save as'),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
+              Expanded(child: _buildPreview(context)),
+              if (!previewImmersive)
+                Container(
+                  height: 278,
+                  color: Theme.of(context).colorScheme.surfaceContainerLow,
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                  child: ReorderableListView.builder(
+                    key: const Key('video-merge-order-list'),
+                    scrollDirection: Axis.horizontal,
+                    buildDefaultDragHandles: false,
+                    itemCount: videos.length,
+                    onReorderItem: (oldIndex, newIndex) {
+                      setState(() {
+                        final item = videos.removeAt(oldIndex);
+                        videos.insert(newIndex, item);
+                      });
+                      unawaited(
+                        _invalidatePreview().then((_) {
+                          if (mounted) setState(() {});
+                        }),
+                      );
+                    },
+                    itemBuilder: (context, index) {
+                      final video = videos[index];
+                      final compactCard =
+                          MediaQuery.textScalerOf(context).scale(1) > 1.25;
+                      return SizedBox(
+                        key: ValueKey(video.id),
+                        width: compactCard ? 220 : 248,
+                        height: double.infinity,
+                        child: Card(
+                          margin: const EdgeInsets.only(right: 12),
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    CircleAvatar(
+                                      radius: 17,
+                                      child: Text('${index + 1}'),
+                                    ),
+                                    const Spacer(),
+                                    ReorderableDragStartListener(
+                                      index: index,
+                                      child: IconButton(
+                                        key: ValueKey(
+                                          'video-merge-drag-${video.id}',
+                                        ),
+                                        tooltip: context.l10n.select(
+                                          zh: '拖拽排序',
+                                          en: 'Drag to reorder',
+                                        ),
+                                        onPressed: null,
+                                        constraints:
+                                            const BoxConstraints.tightFor(
+                                              width: 32,
+                                              height: 32,
+                                            ),
+                                        padding: EdgeInsets.zero,
+                                        visualDensity: VisualDensity.compact,
+                                        icon: const Icon(
+                                          Icons.drag_indicator_rounded,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                Flexible(
+                                  child: Center(
+                                    child: compactCard
+                                        ? SizedBox(
+                                            width: 172,
+                                            height: 96,
+                                            child: _MergeVideoThumbnail(
+                                              video: video,
+                                              backend: widget.backend,
+                                              onPreview: () =>
+                                                  _previewSource(video),
+                                            ),
+                                          )
+                                        : SizedBox(
+                                            width: double.infinity,
+                                            child: _MergeVideoThumbnail(
+                                              video: video,
+                                              backend: widget.backend,
+                                              onPreview: () =>
+                                                  _previewSource(video),
+                                            ),
+                                          ),
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  video.originalName,
+                                  maxLines: compactCard ? 1 : 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                if (video.tags.isNotEmpty) ...[
+                                  const SizedBox(height: 4),
+                                  SingleChildScrollView(
+                                    scrollDirection: Axis.horizontal,
+                                    child: Row(
+                                      children: [
+                                        for (
+                                          var tagIndex = 0;
+                                          tagIndex < video.tags.length;
+                                          tagIndex++
+                                        ) ...[
+                                          if (tagIndex > 0)
+                                            const SizedBox(width: 4),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 8,
+                                              vertical: 3,
+                                            ),
+                                            decoration: BoxDecoration(
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .secondaryContainer,
+                                              borderRadius:
+                                                  BorderRadius.circular(999),
+                                            ),
+                                            child: Text(
+                                              video.tags[tagIndex],
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .labelSmall,
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
             ],
           ),
           if (busy)
@@ -374,15 +446,34 @@ class _VideoMergePageState extends State<VideoMergePage> {
   Widget _buildPreview(BuildContext context) {
     final controller = previewController;
     if (controller != null) {
+      final controls = appDesktopVideoControlsThemeData(
+        immersive: previewImmersive,
+        onToggleImmersive: () =>
+            setState(() => previewImmersive = !previewImmersive),
+        immersiveKey: const Key('video-merge-immersive'),
+        systemFullscreenKey: const Key('video-merge-system-fullscreen'),
+        immersiveTooltip: previewImmersive
+            ? context.l10n.select(zh: '退出应用内全屏', en: 'Exit in-app fullscreen')
+            : context.l10n.select(zh: '应用内全屏', en: 'In-app fullscreen'),
+        systemFullscreenTooltip: context.l10n.select(
+          zh: '全屏',
+          en: 'Fullscreen',
+        ),
+      );
       return Padding(
         padding: const EdgeInsets.all(16),
         child: Center(
           child: AspectRatio(
             aspectRatio: 16 / 9,
-            child: VideoPreview(
-              controller: controller,
-              cover: videos.first,
-              controls: AdaptiveVideoControls,
+            child: MaterialDesktopVideoControlsTheme(
+              normal: controls,
+              fullscreen: controls,
+              child: VideoPreview(
+                controller: controller,
+                cover: videos.first,
+                controls: AdaptiveVideoControls,
+                showLoadingIndicator: false,
+              ),
             ),
           ),
         ),
@@ -520,6 +611,7 @@ class _SourceVideoPreviewState extends State<_SourceVideoPreview> {
   late final VideoController controller = VideoController(player);
 
   Object? error;
+  bool immersive = false;
 
   @override
   void initState() {
@@ -552,41 +644,50 @@ class _SourceVideoPreviewState extends State<_SourceVideoPreview> {
     constraints: const BoxConstraints(maxWidth: 1100, maxHeight: 760),
     child: Column(
       children: [
-        SizedBox(
-          height: 52,
-          child: Stack(
-            children: [
-              Positioned.fill(
-                child: DesktopWindowDragArea(
-                  key: const Key('video-merge-source-window-drag-area'),
-                  child: Text(
-                    widget.video.originalName,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 17,
-                      fontWeight: FontWeight.w600,
+        if (!immersive)
+          SizedBox(
+            height: 52,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: DesktopWindowDragArea(
+                    key: const Key('video-merge-source-window-drag-area'),
+                    child: Text(
+                      widget.video.originalName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ),
-              ),
-              Positioned(
-                top: 8,
-                left: 8,
-                child: IconButton.filledTonal(
-                  key: const Key('video-merge-source-preview-close'),
-                  tooltip: context.l10n.select(zh: '关闭预览', en: 'Close preview'),
-                  onPressed: () => Navigator.of(context).pop(),
-                  icon: const Icon(Icons.close_rounded),
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  child: IconButton.filledTonal(
+                    key: const Key('video-merge-source-preview-close'),
+                    tooltip: context.l10n.select(
+                      zh: '关闭预览',
+                      en: 'Close preview',
+                    ),
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
         Expanded(
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            padding: EdgeInsets.fromLTRB(
+              immersive ? 0 : 16,
+              0,
+              immersive ? 0 : 16,
+              immersive ? 0 : 16,
+            ),
             child: error == null
                 ? Center(
                     child: Stack(
@@ -594,10 +695,61 @@ class _SourceVideoPreviewState extends State<_SourceVideoPreview> {
                       children: [
                         AspectRatio(
                           aspectRatio: 16 / 9,
-                          child: VideoPreview(
-                            controller: controller,
-                            cover: widget.video,
-                            controls: AdaptiveVideoControls,
+                          child: MaterialDesktopVideoControlsTheme(
+                            normal: appDesktopVideoControlsThemeData(
+                              immersive: immersive,
+                              onToggleImmersive: () =>
+                                  setState(() => immersive = !immersive),
+                              immersiveKey: const Key(
+                                'video-merge-source-immersive',
+                              ),
+                              systemFullscreenKey: const Key(
+                                'video-merge-source-system-fullscreen',
+                              ),
+                              immersiveTooltip: immersive
+                                  ? context.l10n.select(
+                                      zh: '退出应用内全屏',
+                                      en: 'Exit in-app fullscreen',
+                                    )
+                                  : context.l10n.select(
+                                      zh: '应用内全屏',
+                                      en: 'In-app fullscreen',
+                                    ),
+                              systemFullscreenTooltip: context.l10n.select(
+                                zh: '全屏',
+                                en: 'Fullscreen',
+                              ),
+                            ),
+                            fullscreen: appDesktopVideoControlsThemeData(
+                              immersive: immersive,
+                              onToggleImmersive: () =>
+                                  setState(() => immersive = !immersive),
+                              immersiveTooltip: immersive
+                                  ? context.l10n.select(
+                                      zh: '退出应用内全屏',
+                                      en: 'Exit in-app fullscreen',
+                                    )
+                                  : context.l10n.select(
+                                      zh: '应用内全屏',
+                                      en: 'In-app fullscreen',
+                                    ),
+                              systemFullscreenTooltip: context.l10n.select(
+                                zh: '全屏',
+                                en: 'Fullscreen',
+                              ),
+                              immersiveKey: const Key(
+                                'video-merge-source-immersive-fullscreen',
+                              ),
+                              systemFullscreenKey: const Key(
+                                'video-merge-source-system-fullscreen-fullscreen',
+                              ),
+                            ),
+                            child: VideoPreview(
+                              controller: controller,
+                              cover: widget.video,
+                              controls: AdaptiveVideoControls,
+                              showLoadingIndicator: false,
+                            ),
                           ),
                         ),
                       ],

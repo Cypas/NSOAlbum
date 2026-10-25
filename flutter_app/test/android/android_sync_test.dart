@@ -5,6 +5,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/main.dart';
@@ -17,6 +18,7 @@ import 'package:squid_album/src/state/sync_controller.dart';
 import 'package:squid_album/src/state/transfer_controller.dart';
 import 'package:squid_album/src/ui/android/android_transfer_page.dart';
 import 'package:squid_album/src/ui/android/android_nintendo_sync_page.dart';
+import 'package:squid_album/src/ui/android/android_settings_page.dart';
 import 'package:squid_album/src/ui/android/android_theme.dart';
 import 'package:squid_album/src/ui/platform_ui.dart';
 
@@ -85,6 +87,20 @@ void main() {
   testWidgets(
     'automatic sync card groups and saves the notification preference',
     (tester) async {
+      const notificationChannel = MethodChannel(
+        'io.github.cypas.nsoalbum/notifications',
+      );
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(notificationChannel, (call) async {
+            if (call.method == 'notificationPermissionStatus') {
+              return 'allowed';
+            }
+            return null;
+          });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(notificationChannel, null),
+      );
       final backend = FakeBackend(signedIn: true, mediaItems: []);
       final settings = SettingsController(backend);
       final sync = SyncController(backend, allAccounts: true);
@@ -103,36 +119,31 @@ void main() {
             GlobalCupertinoLocalizations.delegate,
           ],
           supportedLocales: AppLocalizations.supportedLocales,
-          home: AndroidNintendoSyncPage(controller: transfer),
+          home: AndroidSettingsPage(backend: backend, controller: settings),
         ),
       );
       await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
-        find.text('自动同步设置'),
+        find.byKey(const Key('android-auto-sync-notifications')),
         180,
         scrollable: find.byType(Scrollable).last,
       );
-      expect(find.text('同步完成后通知'), findsOneWidget);
+      expect(
+        find.byKey(const Key('android-auto-sync-notifications')),
+        findsOneWidget,
+      );
       final card = find.ancestor(
-        of: find.text('同步完成后通知'),
+        of: find.byKey(const Key('android-auto-sync-notifications')),
         matching: find.byType(Card),
       );
       expect(card, findsOneWidget);
-      for (final text in [
-        '自动同步设置',
-        '启用自动同步策略',
-        '启动时自动同步',
-        '活跃期检查周期',
-        '无新媒体后进入休眠（小时）',
-      ]) {
-        expect(
-          find.descendant(of: card, matching: find.text(text)),
-          findsOneWidget,
-        );
-      }
+      expect(find.text('通知'), findsOneWidget);
       expect(settings.value.notifyOnAutoSync, isTrue);
-      await tester.ensureVisible(find.text('同步完成后通知'));
-      await tester.tap(find.text('同步完成后通知'));
+      final notificationSwitch = find.byKey(
+        const Key('android-auto-sync-notifications'),
+      );
+      final tile = tester.widget<SwitchListTile>(notificationSwitch);
+      tile.onChanged!(false);
       await tester.pumpAndSettle();
       expect(settings.value.notifyOnAutoSync, isFalse);
       expect(backend.settings.notifyOnAutoSync, isFalse);

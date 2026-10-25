@@ -4,7 +4,7 @@ import '../../backend/device_sync/account_coordinator.dart'
     show AccountPreviewChanged, AccountRecoveryRequired;
 import '../../backend/device_sync/account_gate.dart' show DeviceSyncBusy;
 import '../../backend/device_sync/account_storage.dart'
-    show AccountConsentRequired;
+    show AccountConsentRequired, AccountPayloadInvalid;
 import '../../backend/device_sync/service_contract.dart';
 import '../../l10n/app_localizations.dart';
 import '../../rust/device_sync/driver.dart' as driver;
@@ -51,8 +51,8 @@ String deviceSyncError(BuildContext context, Object error) {
     ),
     read.ReadError.cancelled => ('操作已取消。', 'Operation cancelled.'),
     read.ReadError.invalidInput => (
-      '传输数据或交换目录校验未通过，可能是传输中断或目录数据损坏。请检查连接后重新连接；已校验的暂存文件会保留。',
-      'Transfer data or the exchange folder failed validation, possibly due to interruption or corrupt directory data. Check the connection and reconnect. Verified staged files are retained.',
+      '传输数据或交换目录校验未通过，可能是传输中断或目录数据损坏。若包含账号，请确认两端均支持账号名称历史；也可重新连接并选择仅同步图库。已校验的暂存文件会保留。',
+      'Transfer data or the exchange folder failed validation, possibly due to interruption or corrupt data. For account sync, check that both devices support account name history, or reconnect with library-only sync. Verified staged files are retained.',
     ),
     read.ReadError.versionMismatch => (
       '两端软件版本、构建号或传输协议不兼容。请更新两端应用至相同版本和构建，再重新生成二维码。',
@@ -65,6 +65,10 @@ String deviceSyncError(BuildContext context, Object error) {
     _ when error is AccountConsentRequired => (
       '读取账号变化前需要单独授权。',
       'Separate consent is required before reading account changes.',
+    ),
+    _ when error is AccountPayloadInvalid => (
+      '账号或名称历史无法安全同步：数据无效或超出容量限制。未应用账号更改；可取消账号同步后仅同步图库。',
+      'Accounts or name history could not be synced safely: the data is invalid or exceeds capacity. No account changes were applied. Cancel account sync to transfer only the library.',
     ),
     _ when error is DeviceBackupUnavailable => (
       '此备份不具备恢复条件。它可能不完整、缺少账号材料或仅用于内部恢复。',

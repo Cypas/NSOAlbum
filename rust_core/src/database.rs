@@ -1,10 +1,11 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
+use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::album::{kind_from_type, readable_import_media_name, readable_media_name};
 use crate::device_sync::library_guard::{
@@ -14,8 +15,10 @@ use crate::device_sync::library_guard::{
 use crate::device_sync::manifest as ds;
 use crate::error::{CoreError, CoreResult};
 use crate::models::{
-    AlbumRule, AlbumSummary, GalleryKindFilter, GalleryQuery, GameTagAliasSummary, GameTagSummary,
-    LibraryRootProbe, MediaAsset, MediaCandidate, MediaKind, SyncProgress, TagUsageSummary,
+    AlbumRule, AlbumSummary, GalleryCursor, GalleryKindFilter, GalleryPage, GalleryPageDirection,
+    GalleryPageRequest, GalleryQuery, GameMediaCount, GameTagAliasSummary, GameTagSummary,
+    LibraryRootProbe, MediaAsset, MediaCandidate, MediaDetails, MediaKind, MediaSourceDetails,
+    SyncProgress, TagUsageSummary,
 };
 use crate::settings::AppSettings;
 use crate::smart_album::matches_album_rules;
@@ -26,6 +29,735 @@ type AlbumFilter = (
     Vec<AlbumRule>,
     std::collections::HashSet<i64>,
 );
+
+fn gallery_filter_fingerprint(query: &GalleryQuery) -> String {
+    let mut canonical = query.clone();
+    canonical.limit = 0;
+    canonical.offset = 0;
+    canonical.game_names.sort();
+    canonical.game_names.dedup();
+    hex::encode(Sha256::digest(
+        serde_json::to_vec(&canonical).expect("GalleryQuery is serializable"),
+    ))
+}
+
+// Strip the fraction before unixepoch: SQLite rounds fractional seconds to
+// milliseconds, which can carry .999999 into the following second. Preserve
+// the fraction independently as integer microseconds; never use Julian floats.
+fn gallery_time_sql(field: &str) -> String {
+    format!(
+        "(unixepoch(substr({field},1,19) ||
+             CASE WHEN upper(substr({field},-1))='Z' THEN 'Z'
+                  ELSE substr({field},-6) END)*1000000 +
+          CASE WHEN substr({field},20,1)='.' THEN
+            CAST(substr(substr({field},21,length({field})-20-
+              CASE WHEN upper(substr({field},-1))='Z' THEN 1 ELSE 6 END)
+              || '000000',1,6) AS INTEGER)
+          ELSE 0 END)"
+    )
+}
+
+fn gallery_sort_sql() -> String {
+    gallery_time_sql("COALESCE(m.captured_at,NULLIF(m.imported_at,''))")
+}
+
+fn gallery_text_rule(
+    column: &str,
+    operator: &str,
+    expected: &str,
+    bind: &mut Vec<Value>,
+) -> String {
+    let expression = match operator {
+        "equals" => format!("gallery_lower({column}) = ?"),
+        "not_equals" => format!("gallery_lower({column}) <> ?"),
+        "contains" => format!("instr(gallery_lower({column}),?) > 0"),
+        "not_contains" => format!("instr(gallery_lower({column}),?) = 0"),
+        "starts_with" => format!("instr(gallery_lower({column}),?) = 1"),
+        "ends_with" => {
+            // An empty expected string matches every text, including "".
+            bind.push(Value::Text(expected.to_lowercase()));
+            bind.push(Value::Text(expected.to_lowercase()));
+            bind.push(Value::Text(expected.to_lowercase()));
+            return format!("(? = '' OR substr(gallery_lower({column}),-length(?)) = ?)");
+        }
+        _ => return "0".into(),
+    };
+    bind.push(Value::Text(expected.to_lowercase()));
+    expression
+}
+
+fn gallery_rule_sql(rule: &AlbumRule, bind: &mut Vec<Value>) -> String {
+    let expected = rule.value.trim();
+    match rule.field.as_str() {
+        "favorite" => {
+            let value = matches!(expected.to_ascii_lowercase().as_str(), "1" | "true" | "yes");
+            match rule.operator.as_str() {
+                "equals" | "not_equals" => {
+                    bind.push(Value::Integer(i64::from(value)));
+                    format!(
+                        "m.favorite {} ?",
+                        if rule.operator == "equals" { "=" } else { "<>" }
+                    )
+                }
+                _ => "0".into(),
+            }
+        }
+        "game" | "game_tag" => gallery_text_rule("m.game_name", &rule.operator, expected, bind),
+        "note" => gallery_text_rule("COALESCE(n.text,'')", &rule.operator, expected, bind),
+        "type" => gallery_text_rule("m.media_type", &rule.operator, expected, bind),
+        "tag" => {
+            let negative = matches!(rule.operator.as_str(), "not_equals" | "not_contains");
+            let operator = match rule.operator.as_str() {
+                "not_equals" => "equals",
+                "not_contains" => "contains",
+                other => other,
+            };
+            let condition = gallery_text_rule("t.name", operator, expected, bind);
+            format!(
+                "{}EXISTS(SELECT 1 FROM media_tag mt JOIN tag t ON t.id=mt.tag_id
+                     WHERE mt.media_id=m.id AND ({condition}))",
+                if negative { "NOT " } else { "" }
+            )
+        }
+        _ => "0".into(),
+    }
+}
+
+fn gallery_album_sql(
+    connection: &Connection,
+    album_id: i64,
+    bind: &mut Vec<Value>,
+) -> CoreResult<String> {
+    let (kind, system): (String, Option<String>) = connection.query_row(
+        "SELECT album_type,system_key FROM album WHERE id=?1",
+        [album_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if system.as_deref() == Some("favorites") {
+        return Ok("m.favorite=1".into());
+    }
+    if kind != "smart" {
+        bind.push(Value::Integer(album_id));
+        return Ok(
+            "EXISTS(SELECT 1 FROM album_media am WHERE am.album_id=? AND am.media_id=m.id)".into(),
+        );
+    }
+    let mut statement = connection.prepare("SELECT rule_group,field,operator,value FROM album_rule WHERE album_id=?1 ORDER BY rule_group,id")?;
+    let rules = statement
+        .query_map([album_id], |row| {
+            Ok(AlbumRule {
+                rule_group: row.get(0)?,
+                field: row.get(1)?,
+                operator: row.get(2)?,
+                value: row.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut groups = std::collections::BTreeMap::<i64, Vec<String>>::new();
+    for rule in &rules {
+        groups
+            .entry(rule.rule_group)
+            .or_default()
+            .push(gallery_rule_sql(rule, bind));
+    }
+    if groups.is_empty() {
+        return Ok("0".into());
+    }
+    Ok(groups
+        .values()
+        .map(|group| format!("({})", group.join(" AND ")))
+        .collect::<Vec<_>>()
+        .join(" OR "))
+}
+
+fn gallery_where_sql(
+    connection: &Connection,
+    query: &GalleryQuery,
+) -> CoreResult<(String, Vec<Value>)> {
+    let mut conditions = vec!["m.status='ready'".to_owned()];
+    let mut bind = Vec::new();
+    match query.kind {
+        GalleryKindFilter::All => {}
+        GalleryKindFilter::Image => conditions.push("m.media_type='image'".into()),
+        GalleryKindFilter::Video => conditions.push("m.media_type='video'".into()),
+    }
+    if query.favorite_only {
+        conditions.push("m.favorite=1".into());
+    }
+    if !query.game_names.is_empty() {
+        conditions.push(format!(
+            "m.game_name IN ({})",
+            vec!["?"; query.game_names.len()].join(",")
+        ));
+        bind.extend(query.game_names.iter().cloned().map(Value::Text));
+    }
+    for (expression, from, until) in [
+        (
+            gallery_time_sql("NULLIF(m.imported_at,'')"),
+            query.imported_from,
+            query.imported_until,
+        ),
+        (
+            gallery_sort_sql(),
+            query.captured_from,
+            query.captured_until,
+        ),
+    ] {
+        if let Some(time) = from {
+            conditions.push(format!("{expression} >= ?"));
+            bind.push(Value::Integer(time.timestamp_micros()));
+        }
+        if let Some(time) = until {
+            conditions.push(format!("{expression} < ?"));
+            bind.push(Value::Integer(time.timestamp_micros()));
+        }
+    }
+    if let Some(day) = &query.captured_on_this_day {
+        if !(1..=9999).contains(&day.before_year)
+            || NaiveDate::from_ymd_opt(2000, day.month, day.day).is_none()
+            || FixedOffset::east_opt(day.utc_offset_seconds).is_none()
+        {
+            return Err(CoreError::InvalidConfig(
+                "invalid anniversary date or UTC offset".into(),
+            ));
+        }
+        // Drop the fraction before date extraction, so .999999 never rounds
+        // into tomorrow at a local midnight boundary.
+        let raw = "NULLIF(m.imported_at,'')";
+        let time = format!("substr({raw},1,19)||CASE WHEN upper(substr({raw},-1))='Z' THEN 'Z' ELSE substr({raw},-6) END");
+        conditions.push(format!(
+            "strftime('%m-%d',{time},?)=? AND CAST(strftime('%Y',{time},?) AS INTEGER) < ?"
+        ));
+        bind.extend([
+            Value::Text(format!("{} seconds", day.utc_offset_seconds)),
+            Value::Text(format!("{:02}-{:02}", day.month, day.day)),
+            Value::Text(format!("{} seconds", day.utc_offset_seconds)),
+            Value::Integer(i64::from(day.before_year)),
+        ]);
+    }
+    if let Some(album_id) = query.album_id {
+        conditions.push(format!(
+            "({})",
+            gallery_album_sql(connection, album_id, &mut bind)?
+        ));
+    }
+    Ok((conditions.join(" AND "), bind))
+}
+
+fn gallery_cursor_sql(
+    cursor: &GalleryCursor,
+    descending: bool,
+    bind: &mut Vec<Value>,
+) -> CoreResult<String> {
+    let sort = gallery_sort_sql();
+    let comparator = if descending { "<" } else { ">" };
+    let Some(time) = &cursor.effective_sort_time else {
+        bind.push(Value::Integer(cursor.media_id));
+        return Ok(if descending {
+            format!("({sort} IS NULL AND m.id < ?)")
+        } else {
+            format!("({sort} IS NOT NULL OR ({sort} IS NULL AND m.id > ?))")
+        });
+    };
+    let micros = time
+        .parse::<i64>()
+        .map_err(|_| CoreError::InvalidConfig("invalid gallery cursor time".into()))?;
+    bind.extend([
+        Value::Integer(micros),
+        Value::Integer(micros),
+        Value::Integer(cursor.media_id),
+    ]);
+    Ok(format!(
+        "(({sort} {comparator} ?) OR ({sort} = ? AND m.id {comparator} ?) {})",
+        if descending {
+            format!("OR {sort} IS NULL")
+        } else {
+            String::new()
+        }
+    ))
+}
+
+fn read_gallery_rows(
+    connection: &Connection,
+    tail: &str,
+    bind: &[Value],
+) -> CoreResult<Vec<MediaAsset>> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT m.id,m.sha256,m.original_name,m.storage_path,m.media_type,
+          m.captured_at,m.imported_at,m.game_title_id,m.game_name,m.favorite,n.text
+         FROM media_asset m LEFT JOIN note n ON n.media_id=m.id {tail}"
+    ))?;
+    let mut rows = statement.query(params_from_iter(bind))?;
+    let mut items = Vec::new();
+    let mut tags = connection.prepare_cached(
+        "SELECT t.name FROM tag t JOIN media_tag mt ON mt.tag_id=t.id
+         WHERE mt.media_id=?1 ORDER BY t.name COLLATE NOCASE",
+    )?;
+    while let Some(row) = rows.next()? {
+        let id = row.get(0)?;
+        let captured: Option<String> = row.get(5)?;
+        let imported: String = row.get(6)?;
+        let kind: String = row.get(4)?;
+        items.push(MediaAsset {
+            id,
+            sha256: row.get(1)?,
+            original_name: row.get(2)?,
+            storage_path: row.get(3)?,
+            kind: if kind == "video" {
+                MediaKind::Video
+            } else {
+                MediaKind::Image
+            },
+            captured_at: parse_datetime(captured.as_deref())?,
+            imported_at: parse_imported_at(Some(&imported))?,
+            game_title_id: row.get(7)?,
+            game_name: row.get(8)?,
+            favorite: row.get::<_, i64>(9)? != 0,
+            note: row.get(10)?,
+            tags: tags
+                .query_map([id], |row| row.get(0))?
+                .collect::<Result<Vec<String>, _>>()?,
+        });
+    }
+    Ok(items)
+}
+
+fn gallery_cursor_for(asset: &MediaAsset, fingerprint: &str) -> GalleryCursor {
+    GalleryCursor {
+        filter_fingerprint: fingerprint.into(),
+        effective_sort_time: asset
+            .captured_at
+            .or(asset.imported_at)
+            .map(|time| time.timestamp_micros().to_string()),
+        media_id: asset.id,
+    }
+}
+
+#[cfg(test)]
+mod gallery_page_tests {
+    use super::*;
+
+    #[test]
+    fn keyset_page_keeps_stable_order_and_rejects_mismatched_cursor() {
+        let root = tempfile::tempdir().unwrap();
+        let database = Database::open(root.path().join("library.sqlite3")).unwrap();
+        {
+            let connection = database.connection.lock().unwrap();
+            for (id, captured) in [
+                (1_i64, Some("2026-01-03T00:00:00+00:00")),
+                (2_i64, Some("2026-01-02T00:00:00+00:00")),
+                (3_i64, Some("2026-01-02T00:00:00+00:00")),
+                (4_i64, None),
+            ] {
+                connection
+                    .execute(
+                        "INSERT INTO media_asset(
+                           id,sha256,size,media_type,captured_at,imported_at,
+                           game_name,original_name,storage_path,status
+                         ) VALUES (?1,?2,1,'image',?3,?4,'Game',?5,?5,'ready')",
+                        params![
+                            id,
+                            format!("sha-{id}"),
+                            captured,
+                            if id == 4 {
+                                String::new()
+                            } else {
+                                format!("2026-01-0{id}T00:00:00+00:00")
+                            },
+                            format!("media-{id}.jpg")
+                        ],
+                    )
+                    .unwrap();
+            }
+        }
+        let mut query = GalleryQuery {
+            limit: 2,
+            ..GalleryQuery::default()
+        };
+        let first = database
+            .list_media_page(&GalleryPageRequest {
+                query: query.clone(),
+                cursor: None,
+                direction: GalleryPageDirection::Forward,
+            })
+            .unwrap();
+        assert_eq!(
+            first.items.iter().map(|item| item.id).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert!(first.has_after);
+        {
+            let connection = database.connection.lock().unwrap();
+            connection
+                .execute(
+                    "INSERT INTO media_asset(id,sha256,size,media_type,captured_at,imported_at,
+                  game_name,original_name,storage_path,status)
+                 VALUES(5,'inserted-after-cursor',1,'image','2026-01-04T00:00:00Z',
+                  '2026-01-04T00:00:00Z','Game','new.jpg','new.jpg','ready')",
+                    [],
+                )
+                .unwrap();
+            connection
+                .execute("DELETE FROM media_asset WHERE id=3", [])
+                .unwrap();
+        }
+        let second = database
+            .list_media_page(&GalleryPageRequest {
+                query: query.clone(),
+                cursor: first.after_cursor.clone(),
+                direction: GalleryPageDirection::Forward,
+            })
+            .unwrap();
+        assert_eq!(
+            second.items.iter().map(|item| item.id).collect::<Vec<_>>(),
+            vec![2, 4]
+        );
+        assert!(!second.has_after);
+        query.favorite_only = true;
+        let error = database
+            .list_media_page(&GalleryPageRequest {
+                query,
+                cursor: first.after_cursor,
+                direction: GalleryPageDirection::Forward,
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("cursor"));
+    }
+
+    fn fixture() -> (tempfile::TempDir, Database) {
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(root.path().join("library.sqlite3")).unwrap();
+        {
+            let connection = db.connection.lock().unwrap();
+            for (id, captured, imported, kind, game, favorite) in [
+                (
+                    1,
+                    Some("2026-01-01T08:00:00.000001+08:00"),
+                    "2025-12-31T20:00:00Z",
+                    "image",
+                    "École",
+                    1,
+                ),
+                (
+                    2,
+                    Some("2026-01-01T00:00:00.000002Z"),
+                    "2025-12-31T16:00:00.000001Z",
+                    "video",
+                    "École",
+                    0,
+                ),
+                (
+                    3,
+                    Some("2025-12-31T19:00:00.000002-05:00"),
+                    "2024-01-01T00:00:00Z",
+                    "image",
+                    "Game",
+                    1,
+                ),
+                (4, None, "", "video", "Game", 0),
+                (5, None, "2026-01-01T00:00:00.000003Z", "image", "Other", 1),
+            ] {
+                connection
+                    .execute(
+                        "INSERT INTO media_asset(id,sha256,size,media_type,captured_at,imported_at,
+                         game_name,original_name,storage_path,favorite,status)
+                     VALUES(?1,?2,1,?3,?4,?5,?6,?2,?2,?7,'ready')",
+                        params![
+                            id,
+                            format!("synthetic-{id}"),
+                            kind,
+                            captured,
+                            imported,
+                            game,
+                            favorite
+                        ],
+                    )
+                    .unwrap();
+            }
+            connection.execute(
+                "INSERT INTO note(media_id,text,updated_at) VALUES(1,'ÉTÉ 100%_?', '2026-01-01T00:00:00Z')",[],
+            ).unwrap();
+        }
+        db.add_tag(1, "Été").unwrap();
+        (root, db)
+    }
+
+    fn ids(db: &Database, query: GalleryQuery) -> Vec<i64> {
+        let mut cursor = None;
+        let mut result = Vec::new();
+        loop {
+            let page = db
+                .list_media_page(&GalleryPageRequest {
+                    query: query.clone(),
+                    cursor,
+                    direction: GalleryPageDirection::Forward,
+                })
+                .unwrap();
+            assert!(page.items.len() <= query.limit.min(60) as usize);
+            result.extend(page.items.iter().map(|item| item.id));
+            if !page.has_after {
+                break;
+            }
+            assert!(!page.items.is_empty());
+            cursor = page.after_cursor;
+            assert!(result.len() <= 5, "cursor repeated a page");
+        }
+        result
+    }
+
+    #[test]
+    fn utc_microsecond_order_and_null_bucket_are_identical_in_both_directions() {
+        let (_root, db) = fixture();
+        let query = GalleryQuery {
+            limit: 2,
+            ..Default::default()
+        };
+        assert_eq!(ids(&db, query.clone()), [5, 3, 2, 1, 4]);
+        let ascending = GalleryQuery {
+            newest_first: false,
+            ..query.clone()
+        };
+        assert_eq!(ids(&db, ascending), [4, 1, 2, 3, 5]);
+        let first = db
+            .list_media_page(&GalleryPageRequest {
+                query: query.clone(),
+                cursor: None,
+                direction: GalleryPageDirection::Forward,
+            })
+            .unwrap();
+        let next = db
+            .list_media_page(&GalleryPageRequest {
+                query: query.clone(),
+                cursor: first.after_cursor,
+                direction: GalleryPageDirection::Forward,
+            })
+            .unwrap();
+        let previous = db
+            .list_media_page(&GalleryPageRequest {
+                query,
+                cursor: next.before_cursor,
+                direction: GalleryPageDirection::Backward,
+            })
+            .unwrap();
+        assert_eq!(
+            previous
+                .items
+                .iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>(),
+            [5, 3]
+        );
+        assert!(!previous.has_before);
+        assert!(previous.has_after);
+    }
+
+    #[test]
+    fn sql_filters_and_smart_rules_preserve_unicode_literal_and_album_scope() {
+        let (_root, db) = fixture();
+        let album = db.create_album("Smart", "", true).unwrap();
+        db.replace_album_rules(
+            album,
+            &[
+                AlbumRule {
+                    rule_group: 0,
+                    field: "tag".into(),
+                    operator: "equals".into(),
+                    value: "ÉTÉ".into(),
+                },
+                AlbumRule {
+                    rule_group: 0,
+                    field: "note".into(),
+                    operator: "contains".into(),
+                    value: "100%_?".into(),
+                },
+                AlbumRule {
+                    rule_group: 1,
+                    field: "game".into(),
+                    operator: "equals".into(),
+                    value: "Other".into(),
+                },
+            ],
+        )
+        .unwrap();
+        let query = GalleryQuery {
+            limit: 1,
+            album_id: Some(album),
+            ..Default::default()
+        };
+        assert_eq!(ids(&db, query), [5, 1]);
+        let counts = db.list_game_media_counts(Some(album)).unwrap();
+        assert_eq!(counts.len(), 2);
+        assert!(counts
+            .iter()
+            .all(|count| count.image_count == 1 && count.video_count == 0));
+        let manual = db.create_album("Manual", "", false).unwrap();
+        db.add_media_to_album(manual, 2).unwrap();
+        db.add_media_to_album(manual, 5).unwrap();
+        let manual_counts = db.list_game_media_counts(Some(manual)).unwrap();
+        assert_eq!(
+            manual_counts
+                .iter()
+                .map(|count| (count.image_count, count.video_count))
+                .collect::<Vec<_>>(),
+            [(1, 0), (0, 1)]
+        );
+        let favorites = db
+            .list_albums()
+            .unwrap()
+            .into_iter()
+            .find(|album| album.system_key.as_deref() == Some("favorites"))
+            .unwrap();
+        let favorite_counts = db.list_game_media_counts(Some(favorites.id)).unwrap();
+        assert_eq!(favorite_counts.len(), 3);
+        assert!(favorite_counts
+            .iter()
+            .all(|count| count.image_count == 1 && count.video_count == 0));
+        let query = GalleryQuery {
+            limit: 1,
+            imported_from: Some("2025-12-31T16:00:00Z".parse().unwrap()),
+            imported_until: Some("2025-12-31T20:00:00Z".parse().unwrap()),
+            ..Default::default()
+        };
+        assert_eq!(ids(&db, query), [2]);
+        let query = GalleryQuery {
+            limit: 1,
+            captured_on_this_day: Some(crate::models::CapturedOnThisDay {
+                month: 1,
+                day: 1,
+                before_year: 2026,
+                utc_offset_seconds: 8 * 3600,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(ids(&db, query), [3]);
+    }
+
+    #[test]
+    fn sql_rules_are_equivalent_to_existing_rule_evaluator_for_every_operator() {
+        let (_root, db) = fixture();
+        let all = db.list_media(&GalleryQuery::default()).unwrap();
+        let album = db.create_album("Rule equivalence", "", true).unwrap();
+        for field in [
+            "game",
+            "game_tag",
+            "note",
+            "tag",
+            "type",
+            "favorite",
+            "unsupported",
+        ] {
+            for operator in [
+                "equals",
+                "not_equals",
+                "contains",
+                "not_contains",
+                "starts_with",
+                "ends_with",
+                "invalid",
+            ] {
+                for expected in ["ÉTÉ", "Game", "image", "true", ""] {
+                    let rule = AlbumRule {
+                        rule_group: 0,
+                        field: field.into(),
+                        operator: operator.into(),
+                        value: expected.into(),
+                    };
+                    db.replace_album_rules(album, std::slice::from_ref(&rule))
+                        .unwrap();
+                    let expected_ids = all
+                        .iter()
+                        .filter(|item| matches_album_rules(item, std::slice::from_ref(&rule)))
+                        .map(|item| item.id)
+                        .collect::<Vec<_>>();
+                    let query = GalleryQuery {
+                        album_id: Some(album),
+                        limit: 2,
+                        ..Default::default()
+                    };
+                    assert_eq!(
+                        ids(&db, query),
+                        expected_ids,
+                        "field={field},operator={operator},value={expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn large_library_reads_only_a_page_and_uses_integer_time_index() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("library.sqlite3");
+        let db = Database::open(&path).unwrap();
+        {
+            let connection = db.connection.lock().unwrap();
+            connection.execute_batch(
+                "WITH RECURSIVE rows(id) AS (SELECT 1 UNION ALL SELECT id+1 FROM rows WHERE id<200000)
+                 INSERT INTO media_asset(id,sha256,size,media_type,captured_at,imported_at,game_name,original_name,storage_path)
+                 SELECT id,printf('%064x',id),1,'image','2026-01-01T00:00:00.999999Z',
+                   '2026-01-01T00:00:00Z','Game','synthetic.jpg','synthetic.jpg' FROM rows;"
+            ).unwrap();
+            // Invalid page-external payload would fail if complete MediaAssets
+            // were decoded before LIMIT. Counting must not decode it either.
+            connection
+                .execute("UPDATE media_asset SET original_name=X'FF' WHERE id=1", [])
+                .unwrap();
+            let plan = connection
+                .prepare(&format!(
+                    "EXPLAIN QUERY PLAN SELECT m.id FROM media_asset m
+                 WHERE m.status='ready' ORDER BY {} DESC,m.id DESC LIMIT 60",
+                    gallery_sort_sql()
+                ))
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(plan
+                .iter()
+                .any(|line| line.contains("idx_media_gallery_utc_micro_v1")));
+            assert!(!plan.iter().any(|line| line.contains("TEMP B-TREE")));
+        }
+        let page = db
+            .list_media_page(&GalleryPageRequest {
+                query: GalleryQuery {
+                    limit: 99999,
+                    ..Default::default()
+                },
+                cursor: None,
+                direction: GalleryPageDirection::Forward,
+            })
+            .unwrap();
+        assert_eq!(page.items.len(), 60);
+        assert_eq!(page.items.first().unwrap().id, 200000);
+        assert!(page.has_after);
+        assert_eq!(
+            db.list_media(&GalleryQuery {
+                limit: 1,
+                ..Default::default()
+            })
+            .unwrap()
+            .len(),
+            1
+        );
+        assert_eq!(
+            db.list_game_media_counts(None).unwrap()[0].image_count,
+            200000
+        );
+        drop(db);
+        let reopened = Database::open(&path).unwrap();
+        assert_eq!(
+            reopened
+                .list_media(&GalleryQuery {
+                    limit: 1,
+                    ..Default::default()
+                })
+                .unwrap()[0]
+                .id,
+            200000
+        );
+    }
+}
 
 #[cfg(test)]
 #[path = "device_sync/receiver/fix1_sql_tests.rs"]
@@ -3202,6 +3934,13 @@ impl Database {
             absolute
         };
         let connection = Connection::open(path)?;
+        connection.create_scalar_function(
+            "gallery_lower",
+            1,
+            rusqlite::functions::FunctionFlags::SQLITE_UTF8
+                | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+            |context| Ok(context.get::<String>(0)?.to_lowercase()),
+        )?;
         let pending = device_sync_has_pending(&connection)?;
         gate.publish_pending(pending);
         let database_path = connection
@@ -3419,6 +4158,14 @@ impl Database {
             transaction.execute("UPDATE schema_version SET version = 6", [])?;
         }
         ensure_required_columns(&transaction)?;
+        // Native SQLite-only expression index is safe for other database
+        // connections and is maintained by every write, including sync apply.
+        // Creation is repeatable and computes the historical UTC keys once.
+        transaction.execute_batch(&format!(
+            "CREATE INDEX IF NOT EXISTS idx_media_gallery_utc_micro_v1
+             ON media_asset(status,{} DESC,id DESC);",
+            gallery_time_sql("COALESCE(captured_at,NULLIF(imported_at,''))")
+        ))?;
         transaction.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_media_capture
                ON media_asset(captured_at DESC, imported_at DESC);
@@ -4361,21 +5108,18 @@ impl Database {
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
-        let media = self.load_all_media()?;
+        let connection = self.connection.lock().expect("database mutex poisoned");
         for album in &mut albums {
-            let (album_type, system_key, rules, manual_ids) = self.album_filter(album.id)?;
-            album.media_count = media
-                .iter()
-                .filter(|asset| {
-                    if system_key.as_deref() == Some("favorites") {
-                        asset.favorite
-                    } else if album_type == "smart" {
-                        matches_album_rules(asset, &rules)
-                    } else {
-                        manual_ids.contains(&asset.id)
-                    }
-                })
-                .count() as u64;
+            let mut bind = Vec::new();
+            let scope = gallery_album_sql(&connection, album.id, &mut bind)?;
+            album.media_count = connection.query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM media_asset m LEFT JOIN note n ON n.media_id=m.id
+                          WHERE m.status='ready' AND ({scope})"
+                ),
+                params_from_iter(&bind),
+                |row| row.get(0),
+            )?;
         }
         Ok(albums)
     }
@@ -4666,12 +5410,101 @@ impl Database {
     }
 
     pub fn media_asset(&self, media_id: i64) -> CoreResult<MediaAsset> {
-        self.load_all_media()?
-            .into_iter()
-            .find(|media| media.id == media_id)
+        let connection = self.connection.lock().expect("database mutex poisoned");
+        read_gallery_rows(
+            &connection,
+            "WHERE m.status='ready' AND m.id=? LIMIT 1",
+            &[Value::Integer(media_id)],
+        )?
+        .into_iter()
+        .find(|media| media.id == media_id)
+        .ok_or_else(|| crate::error::CoreError::InvalidConfig("media item does not exist".into()))
+    }
+
+    pub fn media_details(&self, media_id: i64) -> CoreResult<MediaDetails> {
+        let connection = self.connection.lock().expect("database mutex poisoned");
+        let base = connection
+            .query_row(
+                "SELECT m.id,m.sha256,m.original_name,m.storage_path,m.media_type,
+                        m.captured_at,m.imported_at,m.game_title_id,m.game_name,
+                        m.favorite,n.text,m.size
+                 FROM media_asset m LEFT JOIN note n ON n.media_id=m.id
+                 WHERE m.id=?1 AND m.status='ready'",
+                [media_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, i64>(9)? != 0,
+                        row.get::<_, Option<String>>(10)?,
+                        row.get::<_, u64>(11)?,
+                    ))
+                },
+            )
+            .optional()?
             .ok_or_else(|| {
                 crate::error::CoreError::InvalidConfig("media item does not exist".into())
-            })
+            })?;
+        let mut tag_statement = connection.prepare(
+            "SELECT t.name FROM tag t JOIN media_tag mt ON mt.tag_id=t.id
+             WHERE mt.media_id=?1 ORDER BY t.name COLLATE NOCASE",
+        )?;
+        let tags = tag_statement
+            .query_map([media_id], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        let media = MediaAsset {
+            id: base.0,
+            sha256: base.1,
+            original_name: base.2,
+            storage_path: base.3,
+            kind: if base.4 == "video" {
+                MediaKind::Video
+            } else {
+                MediaKind::Image
+            },
+            captured_at: parse_datetime(base.5.as_deref())?,
+            imported_at: parse_imported_at(Some(&base.6))?,
+            game_title_id: base.7,
+            game_name: base.8,
+            favorite: base.9,
+            note: base.10,
+            tags,
+        };
+        let mut statement = connection.prepare(
+            "SELECT source_type,source_path,provider,remote_id,discovered_at
+             FROM media_source WHERE media_id=?1 ORDER BY id",
+        )?;
+        let sources = statement
+            .query_map([media_id], |row| {
+                let discovered = row
+                    .get::<_, Option<String>>(4)?
+                    .and_then(|value| chrono::DateTime::parse_from_rfc3339(&value).ok())
+                    .map(|value| value.with_timezone(&chrono::Utc));
+                Ok(MediaSourceDetails {
+                    source_type: row.get(0)?,
+                    source_path: row.get(1)?,
+                    provider: row.get(2)?,
+                    remote_id: row.get(3)?,
+                    discovered_at: discovered,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(MediaDetails {
+            created_at: media.imported_at,
+            captured_at: media.captured_at,
+            imported_at: media.imported_at,
+            storage_path: media.storage_path.clone(),
+            size_bytes: base.11,
+            media,
+            sources,
+        })
     }
 
     pub fn replace_media_content(
@@ -4944,78 +5777,125 @@ impl Database {
     }
 
     pub fn list_media(&self, query: &GalleryQuery) -> CoreResult<Vec<MediaAsset>> {
-        let anniversary = query
-            .captured_on_this_day
-            .as_ref()
-            .map(|day| {
-                if !(1..=9999).contains(&day.before_year)
-                    || NaiveDate::from_ymd_opt(2000, day.month, day.day).is_none()
-                {
-                    return Err(CoreError::InvalidConfig("invalid anniversary date".into()));
-                }
-                let offset = FixedOffset::east_opt(day.utc_offset_seconds).ok_or_else(|| {
-                    CoreError::InvalidConfig("invalid anniversary UTC offset".into())
-                })?;
-                Ok((day, offset))
-            })
-            .transpose()?;
-        let mut media = self.load_all_media()?;
-        media.retain(|asset| match query.kind {
-            GalleryKindFilter::All => true,
-            GalleryKindFilter::Image => asset.kind == MediaKind::Image,
-            GalleryKindFilter::Video => asset.kind == MediaKind::Video,
-        });
-        if query.favorite_only {
-            media.retain(|asset| asset.favorite);
-        }
-        if !query.game_names.is_empty() {
-            media.retain(|asset| query.game_names.contains(&asset.game_name));
-        }
-        if query.captured_from.is_some() || query.captured_until.is_some() {
-            media.retain(|asset| {
-                asset
-                    .captured_at
-                    .or(asset.imported_at)
-                    .is_some_and(|timestamp| {
-                        query.captured_from.is_none_or(|from| timestamp >= from)
-                            && query.captured_until.is_none_or(|until| timestamp < until)
-                    })
-            });
-        }
-        if let Some((day, offset)) = anniversary {
-            media.retain(|asset| {
-                asset
-                    .captured_at
-                    .or(asset.imported_at)
-                    .is_some_and(|timestamp| {
-                        let local = timestamp.with_timezone(&offset);
-                        local.year() < day.before_year
-                            && local.month() == day.month
-                            && local.day() == day.day
-                    })
-            });
-        }
+        let connection = self.connection.lock().expect("database mutex poisoned");
+        let (condition, mut bind) = gallery_where_sql(&connection, query)?;
+        let order = if query.newest_first { "DESC" } else { "ASC" };
+        let tail = format!(
+            "WHERE {condition} ORDER BY {} {order},m.id {order} LIMIT ? OFFSET ?",
+            gallery_sort_sql()
+        );
+        bind.extend([
+            Value::Integer(i64::from(query.limit.clamp(1, 500))),
+            Value::Integer(i64::from(query.offset)),
+        ]);
+        read_gallery_rows(&connection, &tail, &bind)
+    }
+
+    /// Fetch one bounded, keyset-paginated gallery page.  This deliberately
+    /// lives beside the compatibility `list_media` API so device-sync and
+    /// older callers can continue using their offset-shaped request.
+    pub fn list_media_page(&self, request: &GalleryPageRequest) -> CoreResult<GalleryPage> {
+        let query = &request.query;
+
+        let page_size = query.limit.clamp(1, 60) as usize;
+        let connection = self.connection.lock().expect("database mutex poisoned");
+        let mut fingerprint = gallery_filter_fingerprint(query);
         if let Some(album_id) = query.album_id {
-            let (album_type, system_key, rules, manual_ids) = self.album_filter(album_id)?;
-            if system_key.as_deref() == Some("favorites") {
-                media.retain(|asset| asset.favorite);
-            } else if album_type == "smart" {
-                media.retain(|asset| matches_album_rules(asset, &rules));
-            } else {
-                media.retain(|asset| manual_ids.contains(&asset.id));
+            let mut bindings = Vec::new();
+            let scope = gallery_album_sql(&connection, album_id, &mut bindings)?;
+            fingerprint.push_str(&hex::encode(Sha256::digest(format!("{scope}{bindings:?}"))));
+        }
+        let (condition, base_bind) = gallery_where_sql(&connection, query)?;
+        let mut bind = base_bind.clone();
+        let mut tail = format!("WHERE {condition}");
+        let descending =
+            query.newest_first != (request.direction == GalleryPageDirection::Backward);
+        let order = if descending { "DESC" } else { "ASC" };
+        if let Some(cursor) = &request.cursor {
+            if cursor.filter_fingerprint != fingerprint {
+                return Err(CoreError::InvalidConfig(
+                    "gallery cursor does not match the current filters".into(),
+                ));
             }
+            tail.push_str(&format!(
+                " AND {}",
+                gallery_cursor_sql(cursor, descending, &mut bind)?
+            ));
         }
-        if !query.newest_first {
-            media.reverse();
+        tail.push_str(&format!(
+            " ORDER BY {} {order},m.id {order} LIMIT ?",
+            gallery_sort_sql()
+        ));
+        bind.push(Value::Integer(page_size as i64));
+        let mut items = read_gallery_rows(&connection, &tail, &bind)?;
+        if request.direction == GalleryPageDirection::Backward {
+            items.reverse();
         }
-        let start = query.offset as usize;
-        let end = start
-            .saturating_add(query.limit.clamp(1, 500) as usize)
-            .min(media.len());
-        if start >= media.len() {
-            return Ok(Vec::new());
+        let before_cursor = items
+            .first()
+            .map(|item| gallery_cursor_for(item, &fingerprint));
+        let after_cursor = items
+            .last()
+            .map(|item| gallery_cursor_for(item, &fingerprint));
+        let exists = |cursor: &Option<GalleryCursor>, descending: bool| -> CoreResult<bool> {
+            let Some(cursor) = cursor else {
+                return Ok(false);
+            };
+            let mut bind = base_bind.clone();
+            let boundary = gallery_cursor_sql(cursor, descending, &mut bind)?;
+            Ok(connection.query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM media_asset m LEFT JOIN note n ON n.media_id=m.id
+                 WHERE {condition} AND {boundary} LIMIT 1)"
+                ),
+                params_from_iter(&bind),
+                |row| row.get(0),
+            )?)
+        };
+        let has_before = exists(&before_cursor, !query.newest_first)?;
+        let has_after = exists(&after_cursor, query.newest_first)?;
+        Ok(GalleryPage {
+            items,
+            before_cursor,
+            after_cursor,
+            has_before,
+            has_after,
+        })
+    }
+
+    pub fn list_game_media_counts(&self, album_id: Option<i64>) -> CoreResult<Vec<GameMediaCount>> {
+        let connection = self.connection.lock().expect("database mutex poisoned");
+        let mut sql = String::from(
+            "SELECT TRIM(m.game_name),
+                    COUNT(CASE WHEN m.media_type='image' THEN 1 END),
+                    COUNT(CASE WHEN m.media_type='video' THEN 1 END),
+                    COALESCE(g.selection_count, 0)
+             FROM media_asset m LEFT JOIN note n ON n.media_id=m.id
+             LEFT JOIN game_filter_usage g ON g.game_name=TRIM(m.game_name)
+             WHERE m.status='ready' AND TRIM(m.game_name) <> ''",
+        );
+        let mut bind = Vec::new();
+        if let Some(id) = album_id {
+            sql.push_str(&format!(
+                " AND ({})",
+                gallery_album_sql(&connection, id, &mut bind)?
+            ));
         }
-        Ok(media[start..end].to_vec())
+        sql.push_str(
+            " GROUP BY TRIM(m.game_name)
+              ORDER BY COALESCE(g.selection_count,0) DESC, COUNT(m.id) DESC,
+                       TRIM(m.game_name) COLLATE NOCASE",
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(params_from_iter(&bind), |row| {
+            Ok(GameMediaCount {
+                game_name: row.get(0)?,
+                image_count: row.get(1)?,
+                video_count: row.get(2)?,
+                selection_count: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     fn load_all_media(&self) -> CoreResult<Vec<MediaAsset>> {
@@ -5356,7 +6236,14 @@ fn migrate_receiver(transaction: &rusqlite::Transaction<'_>) -> CoreResult<()> {
            backup_uuid TEXT NOT NULL REFERENCES device_sync_backup(backup_uuid) ON DELETE RESTRICT,
            preview_digest TEXT NOT NULL,external_reference TEXT);
          CREATE UNIQUE INDEX IF NOT EXISTS idx_device_sync_single_pending
-           ON device_sync_apply_journal((1)) WHERE stage NOT IN ('finalized','rolled_back');",
+           ON device_sync_apply_journal((1)) WHERE stage NOT IN ('finalized','rolled_back');
+         CREATE TABLE IF NOT EXISTS device_sync_session_state(
+           session_uuid TEXT PRIMARY KEY,channel_uuid TEXT NOT NULL,
+           version INTEGER NOT NULL CHECK(version=1),
+           stage TEXT NOT NULL CHECK(stage IN ('paired','staging')),
+           operation_uuid TEXT,
+           CHECK((stage='paired' AND operation_uuid IS NULL) OR
+                 (stage='staging' AND operation_uuid IS NOT NULL)));",
     )?;
     ensure_backup_created_at(transaction)?;
     ensure_backup_ownership(transaction)?;
@@ -6713,6 +7600,138 @@ impl Database {
                 })
                 .transpose()?,
         }))
+    }
+
+    pub(crate) fn device_sync_begin_session(
+        &self,
+        session: uuid::Uuid,
+        channel: uuid::Uuid,
+    ) -> CoreResult<()> {
+        ds::validate_uuid(&session.to_string())?;
+        ds::validate_uuid(&channel.to_string())?;
+        let connection = self.connection.lock().expect("database mutex poisoned");
+        let old: Option<String> = connection
+            .query_row(
+                "SELECT channel_uuid FROM device_sync_session_state WHERE session_uuid=?1",
+                [session.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(old) = old {
+            return if old == channel.to_string() {
+                Ok(())
+            } else {
+                Err(ds::invalid("session identity changed"))
+            };
+        }
+        let count: u32 = connection.query_row(
+            "SELECT count(*) FROM device_sync_session_state",
+            [],
+            |row| row.get(0),
+        )?;
+        if count >= 64 {
+            return Err(ds::invalid("interrupted session count exceeded"));
+        }
+        connection.execute(
+            "INSERT INTO device_sync_session_state(session_uuid,channel_uuid,version,stage)
+             VALUES(?1,?2,1,'paired')",
+            params![session.to_string(), channel.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn device_sync_bind_session_staging(
+        &self,
+        session: uuid::Uuid,
+        operation: uuid::Uuid,
+    ) -> CoreResult<()> {
+        ds::validate_uuid(&operation.to_string())?;
+        let connection = self.connection.lock().expect("database mutex poisoned");
+        let changed = connection.execute(
+            "UPDATE device_sync_session_state SET operation_uuid=?2,stage='staging'
+             WHERE session_uuid=?1 AND version=1 AND (operation_uuid IS NULL OR operation_uuid=?2)",
+            params![session.to_string(), operation.to_string()],
+        )?;
+        if changed != 1 {
+            return Err(ds::invalid("staging session identity changed"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn device_sync_unfinished_sessions(
+        &self,
+    ) -> CoreResult<Vec<crate::device_sync::startup_recovery::InterruptedSession>> {
+        use crate::device_sync::startup_recovery::InterruptedSession;
+        let connection = self.connection.lock().expect("database mutex poisoned");
+        let mut statement = connection.prepare(
+            "SELECT session_uuid,channel_uuid,version,stage,operation_uuid
+             FROM device_sync_session_state ORDER BY session_uuid LIMIT 65",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u32>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        if rows.len() > 64 {
+            return Err(ds::invalid("interrupted session count exceeded"));
+        }
+        rows.into_iter()
+            .map(|(session, channel, version, stage, operation)| {
+                if version != 1
+                    || !matches!(
+                        (stage.as_str(), operation.is_some()),
+                        ("paired", false) | ("staging", true)
+                    )
+                {
+                    return Err(ds::invalid("interrupted session state invalid"));
+                }
+                let id = |value: &str| {
+                    ds::validate_uuid(value)?;
+                    uuid::Uuid::parse_str(value)
+                        .map_err(|_| ds::invalid("invalid interrupted identity"))
+                };
+                Ok(InterruptedSession {
+                    session: id(&session)?,
+                    channel: id(&channel)?,
+                    operation: operation.as_deref().map(id).transpose()?,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn device_sync_clear_session(
+        &self,
+        record: &crate::device_sync::startup_recovery::InterruptedSession,
+    ) -> CoreResult<()> {
+        if self.device_sync_pending_journal()?.is_some() {
+            return Err(CoreError::DeviceSyncRecoveryRequired);
+        }
+        let connection = self.connection.lock().expect("database mutex poisoned");
+        let changed = connection.execute(
+            "DELETE FROM device_sync_session_state
+             WHERE session_uuid=?1 AND channel_uuid=?2 AND version=1 AND operation_uuid IS ?3",
+            params![
+                record.session.to_string(),
+                record.channel.to_string(),
+                record.operation.map(|id| id.to_string())
+            ],
+        )?;
+        if changed == 0
+            && connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM device_sync_session_state WHERE session_uuid=?1)",
+                [record.session.to_string()],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            return Err(ds::invalid("interrupted session changed before cleanup"));
+        }
+        Ok(())
     }
 
     pub fn device_sync_pending_journal(
@@ -8616,6 +9635,41 @@ mod unknown_import_time_tests {
         }
     }
 
+    #[test]
+    fn imported_time_query_filters_by_local_library_creation_time_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("library.sqlite3")).unwrap();
+        insert(
+            &database,
+            1,
+            Some("2020-01-01T00:00:00Z"),
+            "2026-01-02T00:00:00Z",
+        );
+        insert(
+            &database,
+            2,
+            Some("2026-01-03T00:00:00Z"),
+            "2020-01-01T00:00:00Z",
+        );
+        let from = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let until = DateTime::parse_from_rfc3339("2026-01-03T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let ids = database
+            .list_media(&GalleryQuery {
+                imported_from: Some(from),
+                imported_until: Some(until),
+                ..Default::default()
+            })
+            .unwrap()
+            .into_iter()
+            .map(|media| media.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![1]);
+    }
+
     fn anniversary_query(month: u32, day: u32, year: i32, offset: i32) -> GalleryQuery {
         GalleryQuery {
             captured_on_this_day: Some(crate::models::CapturedOnThisDay {
@@ -8632,19 +9686,24 @@ mod unknown_import_time_tests {
     fn anniversary_filters_previous_local_years_before_pagination() {
         let directory = tempfile::tempdir().unwrap();
         let database = Database::open(directory.path().join("library.sqlite3")).unwrap();
-        insert(&database, 1, Some("2025-10-21T16:00:00Z"), "");
-        insert(&database, 2, Some("2024-10-22T15:59:59Z"), "");
+        insert(
+            &database,
+            1,
+            Some("2025-10-21T16:00:00Z"),
+            "2025-10-21T16:00:00Z",
+        );
+        insert(
+            &database,
+            2,
+            Some("2024-10-22T15:59:59Z"),
+            "2024-10-22T15:59:59Z",
+        );
         insert(&database, 3, None, "2023-10-22T04:00:00Z");
         insert(&database, 4, Some("2026-10-22T00:00:00Z"), "");
         insert(&database, 5, Some("2025-10-21T15:59:59Z"), "");
         insert(&database, 6, Some("2025-10-22T16:00:00Z"), "");
         insert(&database, 7, None, "");
-        insert(
-            &database,
-            8,
-            Some("2022-10-21T04:00:00Z"),
-            "2021-10-22T04:00:00Z",
-        );
+        insert(&database, 8, Some("2022-10-21T04:00:00Z"), "");
         insert(&database, 9, Some("2027-10-22T00:00:00Z"), "");
         // Older matches must remain reachable behind more than a full UI page.
         for id in 100..611 {
@@ -8682,7 +9741,7 @@ mod unknown_import_time_tests {
             (6, "2025-01-01T03:59:59Z"),
             (7, "2025-01-01T04:00:00Z"),
         ] {
-            insert(&database, id, Some(date), "");
+            insert(&database, id, Some(date), date);
         }
         for (query, expected) in [
             (anniversary_query(2, 29, 2028, 0), vec![1, 2]),
@@ -8896,6 +9955,54 @@ mod tests {
             serde_json::to_value(&media[0]).unwrap()["imported_at"],
             serde_json::Value::Null
         );
+    }
+
+    #[test]
+    fn media_details_returns_timestamps_storage_path_and_all_sources() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("library.sqlite3")).unwrap();
+        let connection = database.connection.lock().unwrap();
+        connection
+            .execute(
+                "INSERT INTO media_asset(
+                   id,sha256,size,media_type,captured_at,imported_at,
+                   source_game_name,game_name,original_name,storage_path
+                 ) VALUES(
+                   42,?1,12,'image','2026-10-20T01:02:03Z',
+                   '2026-10-21T04:05:06Z','Game','Game','photo.jpg',
+                   'originals/aa/bb/hash.jpg'
+                 )",
+                ["a".repeat(64)],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO media_source(
+                   media_id,source_type,source_path,remote_id,provider,discovered_at
+                 ) VALUES(
+                   42,'nso','/remote/photo.jpg','remote-1','coral',
+                   '2026-10-21T04:05:07Z'
+                 )",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO media_source(
+                   media_id,source_type,source_path,remote_id,provider,discovered_at
+                 ) VALUES(42,'folder','/imports/photo.jpg',NULL,NULL,'2026-10-21T04:05:08Z')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let details = database.media_details(42).unwrap();
+        assert_eq!(details.storage_path, "originals/aa/bb/hash.jpg");
+        assert_eq!(details.size_bytes, 12);
+        assert_eq!(details.created_at, details.imported_at);
+        assert_eq!(details.sources.len(), 2);
+        assert_eq!(details.sources[0].source_type, "nso");
+        assert_eq!(details.sources[1].source_type, "folder");
     }
 
     #[test]
@@ -9931,5 +11038,79 @@ mod tests {
             .unwrap();
         assert!(original_name.starts_with("Splatoon 3 - 2026-10-04 "));
         assert!(original_name.ends_with("[12345678].jpg"));
+    }
+}
+
+#[cfg(test)]
+mod interrupted_session_database_tests {
+    use crate::api::CoreApi;
+    use uuid::Uuid;
+
+    #[test]
+    fn failed_marker_writes_and_cleanup_preserve_durable_old_state() {
+        let root = tempfile::tempdir().unwrap();
+        let api = CoreApi::open(root.path()).unwrap();
+        let database = api.database();
+        database
+            .connection
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TEMP TRIGGER reject_session BEFORE INSERT ON device_sync_session_state
+             BEGIN SELECT RAISE(ABORT,'synthetic marker failure'); END;",
+            )
+            .unwrap();
+        assert!(database
+            .device_sync_begin_session(Uuid::new_v4(), Uuid::new_v4())
+            .is_err());
+        assert!(database
+            .device_sync_unfinished_sessions()
+            .unwrap()
+            .is_empty());
+        database
+            .connection
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_session")
+            .unwrap();
+        database
+            .device_sync_begin_session(Uuid::new_v4(), Uuid::new_v4())
+            .unwrap();
+        let before = database.device_sync_unfinished_sessions().unwrap();
+        database
+            .connection
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TEMP TRIGGER reject_clear BEFORE DELETE ON device_sync_session_state
+             BEGIN SELECT RAISE(ABORT,'synthetic cleanup failure'); END;",
+            )
+            .unwrap();
+        assert!(database.device_sync_clear_session(&before[0]).is_err());
+        assert_eq!(database.device_sync_unfinished_sessions().unwrap(), before);
+    }
+
+    #[test]
+    fn corrupt_or_unreadable_markers_are_not_treated_as_clean() {
+        let root = tempfile::tempdir().unwrap();
+        let api = CoreApi::open(root.path()).unwrap();
+        let database = api.database();
+        database
+            .device_sync_begin_session(Uuid::new_v4(), Uuid::new_v4())
+            .unwrap();
+        database
+            .connection
+            .lock()
+            .unwrap()
+            .execute_batch("UPDATE device_sync_session_state SET channel_uuid='corrupt';")
+            .unwrap();
+        assert!(database.device_sync_unfinished_sessions().is_err());
+        database
+            .connection
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TABLE device_sync_session_state;")
+            .unwrap();
+        assert!(database.device_sync_unfinished_sessions().is_err());
     }
 }

@@ -73,14 +73,14 @@ void registerAndroidBatchFeatureTests({bool layoutOnly = false}) {
             await tester.pumpAndSettle();
             if (preset == 'anniversary') {
               expect(library.capturedOnThisDay, isNotNull);
-              expect(library.capturedFrom, isNull);
-              expect(library.capturedUntil, isNull);
+              expect(library.importedFrom, isNull);
+              expect(library.importedUntil, isNull);
             } else {
               expect(library.capturedOnThisDay, isNull);
-              expect(library.capturedFrom, isNotNull);
-              expect(library.capturedUntil, isNotNull);
+              expect(library.importedFrom, isNotNull);
+              expect(library.importedUntil, isNotNull);
               expect(
-                library.capturedUntil!.isAfter(library.capturedFrom!),
+                library.importedUntil!.isAfter(library.importedFrom!),
                 isTrue,
               );
             }
@@ -172,8 +172,8 @@ void registerAndroidBatchFeatureTests({bool layoutOnly = false}) {
                 utcOffsetSeconds: 0,
               );
             } else {
-              library.capturedFrom = DateTime(2026, 10, 21);
-              library.capturedUntil = DateTime(2026, 10, 22);
+              library.importedFrom = DateTime(2026, 10, 21);
+              library.importedUntil = DateTime(2026, 10, 22);
             }
             addTearDown(library.dispose);
             addTearDown(settings.dispose);
@@ -206,8 +206,8 @@ void registerAndroidBatchFeatureTests({bool layoutOnly = false}) {
             expect(library.favoriteOnly, isFalse);
             expect(backend.lastFavoriteOnly, isFalse);
             expect(library.gameNames, isEmpty);
-            expect(library.capturedFrom, isNull);
-            expect(library.capturedUntil, isNull);
+            expect(library.importedFrom, isNull);
+            expect(library.importedUntil, isNull);
             expect(library.capturedOnThisDay, isNull);
             expect(backend.lastCapturedFrom, isNull);
             expect(backend.lastCapturedUntil, isNull);
@@ -426,8 +426,8 @@ void registerAndroidBatchFeatureTests({bool layoutOnly = false}) {
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('android-filter-anniversary')));
       await tester.pumpAndSettle();
-      expect(library.capturedFrom, isNull);
-      expect(library.capturedUntil, isNull);
+      expect(library.importedFrom, isNull);
+      expect(library.importedUntil, isNull);
       expect(
         find.textContaining(locale == 'zh' ? '往年' : 'previous years'),
         findsOneWidget,
@@ -453,13 +453,13 @@ void registerAndroidBatchFeatureTests({bool layoutOnly = false}) {
       await tester.tap(find.byKey(const Key('android-filter-today')));
       await tester.pumpAndSettle();
       expect(library.capturedOnThisDay, isNull);
-      expect(library.capturedFrom, isNotNull);
+      expect(library.importedFrom, isNotNull);
       final clear = find.text(locale == 'zh' ? '清除筛选' : 'Clear filters');
       await tester.ensureVisible(clear);
       await tester.tap(clear);
       await tester.pump();
-      expect(library.capturedFrom, isNull);
-      expect(library.capturedUntil, isNull);
+      expect(library.importedFrom, isNull);
+      expect(library.importedUntil, isNull);
       expect(library.capturedOnThisDay, isNull);
     });
   }

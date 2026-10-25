@@ -18,8 +18,8 @@ use crate::device_sync::usb::{UsbAction, UsbReply, UsbView};
 use crate::models::{
     AlbumRule, AlbumSummary, GalleryQuery, GameTagAliasSummary, GameTagSummary, ImportSummary,
     LibraryRelocationResult, LibraryRootProbe, LoginChallenge, MediaAsset, MediaDeletionResult,
-    MediaExportSummary, NintendoFriendsSnapshot, OperationProgress, SeedExportPayload,
-    SplatNetWebSession, SyncProgress, SyncSummary, TagUsageSummary,
+    MediaDetails, MediaExportSummary, NintendoFriendsSnapshot, OperationProgress,
+    SeedExportPayload, SplatNetWebSession, SyncProgress, SyncSummary, TagUsageSummary,
 };
 use crate::nso::CoralSession;
 use crate::settings::{AppSettings, SyncPolicy, SyncRuntimeState, SyncScheduleStatus};
@@ -33,6 +33,12 @@ pub fn device_sync_open_library(library_root: String) -> Result<LibraryInfo, Str
 }
 pub fn device_sync_library_info(library: String) -> Result<LibraryInfo, String> {
     headless::library_info(&library)
+}
+pub fn device_sync_recover_interrupted_sessions(
+    library: String,
+    sessions: Vec<String>,
+) -> Result<(), String> {
+    headless::recover_interrupted_sessions(&library, sessions)
 }
 pub async fn device_sync_close_library(library: String) -> Result<(), String> {
     headless::close_library_async(&library).await
@@ -810,6 +816,16 @@ pub fn list_media(query: GalleryQuery) -> Result<Vec<MediaAsset>, String> {
     core()?.list_media(query).map_err(error_text)
 }
 
+pub fn list_media_page(
+    request: crate::models::GalleryPageRequest,
+) -> Result<crate::models::GalleryPage, String> {
+    core()?.list_media_page(request).map_err(error_text)
+}
+
+pub fn media_details(media_id: i64) -> Result<MediaDetails, String> {
+    core()?.media_details(media_id).map_err(error_text)
+}
+
 pub fn list_albums() -> Result<Vec<AlbumSummary>, String> {
     core()?.list_albums().map_err(error_text)
 }
@@ -840,6 +856,12 @@ pub fn merge_tags(tag_ids: Vec<i64>, target_name: String) -> Result<(), String> 
 
 pub fn list_game_tags() -> Result<Vec<GameTagSummary>, String> {
     core()?.list_game_tags().map_err(error_text)
+}
+
+pub fn list_game_media_counts(
+    album_id: Option<i64>,
+) -> Result<Vec<crate::models::GameMediaCount>, String> {
+    core()?.list_game_media_counts(album_id).map_err(error_text)
 }
 
 pub fn list_game_tag_aliases() -> Result<Vec<GameTagAliasSummary>, String> {

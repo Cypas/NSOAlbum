@@ -598,7 +598,9 @@ class DeviceAccountCoordinator {
 
   /// Task5 must call before settings/font compatibility writes, token getters,
   /// implicit migration or automatic NSO. Native library identity/journal FIRST.
-  Future<AccountRecoveryState> recoverStartup() {
+  Future<AccountRecoveryState> recoverStartup({
+    void Function()? onRecoveryDetected,
+  }) {
     if (_driving != null) {
       return Future.value(const AccountRecoveryState('busy'));
     }
@@ -611,12 +613,18 @@ class DeviceAccountCoordinator {
       if (owned.length == 1) {
         // A failed abort retains its own permit. Recovery must keep that
         // ownership until the original compensation proves both domains safe.
-        return _recoverOwned(owned.single);
+        return _recoverOwned(
+          owned.single,
+          onRecoveryDetected: onRecoveryDetected,
+        );
       }
       DeviceAccountPermit? permit;
       try {
         permit = gate.recoveryPermit();
-        return await _recoverOwned(permit);
+        return await _recoverOwned(
+          permit,
+          onRecoveryDetected: onRecoveryDetected,
+        );
       } on DeviceSyncBusy {
         return const AccountRecoveryState('busy');
       } finally {
@@ -625,7 +633,10 @@ class DeviceAccountCoordinator {
     });
   }
 
-  Future<AccountRecoveryState> _recoverOwned(DeviceAccountPermit permit) async {
+  Future<AccountRecoveryState> _recoverOwned(
+    DeviceAccountPermit permit, {
+    void Function()? onRecoveryDetected,
+  }) async {
     if (!gate.ownsDevice(permit)) {
       return const AccountRecoveryState('busy');
     }
@@ -635,6 +646,7 @@ class DeviceAccountCoordinator {
       final actual = await native.deviceSyncLibraryInfo(library_: library);
       operation = actual.pendingOperation;
       if (operation != null) {
+        onRecoveryDetected?.call();
         final journal = await native.deviceSyncJournal(
           library_: library,
           operation: operation,
@@ -661,6 +673,7 @@ class DeviceAccountCoordinator {
         );
         if (journal == null) {
           if (material.stage == 'rolled_back') continue;
+          onRecoveryDetected?.call();
           if (material.stage != 'prepared' ||
               rawAccountDigest(await readRawAccountKeys(storage)) !=
                   rawAccountDigest(material.old)) {
@@ -675,8 +688,14 @@ class DeviceAccountCoordinator {
           throw AccountRecoveryRequired('journal_mismatch');
         }
         if (journal.stage == 'finalized' || journal.stage == 'rolled_back') {
+          if (material.stage != journal.stage) {
+            onRecoveryDetected?.call();
+            material.stage = journal.stage;
+            await _save(material);
+          }
           continue;
         }
+        onRecoveryDetected?.call();
         if (journal.stage != 'prepared' && journal.stage != 'library_applied') {
           throw AccountRecoveryRequired('journal_stage_unknown');
         }
@@ -767,6 +786,12 @@ class DeviceAccountCoordinator {
               AccountSnapshot.fromRaw(selected.old).payload,
               overwrite: true,
             );
+      if (selected != null && change != null) {
+        restoreAccountStateWithNameHistory(
+          current: change.before.raw,
+          saved: selected.old,
+        );
+      }
       final info = await native.deviceSyncPreviewRestore(
         library_: library,
         backup: backup,
@@ -930,7 +955,10 @@ class DeviceAccountCoordinator {
         library: actual.libraryUuid,
         operation: preview.operation,
         old: preview.change!.before.raw,
-        candidate: selected.old,
+        candidate: restoreAccountStateWithNameHistory(
+          current: preview.change!.before.raw,
+          saved: selected.old,
+        ),
         binding: preview.binding,
       );
       await _reserve(safety);

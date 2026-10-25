@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 import 'package:squid_album/src/l10n/app_localizations.dart';
 import 'package:squid_album/src/rust/models.dart';
 import 'package:squid_album/src/ui/video_preview.dart';
@@ -19,6 +20,41 @@ final _pixel = Uint8List.fromList(
 );
 
 void main() {
+  test('desktop controls label fullscreen actions distinctly', () {
+    final theme = appDesktopVideoControlsThemeData(
+      onToggleImmersive: () {},
+      immersive: false,
+      immersiveTooltip: '应用内全屏',
+      systemFullscreenTooltip: '全屏',
+      immersiveKey: const Key('test-immersive'),
+      systemFullscreenKey: const Key('test-system-fullscreen'),
+    );
+
+    expect(theme.bottomButtonBar, hasLength(8));
+    final tooltips = theme.bottomButtonBar.whereType<Tooltip>().toList();
+    expect(tooltips, hasLength(2));
+    final immersive = tooltips.singleWhere(
+      (tooltip) => tooltip.message == '应用内全屏',
+    );
+    final system = tooltips.singleWhere((tooltip) => tooltip.message == '全屏');
+    expect(immersive.child, isA<MaterialDesktopCustomButton>());
+    expect(system.child, isA<MaterialDesktopFullscreenButton>());
+    expect(
+      (immersive.child as MaterialDesktopCustomButton).key,
+      const Key('test-immersive'),
+    );
+    expect(
+      (system.child as MaterialDesktopFullscreenButton).key,
+      const Key('test-system-fullscreen'),
+    );
+    final immersiveIconSize =
+        (immersive.child as MaterialDesktopCustomButton).iconSize!;
+    final systemIconSize =
+        MaterialDesktopVideoControlsThemeData().buttonBarButtonSize;
+    expect(immersiveIconSize, lessThan(systemIconSize));
+    expect(systemIconSize - immersiveIconSize, lessThanOrEqualTo(12));
+  });
+
   for (final androidDecoder in [false, true]) {
     testWidgets(
       'first-frame reveal retains progress controls and slider state (android=$androidDecoder)',

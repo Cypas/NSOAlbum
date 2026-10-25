@@ -9,6 +9,7 @@ class StartupOptions {
     this.ciSmokeRoot,
     this.ciSmokeScenario = 'normal',
     this.ciSmokeFailure,
+    this.openGalleryOnLaunch = false,
   });
 
   final bool safeMode;
@@ -18,6 +19,7 @@ class StartupOptions {
   final String? ciSmokeRoot;
   final String ciSmokeScenario;
   final String? ciSmokeFailure;
+  final bool openGalleryOnLaunch;
   bool get ciSmoke => ciSmokeRoot != null;
 
   bool get disableDesktopLifecycle => safeMode || ciSmoke;
@@ -30,6 +32,7 @@ class StartupOptions {
     var disableVideo = false;
     var disableIme = false;
     var softwareRendering = false;
+    var openGalleryOnLaunch = false;
     var smoke = false;
     String? root;
     var scenario = 'normal';
@@ -46,6 +49,7 @@ class StartupOptions {
       if (argument.startsWith('--ci-smoke-fail=')) {
         failure = argument.substring('--ci-smoke-fail='.length);
       }
+      if (argument == '--toast-activated') openGalleryOnLaunch = true;
       switch (argument.trim().toLowerCase()) {
         case '--safe-mode':
           safeMode = true;
@@ -83,6 +87,7 @@ class StartupOptions {
       ciSmokeRoot: smoke ? root : null,
       ciSmokeScenario: scenario,
       ciSmokeFailure: failure,
+      openGalleryOnLaunch: openGalleryOnLaunch,
     );
   }
 }

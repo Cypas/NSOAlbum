@@ -12,13 +12,17 @@ class AutomaticSyncCoordinator {
     this._settings,
     this._sync, {
     DateTime Function()? now,
+    this.startupDelay = Duration.zero,
   }) : _now = now ?? DateTime.now;
 
   final AppBackend _backend;
   final SettingsController _settings;
   final SyncController _sync;
   final DateTime Function() _now;
+  final Duration startupDelay;
   Timer? _timer;
+  Timer? _startupDelayTimer;
+  Completer<void>? _startupDelayCompleter;
   SyncState? _lastSyncState;
   int _generation = 0;
   bool _started = false;
@@ -36,6 +40,17 @@ class AutomaticSyncCoordinator {
   Future<void> start() async {
     if (_started || _disposed) return;
     _started = true;
+    if (startupDelay > Duration.zero) {
+      final delay = Completer<void>();
+      _startupDelayCompleter = delay;
+      _startupDelayTimer = Timer(startupDelay, () {
+        if (!delay.isCompleted) delay.complete();
+      });
+      await delay.future;
+      _startupDelayTimer = null;
+      _startupDelayCompleter = null;
+      if (_disposed) return;
+    }
     _transferWasActive = _accountGate?.transferActive == true;
     _lastSyncState = _sync.state;
     _settings.addListener(_settingsChanged);
@@ -378,6 +393,13 @@ class AutomaticSyncCoordinator {
     _disposed = true;
     _generation++;
     _timer?.cancel();
+    _startupDelayTimer?.cancel();
+    _startupDelayTimer = null;
+    final startupDelay = _startupDelayCompleter;
+    _startupDelayCompleter = null;
+    if (startupDelay != null && !startupDelay.isCompleted) {
+      startupDelay.complete();
+    }
     _settings.removeListener(_settingsChanged);
     _sync.removeListener(_syncChanged);
     _accountGate?.removeListener(_accountGateChanged);

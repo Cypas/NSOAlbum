@@ -6,6 +6,24 @@ import '../../rust/models.dart';
 import '../../rust/settings.dart';
 import 'android_page_frame.dart';
 
+bool androidIsEmptyNsoAlbumResult(SyncSummary? result) =>
+    result != null &&
+    result.totalFound == BigInt.zero &&
+    result.downloaded == BigInt.zero &&
+    result.duplicates == BigInt.zero &&
+    result.skippedRemote == BigInt.zero &&
+    result.failed == BigInt.zero &&
+    result.errors.isEmpty;
+
+bool androidIsEmptyNsoAlbumAttempt(SyncAttemptSummary? attempt) =>
+    attempt != null &&
+    (attempt.status == 'success' || attempt.status == 'completed') &&
+    attempt.totalFound == BigInt.zero &&
+    attempt.downloaded == BigInt.zero &&
+    attempt.duplicates == BigInt.zero &&
+    (attempt.skippedRemote ?? BigInt.zero) == BigInt.zero &&
+    attempt.failed == BigInt.zero;
+
 /// One status resolution for both the account overview and account settings.
 ({String text, Color color}) androidAccountStatus(
   BuildContext context, {

@@ -136,12 +136,14 @@ class LibraryInfo {
   final String libraryUuid;
   final BigInt generation;
   final String? pendingOperation;
+  final List<String>? interruptedSessions;
 
   const LibraryInfo({
     required this.handle,
     required this.libraryUuid,
     required this.generation,
     this.pendingOperation,
+    this.interruptedSessions,
   });
 
   @override
@@ -149,7 +151,8 @@ class LibraryInfo {
       handle.hashCode ^
       libraryUuid.hashCode ^
       generation.hashCode ^
-      pendingOperation.hashCode;
+      pendingOperation.hashCode ^
+      interruptedSessions.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -159,7 +162,8 @@ class LibraryInfo {
           handle == other.handle &&
           libraryUuid == other.libraryUuid &&
           generation == other.generation &&
-          pendingOperation == other.pendingOperation;
+          pendingOperation == other.pendingOperation &&
+          interruptedSessions == other.interruptedSessions;
 }
 
 class RestoreInfo {

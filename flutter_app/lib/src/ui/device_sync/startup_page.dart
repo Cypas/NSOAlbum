@@ -6,7 +6,6 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 
 import '../../app_branding.dart';
 import '../../backend/app_backend.dart';
-import '../../backend/device_sync/startup_lifecycle.dart';
 import '../../l10n/app_localizations.dart';
 import '../../startup/application_bootstrap.dart';
 
@@ -27,6 +26,7 @@ class DeviceSyncStartupApp extends StatefulWidget {
 }
 
 class _DeviceSyncStartupAppState extends State<DeviceSyncStartupApp> {
+  Widget? _readyApplication;
   @override
   void initState() {
     super.initState();
@@ -39,7 +39,10 @@ class _DeviceSyncStartupAppState extends State<DeviceSyncStartupApp> {
   void dispose() {
     // Disposal is only a fallback; native destruction uses the waiting owner.
     // The owner reports close failures while this widget may no longer exist.
-    unawaited(widget.controller.close().catchError((Object _) {}));
+    if (widget.controller.phase != BootstrapPhase.closing &&
+        widget.controller.phase != BootstrapPhase.closed) {
+      unawaited(widget.controller.close().catchError((Object _) {}));
+    }
     super.dispose();
   }
 
@@ -48,15 +51,51 @@ class _DeviceSyncStartupAppState extends State<DeviceSyncStartupApp> {
     animation: widget.controller,
     builder: (context, _) {
       final controller = widget.controller;
-      if (controller.phase == BootstrapPhase.ready) {
-        return widget.application(controller.backend!);
-      }
       final settings = controller.backend?.settings;
       final language =
           settings?.language ??
           (PlatformDispatcher.instance.locale.languageCode == 'zh'
               ? 'zh'
               : 'en');
+      final closing =
+          controller.phase == BootstrapPhase.closing ||
+          controller.phase == BootstrapPhase.closed;
+      if (controller.phase == BootstrapPhase.ready ||
+          (_readyApplication != null && closing)) {
+        _readyApplication ??= widget.application(controller.backend!);
+        return Stack(
+          fit: StackFit.expand,
+          textDirection: TextDirection.ltr,
+          children: [
+            AbsorbPointer(
+              absorbing: closing,
+              child: ExcludeFocus(
+                excluding: closing,
+                child: _readyApplication!,
+              ),
+            ),
+            if (closing &&
+                (controller.closeFeedback || controller.closeError != null))
+              Positioned(
+                left: 16,
+                right: 16,
+                bottom: 24,
+                child: SafeArea(
+                  child: Center(
+                    child: Theme(
+                      data: widget.theme(settings?.theme ?? 'ocean'),
+                      child: _CloseNotice(
+                        language: language,
+                        failed: controller.closeError != null,
+                        onRetry: controller.requestCloseRetry,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+      }
       return MaterialApp(
         debugShowCheckedModeBanner: false,
         theme: widget.theme(settings?.theme ?? 'ocean'),
@@ -84,6 +123,69 @@ class _DeviceSyncStartupAppState extends State<DeviceSyncStartupApp> {
               ),
       );
     },
+  );
+}
+
+class _CloseNotice extends StatelessWidget {
+  const _CloseNotice({
+    required this.language,
+    required this.failed,
+    required this.onRetry,
+  });
+  final String language;
+  final bool failed;
+  final VoidCallback? onRetry;
+  @override
+  Widget build(BuildContext context) => Directionality(
+    textDirection: TextDirection.ltr,
+    child: Semantics(
+      liveRegion: true,
+      child: Material(
+        elevation: 6,
+        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 480),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (failed)
+                      const Icon(Icons.warning_amber_rounded)
+                    else
+                      const SizedBox.square(
+                        dimension: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    const SizedBox(width: 12),
+                    Flexible(
+                      child: Text(
+                        language == 'zh'
+                            ? failed
+                                  ? '当前操作尚未安全结束，窗口将保持打开。'
+                                  : '正在结束当前操作'
+                            : failed
+                            ? 'The current operation could not finish safely. The window will remain open.'
+                            : 'Finishing current operations',
+                      ),
+                    ),
+                  ],
+                ),
+                if (failed && onRetry != null)
+                  TextButton(
+                    onPressed: onRetry,
+                    child: Text(language == 'zh' ? '重试关闭' : 'Retry closing'),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ),
   );
 }
 
@@ -132,7 +234,18 @@ class DeviceSyncStartupPage extends StatelessWidget {
         closeFailed ||
         phase == BootstrapPhase.failed ||
         phase == BootstrapPhase.timedOut;
-    final restoring = controller.startup?.phase == DeviceStartupPhase.restoring;
+    final interrupted = controller.startup?.interruptedRecovery == true;
+    final showFeedback =
+        failed || interrupted || (closing && controller.closeFeedback);
+    if (!showFeedback) {
+      // Normal core preparation/recovery still runs before the gallery is
+      // usable, but a branded spinner screen adds no actionable information.
+      // Keep the window surface stable and reserve visible feedback for
+      // interrupted recovery, failures, or a close that takes unusually long.
+      return Scaffold(
+        body: ColoredBox(color: Theme.of(context).scaffoldBackgroundColor),
+      );
+    }
     return Scaffold(
       body: SafeArea(
         child: Center(
@@ -153,30 +266,12 @@ class DeviceSyncStartupPage extends StatelessWidget {
                     ),
                   const SizedBox(height: 20),
                   Text(
-                    closeFailed
-                        ? context.l10n.select(
-                            zh: '无法安全关闭',
-                            en: 'Unable to close safely',
-                          )
-                        : closing
-                        ? context.l10n.select(
-                            zh: '正在安全关闭',
-                            en: 'Closing safely',
-                          )
-                        : failed
-                        ? context.l10n.select(
-                            zh: '数据检查未完成',
-                            en: 'Data check incomplete',
-                          )
-                        : restoring
-                        ? context.l10n.select(
-                            zh: '正在恢复数据',
-                            en: 'Restoring data',
-                          )
-                        : context.l10n.select(
-                            zh: '正在检查数据',
-                            en: 'Checking data',
-                          ),
+                    _feedbackTitle(
+                      context,
+                      closeFailed: closeFailed,
+                      closing: closing,
+                      failed: failed,
+                    ),
                     style: Theme.of(context).textTheme.titleLarge,
                     textAlign: TextAlign.center,
                   ),
@@ -214,6 +309,30 @@ class DeviceSyncStartupPage extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+
+  String _feedbackTitle(
+    BuildContext context, {
+    required bool closeFailed,
+    required bool closing,
+    required bool failed,
+  }) {
+    if (closeFailed) {
+      return context.l10n.select(zh: '无法安全关闭', en: 'Unable to close safely');
+    }
+    if (closing && controller.closeFeedback) {
+      return context.l10n.select(
+        zh: '正在结束当前操作',
+        en: 'Finishing current operations',
+      );
+    }
+    if (failed) {
+      return context.l10n.select(zh: '数据检查未完成', en: 'Data check incomplete');
+    }
+    return context.l10n.select(
+      zh: '上次同步未正常完成，正在校验数据',
+      en: 'The previous sync did not finish. Checking data.',
     );
   }
 }

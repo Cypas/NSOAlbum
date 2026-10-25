@@ -5,7 +5,6 @@ import '../l10n/app_localizations.dart';
 import '../rust/models.dart';
 import '../search/search_normalizer.dart';
 import 'font_families.dart';
-import 'display_time.dart';
 
 class MediaMetadataUpdate {
   const MediaMetadataUpdate({required this.note, required this.tags});
@@ -152,13 +151,6 @@ class _MediaMetadataEditorState extends State<MediaMetadataEditor> {
                   en: 'Add a note for this media item',
                 ),
                 border: const OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 18),
-            SelectableText(
-              context.l10n.select(
-                zh: '文件路径：${widget.asset.storagePath}\n创建时间：${widget.asset.capturedAt == null ? '未知' : formatUserDateTime(widget.asset.capturedAt!)}\n内容哈希：${widget.asset.sha256}',
-                en: 'File path: ${widget.asset.storagePath}\nCreated at: ${widget.asset.capturedAt == null ? 'Unknown' : formatUserDateTime(widget.asset.capturedAt!)}\nContent hash: ${widget.asset.sha256}',
               ),
             ),
             const SizedBox(height: 20),

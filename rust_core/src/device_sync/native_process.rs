@@ -1,6 +1,9 @@
 //! Parent-side native I/O isolation. The child owns all MTP handles.
 use super::io_metrics::{IoMetrics, IoStep};
-use super::native_io::{read_packet, write_packet, NativeError, NativeRequest, NativeResponse};
+use super::native_io::{
+    read_packet, response_from_packet, validate_response_payload, write_packet, IpcPacket,
+    NativeError, NativeRequest, NativeResponse,
+};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{
@@ -9,18 +12,19 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-type Reply = Result<serde_json::Value, NativeError>;
+type Reply = Result<NativeResponse, NativeError>;
 type ReceivedReply = (Reply, Instant);
 fn terminal_error(error: NativeError, discovery: bool) -> bool {
     error != NativeError::WindowFull && !(discovery && error == NativeError::Unavailable)
 }
-type CommandPacket = (Vec<u8>, mpsc::SyncSender<ReceivedReply>, bool);
+type CommandPacket = (IpcPacket, mpsc::SyncSender<ReceivedReply>, bool);
 struct PendingRequest {
     response: mpsc::Receiver<ReceivedReply>,
     started: Instant,
     deadline: Duration,
     closing: bool,
     discovery: bool,
+    payload_expected: bool,
 }
 pub struct NativeProcess {
     child: Arc<Mutex<Child>>,
@@ -71,22 +75,25 @@ impl NativeProcess {
                 let started = Instant::now();
                 let answer = write_packet(&mut input, &request)
                     .and_then(|_| read_packet(&mut output))
-                    .and_then(|bytes| {
+                    .and_then(|packet| {
                         let decoding = Instant::now();
-                        let answer = serde_json::from_slice::<NativeResponse>(&bytes)
-                            .map_err(|_| NativeError::Io);
+                        let packet_bytes = packet.header.len() + packet.payload.len();
+                        let answer = response_from_packet(packet);
                         io_timings
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
-                            .elapsed(IoStep::IpcDecode, decoding, bytes.len() as u64);
+                            .elapsed(IoStep::IpcDecode, decoding, packet_bytes as u64);
                         answer
-                    })
-                    .and_then(|reply| reply.value);
+                    });
                 let received_at = Instant::now();
                 io_timings
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .elapsed(IoStep::IpcRoundtrip, started, request.len() as u64);
+                    .elapsed(
+                        IoStep::IpcRoundtrip,
+                        started,
+                        (request.header.len() + request.payload.len()) as u64,
+                    );
                 let failed = answer
                     .as_ref()
                     .is_err_and(|error| terminal_error(*error, discovery));
@@ -121,6 +128,23 @@ impl NativeProcess {
         request: NativeRequest,
         deadline: Duration,
     ) -> Result<serde_json::Value, NativeError> {
+        if matches!(request, NativeRequest::Read { .. }) {
+            return Err(NativeError::InvalidBlock);
+        }
+        self.request_response(request, deadline)
+            .and_then(|response| {
+                if response.payload.is_empty() {
+                    Ok(response.value)
+                } else {
+                    Err(NativeError::InvalidBlock)
+                }
+            })
+    }
+    pub fn request_response(
+        &mut self,
+        request: NativeRequest,
+        deadline: Duration,
+    ) -> Result<NativeResponse, NativeError> {
         self.begin_request(request, deadline)?;
         loop {
             if let Some(answer) = self.poll_response() {
@@ -143,15 +167,14 @@ impl NativeProcess {
         }
         let closing = matches!(request, NativeRequest::Close);
         let discovery = matches!(request, NativeRequest::Discover { .. });
+        let payload_expected = matches!(request, NativeRequest::Read { .. });
         let encoding = Instant::now();
-        let request = serde_json::to_vec(&request).map_err(|_| NativeError::Bounds)?;
+        let request = request.into_packet()?;
+        let request_bytes = request.header.len() + request.payload.len();
         self.timings
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .elapsed(IoStep::IpcEncode, encoding, request.len() as u64);
-        if request.len() > super::native_io::MAX_IPC {
-            return Err(NativeError::Bounds);
-        }
+            .elapsed(IoStep::IpcEncode, encoding, request_bytes as u64);
         let (reply, response) = mpsc::sync_channel(1);
         let started = Instant::now();
         self.commands
@@ -163,6 +186,7 @@ impl NativeProcess {
             deadline,
             closing,
             discovery,
+            payload_expected,
         });
         Ok(())
     }
@@ -176,7 +200,9 @@ impl NativeProcess {
                     if received_at.saturating_duration_since(pending.started) >= pending.deadline {
                         Err(NativeError::Timeout)
                     } else {
-                        answer
+                        answer.and_then(|response| {
+                            validate_response_payload(response, pending.payload_expected)
+                        })
                     }
                 }
                 Err(mpsc::TryRecvError::Empty) => {
@@ -275,7 +301,13 @@ mod tests {
             .unwrap();
         hold_completed_reply(&mut process, Duration::from_secs(1));
         std::thread::sleep(Duration::from_millis(2100));
-        assert_eq!(process.poll_response(), Some(Ok(serde_json::json!(123))));
+        assert_eq!(
+            process.poll_response(),
+            Some(Ok(NativeResponse {
+                value: serde_json::json!(123),
+                payload: vec![],
+            }))
+        );
         assert_eq!(
             process.request(NativeRequest::Enumerate, Duration::from_secs(2)),
             Ok(serde_json::json!(123)),
@@ -313,7 +345,6 @@ mod tests {
     #[test]
     fn v4_carrier_crosses_real_worker_ipc_and_oversize_cannot_publish_a_partial() {
         use crate::device_sync::native_io::Direction;
-        use base64::{engine::general_purpose::STANDARD, Engine};
 
         let directory = tempfile::tempdir().unwrap();
         let executable = directory.path().join(if cfg!(windows) {
@@ -352,14 +383,14 @@ mod tests {
                     operation: "a".repeat(32),
                     session: "b".repeat(32),
                     name: name.into(),
-                    bytes: STANDARD.encode(&payload),
+                    bytes: payload.clone(),
                 },
                 deadline
             ),
             Ok(serde_json::Value::Null)
         );
         let value = worker
-            .request(
+            .request_response(
                 NativeRequest::Read {
                     operation: "a".repeat(32),
                     session: "b".repeat(32),
@@ -369,7 +400,8 @@ mod tests {
                 deadline,
             )
             .unwrap();
-        assert_eq!(STANDARD.decode(value.as_str().unwrap()).unwrap(), payload);
+        assert!(value.value.is_null());
+        assert_eq!(value.payload, payload);
         worker
             .request(
                 NativeRequest::Acknowledge {
@@ -387,7 +419,7 @@ mod tests {
                     operation: "a".repeat(32),
                     session: "b".repeat(32),
                     name: "0000000000000001.block".into(),
-                    bytes: STANDARD.encode(vec![0x53; super::super::native_io::MAX_BLOCK + 1]),
+                    bytes: vec![0x53; super::super::native_io::MAX_BLOCK + 1],
                 },
                 deadline
             ),
@@ -431,7 +463,7 @@ mod tests {
                     operation: "a".repeat(32),
                     session: "b".repeat(32),
                     name: "0000000000000000.block".into(),
-                    bytes: "x".repeat(87392),
+                    bytes: vec![b'x'; 87392],
                 },
                 Duration::from_millis(100)
             ),
@@ -497,13 +529,38 @@ mod tests {
                     operation: "a".repeat(32),
                     session: "b".repeat(32),
                     name: "0000000000000000.block".into(),
-                    bytes: "AQ==".into(),
+                    bytes: vec![1],
                 },
                 Duration::from_secs(2)
             ),
             Err(NativeError::InvalidBlock)
         );
     }
+
+    #[test]
+    fn value_only_request_api_refuses_binary_reads_without_poisoning_worker() {
+        use super::super::native_io::Direction;
+
+        let (_directory, executable) = response_fixture("device_sync_reply_worker.rs");
+        let mut process = NativeProcess::spawn(&executable).unwrap();
+        assert_eq!(
+            process.request(
+                NativeRequest::Read {
+                    operation: "a".repeat(32),
+                    session: "b".repeat(32),
+                    direction: Direction::Desktop,
+                    name: "0000000000000000.block".into(),
+                },
+                Duration::from_secs(2)
+            ),
+            Err(NativeError::InvalidBlock)
+        );
+        assert_eq!(
+            process.request(NativeRequest::Enumerate, Duration::from_secs(2)),
+            Ok(serde_json::json!(123))
+        );
+    }
+
     #[test]
     fn close_is_terminal_before_any_later_native_command() {
         let directory = tempfile::tempdir().unwrap();
@@ -553,14 +610,14 @@ mod tests {
                     operation: "a".repeat(32),
                     session: "b".repeat(32),
                     name: "0000000000000080.block".into(),
-                    bytes: "AQID".into(),
+                    bytes: vec![1, 2, 3],
                 },
                 Duration::from_secs(2)
             ),
             Err(NativeError::WindowFull)
         );
         assert_eq!(
-            process.request(
+            process.request_response(
                 NativeRequest::Read {
                     operation: "a".repeat(32),
                     session: "b".repeat(32),
@@ -569,7 +626,10 @@ mod tests {
                 },
                 Duration::from_secs(2)
             ),
-            Ok(serde_json::json!("AQID"))
+            Ok(NativeResponse {
+                value: serde_json::Value::Null,
+                payload: vec![1, 2, 3],
+            })
         );
         assert_eq!(
             process.request(

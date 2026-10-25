@@ -9,6 +9,8 @@ import '../../l10n/app_localizations.dart';
 import '../../rust/models.dart';
 import '../../rust/settings.dart';
 import '../../state/media_edit_controller.dart';
+import '../../state/media_window_controller.dart';
+import '../../platform/android_media_share.dart';
 import '../video_preview_prefetch.dart';
 import '../video_thumbnail.dart';
 import '../video_preview.dart';
@@ -28,20 +30,33 @@ class AndroidMediaViewer extends StatefulWidget {
     this.settings,
     this.initialIndex = 0,
     this.autoPlay,
+    this.galleryQuery,
+    this.initialPage,
+    this.mediaFilter,
   });
   final AppBackend backend;
   final List<MediaAsset> items;
   final AppSettings? settings;
   final int initialIndex;
   final bool? autoPlay;
+  final GalleryQuery? galleryQuery;
+  final GalleryPage? initialPage;
+  final bool Function(MediaAsset)? mediaFilter;
   @override
   State<AndroidMediaViewer> createState() => _AndroidMediaViewerState();
 }
 
-class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
+class _AndroidMediaViewerState extends State<AndroidMediaViewer>
+    with SingleTickerProviderStateMixin {
+  static const _imageZoomDecodeAllowance = 1.5;
   late List<MediaAsset> items = List.of(widget.items);
   late int index = widget.initialIndex;
-  late final pages = PageController(initialPage: widget.initialIndex);
+  late PageController pages;
+  late final AnimationController pageFade;
+  late final Animation<double> pageOpacity;
+  MediaWindowController? window;
+  bool extendingWindow = false;
+  Future<void>? windowRequest;
   final videoPages = <(int, String), GlobalKey<AndroidVideoSurfaceState>>{};
   GlobalKey<AndroidVideoSurfaceState> videoKey(MediaAsset asset) =>
       videoPages.putIfAbsent((asset.id, asset.sha256), GlobalKey.new);
@@ -60,9 +75,35 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
   @override
   void initState() {
     super.initState();
+    pageFade = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 160),
+    );
+    pageOpacity = TweenSequence<double>([
+      TweenSequenceItem(tween: Tween<double>(begin: 1, end: 0), weight: 1),
+      TweenSequenceItem(tween: Tween<double>(begin: 0, end: 1), weight: 1),
+    ]).animate(CurvedAnimation(parent: pageFade, curve: Curves.easeInOutCubic));
+    if (widget.galleryQuery case final scope?) {
+      final currentId = items[index].id;
+      window = MediaWindowController(
+        widget.backend,
+        scope: scope,
+        initial:
+            widget.initialPage ??
+            GalleryPage(items: items, hasBefore: false, hasAfter: false),
+        mediaId: currentId,
+        filter: widget.mediaFilter,
+      );
+      items = List.of(window!.items);
+      index = items.indexWhere((item) => item.id == currentId);
+    }
+    pages = PageController(initialPage: index);
     transform.addListener(_zoomChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) prefetch.around(items, index);
+      if (mounted) {
+        prefetch.around(items, index);
+        unawaited(_extendWindow());
+      }
     });
   }
 
@@ -75,17 +116,31 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
       await VideoThumbnailCache.warmCached(item);
     } else if (mounted) {
       await precacheImage(
-        mediaPreviewImage(item.storagePath),
+        _imageProvider(item.storagePath),
         context,
         onError: (_, _) {},
       );
     }
   }
 
+  ImageProvider<Object> _imageProvider(String path) {
+    final viewport = MediaQuery.sizeOf(context);
+    final pixelRatio = MediaQuery.devicePixelRatioOf(context);
+    return ResizeImage(
+      FileImage(File(path)),
+      width: (viewport.width * pixelRatio * _imageZoomDecodeAllowance).round(),
+      height: (viewport.height * pixelRatio * _imageZoomDecodeAllowance)
+          .round(),
+      policy: ResizeImagePolicy.fit,
+    );
+  }
+
   @override
   void dispose() {
     prefetch.dispose();
+    window?.dispose();
     pages.dispose();
+    pageFade.dispose();
     // The surface owns its player; do not dispose that player twice here.
     transform.removeListener(_zoomChanged);
     transform.dispose();
@@ -162,24 +217,28 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
   }
 
   Future<void> navigate(int delta) async {
-    final next = index + delta;
+    var next = index + delta;
+    if (next < 0 || next >= items.length) {
+      await _extendWindow();
+      if (!mounted) return;
+      next = index + delta;
+    }
+    if (!pages.hasClients) {
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || !pages.hasClients) return;
+    }
     if (busy || switching || next < 0 || next >= items.length) return;
     navigationGeneration++;
     setState(() => switching = true);
+    var pageFadeStarted = false;
     try {
       if (dirty && !await confirmAndroidDiscard(context)) return;
       if (!mounted) return;
-      await video.currentState?.pausePlayback();
       final retained = {
         for (final position in [next - 1, next, next + 1])
           if (position >= 0 && position < items.length)
             (items[position].id, items[position].sha256),
       };
-      for (final key in videoPages.keys.toList(growable: false)) {
-        if (retained.contains(key)) continue;
-        await videoPages.remove(key)?.currentState?.release();
-      }
-      if (!mounted) return;
       setState(() {
         player = null;
         index = next;
@@ -191,15 +250,89 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
         transform.value = Matrix4.identity();
       });
       prefetch.around(items, index);
-      await pages.animateToPage(
+      final pageTransition = pages.animateToPage(
         next,
         duration: const Duration(milliseconds: 220),
         curve: Curves.easeOutCubic,
       );
+      pageFadeStarted = true;
+      final fadeIn = pageFade.forward(from: 0);
+      final retirements = <Future<void>>[];
+      for (final key in videoPages.keys.toList(growable: false)) {
+        if (retained.contains(key)) continue;
+        final surface = videoPages.remove(key)?.currentState;
+        if (surface != null) retirements.add(surface.release());
+      }
+      unawaited(_extendWindow());
+      await Future.wait([pageTransition, fadeIn, ...retirements]);
     } catch (error) {
       if (mounted) androidMessage(context, error);
     } finally {
-      if (mounted) setState(() => switching = false);
+      if (mounted) {
+        if (pageFadeStarted && pageFade.status != AnimationStatus.completed) {
+          await pageFade.forward();
+        }
+        if (mounted) setState(() => switching = false);
+      }
+    }
+  }
+
+  Future<void> _extendWindow() =>
+      windowRequest ??= _fetchWindow().whenComplete(() => windowRequest = null);
+
+  Future<void> _fetchWindow() async {
+    final currentWindow = window;
+    if (currentWindow == null || extendingWindow || !mounted) return;
+    extendingWindow = true;
+    try {
+      await currentWindow.prefetchAround(items[index].id);
+      if (!mounted) return;
+      if (currentWindow.error != null) setState(() {});
+      final currentId = items[index].id;
+      final center = currentWindow.items.indexWhere(
+        (item) => item.id == currentId,
+      );
+      if (center < 0) return;
+      final local = {for (final item in items) item.id: item};
+      final next = currentWindow.items
+          .sublist(
+            (center - 60).clamp(0, currentWindow.items.length),
+            (center + 61).clamp(0, currentWindow.items.length),
+          )
+          .map((item) => local[item.id] ?? item)
+          .toList();
+      final anchor = next.indexWhere((item) => item.id == currentId);
+      if (anchor < 0 ||
+          (next.length == items.length &&
+              next.first.id == items.first.id &&
+              next.last.id == items.last.id)) {
+        currentWindow.retainAround(currentId);
+        setState(() {});
+        return;
+      }
+      final generation = navigationGeneration;
+      final retained = {for (final asset in next) (asset.id, asset.sha256)};
+      for (final key in videoPages.keys.toList()) {
+        if (!retained.contains(key)) {
+          await videoPages.remove(key)?.currentState?.release();
+        }
+      }
+      if (!mounted || generation != navigationGeneration) return;
+      currentWindow.retainAround(currentId);
+      final old = pages;
+      final reanchor = anchor != index;
+      setState(() {
+        items = List.of(next);
+        index = anchor;
+        if (reanchor) pages = PageController(initialPage: anchor);
+      });
+      if (reanchor) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
+      }
+    } catch (failure) {
+      if (mounted) setState(() => currentWindow.error = failure);
+    } finally {
+      extendingWindow = false;
     }
   }
 
@@ -223,14 +356,11 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
     if (result != true || !mounted || generation != navigationGeneration) {
       return;
     }
-    final fresh = await widget.backend.listMedia(limit: 100000);
-    if (mounted) {
+    final fresh = await widget.backend.loadMediaDetails(item.id);
+    if (mounted && generation == navigationGeneration) {
       setState(() {
         items = items
-            .map(
-              (old) =>
-                  fresh.where((item) => item.id == old.id).firstOrNull ?? old,
-            )
+            .map((old) => old.id == item.id ? fresh.media : old)
             .toList();
       });
     }
@@ -325,8 +455,9 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
           minScale: .75,
           maxScale: 5,
           child: Center(
-            child: Image.file(
-              File(item.storagePath),
+            child: Image(
+              key: ValueKey(('android-detail-image', item.sha256)),
+              image: _imageProvider(item.storagePath),
               fit: BoxFit.contain,
               errorBuilder: (_, _, _) => Semantics(
                 label: context.l10n.select(
@@ -400,20 +531,24 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
               final media = Stack(
                 fit: StackFit.expand,
                 children: [
-                  PageView.builder(
-                    key: const Key('android-detail-media'),
-                    controller: pages,
-                    physics: const NeverScrollableScrollPhysics(),
-                    allowImplicitScrolling: true,
-                    itemCount: items.length,
-                    itemBuilder: (context, page) {
-                      final asset = items[page];
-                      if ((page - index).abs() > 1 &&
-                          asset.kind == MediaKind.video) {
-                        return VideoPoster(asset: asset);
-                      }
-                      return _media(asset);
-                    },
+                  FadeTransition(
+                    key: const Key('android-detail-page-fade'),
+                    opacity: pageOpacity,
+                    child: PageView.builder(
+                      key: const Key('android-detail-media'),
+                      controller: pages,
+                      physics: const NeverScrollableScrollPhysics(),
+                      allowImplicitScrolling: true,
+                      itemCount: items.length,
+                      itemBuilder: (context, page) {
+                        final asset = items[page];
+                        if ((page - index).abs() > 1 &&
+                            asset.kind == MediaKind.video) {
+                          return VideoPoster(asset: asset);
+                        }
+                        return _media(asset);
+                      },
+                    ),
                   ),
                   if (controlsVisible)
                     Positioned(
@@ -437,20 +572,16 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
                                 icon: const Icon(Icons.arrow_back),
                               ),
                             ),
-                            Expanded(
-                              child: Semantics(
-                                label: context.l10n.select(
-                                  zh: '第 ${index + 1} 项，共 ${items.length} 项',
-                                  en: 'Item ${index + 1} of ${items.length}',
+                            const Spacer(),
+                            if (window?.error != null)
+                              IconButton(
+                                tooltip: context.l10n.select(
+                                  zh: '相邻媒体加载失败，重试',
+                                  en: 'Could not load adjacent media. Retry',
                                 ),
-                                child: ExcludeSemantics(
-                                  child: Text(
-                                    '${index + 1} / ${items.length}',
-                                    textAlign: TextAlign.center,
-                                  ),
-                                ),
+                                onPressed: _extendWindow,
+                                icon: const Icon(Icons.refresh),
                               ),
-                            ),
                             if (item.kind == MediaKind.video)
                               IconButton(
                                 key: const Key('android-capture-frame'),
@@ -463,6 +594,19 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer> {
                                     : frame,
                                 icon: const Icon(Icons.screenshot, size: 20),
                               ),
+                            IconButton(
+                              key: const Key('android-share-media'),
+                              tooltip: context.l10n.select(
+                                zh: '分享',
+                                en: 'Share',
+                              ),
+                              onPressed: blocked || dirty
+                                  ? null
+                                  : () => showAndroidMediaShareSheet(context, [
+                                      item,
+                                    ]),
+                              icon: const Icon(Icons.share_outlined, size: 20),
+                            ),
                             PopupMenuButton<String>(
                               tooltip: context.l10n.select(
                                 zh: '更多',

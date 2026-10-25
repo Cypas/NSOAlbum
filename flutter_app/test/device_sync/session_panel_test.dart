@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -127,7 +129,9 @@ void main() {
         final notice = find.byKey(const Key('device-local-continuation'));
         expect(
           find.text(
-            language == 'zh' ? '已传输 25 B / 100 B' : 'Transferred 25 B / 100 B',
+            language == 'zh'
+                ? '已传输 0.02 KB / 0.1 KB'
+                : 'Transferred 0.02 KB / 0.1 KB',
           ),
           findsOneWidget,
         );
@@ -284,7 +288,13 @@ void main() {
           workActive: true,
           scannedItems: BigInt.one,
         );
-        session.update(endpoint(driver.State.awaitingAccountConsent));
+        session.update(
+          endpoint(
+            driver.State.awaitingAccountConsent,
+            host: true,
+            phoneControlled: false,
+          ),
+        );
         await tester.pump();
         expect(
           find.byKey(const Key('device-session-error')),
@@ -303,7 +313,7 @@ void main() {
   );
 
   testWidgets(
-    'receiver budget is complete and source only promises a local check',
+    'preview shows one direction and actual media bytes without receiver budget estimates',
     (tester) async {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
@@ -312,19 +322,33 @@ void main() {
       for (final language in ['zh', 'en']) {
         final session = PanelSession()
           ..shown = samePreview
-          ..state = endpoint(driver.State.awaitingApproval, source: false);
+          ..state = endpoint(
+            driver.State.awaitingApproval,
+            source: false,
+            configuration: const read.AgreedConfiguration(
+              phoneToDesktop: false,
+              mode: plan.SyncMode.overwrite,
+              includeAccounts: true,
+            ),
+          );
         await tester.pumpWidget(
           panelApp(session, language: language, scale: 2),
         );
-        expect(find.textContaining('80.17 MB'), findsOneWidget);
-        expect(find.textContaining('95.37 MB'), findsOneWidget);
+        expect(find.byKey(const Key('device-sync-direction')), findsOneWidget);
+        expect(
+          find.text(language == 'zh' ? '需传输 0.1 KB' : 'To transfer: 0.1 KB'),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('device-space-details')), findsNothing);
+        expect(find.textContaining('80.17 MB'), findsNothing);
+        expect(find.textContaining('95.37 MB'), findsNothing);
         expect(
           find.textContaining(language == 'zh' ? '数据库' : 'Database'),
-          findsOneWidget,
+          findsNothing,
         );
         expect(
           find.textContaining(language == 'zh' ? '安全余量' : 'safety margin'),
-          findsOneWidget,
+          findsNothing,
         );
         await tester.ensureVisible(
           find.byKey(const Key('device-approve-preview')),
@@ -332,22 +356,98 @@ void main() {
         expect(tester.takeException(), isNull);
         session.update(
           endpoint(
-            driver.State.awaitingApproval,
+            driver.State.awaitingAccountConsent,
             source: true,
             host: true,
             controller: false,
           ),
         );
         await tester.pump();
-        expect(find.textContaining('80.17 MB'), findsNothing);
-        expect(
-          find.textContaining(
-            language == 'zh' ? '接收设备会核对空间' : 'receiving device will check',
-          ),
-          findsOneWidget,
-        );
+        expect(find.byKey(const Key('device-sync-direction')), findsNothing);
         await tester.pumpWidget(const SizedBox.shrink());
       }
+    },
+  );
+
+  testWidgets(
+    'rapid pairing confirmation queues once and drops it after the session advances',
+    (tester) async {
+      final started = Completer<void>();
+      final finish = Completer<void>();
+      final session = _BusyPairingSession(started, finish)
+        ..state = endpoint(
+          driver.State.pairing,
+          pairing: read.PairingStage.awaitingConfirmation,
+        );
+      await tester.pumpWidget(panelApp(session));
+
+      await tester.tap(find.byKey(const Key('device-confirm-pair')));
+      await tester.pump();
+      expect(
+        find.byKey(const Key('device-confirm-pair-progress')),
+        findsOneWidget,
+      );
+      await started.future;
+      await tester.tap(find.byKey(const Key('device-confirm-pair')));
+      await tester.tap(find.byKey(const Key('device-confirm-pair')));
+      await tester.pump();
+      expect(session.confirmCalls, 1);
+
+      session.update(endpoint(driver.State.configuring));
+      finish.complete();
+      await tester.pumpAndSettle();
+      expect(session.confirmCalls, 1);
+      expect(session.confirmedLocally, isFalse);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'rapid preview approval queues once and drops it after the stage changes',
+    (tester) async {
+      final started = Completer<void>();
+      final finish = Completer<void>();
+      final session = _BusyApprovalSession(started, finish)
+        ..shown = _mergePreview
+        ..state = endpoint(
+          driver.State.awaitingApproval,
+          source: false,
+          configuration: const read.AgreedConfiguration(
+            phoneToDesktop: false,
+            mode: plan.SyncMode.merge,
+            includeAccounts: false,
+          ),
+        );
+      await tester.pumpWidget(panelApp(session));
+      await tester.ensureVisible(
+        find.byKey(const Key('device-approve-preview')),
+      );
+
+      await tester.tap(find.byKey(const Key('device-approve-preview')));
+      await tester.pump();
+      expect(find.byKey(const Key('device-approve-progress')), findsOneWidget);
+      await started.future;
+      await tester.tap(find.byKey(const Key('device-approve-preview')));
+      await tester.tap(find.byKey(const Key('device-approve-preview')));
+      await tester.pump();
+      expect(session.approvalCalls, 1);
+
+      session.update(
+        endpoint(
+          driver.State.verifying,
+          source: false,
+          configuration: const read.AgreedConfiguration(
+            phoneToDesktop: false,
+            mode: plan.SyncMode.merge,
+            includeAccounts: false,
+          ),
+        ),
+      );
+      finish.complete();
+      await tester.pumpAndSettle();
+      expect(session.approvalCalls, 1);
+      expect(session.approvals, isEmpty);
+      await tester.pumpWidget(const SizedBox.shrink());
     },
   );
 
@@ -408,7 +508,7 @@ void main() {
         find.byKey(const Key('device-transfer-progress-section')),
       );
       expect(find.byKey(const Key('device-byte-progress')), findsOneWidget);
-      expect(find.text('Transferred 10 B / 100 B'), findsOneWidget);
+      expect(find.text('Transferred 0.01 KB / 0.1 KB'), findsOneWidget);
 
       session.update(
         endpoint(
@@ -435,7 +535,7 @@ void main() {
         isTrue,
       );
       expect(find.byKey(const Key('device-byte-progress')), findsOneWidget);
-      expect(find.text('Transferred 10 B / 100 B'), findsOneWidget);
+      expect(find.text('Transferred 0.01 KB / 0.1 KB'), findsOneWidget);
 
       session.update(
         endpoint(
@@ -451,7 +551,7 @@ void main() {
         ),
       );
       await tester.pump();
-      expect(find.text('Transferred 20 B / 100 B'), findsOneWidget);
+      expect(find.text('Transferred 0.02 KB / 0.1 KB'), findsOneWidget);
       expect(find.text('Current speed: 0.02 KB/s'), findsOneWidget);
     },
   );
@@ -636,7 +736,11 @@ void main() {
   ) async {
     for (final accepted in [false, true]) {
       final session = PanelSession()
-        ..state = endpoint(driver.State.awaitingAccountConsent)
+        ..state = endpoint(
+          driver.State.awaitingAccountConsent,
+          host: true,
+          phoneControlled: false,
+        )
         ..confirmed = true;
       await tester.pumpWidget(panelApp(session));
       expect(session.consents, isEmpty);
@@ -655,6 +759,36 @@ void main() {
       expect(session.approvals, isEmpty);
     }
   });
+
+  testWidgets(
+    'phone account selection authorizes this sync without a second prompt',
+    (tester) async {
+      final session = PanelSession()
+        ..confirmed = true
+        ..state = endpoint(
+          driver.State.awaitingAccountConsent,
+          phoneControlled: true,
+          controller: true,
+          configuration: const read.AgreedConfiguration(
+            phoneToDesktop: false,
+            mode: plan.SyncMode.merge,
+            includeAccounts: true,
+          ),
+        );
+      session.proposedConfiguration = const DeviceSyncProposal(
+        phoneToDesktop: false,
+        mode: plan.SyncMode.merge,
+        includeAccounts: true,
+      );
+      await tester.pumpWidget(panelApp(session));
+      await tester.pumpAndSettle();
+
+      expect(session.consents, [true]);
+      expect(find.byKey(const Key('device-allow-accounts')), findsNothing);
+      expect(find.byKey(const Key('device-no-accounts')), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('desktop delegates pairing, configuration and preview to phone', (
     tester,
@@ -698,7 +832,7 @@ void main() {
     await tester.pumpWidget(panelApp(session));
     await tester.tap(find.byKey(const Key('device-review-preview')));
     await tester.pump();
-    expect(find.textContaining('95.37 MB'), findsOneWidget);
+    expect(find.text('To transfer: 0.1 KB'), findsOneWidget);
     await tester.ensureVisible(find.byKey(const Key('device-approve-preview')));
     expect(find.byKey(const Key('device-approve-preview')), findsOneWidget);
     expect(session.approvals, isEmpty);
@@ -721,7 +855,7 @@ void main() {
         await tester.pumpWidget(panelApp(session, language: language));
         expect(
           find.text(
-            language == 'zh' ? '已传输 0 B / 未知' : 'Transferred 0 B / Unknown',
+            language == 'zh' ? '已传输 0 KB / 未知' : 'Transferred 0 KB / Unknown',
           ),
           findsOneWidget,
         );
@@ -808,7 +942,7 @@ void main() {
       find.byKey(const Key('device-byte-progress')),
     );
     expect(progress.value, .25);
-    expect(find.textContaining('25 B / 100 B'), findsOneWidget);
+    expect(find.textContaining('0.02 KB / 0.1 KB'), findsOneWidget);
     session.update(endpoint(driver.State.completedUnconfirmed, source: false));
     await tester.pump();
     expect(
@@ -966,6 +1100,27 @@ final samePreview = DeviceSyncPreviewView(
     ),
   ),
 );
+final _mergePreview = DeviceSyncPreviewView(
+  library: read.PreviewSummary(
+    binding: 'merge-preview',
+    mode: plan.SyncMode.merge,
+    media: counts,
+    albums: counts,
+    space: plan.SpaceEstimate(
+      newStagingBytes: BigInt.from(100),
+      reusableOriginalBytes: BigInt.zero,
+      backupOriginalBytes: BigInt.zero,
+      backupBytesIfCopied: BigInt.zero,
+      conservativeContentBytes: BigInt.from(100),
+      excludesMetadataAndFilesystemOverhead: true,
+    ),
+    conflicts: read.ConflictCounts(
+      unknownRevision: BigInt.zero,
+      equalRevision: BigInt.zero,
+      clockSkew: BigInt.zero,
+    ),
+  ),
+);
 final progress = read.ProgressView(
   workStage: WorkStage.idle,
   workActive: false,
@@ -1063,10 +1218,10 @@ class PanelSession extends DeviceSyncSessionController {
   @override
   read.EndpointRead? get snapshot => state;
   @override
-  DeviceSyncProposal? get proposedConfiguration => const DeviceSyncProposal(
+  DeviceSyncProposal? proposedConfiguration = const DeviceSyncProposal(
     phoneToDesktop: false,
     mode: plan.SyncMode.merge,
-    includeAccounts: true,
+    includeAccounts: false,
   );
   @override
   DeviceSyncPreviewView? get preview => shown;
@@ -1131,4 +1286,43 @@ class _FailingConsentSession extends PanelSession {
   @override
   Future<void> consentAccounts({required bool accepted}) async =>
       throw failureToThrow;
+}
+
+class _BusyPairingSession extends PanelSession {
+  _BusyPairingSession(this.started, this.finish);
+  final Completer<void> started, finish;
+  int confirmCalls = 0;
+  @override
+  bool get busy => confirmCalls > 0 && !finish.isCompleted;
+  @override
+  Future<void> confirmPairing() async {
+    confirmCalls++;
+    if (confirmCalls == 1) {
+      started.complete();
+      await finish.future;
+    }
+    if (snapshot?.value?.pairing != read.PairingStage.awaitingConfirmation) {
+      return;
+    }
+    confirmed = true;
+    notifyListeners();
+  }
+}
+
+class _BusyApprovalSession extends PanelSession {
+  _BusyApprovalSession(this.started, this.finish);
+  final Completer<void> started, finish;
+  int approvalCalls = 0;
+  @override
+  bool get busy => approvalCalls > 0 && !finish.isCompleted;
+  @override
+  Future<void> approvePreview(DeviceSyncPreviewView shown) async {
+    approvalCalls++;
+    if (approvalCalls == 1) {
+      started.complete();
+      await finish.future;
+    }
+    if (snapshot?.value?.stage != driver.State.awaitingApproval) return;
+    await super.approvePreview(shown);
+  }
 }

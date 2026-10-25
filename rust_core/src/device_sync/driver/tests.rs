@@ -24,6 +24,53 @@ struct TestClock {
     mono: AtomicU64,
     wall: std::sync::atomic::AtomicI64,
 }
+
+#[test]
+fn confirmed_pair_is_durable_until_explicit_cancel_has_fully_settled() {
+    let mut pair = Pair::new();
+    assert_eq!(
+        pair.a
+            .database()
+            .device_sync_unfinished_sessions()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        pair.b
+            .database()
+            .device_sync_unfinished_sessions()
+            .unwrap()
+            .len(),
+        1
+    );
+    pair.host.cancel();
+    pair.host.finish_shutdown();
+    pair.host.retire_session_record().unwrap();
+    assert!(pair
+        .a
+        .database()
+        .device_sync_unfinished_sessions()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        pair.b
+            .database()
+            .device_sync_unfinished_sessions()
+            .unwrap()
+            .len(),
+        1
+    );
+    pair.phone.cancel();
+    pair.phone.finish_shutdown();
+    pair.phone.retire_session_record().unwrap();
+    assert!(pair
+        .b
+        .database()
+        .device_sync_unfinished_sessions()
+        .unwrap()
+        .is_empty());
+}
 impl TestClock {
     fn new() -> Arc<Self> {
         Arc::new(Self {

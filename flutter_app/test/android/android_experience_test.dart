@@ -194,7 +194,9 @@ void registerAndroidExperienceTests({bool layoutOnly = false}) {
         expect(imported, findsOneWidget);
         final unknownImported = find.descendant(
           of: imported,
-          matching: find.textContaining(locale == 'zh' ? '未知' : 'Unknown'),
+          matching: find.textContaining(
+            locale == 'zh' ? '未记录' : 'Not recorded',
+          ),
         );
         expect(unknownImported, findsOneWidget);
         final add = find.byKey(const Key('android-inline-add-tag'));

@@ -12,9 +12,20 @@ fn v4_native_carrier_and_ipc_accept_eight_mib_and_reject_oversize_before_allocat
         Some(MAX_BLOCK)
     );
     assert!(validate_entries(&[(name.into(), MAX_BLOCK as u64 + 1, false)]).is_err());
+    let header = br#"{"method":"write","payload_length":8388608}"#.to_vec();
+    let payload = vec![1; MAX_BLOCK];
     let mut packet = Vec::new();
-    write_packet(&mut packet, &vec![1; MAX_IPC]).unwrap();
-    assert_eq!(read_packet(&mut packet.as_slice()).unwrap().len(), MAX_IPC);
+    write_packet(
+        &mut packet,
+        &IpcPacket {
+            header: header.clone(),
+            payload: payload.clone(),
+        },
+    )
+    .unwrap();
+    let decoded = read_packet(&mut packet.as_slice()).unwrap();
+    assert_eq!(decoded.header, header);
+    assert_eq!(decoded.payload, payload);
     assert_eq!(
         read_packet(&mut (MAX_IPC as u32 + 1).to_be_bytes().as_slice()),
         Err(NativeError::Bounds)
@@ -112,15 +123,30 @@ fn native_v4_ciphertext_carrier_accepts_exactly_eight_mib_and_rejects_one_extra_
 }
 
 #[test]
-fn worker_ipc_accepts_exactly_twelve_mib_without_relaxing_declared_length_rejection() {
-    let payload = vec![b'a'; MAX_IPC];
+fn worker_ipc_accepts_binary_carrier_without_base64_expansion() {
+    let payload = vec![0x53; MAX_BLOCK];
+    let header = br#"{"method":"write","payload_length":8388608}"#.to_vec();
+    let ipc = IpcPacket {
+        header: header.clone(),
+        payload: payload.clone(),
+    };
     let mut encoded = Vec::new();
-    write_packet(&mut encoded, &payload).unwrap();
-    assert_eq!(&encoded[..4], &(MAX_IPC as u32).to_be_bytes());
-    assert_eq!(read_packet(&mut encoded.as_slice()).unwrap(), payload);
+    write_packet(&mut encoded, &ipc).unwrap();
+    assert_eq!(
+        u32::from_be_bytes(encoded[..4].try_into().unwrap()) as usize,
+        IPC_ENVELOPE_BYTES + header.len() + MAX_BLOCK
+    );
+    let decoded = read_packet(&mut encoded.as_slice()).unwrap();
+    assert_eq!(decoded, ipc);
     let mut rejected = Vec::new();
     assert_eq!(
-        write_packet(&mut rejected, &vec![0; MAX_IPC + 1]),
+        write_packet(
+            &mut rejected,
+            &IpcPacket {
+                header,
+                payload: vec![0; MAX_BLOCK + 1],
+            }
+        ),
         Err(NativeError::Bounds)
     );
     assert!(rejected.is_empty());
@@ -131,6 +157,224 @@ fn worker_ipc_accepts_exactly_twelve_mib_without_relaxing_declared_length_reject
             Err(NativeError::Bounds)
         );
     }
+}
+
+#[test]
+fn native_write_request_uses_raw_payload_and_checks_declared_length() {
+    let payload = vec![0, 255, 1, 128];
+    let request = NativeRequest::Write {
+        operation: "a".repeat(32),
+        session: "b".repeat(32),
+        name: "0000000000000000.block".into(),
+        bytes: payload.clone(),
+    };
+    let packet = request.into_packet().unwrap();
+    let header: serde_json::Value = serde_json::from_slice(&packet.header).unwrap();
+    assert_eq!(header["payload_length"], payload.len());
+    assert_eq!(packet.payload, payload);
+    assert!(header.get("bytes").is_none());
+    assert_eq!(
+        NativeRequest::from_packet(packet).unwrap(),
+        NativeRequest::Write {
+            operation: "a".repeat(32),
+            session: "b".repeat(32),
+            name: "0000000000000000.block".into(),
+            bytes: vec![0, 255, 1, 128],
+        }
+    );
+
+    let mut malformed = NativeRequest::Write {
+        operation: "a".repeat(32),
+        session: "b".repeat(32),
+        name: "0000000000000000.block".into(),
+        bytes: vec![1, 2, 3],
+    }
+    .into_packet()
+    .unwrap();
+    malformed.payload.push(4);
+    assert_eq!(
+        NativeRequest::from_packet(malformed),
+        Err(NativeError::Bounds)
+    );
+    assert_eq!(
+        NativeRequest::from_packet(IpcPacket {
+            header: br#"{"method":"read","operation":"a","session":"b","direction":"desktop","name":"0000000000000000.block"}"#.to_vec(),
+            payload: vec![1],
+        }),
+        Err(NativeError::InvalidBlock)
+    );
+}
+
+#[test]
+fn native_read_response_keeps_binary_body_outside_json_header() {
+    let payload = vec![0, 255, 1, 128];
+    let packet = response_packet(Ok(serde_json::Value::Null), payload.clone()).unwrap();
+    let header: serde_json::Value = serde_json::from_slice(&packet.header).unwrap();
+    assert_eq!(header["payload_length"], payload.len());
+    assert!(header["value"]["Ok"].is_null());
+    assert_eq!(packet.payload, payload);
+    let response = response_from_packet(packet).unwrap();
+    assert!(response.value.is_null());
+    assert_eq!(response.payload, vec![0, 255, 1, 128]);
+    assert_eq!(
+        response_packet(Err(NativeError::InvalidBlock), vec![1]),
+        Err(NativeError::Bounds)
+    );
+    assert_eq!(
+        response_packet(Ok(serde_json::json!(true)), vec![1]),
+        Err(NativeError::InvalidBlock)
+    );
+}
+
+#[test]
+fn ipc_decoders_enforce_bounds_for_directly_constructed_packets() {
+    assert_eq!(
+        NativeRequest::from_packet(IpcPacket {
+            header: vec![b' '; MAX_IPC_HEADER + 1],
+            payload: vec![],
+        }),
+        Err(NativeError::Bounds)
+    );
+    assert_eq!(
+        NativeRequest::from_packet(IpcPacket {
+            header: br#"{"method":"enumerate"}"#.to_vec(),
+            payload: vec![0; MAX_BLOCK + 1],
+        }),
+        Err(NativeError::Bounds)
+    );
+    assert_eq!(
+        response_from_packet(IpcPacket {
+            header: vec![b' '; MAX_IPC_HEADER + 1],
+            payload: vec![],
+        }),
+        Err(NativeError::Bounds)
+    );
+}
+
+#[test]
+fn legacy_json_only_worker_framing_is_rejected() {
+    let legacy_body = br#"{"method":"enumerate"}"#;
+    let mut packet = Vec::new();
+    packet.extend_from_slice(&(legacy_body.len() as u32).to_be_bytes());
+    packet.extend_from_slice(legacy_body);
+    assert_eq!(read_packet(&mut packet.as_slice()), Err(NativeError::Io));
+}
+
+#[test]
+fn ipc_framing_rejects_truncation_and_inconsistent_lengths() {
+    let mut encoded = vec![];
+    write_packet(
+        &mut encoded,
+        &IpcPacket {
+            header: br#"{"method":"close"}"#.to_vec(),
+            payload: vec![0, 255, 128],
+        },
+    )
+    .unwrap();
+    for cut in [0, 3, 4, 12, 19, 20, encoded.len() - 1] {
+        assert_eq!(
+            read_packet(&mut &encoded[..cut]),
+            Err(NativeError::Io),
+            "truncated packet at {cut}"
+        );
+    }
+    for (offset, declared) in [
+        (12, 0),
+        (12, MAX_IPC_HEADER as u32 + 1),
+        (16, MAX_BLOCK as u32 + 1),
+        (16, 2),
+    ] {
+        let mut malformed = encoded.clone();
+        malformed[offset..offset + 4].copy_from_slice(&declared.to_be_bytes());
+        assert_eq!(
+            read_packet(&mut malformed.as_slice()),
+            Err(NativeError::Bounds)
+        );
+    }
+}
+
+#[test]
+fn ipc_framing_handles_short_reads_and_writes_and_reports_broken_pipe() {
+    use std::io::{Read, Write};
+    struct ShortWriter {
+        bytes: Vec<u8>,
+        remaining: usize,
+    }
+    impl Write for ShortWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.remaining == 0 {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            let count = bytes.len().min(3).min(self.remaining);
+            self.bytes.extend_from_slice(&bytes[..count]);
+            self.remaining -= count;
+            Ok(count)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    struct ShortReader<'a>(&'a [u8]);
+    impl Read for ShortReader<'_> {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            let count = bytes.len().min(2);
+            self.0.read(&mut bytes[..count])
+        }
+    }
+    let packet = IpcPacket {
+        header: br#"{"value":{"Ok":null},"payload_length":4}"#.to_vec(),
+        payload: vec![0, 128, 255, 3],
+    };
+    let mut writer = ShortWriter {
+        bytes: vec![],
+        remaining: usize::MAX,
+    };
+    write_packet(&mut writer, &packet).unwrap();
+    assert_eq!(
+        read_packet(&mut ShortReader(&writer.bytes)).unwrap(),
+        packet
+    );
+    let mut broken = ShortWriter {
+        bytes: vec![],
+        remaining: 25,
+    };
+    assert_eq!(write_packet(&mut broken, &packet), Err(NativeError::Io));
+    assert_eq!(
+        read_packet(&mut broken.bytes.as_slice()),
+        Err(NativeError::Io)
+    );
+}
+
+#[test]
+fn response_payload_must_match_the_native_operation() {
+    assert!(validate_response_payload(
+        NativeResponse {
+            value: serde_json::Value::Null,
+            payload: vec![1, 2, 3],
+        },
+        true,
+    )
+    .is_ok());
+    assert_eq!(
+        validate_response_payload(
+            NativeResponse {
+                value: serde_json::Value::Null,
+                payload: vec![],
+            },
+            true,
+        ),
+        Err(NativeError::InvalidBlock)
+    );
+    assert_eq!(
+        validate_response_payload(
+            NativeResponse {
+                value: serde_json::Value::Null,
+                payload: vec![1],
+            },
+            false,
+        ),
+        Err(NativeError::InvalidBlock)
+    );
 }
 
 #[test]

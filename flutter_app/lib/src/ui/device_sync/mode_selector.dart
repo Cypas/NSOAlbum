@@ -81,8 +81,8 @@ class DeviceSyncModeSelector extends StatelessWidget {
       if (includeAccounts)
         Text(
           context.l10n.select(
-            zh: '包含 Nintendo 账号与登录凭据，继续后仍需单独授权。',
-            en: 'Includes Nintendo accounts and sign-in credentials. Separate consent is required to continue.',
+            zh: '包含 Nintendo 账号、登录凭据及历史账号显示名称。选择后会在本次会话中安全处理账号同步授权。',
+            en: 'Includes Nintendo accounts, sign-in credentials and account display-name history. Account-sync authorization is handled securely for this session after you continue.',
           ),
         ),
       const SizedBox(height: 12),

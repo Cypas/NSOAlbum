@@ -36,6 +36,7 @@ class SyncController extends ChangeNotifier {
   int totalAccounts = 0;
   final Map<String, SyncSummary> accountResults = {};
   final Map<String, Object> accountErrors = {};
+  final Map<String, DateTime> accountAttemptedAt = {};
   final Map<String, SyncScheduleStatus?> accountSchedules = {};
   final Set<String> authPausedAccountIds = {};
   final Set<String> _pendingAuthenticatedAccountIds = {};
@@ -101,8 +102,8 @@ class SyncController extends ChangeNotifier {
         await _runAccountQueue(automatic: automatic, accountIds: accountIds);
       } else {
         await _runLegacySync();
-        if (automatic && summary != null) {
-          await _notifyAutomaticCompletion([summary!]);
+        if (summary != null) {
+          await _notifySyncCompletion([summary!]);
         }
       }
     } catch (exception, stackTrace) {
@@ -196,6 +197,7 @@ class SyncController extends ChangeNotifier {
       accountErrors.remove(accountId);
       _authenticationOverrides.remove(accountId);
       currentAccountId = accountId;
+      accountAttemptedAt[accountId] = _now();
       progress = null;
       _notify();
       try {
@@ -204,7 +206,7 @@ class SyncController extends ChangeNotifier {
         accountResults[accountId] = result;
         accountErrors.remove(accountId);
         authPausedAccountIds.remove(accountId);
-        summary = result;
+        summary = _combinedAccountResults(queue);
         progress = _completedProgress(result);
         try {
           accountSchedules[accountId] = await backend.recordAccountSyncOutcome(
@@ -249,19 +251,47 @@ class SyncController extends ChangeNotifier {
       }
       _notify();
     }
+    summary = _combinedAccountResults(queue);
     state = _cancelRequested ? SyncState.cancelled : SyncState.completed;
-    if (automatic) {
-      await _notifyAutomaticCompletion(
-        queue
-            .map((id) => accountResults[id])
-            .whereType<SyncSummary>()
-            .toList(growable: false),
-        failedAccountCount: queue.where(accountErrors.containsKey).length,
-      );
-    }
+    await _notifySyncCompletion(
+      queue
+          .map((id) => accountResults[id])
+          .whereType<SyncSummary>()
+          .toList(growable: false),
+      failedAccountCount: queue.where(accountErrors.containsKey).length,
+    );
   }
 
-  Future<void> _notifyAutomaticCompletion(
+  SyncSummary? _combinedAccountResults(Iterable<String> accountIds) {
+    final results = accountIds
+        .map((id) => accountResults[id])
+        .whereType<SyncSummary>()
+        .toList(growable: false);
+    if (results.isEmpty) return null;
+    return SyncSummary(
+      jobId: results.last.jobId,
+      totalFound: results.fold(
+        BigInt.zero,
+        (total, value) => total + value.totalFound,
+      ),
+      downloaded: results.fold(
+        BigInt.zero,
+        (total, value) => total + value.downloaded,
+      ),
+      duplicates: results.fold(
+        BigInt.zero,
+        (total, value) => total + value.duplicates,
+      ),
+      skippedRemote: results.fold(
+        BigInt.zero,
+        (total, value) => total + value.skippedRemote,
+      ),
+      failed: results.fold(BigInt.zero, (total, value) => total + value.failed),
+      errors: results.expand((value) => value.errors).toList(growable: false),
+    );
+  }
+
+  Future<void> _notifySyncCompletion(
     List<SyncSummary> results, {
     int failedAccountCount = 0,
   }) async {
@@ -296,7 +326,7 @@ class SyncController extends ChangeNotifier {
         } catch (exception, stackTrace) {
           try {
             await _backend.logError(
-              '[sync] trigger=automatic stage=notification_failed',
+              '[sync] trigger=sync stage=notification_failed',
               exception,
               stackTrace,
             );

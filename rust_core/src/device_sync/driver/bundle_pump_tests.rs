@@ -2,6 +2,57 @@ use super::*;
 use crate::device_sync::driver::pump::bundle::BundlePump;
 use crate::device_sync::mailbox::bundle::{BundleDecoder, BundleEncoder};
 
+struct AdvancingPreparationClock {
+    mono: AtomicU64,
+    wall: i64,
+}
+impl Clock for AdvancingPreparationClock {
+    fn monotonic_ms(&self) -> u64 {
+        self.mono.fetch_add(2, Ordering::SeqCst)
+    }
+    fn unix_ms(&self) -> i64 {
+        self.wall
+    }
+}
+
+#[tokio::test]
+async fn usb_active_preparation_crossing_flush_deadline_still_fills_target() {
+    let mut pair = super::stream_tests::window_pair().await;
+    pair.host.clock = Arc::new(AdvancingPreparationClock {
+        mono: AtomicU64::new(pair.hc.monotonic_ms()),
+        wall: pair.hc.unix_ms(),
+    });
+    let mut pump = BundlePump::default();
+    let first = pump
+        .outgoing_without_finish(&mut pair.host)
+        .unwrap()
+        .map(|(name, bytes)| (name.to_owned(), bytes.to_vec()))
+        .unwrap();
+    assert!(
+        first.1.len() >= 4 * 1024 * 1024,
+        "a publication timer must not stop actively available bounded preparation"
+    );
+    assert!(pair.host.clock.monotonic_ms() >= 50);
+    let before = pair.host.file.as_ref().unwrap().offset;
+    let pending = pump
+        .outgoing_without_finish(&mut pair.host)
+        .unwrap()
+        .map(|(name, bytes)| (name.to_owned(), bytes.to_vec()))
+        .unwrap();
+    assert_eq!(pending, first, "native write ownership must stay exact");
+    assert!(pair.host.file.as_ref().unwrap().offset >= before + 4 * 1024 * 1024);
+    assert!(pump.buffered_bytes() <= 16 * 1024 * 1024);
+    pump.written(&mut pair.host).unwrap();
+    let next = pump
+        .outgoing_without_finish(&mut pair.host)
+        .unwrap()
+        .unwrap();
+    assert!(next.1.len() >= 4 * 1024 * 1024);
+    assert_ne!(next.0, first.0);
+    pair.host.cancel();
+    assert!(pump.outgoing_without_finish(&mut pair.host).is_err());
+}
+
 #[tokio::test]
 async fn usb_large_media_reaches_four_mib_target_without_waiting_for_a_peer_receipt() {
     let mut pair = super::stream_tests::window_pair().await;

@@ -19,6 +19,7 @@ import '../rust/models.dart';
 import '../rust/nso/provider.dart';
 import '../rust/settings.dart';
 import 'app_backend.dart';
+import 'account_name_history.dart';
 import 'account_tool_requests.dart';
 import 'account_tool_lifecycle.dart';
 import 'nintendo_account_tools_backend.dart';
@@ -54,6 +55,7 @@ class RustBackend
         NintendoAccountToolLifecycleBackend,
         AccountWorkBackend,
         AccountScheduleAdmissionBackend,
+        NintendoAccountNameHistoryBackend,
         DeviceSyncStartupBackend {
   RustBackend._(
     this._storage,
@@ -479,6 +481,8 @@ class RustBackend
     int? albumId,
     bool newestFirst = true,
     List<String> gameNames = const [],
+    DateTime? importedFrom,
+    DateTime? importedUntil,
     DateTime? capturedFrom,
     DateTime? capturedUntil,
     CapturedOnThisDay? capturedOnThisDay,
@@ -491,11 +495,25 @@ class RustBackend
       albumId: albumId,
       newestFirst: newestFirst,
       gameNames: gameNames,
+      importedFrom: importedFrom,
+      importedUntil: importedUntil,
       capturedFrom: capturedFrom,
       capturedUntil: capturedUntil,
       capturedOnThisDay: capturedOnThisDay,
     ),
   );
+
+  @override
+  Future<GalleryPage> listMediaPage(GalleryPageRequest request) =>
+      rust_api.listMediaPage(request: request);
+
+  @override
+  Future<List<GameMediaCount>> listGameMediaCounts({int? albumId}) =>
+      rust_api.listGameMediaCounts(albumId: albumId);
+
+  @override
+  Future<MediaDetails> loadMediaDetails(int mediaId) =>
+      rust_api.mediaDetails(mediaId: mediaId);
 
   @override
   Future<List<AlbumSummary>> listAlbums() => rust_api.listAlbums();
@@ -1016,6 +1034,11 @@ class RustBackend
     final accountId = _accountId(session);
     await _commitAccounts(() async {
       _checkLogin(pending, flow, intent, epoch);
+      final tokens = await _readStoredAccountTokens();
+      tokens[accountId] = sessionToken;
+      final profileJson = await _sessionProfileJson(accountId, session);
+      await _validateAccountCandidate(tokens, accountId, profileJson);
+      _checkLogin(pending, flow, intent, epoch);
       final publishingEpoch = ++_accountCredentialEpoch;
       final cleanup = accountToolLifecycle.invalidateAndWait({accountId});
       for (final id in _accountToolRequests.removeAccount(accountId)) {
@@ -1025,15 +1048,12 @@ class RustBackend
       await cleanup;
       await _storage.delete(key: _friendCodeKey(accountId));
       _checkLogin(pending, flow, intent, publishingEpoch);
-      final tokens = await _readStoredAccountTokens();
-      _checkLogin(pending, flow, intent, publishingEpoch);
       // Once the first OS mutation is admitted, finish this one serialized
       // commit. A newer mutation runs afterward, never between its four keys.
-      tokens[accountId] = sessionToken;
       await _writeAccountTokens(tokens);
       await _storage.write(key: _selectedAccountKey, value: accountId);
       await _storage.delete(key: _sessionTokenKey);
-      await _cacheProfile(accountId, session);
+      await _writeProfileJson(profileJson);
       accountToolLifecycle.accountAvailable(accountId);
       if (identical(_pendingLogin, pending) && _pendingLoginFlow == flow) {
         _pendingLogin = null;
@@ -1093,6 +1113,15 @@ class RustBackend
   }
 
   @override
+  Future<List<NintendoAccountNameRecord>> listNintendoAccountNameHistory() =>
+      accountWorkGate.normal(() async {
+        _requireAccountAccess();
+        if (_isolated) return const [];
+        return accountNamesFromProfiles(await _readRawProfiles()).values
+            .toList(growable: false);
+      });
+
+  @override
   Future<String?> get selectedNintendoAccountId => deviceSyncStartup.deferred
       ? Future.value(null)
       : accountWorkGate.normal(_selectedNintendoAccountId);
@@ -1147,7 +1176,13 @@ class RustBackend
       tokens.remove(accountId);
       await _storage.delete(key: _friendCodeKey(accountId));
       final profiles = await _readCachedProfiles();
-      profiles.remove(accountId);
+      final previous = profiles[accountId];
+      if (previous != null) {
+        profiles[accountId] = NintendoAccountProfile(
+          accountId: accountId,
+          nickname: previous.nickname,
+        );
+      }
       await _writeCachedProfiles(profiles);
       await _writeAccountTokens(tokens);
       final selected = await _storage.read(key: _selectedAccountKey);
@@ -1450,10 +1485,13 @@ class RustBackend
       if (current.isNotEmpty || currentLegacy != legacy) {
         throw StateError('Nintendo legacy account state changed');
       }
-      _accountCredentialEpoch++;
       final accountId = _accountId(session);
       final migrated = <String, String>{accountId: legacy};
-      await _cacheProfile(accountId, session);
+      final profileJson = await _sessionProfileJson(accountId, session);
+      await _validateAccountCandidate(migrated, accountId, profileJson);
+      checkMigration();
+      _accountCredentialEpoch++;
+      await _writeProfileJson(profileJson);
       await _writeAccountTokens(migrated);
       await _storage.write(key: _selectedAccountKey, value: accountId);
       await _storage.delete(key: _sessionTokenKey);
@@ -1463,6 +1501,11 @@ class RustBackend
 
   Future<void> _writeAccountTokens(Map<String, String> tokens) async {
     _requireAccountAccess();
+    final raw = await readRawAccountKeys(FlutterAccountSecureStorage(_storage));
+    validateRawAccountSize({
+      ...raw,
+      _accountTokensKey: tokens.isEmpty ? null : jsonEncode(tokens),
+    });
     if (tokens.isEmpty) {
       await _storage.delete(key: _accountTokensKey);
       return;
@@ -1474,6 +1517,10 @@ class RustBackend
     _requireAccountAccess();
     final raw = await _storage.read(key: _accountProfilesKey);
     if (raw == null || raw.isEmpty) return {};
+    if (raw.length > maxAccountRawBytes ||
+        utf8.encode(raw).length > maxAccountRawBytes) {
+      throw AccountPayloadInvalid();
+    }
     dynamic decoded;
     try {
       decoded = jsonDecode(raw);
@@ -1512,20 +1559,91 @@ class RustBackend
     Map<String, NintendoAccountProfile> profiles,
   ) async {
     _requireAccountAccess();
-    if (profiles.isEmpty) {
-      await _storage.delete(key: _accountProfilesKey);
-      return;
+    await _writeProfileJson(await _encodeProfiles(profiles));
+  }
+
+  Future<Map<String, dynamic>> _readRawProfiles() async {
+    final raw = await _storage.read(key: _accountProfilesKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) return decoded;
+    } catch (_) {
+      // Do not leak malformed account metadata into a diagnostic.
     }
+    throw AccountPayloadInvalid();
+  }
+
+  Future<String?> _encodeProfiles(
+    Map<String, NintendoAccountProfile> profiles, {
+    String? refreshedAccountId,
+  }) async {
+    if (profiles.isEmpty) return null;
+    final old = await _readRawProfiles();
     final encoded = profiles.map(
       (accountId, profile) => MapEntry(accountId, {
-        'nickname': profile.nickname,
-        'avatar_url': profile.avatarUrl,
-        'avatar_base64': profile.avatarBytes == null
-            ? null
-            : base64Encode(profile.avatarBytes!),
+        if (accountId == refreshedAccountId ||
+            old[accountId] is! Map ||
+            (old[accountId] as Map)['nickname'] is String)
+          'nickname': profile.nickname,
+        if (profile.avatarUrl != null) 'avatar_url': profile.avatarUrl,
+        if (profile.avatarBytes != null)
+          'avatar_base64': base64Encode(profile.avatarBytes!),
+        if (accountId == refreshedAccountId)
+          'name_updated_at': DateTime.now().toUtc().toIso8601String()
+        else if (old[accountId] is Map &&
+            (old[accountId] as Map)['name_updated_at'] is String)
+          'name_updated_at': (old[accountId] as Map)['name_updated_at'],
       }),
     );
-    await _storage.write(key: _accountProfilesKey, value: jsonEncode(encoded));
+    return jsonEncode(encoded);
+  }
+
+  Future<String?> _sessionProfileJson(String id, CoralSession session) async {
+    final profiles = await _readCachedProfiles();
+    final previous = profiles[id];
+    final profile = _profileFromSession(id, session);
+    profiles[id] = session.nickname.trim().isEmpty && previous != null
+        ? NintendoAccountProfile(
+            accountId: id,
+            nickname: previous.nickname,
+            avatarUrl: profile.avatarUrl,
+            avatarBytes: profile.avatarBytes,
+          )
+        : profile;
+    return _encodeProfiles(
+      profiles,
+      refreshedAccountId: session.nickname.trim().isEmpty ? null : id,
+    );
+  }
+
+  Future<void> _validateAccountCandidate(
+    Map<String, String> tokens,
+    String selected,
+    String? profiles,
+  ) async {
+    final before = await readRawAccountKeys(
+      FlutterAccountSecureStorage(_storage),
+    );
+    validateRawAccountSize({
+      ...before,
+      _sessionTokenKey: null,
+      _accountTokensKey: jsonEncode(tokens),
+      _selectedAccountKey: selected,
+      _accountProfilesKey: profiles,
+    });
+  }
+
+  Future<void> _writeProfileJson(String? encoded) async {
+    final before = await readRawAccountKeys(
+      FlutterAccountSecureStorage(_storage),
+    );
+    validateRawAccountSize({...before, _accountProfilesKey: encoded});
+    if (encoded == null) {
+      await _storage.delete(key: _accountProfilesKey);
+    } else {
+      await _storage.write(key: _accountProfilesKey, value: encoded);
+    }
   }
 
   Future<void> _cacheProfile(
@@ -1539,9 +1657,7 @@ class RustBackend
             (await _readStoredAccountTokens())[accountId] != expectedToken)) {
       throw StateError('Nintendo account profile is no longer current');
     }
-    final profiles = await _readCachedProfiles();
-    profiles[accountId] = _profileFromSession(accountId, session);
-    await _writeCachedProfiles(profiles);
+    await _writeProfileJson(await _sessionProfileJson(accountId, session));
   });
 
   String _accountId(CoralSession session) {
@@ -1602,6 +1718,7 @@ class RustBackend
         expectedAccount: accountId,
         proxyUrl: _networkProxy,
       );
+      await _refreshMissingAccountAvatar(accountId, token);
       await _logger.info(
         '[sync] trigger=manual-or-scheduled account_slot=account stage=request_succeeded status=${summary.failed == BigInt.zero ? 'success' : 'partial_failure'}',
       );
@@ -1653,6 +1770,28 @@ class RustBackend
       rethrow;
     } finally {
       cleanup.remove();
+    }
+  }
+
+  Future<void> _refreshMissingAccountAvatar(
+    String accountId,
+    String sessionToken,
+  ) async {
+    final cached = (await _readCachedProfiles())[accountId];
+    if (cached?.avatarBytes?.isNotEmpty == true) return;
+    try {
+      final session = await rust_api.establishCoralSessionForAccount(
+        sessionToken: sessionToken,
+        expectedAccount: accountId,
+        proxyUrl: _networkProxy,
+      );
+      await _cacheProfile(accountId, session, expectedToken: sessionToken);
+    } catch (error) {
+      // Avatar recovery is best effort and must never turn a successful
+      // media synchronization into a failed synchronization.
+      await _logger.info(
+        '[sync] stage=account_avatar_refresh_failed account_slot=account reason=${sanitizeDiagnostic('$error')}',
+      );
     }
   }
 

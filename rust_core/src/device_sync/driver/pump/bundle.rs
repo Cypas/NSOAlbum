@@ -85,7 +85,7 @@ impl BundlePump {
         // The exact pending carrier stays owned by its native write. Prepare
         // at most one bounded successor while that write is in flight.
         for _ in 0..crate::device_sync::mailbox::bundle::MAX_DRAINS {
-            if self.buffer.ready(driver.clock.monotonic_ms())
+            if self.buffer.stop_filling()
                 || self
                     .buffered_bytes()
                     .saturating_add(super::super::super::MAX_CIPHERTEXT + 28)

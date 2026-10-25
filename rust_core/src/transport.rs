@@ -15,6 +15,7 @@ use crate::error::{CoreError, CoreResult};
 use crate::sync::CancellationToken;
 
 pub const DEFAULT_MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const NXAPI_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (Linux; Android 14; Pixel 7a) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36";
 const MAX_AVATAR_BYTES: u64 = 4 * 1024 * 1024;
@@ -94,6 +95,7 @@ pub struct HttpTransport {
     client: Arc<Client>,
     config: TransportConfig,
     download_user_agent: Option<String>,
+    follow_redirects: bool,
 }
 
 #[derive(Debug)]
@@ -320,25 +322,35 @@ impl HttpTransport {
         Arc::ptr_eq(&self.client, &other.client)
     }
     pub fn new(config: TransportConfig) -> CoreResult<Self> {
-        Self::configured(config, reqwest::redirect::Policy::limited(10))
+        Self::configured(config, true)
     }
 
     pub(crate) fn without_redirects(&self) -> CoreResult<Self> {
-        let mut transport =
-            Self::configured(self.config.clone(), reqwest::redirect::Policy::none())?;
+        let mut transport = Self::configured(self.config.clone(), false)?;
         transport
             .download_user_agent
             .clone_from(&self.download_user_agent);
         Ok(transport)
     }
 
-    fn configured(
-        config: TransportConfig,
-        redirects: reqwest::redirect::Policy,
-    ) -> CoreResult<Self> {
+    pub(crate) fn with_timeout(&self, timeout: Duration) -> CoreResult<Self> {
+        let mut config = self.config.clone();
+        config.timeout = timeout;
+        let mut transport = Self::configured(config, self.follow_redirects)?;
+        transport
+            .download_user_agent
+            .clone_from(&self.download_user_agent);
+        Ok(transport)
+    }
+
+    fn configured(config: TransportConfig, follow_redirects: bool) -> CoreResult<Self> {
         let mut builder = Client::builder()
             .timeout(config.timeout)
-            .redirect(redirects)
+            .redirect(if follow_redirects {
+                reqwest::redirect::Policy::limited(10)
+            } else {
+                reqwest::redirect::Policy::none()
+            })
             .user_agent(DEFAULT_USER_AGENT);
         if let Some(proxy_url) = config.proxy_url.as_deref().filter(|v| !v.trim().is_empty()) {
             let parsed = Url::parse(proxy_url)?;
@@ -353,6 +365,7 @@ impl HttpTransport {
             client: Arc::new(builder.build()?),
             config,
             download_user_agent: None,
+            follow_redirects,
         })
     }
 
@@ -900,6 +913,7 @@ pub(crate) mod tests {
             ),
             config: TransportConfig::default(),
             download_user_agent: None,
+            follow_redirects: true,
         };
         let error = transport
             .post_form_raw(

@@ -1,7 +1,6 @@
 //! Synthetic byte-only MTP probe; never initializes CoreApi or accesses accounts/library data.
 #[cfg(any(windows, target_os = "macos"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use base64::{engine::general_purpose::STANDARD, Engine};
     use squid_album_core::device_sync::{
         native_io::{Direction, NativeDevice, NativeRequest},
         native_process::NativeProcess,
@@ -24,10 +23,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut process = NativeProcess::spawn(&worker).map_err(|e| format!("{e:?}"))?;
     let mut request = |request| {
         process
-            .request(request, Duration::from_secs(15))
+            .request_response(request, Duration::from_secs(15))
             .map_err(|e| format!("{e:?}"))
     };
-    let devices: Vec<NativeDevice> = serde_json::from_value(request(NativeRequest::Enumerate)?)?;
+    let devices: Vec<NativeDevice> =
+        serde_json::from_value(request(NativeRequest::Enumerate)?.value)?;
     if devices.len() != 1 || devices[0].storages.is_empty() {
         return Err(
             "Probe requires exactly one available MTP device and a writable storage".into(),
@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         operation: operation.clone(),
         session: session.clone(),
         name: name.clone(),
-        bytes: STANDARD.encode(&bytes),
+        bytes: bytes.clone(),
     })?;
     let received = request(NativeRequest::Read {
         operation: operation.clone(),
@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         direction: Direction::Desktop,
         name: name.clone(),
     })?;
-    if STANDARD.decode(received.as_str().ok_or("No bytes")?)? != bytes {
+    if !received.value.is_null() || received.payload != bytes {
         return Err("MTP byte mismatch".into());
     }
     println!("MTP_NATIVE_PROBE PASS forced-native write/part-publish/read 123 bytes");
@@ -65,7 +65,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         operation: operation.clone(),
         session: session.clone(),
         direction: Direction::Mobile,
-    })?;
+    })?
+    .value;
     if mobile
         .as_array()
         .is_some_and(|a| a.iter().any(|n| n.as_str() == Some(&name)))
@@ -76,7 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             direction: Direction::Mobile,
             name: name.clone(),
         })?;
-        if STANDARD.decode(received.as_str().ok_or("No mobile bytes")?)? != bytes {
+        if !received.value.is_null() || received.payload != bytes {
             return Err("Mobile byte mismatch".into());
         }
         println!("MTP_NATIVE_PROBE PASS Android SAF -> Windows MTP 123 bytes");
@@ -87,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         operation,
         session,
         name,
-        bytes: STANDARD.encode([1]),
+        bytes: vec![1],
     })
     .is_ok()
     {

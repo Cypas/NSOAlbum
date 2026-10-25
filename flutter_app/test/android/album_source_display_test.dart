@@ -44,6 +44,22 @@ void main() {
           find.descendant(of: card, matching: find.text(known)),
           findsOneWidget,
         );
+        expect(
+          find.descendant(
+            of: card,
+            matching: find.text(
+              language == 'zh' ? '普通相册' : 'Regular album',
+            ),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: card,
+            matching: find.text('My regular album note'),
+          ),
+          findsOneWidget,
+        );
         for (final entry in [
           (3, language == 'zh' ? '来源：Phone' : 'Source: Phone'),
           (4, language == 'zh' ? '来源未知' : 'Unknown source'),
@@ -60,6 +76,29 @@ void main() {
             findsOneWidget,
           );
         }
+        final smartCard = find.byKey(const ValueKey('android-album-3'));
+        await tester.scrollUntilVisible(
+          smartCard,
+          250,
+          scrollable: find.byType(Scrollable).last,
+        );
+        await tester.pumpAndSettle();
+        expect(
+          find.descendant(
+            of: smartCard,
+            matching: find.text(
+              language == 'zh' ? '自动相册' : 'Smart album',
+            ),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: smartCard,
+            matching: find.text('My smart album note'),
+          ),
+          findsOneWidget,
+        );
         await tester.scrollUntilVisible(
           card,
           -250,

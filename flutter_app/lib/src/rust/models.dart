@@ -113,7 +113,95 @@ class CapturedOnThisDay {
           utcOffsetSeconds == other.utcOffsetSeconds;
 }
 
+class GalleryCursor {
+  final String filterFingerprint;
+  final String? effectiveSortTime;
+  final PlatformInt64 mediaId;
+
+  const GalleryCursor({
+    required this.filterFingerprint,
+    this.effectiveSortTime,
+    required this.mediaId,
+  });
+
+  @override
+  int get hashCode =>
+      filterFingerprint.hashCode ^
+      effectiveSortTime.hashCode ^
+      mediaId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is GalleryCursor &&
+          runtimeType == other.runtimeType &&
+          filterFingerprint == other.filterFingerprint &&
+          effectiveSortTime == other.effectiveSortTime &&
+          mediaId == other.mediaId;
+}
+
 enum GalleryKindFilter { all, image, video }
+
+class GalleryPage {
+  final List<MediaAsset> items;
+  final GalleryCursor? beforeCursor;
+  final GalleryCursor? afterCursor;
+  final bool hasBefore;
+  final bool hasAfter;
+
+  const GalleryPage({
+    required this.items,
+    this.beforeCursor,
+    this.afterCursor,
+    required this.hasBefore,
+    required this.hasAfter,
+  });
+
+  @override
+  int get hashCode =>
+      items.hashCode ^
+      beforeCursor.hashCode ^
+      afterCursor.hashCode ^
+      hasBefore.hashCode ^
+      hasAfter.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is GalleryPage &&
+          runtimeType == other.runtimeType &&
+          items == other.items &&
+          beforeCursor == other.beforeCursor &&
+          afterCursor == other.afterCursor &&
+          hasBefore == other.hasBefore &&
+          hasAfter == other.hasAfter;
+}
+
+enum GalleryPageDirection { forward, backward }
+
+class GalleryPageRequest {
+  final GalleryQuery query;
+  final GalleryCursor? cursor;
+  final GalleryPageDirection direction;
+
+  const GalleryPageRequest({
+    required this.query,
+    this.cursor,
+    required this.direction,
+  });
+
+  @override
+  int get hashCode => query.hashCode ^ cursor.hashCode ^ direction.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is GalleryPageRequest &&
+          runtimeType == other.runtimeType &&
+          query == other.query &&
+          cursor == other.cursor &&
+          direction == other.direction;
+}
 
 class GalleryQuery {
   final GalleryKindFilter kind;
@@ -123,6 +211,8 @@ class GalleryQuery {
   final PlatformInt64? albumId;
   final bool newestFirst;
   final List<String> gameNames;
+  final DateTime? importedFrom;
+  final DateTime? importedUntil;
   final DateTime? capturedFrom;
   final DateTime? capturedUntil;
   final CapturedOnThisDay? capturedOnThisDay;
@@ -135,6 +225,8 @@ class GalleryQuery {
     this.albumId,
     required this.newestFirst,
     required this.gameNames,
+    this.importedFrom,
+    this.importedUntil,
     this.capturedFrom,
     this.capturedUntil,
     this.capturedOnThisDay,
@@ -149,6 +241,8 @@ class GalleryQuery {
       albumId.hashCode ^
       newestFirst.hashCode ^
       gameNames.hashCode ^
+      importedFrom.hashCode ^
+      importedUntil.hashCode ^
       capturedFrom.hashCode ^
       capturedUntil.hashCode ^
       capturedOnThisDay.hashCode;
@@ -165,9 +259,42 @@ class GalleryQuery {
           albumId == other.albumId &&
           newestFirst == other.newestFirst &&
           gameNames == other.gameNames &&
+          importedFrom == other.importedFrom &&
+          importedUntil == other.importedUntil &&
           capturedFrom == other.capturedFrom &&
           capturedUntil == other.capturedUntil &&
           capturedOnThisDay == other.capturedOnThisDay;
+}
+
+class GameMediaCount {
+  final String gameName;
+  final BigInt imageCount;
+  final BigInt videoCount;
+  final BigInt selectionCount;
+
+  const GameMediaCount({
+    required this.gameName,
+    required this.imageCount,
+    required this.videoCount,
+    required this.selectionCount,
+  });
+
+  @override
+  int get hashCode =>
+      gameName.hashCode ^
+      imageCount.hashCode ^
+      videoCount.hashCode ^
+      selectionCount.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is GameMediaCount &&
+          runtimeType == other.runtimeType &&
+          gameName == other.gameName &&
+          imageCount == other.imageCount &&
+          videoCount == other.videoCount &&
+          selectionCount == other.selectionCount;
 }
 
 class GameTagAliasSummary {
@@ -450,6 +577,49 @@ class MediaDeletionResult {
           remainingAlbumCount == other.remainingAlbumCount;
 }
 
+class MediaDetails {
+  final MediaAsset media;
+  final DateTime? createdAt;
+  final DateTime? capturedAt;
+  final DateTime? importedAt;
+  final String storagePath;
+  final BigInt sizeBytes;
+  final List<MediaSourceDetails> sources;
+
+  const MediaDetails({
+    required this.media,
+    this.createdAt,
+    this.capturedAt,
+    this.importedAt,
+    required this.storagePath,
+    required this.sizeBytes,
+    required this.sources,
+  });
+
+  @override
+  int get hashCode =>
+      media.hashCode ^
+      createdAt.hashCode ^
+      capturedAt.hashCode ^
+      importedAt.hashCode ^
+      storagePath.hashCode ^
+      sizeBytes.hashCode ^
+      sources.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MediaDetails &&
+          runtimeType == other.runtimeType &&
+          media == other.media &&
+          createdAt == other.createdAt &&
+          capturedAt == other.capturedAt &&
+          importedAt == other.importedAt &&
+          storagePath == other.storagePath &&
+          sizeBytes == other.sizeBytes &&
+          sources == other.sources;
+}
+
 class MediaExportItemError {
   final PlatformInt64 mediaId;
   final String name;
@@ -503,6 +673,41 @@ class MediaExportSummary {
 }
 
 enum MediaKind { image, video }
+
+class MediaSourceDetails {
+  final String sourceType;
+  final String? sourcePath;
+  final String? provider;
+  final String? remoteId;
+  final DateTime? discoveredAt;
+
+  const MediaSourceDetails({
+    required this.sourceType,
+    this.sourcePath,
+    this.provider,
+    this.remoteId,
+    this.discoveredAt,
+  });
+
+  @override
+  int get hashCode =>
+      sourceType.hashCode ^
+      sourcePath.hashCode ^
+      provider.hashCode ^
+      remoteId.hashCode ^
+      discoveredAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MediaSourceDetails &&
+          runtimeType == other.runtimeType &&
+          sourceType == other.sourceType &&
+          sourcePath == other.sourcePath &&
+          provider == other.provider &&
+          remoteId == other.remoteId &&
+          discoveredAt == other.discoveredAt;
+}
 
 class NintendoFriend {
   final String friendId;

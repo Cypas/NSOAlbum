@@ -93,7 +93,67 @@ void main() {
     expect(pager.controller!.page, lessThan(1));
     await tester.pumpAndSettle();
     expect(pager.controller!.page, 1);
-    expect(find.text('2 / 2'), findsOneWidget);
+    expect(
+      tester
+          .widget<Text>(find.byKey(const Key('android-detail-filename')))
+          .data,
+      _image(2).originalName,
+    );
+  });
+
+  testWidgets('detail image decodes at viewport physical size with zoom room', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(720, 1600);
+    tester.view.devicePixelRatio = 2;
+    await tester.binding.setSurfaceSize(const Size(360, 800));
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(_app([_image(1), _image(2)]));
+    await tester.pump();
+
+    final image = tester.widget<Image>(find.byType(Image).first);
+    expect(image.image, isA<ResizeImage>());
+    final decoded = image.image as ResizeImage;
+    expect(decoded.width, 1080);
+    expect(decoded.height, 2400);
+  });
+
+  testWidgets('detail page changes briefly fade without replacing the pager', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_app([_image(1), _image(2)]));
+    await tester.pump();
+    final media = find.byKey(const Key('android-detail-media'));
+    final pager = tester.widget<PageView>(find.byType(PageView));
+
+    await tester.drag(media, const Offset(-250, 0));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 40));
+
+    final fadeFinder = find.byKey(const Key('android-detail-page-fade'));
+    expect(fadeFinder, findsOneWidget);
+    final fade = tester.widget<FadeTransition>(fadeFinder);
+    expect(fade.opacity.value, greaterThan(0));
+    expect(fade.opacity.value, lessThan(1));
+    expect(
+      tester.widget<PageView>(find.byType(PageView)).controller,
+      same(pager.controller),
+    );
+
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<FadeTransition>(
+            find.byKey(const Key('android-detail-page-fade')),
+          )
+          .opacity
+          .value,
+      1,
+    );
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('detail uses a light overlay, single-line filename and swipe', (
@@ -110,13 +170,13 @@ void main() {
     );
     expect(name.maxLines, 1);
     expect(name.overflow, TextOverflow.ellipsis);
-    expect(find.text('1 / 2'), findsOneWidget);
+    expect(find.text('1 / 2'), findsNothing);
     final preview = find.byKey(const Key('android-detail-media'));
     final size = tester.getSize(preview);
     expect(size.height, greaterThan(300));
     await tester.drag(preview, const Offset(-250, 0));
     await tester.pumpAndSettle();
-    expect(find.text('2 / 2'), findsOneWidget);
+    expect(find.text('2 / 2'), findsNothing);
     expect(
       tester
           .widget<Text>(find.byKey(const Key('android-detail-filename')))
@@ -155,7 +215,12 @@ void main() {
       expect(find.text('Discard unsaved changes?'), findsOneWidget);
       await tester.tap(find.text('Keep editing'));
       await tester.pumpAndSettle();
-      expect(find.text('1 / 2'), findsOneWidget);
+      expect(
+        tester
+            .widget<Text>(find.byKey(const Key('android-detail-filename')))
+            .data,
+        _image(1).originalName,
+      );
       expect(
         tester
             .widget<TextField>(
@@ -216,7 +281,12 @@ void main() {
       expect(find.byKey(const Key('android-detail-overlay')), findsNothing);
       await tester.drag(media, const Offset(-250, 0));
       await tester.pumpAndSettle();
-      expect(find.text('2 / 2'), findsOneWidget);
+      expect(
+        tester
+            .widget<Text>(find.byKey(const Key('android-detail-filename')))
+            .data,
+        _image(2).originalName,
+      );
       expect(find.byTooltip('More'), findsOneWidget);
       expect(
         find.byKey(const Key('android-detail-information')),
@@ -254,7 +324,7 @@ void registerAndroidDetailLayoutTests() {
           expect(find.textContaining('2026-10-18 12:34:56'), findsOneWidget);
           expect(find.textContaining('123456'), findsNothing);
           expect(
-            find.textContaining(locale == 'zh' ? '未知' : 'Unknown'),
+            find.textContaining(locale == 'zh' ? '未记录' : 'Not recorded'),
             findsOneWidget,
           );
           expect(tester.takeException(), isNull);

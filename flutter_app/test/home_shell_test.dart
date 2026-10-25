@@ -22,6 +22,7 @@ import 'package:squid_album/src/backend/storage_paths.dart' as storage_paths;
 import 'package:squid_album/src/ui/media_viewer.dart';
 import 'package:squid_album/src/ui/video_runtime.dart';
 import 'package:squid_album/src/release_update.dart';
+import 'package:squid_album/src/platform/windows_system_fonts.dart';
 
 void main() {
   setUp(() async {
@@ -55,7 +56,44 @@ void main() {
     expect(search.style?.fontFamilyFallback, appFontFallback);
   });
 
+  testWidgets('desktop scrollbars keep a visual inset from card edges', (
+    tester,
+  ) async {
+    await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
+    await tester.pumpAndSettle();
+    final theme = Theme.of(tester.element(find.byType(HomeShell)));
+    expect(theme.scrollbarTheme.crossAxisMargin, 8);
+    expect(theme.scrollbarTheme.mainAxisMargin, 8);
+  });
+
   group('[Windows]', () {
+    test(
+      'system font picker lists installed fonts through the native bridge',
+      () async {
+        const channel = MethodChannel('io.github.cypas.nsoalbum/system_fonts');
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, (call) async {
+              if (call.method != 'list') return null;
+              return [
+                {
+                  'name': 'Synthetic Sans',
+                  'path': r'C:\Windows\Fonts\SyntheticSans.ttf',
+                },
+              ];
+            });
+        addTearDown(
+          () => TestDefaultBinaryMessengerBinding
+              .instance
+              .defaultBinaryMessenger
+              .setMockMethodCallHandler(channel, null),
+        );
+        final fonts = await const WindowsSystemFonts().list();
+        expect(fonts, hasLength(1));
+        expect(fonts.single.name, 'Synthetic Sans');
+        expect(fonts.single.path, r'C:\Windows\Fonts\SyntheticSans.ttf');
+      },
+    );
+
     testWidgets(
       'font management persists reorder and applies without restarting',
       (tester) async {
@@ -151,6 +189,76 @@ void main() {
               ?.fontFamilyFallback,
           ['DFP_GBZY9', 'BlitzMain'],
         );
+      },
+      tags: 'platform-windows',
+    );
+
+    testWidgets(
+      'system font picker previews each font without exposing its path',
+      (tester) async {
+        tester.view.physicalSize = const Size(1200, 1200);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final fontPath = File('assets/fonts/default/BlitzMain.otf')
+            .absolute
+            .path;
+        const channel = MethodChannel('io.github.cypas.nsoalbum/system_fonts');
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, (call) async {
+              if (call.method != 'list') return null;
+              return [
+                {'name': 'Synthetic Sans (TrueType)', 'path': fontPath},
+              ];
+            });
+        addTearDown(
+          () => TestDefaultBinaryMessengerBinding
+              .instance
+              .defaultBinaryMessenger
+              .setMockMethodCallHandler(channel, null),
+        );
+
+        final backend = FakeBackend()..mediaItems = [];
+        final settings = SettingsController(backend);
+        addTearDown(settings.dispose);
+        final previewFamily = await tester.runAsync(
+          () => loadCustomFontFamilyForPreview(fontPath),
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            localizationsDelegates: const [
+              AppLocalizations.delegate,
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: SettingsPage(
+              controller: settings,
+              backend: backend,
+              onTagsChanged: () {},
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final button = find.byKey(const Key('choose-system-fonts'));
+        await tester.ensureVisible(button);
+        await tester.tap(button);
+        await tester.pump();
+        await tester.pump();
+
+        final sans = tester.widget<Text>(
+          find.descendant(
+            of: find.widgetWithText(
+              CheckboxListTile,
+              'Synthetic Sans (TrueType)',
+            ),
+            matching: find.text('Synthetic Sans (TrueType)'),
+          ),
+        );
+        expect(sans.style?.fontFamily, previewFamily);
+        expect(find.text(fontPath), findsNothing);
+        expect(find.textContaining(r'C:\Windows\Fonts'), findsNothing);
       },
       tags: 'platform-windows',
     );
@@ -385,6 +493,7 @@ void main() {
 
     await tester.enterText(search, '庆典');
     await tester.pump(const Duration(milliseconds: 650));
+    await tester.pumpAndSettle();
     expect(find.text('sample.jpg'), findsOneWidget);
   });
 
@@ -524,6 +633,25 @@ void main() {
     );
   });
 
+  testWidgets('desktop anniversary quick range uses local creation dates', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    await tester.pumpWidget(SquidAlbumApp(backend: backend));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('capture-date-filter')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('creation-date-quick-anniversary')));
+    await tester.pumpAndSettle();
+
+    final now = DateTime.now();
+    expect(backend.lastCapturedOnThisDay?.month, now.month);
+    expect(backend.lastCapturedOnThisDay?.day, now.day);
+    expect(backend.lastImportedFrom, isNull);
+    expect(backend.lastImportedUntil, isNull);
+  });
+
   testWidgets('filters by multiple visible game tags', (tester) async {
     final backend = FakeBackend(
       mediaItems: [
@@ -632,7 +760,7 @@ void main() {
       ),
       findsOneWidget,
     );
-    expect(find.text('1 / 2'), findsOneWidget);
+    expect(find.byKey(const Key('media-viewer-counter')), findsNothing);
     expect(find.text('Splatoon 3'), findsWidgets);
     final viewerBounds = tester.getRect(
       find.byKey(const Key('media-viewer-dialog')),
@@ -646,12 +774,8 @@ void main() {
       '一条测试备注',
     );
 
-    await tester.tap(find.byKey(const Key('media-viewer-immersive')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('media-viewer-note')), findsNothing);
+    expect(find.byKey(const Key('media-viewer-immersive')), findsNothing);
     expect(find.byKey(const Key('media-viewer-next')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('media-viewer-immersive')));
-    await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const Key('media-viewer-edit-metadata')));
     await tester.pumpAndSettle();
@@ -684,11 +808,17 @@ void main() {
       ),
       findsOneWidget,
     );
-    expect(find.text('2 / 2'), findsOneWidget);
+    expect(find.byKey(const Key('media-viewer-counter')), findsNothing);
 
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
     await tester.pumpAndSettle();
-    expect(find.text('1 / 2'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('media-viewer-dialog')),
+        matching: find.text('first.jpg'),
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('batch selection requires confirmation before deleting files', (
@@ -841,12 +971,15 @@ void main() {
     expect(header, findsOneWidget);
     final initialTop = tester.getTopLeft(header).dy;
     final mediaBefore = tester
-        .getTopLeft(find.byKey(const ValueKey('media-card-1')))
+        .getTopLeft(find.byKey(const ValueKey('media-card-20')))
         .dy;
-    await tester.drag(find.byType(CustomScrollView), const Offset(0, -500));
+    tester
+        .widget<CustomScrollView>(find.byType(CustomScrollView))
+        .controller!
+        .jumpTo(100);
     await tester.pumpAndSettle();
     final mediaAfter = tester
-        .getTopLeft(find.byKey(const ValueKey('media-card-1')))
+        .getTopLeft(find.byKey(const ValueKey('media-card-20')))
         .dy;
     expect(mediaAfter, lessThan(mediaBefore));
     expect(tester.getTopLeft(header).dy, lessThanOrEqualTo(initialTop));
@@ -995,7 +1128,7 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
     await tester.pumpAndSettle();
 
-    final grid = tester.widget<GridView>(find.byType(GridView).first);
+    final grid = tester.widget<SliverGrid>(find.byType(SliverGrid).first);
     final delegate =
         grid.gridDelegate as SliverGridDelegateWithFixedCrossAxisCount;
     expect(delegate.crossAxisCount, 6);
@@ -1841,6 +1974,162 @@ void main() {
   });
 
   testWidgets(
+    'desktop account bubbles contain tools and show each account sync status light',
+    (tester) async {
+      final backend = FakeBackend(
+        signedIn: true,
+        accountProfiles: const [
+          NintendoAccountProfile(accountId: 'account-1', nickname: 'Inkling'),
+          NintendoAccountProfile(accountId: 'account-2', nickname: 'Octoling'),
+        ],
+        accountSyncHistories: {
+          'account-1': SyncRuntimeState(
+            latestAttempt: SyncAttemptSummary(
+              attemptedAt: DateTime(2026, 10, 23, 9),
+              status: 'partial_failure',
+              totalFound: BigInt.one,
+              downloaded: BigInt.zero,
+              duplicates: BigInt.zero,
+              failed: BigInt.one,
+            ),
+          ),
+          'account-2': SyncRuntimeState(
+            latestAttempt: SyncAttemptSummary(
+              attemptedAt: DateTime(2026, 10, 23, 9),
+              status: 'success',
+              totalFound: BigInt.one,
+              downloaded: BigInt.one,
+              duplicates: BigInt.zero,
+              failed: BigInt.zero,
+            ),
+          ),
+        },
+      );
+      await tester.pumpWidget(SquidAlbumApp(backend: backend));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('导入与同步').last);
+      await tester.pumpAndSettle();
+
+      final firstBubble = find.byKey(
+        const Key('nintendo-account-bubble-account-1'),
+      );
+      final secondBubble = find.byKey(
+        const Key('nintendo-account-bubble-account-2'),
+      );
+      expect(firstBubble, findsOneWidget);
+      expect(secondBubble, findsOneWidget);
+      expect(
+        find.descendant(
+          of: firstBubble,
+          matching: find.byKey(const Key('sync-status-dot-account-1')),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: secondBubble,
+          matching: find.byKey(const Key('sync-status-dot-account-2')),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: firstBubble, matching: find.text('当前')),
+        findsNothing,
+      );
+      expect(
+        find.descendant(
+          of: firstBubble,
+          matching: find.byIcon(Icons.radio_button_unchecked_rounded),
+        ),
+        findsNothing,
+      );
+      final bubbleCard = tester.widget<Card>(firstBubble);
+      final bubbleBorder = bubbleCard.shape as RoundedRectangleBorder;
+      expect(
+        bubbleBorder.side.color,
+        Theme.of(tester.element(firstBubble)).colorScheme.outlineVariant,
+      );
+      await tester.tap(
+        find.descendant(
+          of: firstBubble,
+          matching: find.byKey(const Key('sync-account-account-1')),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(of: firstBubble, matching: find.text('好友列表')),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const Key('account-tools-expand-account-1')));
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(of: firstBubble, matching: find.text('好友列表')),
+        findsNothing,
+      );
+      await tester.tap(find.byKey(const Key('account-tools-expand-account-1')));
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(of: firstBubble, matching: find.text('好友列表')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: secondBubble, matching: find.text('好友列表')),
+        findsNothing,
+      );
+      final firstLight = tester.widget<Container>(
+        find.byKey(const Key('sync-status-dot-account-1')),
+      );
+      final secondLight = tester.widget<Container>(
+        find.byKey(const Key('sync-status-dot-account-2')),
+      );
+      expect(
+        (firstLight.decoration! as BoxDecoration).color,
+        Colors.orange.shade800,
+      );
+      expect(
+        (secondLight.decoration! as BoxDecoration).color,
+        Colors.green.shade700,
+      );
+    },
+  );
+
+  testWidgets(
+    'desktop manual sync queues every account and settles on empty galleries',
+    (tester) async {
+      final backend = _DesktopAccountQueueBackend(
+        outcomes: {
+          'account-1': _emptySyncSummary('empty-1'),
+          'account-2': _emptySyncSummary('empty-2'),
+        },
+      );
+      await tester.pumpWidget(SquidAlbumApp(backend: backend));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('导入与同步').last);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(FilledButton, '同步全部账号'));
+      await tester.pumpAndSettle();
+
+      expect(backend.accountCalls, ['account-1', 'account-2']);
+      expect(backend.syncCalls, 0);
+      expect(find.byKey(const Key('nso-sync-progress')), findsNothing);
+      expect(find.text('正在读取 Nintendo 相册列表…'), findsNothing);
+      expect(find.text('重复'), findsNothing);
+      for (final accountId in ['account-1', 'account-2']) {
+        final status = tester.widget<Text>(
+          find.byKey(Key('sync-history-$accountId')),
+        );
+        expect(
+          status.data,
+          matches(
+            RegExp(r'^\d{2}-\d{2} \d{2}:\d{2}:\d{2} · 成功 · NSO线上相册未上传任何媒体$'),
+          ),
+        );
+      }
+    },
+  );
+
+  testWidgets(
     'shows each Nintendo account its own latest sync time and result',
     (tester) async {
       final backend = FakeBackend(
@@ -1946,7 +2235,7 @@ void main() {
     expect(notice, findsOneWidget);
   });
 
-  testWidgets('confirms before removing the current Nintendo account', (
+  testWidgets('chooses an account before removing a Nintendo account', (
     tester,
   ) async {
     final backend = FakeBackend(
@@ -1963,7 +2252,7 @@ void main() {
 
     await tester.tap(find.byKey(const Key('remove-nintendo-account')));
     await tester.pumpAndSettle();
-    expect(find.text('移除当前账号？'), findsOneWidget);
+    expect(find.text('移除账号？'), findsOneWidget);
     expect(find.textContaining('已导入图库的图片、视频'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('cancel-remove-nintendo-account')));
@@ -2192,11 +2481,43 @@ void main() {
 
       await tester.pumpWidget(SquidAlbumApp(backend: backend));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump();
 
       expect(backend.syncCalls, 1);
     },
   );
+
+  testWidgets('cancels the startup sync delay when the app is disposed early', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    backend.settings = AppSettings(
+      proxyUrl: backend.settings.proxyUrl,
+      libraryPath: backend.settings.libraryPath,
+      theme: backend.settings.theme,
+      language: backend.settings.language,
+      galleryColumns: backend.settings.galleryColumns,
+      galleryRows: backend.settings.galleryRows,
+      showNotePreview: backend.settings.showNotePreview,
+      showGameTag: backend.settings.showGameTag,
+      compactTagDisplay: backend.settings.compactTagDisplay,
+      autoPlayVideo: backend.settings.autoPlayVideo,
+      autoSyncOnLaunch: true,
+      notifyOnAutoSync: backend.settings.notifyOnAutoSync,
+      showSplatoonSchedule: backend.settings.showSplatoonSchedule,
+      closeBehavior: backend.settings.closeBehavior,
+      customFontPaths: backend.settings.customFontPaths,
+      syncPolicy: backend.settings.syncPolicy,
+    );
+
+    await tester.pumpWidget(SquidAlbumApp(backend: backend));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+
+    expect(backend.syncCalls, 0);
+  });
 
   testWidgets('desktop sync restrictions show localized account guidance', (
     tester,
@@ -2325,7 +2646,7 @@ void main() {
 
     await tester.tap(find.text('导入与同步').last);
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(FilledButton, '立即同步'));
+    await tester.tap(find.widgetWithText(FilledButton, '同步全部账号'));
     await tester.pump(const Duration(milliseconds: 350));
 
     expect(find.byKey(const Key('nso-sync-progress')), findsOneWidget);
@@ -2410,6 +2731,8 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
   bool lastNewestFirst = true;
   DateTime? lastCapturedFrom;
   DateTime? lastCapturedUntil;
+  DateTime? lastImportedFrom;
+  DateTime? lastImportedUntil;
   CapturedOnThisDay? lastCapturedOnThisDay;
   int listMediaCalls = 0;
   int listAlbumsCalls = 0;
@@ -2445,6 +2768,10 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
 
   @override
   Future<void> openDirectory(String path) async => openedDirectory = path;
+
+  @override
+  Future<MediaDetails> loadMediaDetails(int mediaId) =>
+      Future.error(UnsupportedError('Media details are unavailable'));
 
   @override
   Future<MediaExportSummary> exportMedia(
@@ -2614,7 +2941,9 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
 
   @override
   Future<void> removeNintendoAccount(String accountId) async {
+    signOutCalls += 1;
     if (selectedAccount == accountId) selectedAccount = null;
+    signedIn = false;
   }
 
   @override
@@ -2673,13 +3002,20 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
     DateTime? capturedFrom,
     DateTime? capturedUntil,
     CapturedOnThisDay? capturedOnThisDay,
+    DateTime? importedFrom,
+    DateTime? importedUntil,
   }) async {
     listMediaCalls += 1;
     lastKind = kind;
     lastFavoriteOnly = favoriteOnly;
     lastNewestFirst = newestFirst;
-    lastCapturedFrom = capturedFrom;
-    lastCapturedUntil = capturedUntil;
+    // Keep the historical probe fields populated so existing gallery tests can
+    // assert the selected range while the production query now uses
+    // importedAt/imported_at for creation-time filtering.
+    lastCapturedFrom = importedFrom ?? capturedFrom;
+    lastCapturedUntil = importedUntil ?? capturedUntil;
+    lastImportedFrom = importedFrom;
+    lastImportedUntil = importedUntil;
     lastCapturedOnThisDay = capturedOnThisDay;
     final gate = nextMediaGate;
     if (gate != null) {
@@ -2697,6 +3033,12 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
         (item) => gameNames.isNotEmpty && !gameNames.contains(item.gameName),
       )
       ..removeWhere((item) {
+        if (importedFrom != null || importedUntil != null) {
+          final timestamp = item.importedAt;
+          return timestamp == null ||
+              (importedFrom != null && timestamp.isBefore(importedFrom)) ||
+              (importedUntil != null && !timestamp.isBefore(importedUntil));
+        }
         final timestamp = item.capturedAt ?? item.importedAt;
         if (timestamp == null) {
           return capturedFrom != null || capturedUntil != null;
@@ -2721,6 +3063,59 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
     return result.isEmpty && mediaItems == null
         ? [_media(id: 1, name: 'sample.jpg')]
         : result;
+  }
+
+  @override
+  Future<GalleryPage> listMediaPage(GalleryPageRequest request) async {
+    final values = await listMedia(
+      kind: request.query.kind,
+      limit: request.query.limit,
+      offset: request.query.offset,
+      favoriteOnly: request.query.favoriteOnly,
+      albumId: request.query.albumId,
+      newestFirst: request.query.newestFirst,
+      gameNames: request.query.gameNames,
+      importedFrom: request.query.importedFrom,
+      importedUntil: request.query.importedUntil,
+      capturedFrom: request.query.capturedFrom,
+      capturedUntil: request.query.capturedUntil,
+      capturedOnThisDay: request.query.capturedOnThisDay,
+    );
+    final filtered = values
+        .where(
+          (item) =>
+              (request.query.kind == GalleryKindFilter.all ||
+                  item.kind.name == request.query.kind.name) &&
+              (!request.query.favoriteOnly || item.favorite),
+        )
+        .toList();
+    final cursorIndex = request.cursor == null
+        ? -1
+        : filtered.indexWhere((item) => item.id == request.cursor!.mediaId);
+    final backward = request.direction == GalleryPageDirection.backward;
+    final limit = request.query.limit.clamp(1, 60);
+    final start = backward
+        ? (cursorIndex - limit).clamp(0, filtered.length)
+        : cursorIndex + 1;
+    final end = backward
+        ? cursorIndex.clamp(0, filtered.length)
+        : (start + limit).clamp(0, filtered.length);
+    final items = filtered.sublist(start, end);
+    GalleryCursor cursor(MediaAsset item) => GalleryCursor(
+      filterFingerprint:
+          'fake-${request.query.albumId}-${request.query.favoriteOnly}-${request.query.newestFirst}-${request.query.kind}',
+      mediaId: item.id,
+      effectiveSortTime: (item.capturedAt ?? item.importedAt)
+          ?.microsecondsSinceEpoch
+          .toString(),
+    );
+    return GalleryPage(
+      items: items,
+      hasBefore: start > 0,
+      hasAfter: end < filtered.length,
+      beforeCursor: items.isEmpty ? null : cursor(items.first),
+      afterCursor: items.isEmpty ? null : cursor(items.last),
+    );
   }
 
   @override
@@ -2799,6 +3194,32 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
       return total != 0 ? total : left.name.compareTo(right.name);
     });
     return values;
+  }
+
+  @override
+  Future<List<GameMediaCount>> listGameMediaCounts({int? albumId}) async {
+    final counts = <String, (int, int)>{};
+    for (final item in mediaItems ?? [_media(id: 1, name: 'sample.jpg')]) {
+      if (albumId != null &&
+          albumMediaIds.containsKey(albumId) &&
+          !albumMediaIds[albumId]!.contains(item.id)) {
+        continue;
+      }
+      final count = counts[item.gameName] ?? (0, 0);
+      counts[item.gameName] = item.kind == MediaKind.image
+          ? (count.$1 + 1, count.$2)
+          : (count.$1, count.$2 + 1);
+    }
+    return counts.entries
+        .map(
+          (entry) => GameMediaCount(
+            gameName: entry.key,
+            imageCount: BigInt.from(entry.value.$1),
+            videoCount: BigInt.from(entry.value.$2),
+            selectionCount: BigInt.from(gameSelectionCounts[entry.key] ?? 0),
+          ),
+        )
+        .toList();
   }
 
   @override
@@ -2911,6 +3332,47 @@ class _FontSettingsBackend extends FakeBackend {
     final completion = fontSettingsSaved;
     if (completion != null && !completion.isCompleted) completion.complete();
   }
+}
+
+SyncSummary _emptySyncSummary(String id) => SyncSummary(
+  jobId: id,
+  totalFound: BigInt.zero,
+  downloaded: BigInt.zero,
+  duplicates: BigInt.zero,
+  skippedRemote: BigInt.zero,
+  failed: BigInt.zero,
+  errors: const [],
+);
+
+class _DesktopAccountQueueBackend extends FakeBackend
+    implements AccountSyncBackend {
+  _DesktopAccountQueueBackend({required this.outcomes})
+    : super(
+        signedIn: true,
+        accountProfiles: const [
+          NintendoAccountProfile(accountId: 'account-1', nickname: 'One'),
+          NintendoAccountProfile(accountId: 'account-2', nickname: 'Two'),
+        ],
+      );
+
+  final Map<String, SyncSummary> outcomes;
+  final List<String> accountCalls = [];
+
+  @override
+  Future<SyncSummary> syncNintendoAccount(String accountId) async {
+    accountCalls.add(accountId);
+    return outcomes[accountId]!;
+  }
+
+  @override
+  Future<SyncScheduleStatus?> loadAccountSyncSchedule(String accountId) async =>
+      const SyncScheduleStatus(sleeping: false);
+
+  @override
+  Future<SyncScheduleStatus?> recordAccountSyncOutcome(
+    String accountId, {
+    required bool foundNewMedia,
+  }) async => const SyncScheduleStatus(sleeping: false);
 }
 
 MediaAsset _media({

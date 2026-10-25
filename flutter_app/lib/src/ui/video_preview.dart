@@ -10,6 +10,46 @@ import '../rust/models.dart';
 import 'video_thumbnail.dart';
 import 'video_preview_cache.dart';
 
+/// Shared desktop control bar for all desktop video surfaces.
+///
+/// The in-app immersive action is intentionally separate from media_kit's
+/// system fullscreen action. Both buttons live in the same auto-hiding bar,
+/// while the callbacks only change presentation and never replace the player.
+MaterialDesktopVideoControlsThemeData appDesktopVideoControlsThemeData({
+  required VoidCallback onToggleImmersive,
+  required bool immersive,
+  String immersiveTooltip = 'In-app fullscreen',
+  String systemFullscreenTooltip = 'Fullscreen',
+  Key? immersiveKey,
+  Key? systemFullscreenKey,
+}) => MaterialDesktopVideoControlsThemeData(
+  toggleFullscreenOnDoublePress: false,
+  bufferingIndicatorBuilder: (_) => const SizedBox.shrink(),
+  bottomButtonBar: [
+    const MaterialDesktopSkipPreviousButton(),
+    const MaterialDesktopPlayOrPauseButton(),
+    const MaterialDesktopSkipNextButton(),
+    const MaterialDesktopVolumeButton(),
+    const MaterialDesktopPositionIndicator(),
+    const Spacer(),
+    Tooltip(
+      message: immersiveTooltip,
+      child: MaterialDesktopCustomButton(
+        key: immersiveKey,
+        onPressed: onToggleImmersive,
+        iconSize: 18,
+        icon: Icon(
+          immersive ? Icons.fit_screen_rounded : Icons.open_in_full_rounded,
+        ),
+      ),
+    ),
+    Tooltip(
+      message: systemFullscreenTooltip,
+      child: MaterialDesktopFullscreenButton(key: systemFullscreenKey),
+    ),
+  ],
+);
+
 /// Presentation boundary between an opening texture and its rendered first frame.
 class VideoFirstFrameCover extends StatefulWidget {
   const VideoFirstFrameCover({

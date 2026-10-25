@@ -58,6 +58,37 @@ void main() {
         onError: (Object error, StackTrace _) => error,
       );
 
+  test(
+    'name/profile capacity is checked before changing login credentials',
+    () async {
+      const tokenJson = '{"old":"synthetic-old"}';
+      final shell = jsonEncode({
+        'old': {'nickname': 'Old', 'avatar_base64': ''},
+      });
+      final available =
+          maxAccountRawBytes -
+          utf8.encode(shell).length -
+          utf8.encode(tokenJson).length -
+          'old'.length -
+          4;
+      final padded = available - available % 4;
+      storage.values.addAll({
+        accountTokensKey: tokenJson,
+        selectedAccountKey: 'old',
+        accountProfilesKey: jsonEncode({
+          'old': {'nickname': 'Old', 'avatar_base64': 'A' * padded},
+        }),
+      });
+      final before = Map<String, String>.of(storage.values);
+      final backend = await open();
+      await backend.beginNintendoLogin();
+      final result = await complete(backend, 'a');
+      expect(result, isA<AccountPayloadInvalid>());
+      expect(storage.values, before);
+      expect(rust.cleared, isEmpty);
+    },
+  );
+
   test('late login cannot overwrite newer credentials or clear the newer pending flow', () async {
     final backend = await open();
     rust.delayed['a'] = Completer<CoralSession>();
@@ -106,7 +137,11 @@ void main() {
         }
         rust.delayed['a']!.complete(_session('a'));
         final oldResult = await old;
-        expect(active(), {for (final key in accountActiveKeys) key: null});
+        expect(active()..remove(accountProfilesKey), {
+          for (final key in accountActiveKeys)
+            if (key != accountProfilesKey) key: null,
+        });
+        expect(storage.values[accountProfilesKey], '{"a":{"nickname":"Old"}}');
         expect(oldResult, isStateError);
         expect(backend.accountToolLifecycle.isRemoved('a'), isTrue);
         expect(await backend.nintendoAccountProfile, isNull);
@@ -169,7 +204,18 @@ void main() {
     await login;
     await removal;
     expect(returnedEarly, isFalse);
-    expect(active(), {for (final key in accountActiveKeys) key: null});
+    expect(active()..remove(accountProfilesKey), {
+      for (final key in accountActiveKeys)
+        if (key != accountProfilesKey) key: null,
+    });
+    final history = jsonDecode(storage.values[accountProfilesKey]!) as Map;
+    expect((history['a'] as Map).keys.toSet(), {'nickname', 'name_updated_at'});
+    expect(history['a']['nickname'], 'Synthetic a');
+    expect(
+      DateTime.tryParse(history['a']['name_updated_at'] as String),
+      isNotNull,
+    );
+    expect(await backend.listNintendoAccounts(), isEmpty);
     expect(backend.accountToolLifecycle.isRemoved('a'), isTrue);
   });
 }

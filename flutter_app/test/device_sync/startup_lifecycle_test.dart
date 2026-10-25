@@ -23,6 +23,111 @@ void main() {
   });
   tearDown(RustLib.dispose);
 
+  test(
+    'failed interrupted-session cleanup keeps startup isolated until retry',
+    () async {
+      native.interrupted = ['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'];
+      native.failSessionRecovery = true;
+      final backend = _Backend();
+      await backend.deviceSyncStartup.start();
+      expect(backend.deviceSyncStartup.ready, isFalse);
+      expect(backend.deviceSyncStartup.interruptedRecovery, isTrue);
+      expect(backend.initializations, 0);
+      expect(native.interrupted, isNotEmpty);
+      native.failSessionRecovery = false;
+      await backend.deviceSyncStartup.start();
+      expect(backend.deviceSyncStartup.ready, isTrue);
+      expect(backend.initializations, 1);
+      expect(native.interrupted, isNull);
+      await backend.close();
+    },
+  );
+
+  test(
+    'unreadable session status cannot be interpreted as clean startup',
+    () async {
+      native.failIdentity = true;
+      final backend = _Backend();
+      await backend.deviceSyncStartup.start();
+      expect(backend.deviceSyncStartup.ready, isFalse);
+      expect(backend.initializations, 0);
+      expect(backend.accountWorkGate.busy, isTrue);
+      native.failIdentity = false;
+      await backend.deviceSyncStartup.start();
+      expect(backend.deviceSyncStartup.ready, isTrue);
+      await backend.close();
+    },
+  );
+
+  testWidgets(
+    'clean startup has no data-check notice and close retains gallery',
+    (tester) async {
+      final backend = _Backend();
+      final controller = ApplicationBootstrap(
+        prepare: () async => backend,
+        initializePresentation: (_) async {},
+        safeMode: false,
+      );
+      var consumers = 0;
+      await tester.pumpWidget(_app(controller, () => consumers++));
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(find.text('NSOAlbum'), findsNothing);
+      expect(find.text('Checking data'), findsNothing);
+      await tester.pumpAndSettle();
+      expect(find.text('Local gallery'), findsOneWidget);
+      native.closeGate = Completer<void>();
+      final closing = controller.close();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('Local gallery'), findsOneWidget);
+      expect(find.text('Closing safely'), findsNothing);
+      expect(find.text('Finishing current operations'), findsNothing);
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.text('Local gallery'), findsOneWidget);
+      expect(find.text('Finishing current operations'), findsOneWidget);
+      expect(consumers, 1);
+      native.closeGate!.complete();
+      await closing;
+      await tester.pumpAndSettle();
+      expect(find.text('Finishing current operations'), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  for (final language in ['zh', 'en']) {
+    testWidgets('only interrupted sync shows recovery notice/$language', (
+      tester,
+    ) async {
+      native.interrupted = ['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'];
+      final storage = _BlockingStorage();
+      final backend = _Backend(storage: storage, language: language);
+      final controller = ApplicationBootstrap(
+        prepare: () async => backend,
+        initializePresentation: (_) async {},
+        safeMode: false,
+      );
+      await tester.pumpWidget(_app(controller, () {}));
+      await tester.pump();
+      await tester.pump();
+      expect(
+        find.text(
+          language == 'zh'
+              ? '上次同步未正常完成，正在校验数据'
+              : 'The previous sync did not finish. Checking data.',
+        ),
+        findsOneWidget,
+      );
+      expect(native.recoveredSessions, isEmpty);
+      storage.release.complete();
+      await tester.pumpAndSettle();
+      expect(native.recoveredSessions, [
+        'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      ]);
+      expect(find.text('Local gallery'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    });
+  }
+
   test('settled startup publishes cleared busy to direct consumers', () async {
     final lifecycle = DeviceSyncStartupLifecycle(
       gate: AccountWorkGate(),
@@ -300,7 +405,7 @@ void main() {
         await tester.pump();
         await tester.pump();
         expect(consumers, 0);
-        expect(find.byType(CircularProgressIndicator), findsOneWidget);
+        expect(find.byType(CircularProgressIndicator), findsNothing);
         expect(find.byType(BottomNavigationBar), findsNothing);
         await tester.pump(const Duration(seconds: 45));
         expect(controller.phase, BootstrapPhase.recovering);
@@ -530,6 +635,11 @@ class _BlockingStorage extends MemoryAccountStorage {
 
 class _NativeBoundary implements RustLibApi {
   int closes = 0;
+  Completer<void>? closeGate;
+  List<String>? interrupted;
+  bool failIdentity = false;
+  bool failSessionRecovery = false;
+  final recoveredSessions = <String>[];
   Completer<void>? identityGate;
   final identityStarted = Completer<void>();
   @override
@@ -538,10 +648,12 @@ class _NativeBoundary implements RustLibApi {
   }) async {
     if (!identityStarted.isCompleted) identityStarted.complete();
     await identityGate?.future;
+    if (failIdentity) throw StateError('Synthetic marker read failure');
     return LibraryInfo(
       handle: library_,
       libraryUuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       generation: BigInt.zero,
+      interruptedSessions: interrupted,
     );
   }
 
@@ -549,7 +661,20 @@ class _NativeBoundary implements RustLibApi {
   Future<void> crateBridgeDeviceSyncCloseLibrary({
     required String library_,
   }) async {
+    await closeGate?.future;
     closes++;
+  }
+
+  @override
+  Future<void> crateBridgeDeviceSyncRecoverInterruptedSessions({
+    required String library_,
+    required List<String> sessions,
+  }) async {
+    if (failSessionRecovery) {
+      throw StateError('Synthetic session cleanup failure');
+    }
+    recoveredSessions.addAll(sessions);
+    interrupted = null;
   }
 
   @override

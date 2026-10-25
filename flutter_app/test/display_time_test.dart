@@ -51,57 +51,52 @@ void main() {
   });
 
   for (final locale in ['zh', 'en']) {
-    testWidgets('desktop metadata uses seconds and unknown time in $locale', (
-      tester,
-    ) async {
-      Future<void> show(DateTime? capturedAt) async {
-        await tester.pumpWidget(
-          MaterialApp(
-            locale: Locale(locale),
-            localizationsDelegates: const [
-              AppLocalizations.delegate,
-              GlobalMaterialLocalizations.delegate,
-              GlobalWidgetsLocalizations.delegate,
-              GlobalCupertinoLocalizations.delegate,
-            ],
-            supportedLocales: AppLocalizations.supportedLocales,
-            home: Scaffold(
-              body: MediaMetadataEditor(
-                key: ValueKey(capturedAt),
-                backend: FakeBackend(),
-                asset: MediaAsset(
-                  id: 1,
-                  sha256: 'synthetic',
-                  originalName: 'test.png',
-                  storagePath: 'missing.png',
-                  kind: MediaKind.image,
-                  capturedAt: capturedAt,
-                  importedAt: DateTime(2026, 10, 15),
-                  gameName: 'Game',
-                  favorite: false,
-                  tags: const [],
+    testWidgets(
+      'desktop metadata editor hides technical time and path in $locale',
+      (tester) async {
+        Future<void> show(DateTime? capturedAt) async {
+          await tester.pumpWidget(
+            MaterialApp(
+              locale: Locale(locale),
+              localizationsDelegates: const [
+                AppLocalizations.delegate,
+                GlobalMaterialLocalizations.delegate,
+                GlobalWidgetsLocalizations.delegate,
+                GlobalCupertinoLocalizations.delegate,
+              ],
+              supportedLocales: AppLocalizations.supportedLocales,
+              home: Scaffold(
+                body: MediaMetadataEditor(
+                  key: ValueKey(capturedAt),
+                  backend: FakeBackend(),
+                  asset: MediaAsset(
+                    id: 1,
+                    sha256: 'synthetic',
+                    originalName: 'test.png',
+                    storagePath: 'missing.png',
+                    kind: MediaKind.image,
+                    capturedAt: capturedAt,
+                    importedAt: DateTime(2026, 10, 15),
+                    gameName: 'Game',
+                    favorite: false,
+                    tags: const [],
+                  ),
                 ),
               ),
             ),
-          ),
-        );
-        await tester.pumpAndSettle();
-      }
+          );
+          await tester.pumpAndSettle();
+        }
 
-      await show(DateTime(2026, 10, 15, 9, 8, 7, 654, 321));
-      final text = tester.widget<SelectableText>(find.byType(SelectableText));
-      expect(text.data, contains('2026-10-15 09:08:07\n'));
-      expect(text.data, isNot(contains('.654321')));
+        await show(DateTime(2026, 10, 15, 9, 8, 7, 654, 321));
+        expect(find.byType(SelectableText), findsNothing);
+        expect(find.textContaining('2026-10-15 09:08:07'), findsNothing);
+        expect(find.byKey(const Key('save-media-metadata')), findsOneWidget);
 
-      await show(null);
-      final unknown = tester.widget<SelectableText>(
-        find.byType(SelectableText),
-      );
-      expect(
-        unknown.data,
-        contains(locale == 'zh' ? '创建时间：未知' : 'Created at: Unknown'),
-      );
-      expect(tester.takeException(), isNull);
-    });
+        await show(null);
+        expect(find.byType(SelectableText), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
   }
 }

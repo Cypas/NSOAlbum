@@ -23,6 +23,28 @@ String? normalizeNintendoFriendCode(String input) {
   return digits.length == 12 ? digits : null;
 }
 
+String formatFriendLastOnline(
+  DateTime value, {
+  DateTime? now,
+  bool english = true,
+}) {
+  final current = (now ?? DateTime.now()).toLocal();
+  final local = value.toLocal();
+  final days = current.difference(local).inDays;
+  if (days < 30) {
+    if (days <= 0) return english ? 'Today' : '今天在线';
+    return english ? '$days days ago' : '$days 天前在线';
+  }
+  return formatUserDateTime(local);
+}
+
+Locale? _friendNicknameLocale(String nickname) {
+  final containsJapaneseKana = RegExp(
+    r'[\u3040-\u309f\u30a0-\u30ff\uff66-\uff9f]',
+  ).hasMatch(nickname);
+  return containsJapaneseKana ? const Locale('ja') : null;
+}
+
 class NintendoFriendsPage extends StatefulWidget {
   const NintendoFriendsPage({
     super.key,
@@ -210,9 +232,47 @@ class _NintendoFriendsPageState extends State<NintendoFriendsPage> {
         ]) ...[
           SliverToBoxAdapter(
             child: ListTile(
-              title: Text(
-                group.$3,
-                style: Theme.of(context).textTheme.titleLarge,
+              title: DecoratedBox(
+                key: Key('friend-group-bubble-${group.$4}'),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 7,
+                  ),
+                  child: widget.mobile
+                      ? Row(
+                          mainAxisSize: MainAxisSize.max,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                group.$3,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              '· ${group.$1.length}',
+                              key: Key('friend-group-count-${group.$4}'),
+                              style: Theme.of(context).textTheme.labelMedium
+                                  ?.copyWith(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
+                                  ),
+                            ),
+                          ],
+                        )
+                      : Text(
+                          group.$3,
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                ),
               ),
               trailing: Icon(group.$2 ? Icons.expand_less : Icons.expand_more),
               onTap: () => setState(() {
@@ -610,6 +670,7 @@ class _FriendTile extends StatelessWidget {
                         accountId: accountId,
                         friendId: friend.friendId,
                         avatarUrl: friend.avatarUrl,
+                        radius: mobile ? 30 : 20,
                       ),
                     ),
                     Positioned(
@@ -651,8 +712,15 @@ class _FriendTile extends StatelessWidget {
                 width: double.infinity,
                 child: Text(
                   friend.nickname,
+                  locale: mobile
+                      ? _friendNicknameLocale(friend.nickname)
+                      : null,
                   textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.titleMedium,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: mobile
+                      ? Theme.of(context).textTheme.titleSmall
+                      : Theme.of(context).textTheme.titleMedium,
                 ),
               ),
               if (friend.gameName != null || activity != null)
@@ -672,7 +740,11 @@ class _FriendTile extends StatelessWidget {
               if (friend.logoutAt != null && friend.presence == 'OFFLINE')
                 _FriendInfoRow(
                   icon: Icons.schedule_outlined,
-                  text: formatUserDateTime(friend.logoutAt!),
+                  text: formatFriendLastOnline(
+                    friend.logoutAt!,
+                    english:
+                        Localizations.localeOf(context).languageCode != 'zh',
+                  ),
                 ),
             ],
           ),
@@ -832,7 +904,7 @@ class _NintendoFriendDetailPageState extends State<NintendoFriendDetailPage> {
               accountId: widget.accountId,
               friendId: friend.friendId,
               avatarUrl: friend.avatarUrl,
-              radius: 48,
+              radius: widget.mobile ? 60 : 48,
               onPreview: (bytes) => showNintendoAvatarPreview(
                 context,
                 bytes: bytes,
@@ -843,8 +915,13 @@ class _NintendoFriendDetailPageState extends State<NintendoFriendDetailPage> {
           const SizedBox(height: 12),
           Text(
             friend.nickname,
+            locale: widget.mobile
+                ? _friendNicknameLocale(friend.nickname)
+                : null,
             textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.headlineSmall,
+            style: widget.mobile
+                ? Theme.of(context).textTheme.titleLarge
+                : Theme.of(context).textTheme.headlineSmall,
           ),
           if (friend.isFavorite)
             Center(
@@ -917,7 +994,14 @@ class _NintendoFriendDetailPageState extends State<NintendoFriendDetailPage> {
                     title: Text(
                       context.l10n.select(zh: '最近离线', en: 'Last offline'),
                     ),
-                    subtitle: Text(formatUserDateTime(friend.logoutAt!)),
+                    subtitle: Text(
+                      formatFriendLastOnline(
+                        friend.logoutAt!,
+                        english:
+                            Localizations.localeOf(context).languageCode !=
+                            'zh',
+                      ),
+                    ),
                   ),
               ],
             ),
@@ -1130,23 +1214,25 @@ class _FriendGameImageState extends State<_FriendGameImage> {
   Widget build(BuildContext context) {
     final image = bytes;
     if (image == null) {
-      return SizedBox(
+      return SizedBox.square(
+        dimension: 40,
         key: ValueKey('friend-game-image:${widget.url}'),
-        width: 48,
-        height: 48,
-        child: const Icon(Icons.sports_esports_outlined),
+        child: Icon(Icons.sports_esports_outlined),
       );
     }
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: Image.memory(
-        image,
-        key: ValueKey('friend-game-image:${widget.url}'),
-        width: 48,
-        height: 48,
-        fit: BoxFit.cover,
-        errorBuilder: (context, error, stackTrace) =>
-            const SizedBox(width: 48, height: 48, child: Icon(Icons.games)),
+    return SizedBox.square(
+      dimension: 40,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Image.memory(
+          image,
+          key: ValueKey('friend-game-image:${widget.url}'),
+          width: 40,
+          height: 40,
+          fit: BoxFit.cover,
+          errorBuilder: (context, error, stackTrace) =>
+              const SizedBox.square(dimension: 40, child: Icon(Icons.games)),
+        ),
       ),
     );
   }
@@ -1259,6 +1345,7 @@ class _FriendAvatarState extends State<_FriendAvatar> {
   @override
   Widget build(BuildContext context) {
     final avatar = CircleAvatar(
+      key: ValueKey('friend-avatar-${widget.friendId}'),
       radius: widget.radius,
       foregroundImage: bytes == null ? null : MemoryImage(bytes!),
       child: bytes == null ? const Icon(Icons.person_outline) : null,

@@ -789,6 +789,8 @@ class _VideoTimelineState extends State<VideoTimeline> {
               ),
               thickness: const WidgetStatePropertyAll(10),
               radius: const Radius.circular(999),
+              crossAxisMargin: 8,
+              mainAxisMargin: 8,
             ),
             child: Scrollbar(
               key: const Key('video-editor-horizontal-scrollbar'),
@@ -914,10 +916,19 @@ class _TimelineHandle extends StatelessWidget {
               left: 0,
               right: 0,
               top: 2,
-              child: Text(
-                label,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white, fontSize: 11),
+              child: SizedBox(
+                width: handleWidth,
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.center,
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    softWrap: false,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white, fontSize: 11),
+                  ),
+                ),
               ),
             ),
             Positioned(

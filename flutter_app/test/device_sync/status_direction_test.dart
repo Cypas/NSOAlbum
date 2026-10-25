@@ -7,7 +7,8 @@ import 'package:squid_album/src/rust/device_sync/work.dart';
 import 'package:squid_album/src/ui/device_sync/mode_selector.dart';
 
 import 'mode_selector_test.dart' show selectorApp;
-import 'session_panel_test.dart' show PanelSession, endpoint, panelApp;
+import 'session_panel_test.dart'
+    show PanelSession, endpoint, panelApp, samePreview;
 
 void main() {
   testWidgets('session stage light agrees with its accessible status text', (
@@ -152,8 +153,10 @@ void main() {
       for (final language in ['zh', 'en']) {
         for (final phoneToDesktop in [false, true]) {
           final session = PanelSession()
+            ..shown = samePreview
             ..state = endpoint(
-              driver.State.transferring,
+              driver.State.awaitingApproval,
+              source: false,
               configuration: read.AgreedConfiguration(
                 phoneToDesktop: phoneToDesktop,
                 mode: plan.SyncMode.merge,
@@ -298,7 +301,7 @@ void main() {
             final status = find.byKey(const Key('device-sync-status'));
             final direction = find.byKey(const Key('device-sync-direction'));
             expect(status, findsOneWidget);
-            expect(direction, findsOneWidget);
+            expect(direction, findsNothing);
             expect(
               find.descendant(
                 of: status,
@@ -340,7 +343,6 @@ void main() {
       final keys = [
         'device-sync-status',
         'device-sync-status-dot',
-        'device-sync-direction',
         'device-byte-progress',
         'device-transfer-rate',
       ];

@@ -1,6 +1,6 @@
 [package]
 name = "squid_album_core"
-version = "0.2.14"
+version = "0.2.15"
 edition = "2021"
 license = "MIT"
 
@@ -19,7 +19,7 @@ rand = "0.8"
 rcgen = "0.13"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "brotli", "stream"] }
-rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
+rusqlite = { version = "0.32", features = ["bundled", "hooks", "functions"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

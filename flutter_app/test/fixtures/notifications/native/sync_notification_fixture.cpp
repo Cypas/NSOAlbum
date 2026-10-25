@@ -22,6 +22,7 @@ NativeSingleInstance* owner = nullptr;
 DWORD owner_thread = 0;
 bool wrong_thread = false;
 int activations = 0;
+int gallery_activations = 0;
 
 LRESULT CALLBACK FixtureWindowProc(HWND window, UINT message, WPARAM wparam,
                                    LPARAM lparam) {
@@ -30,6 +31,10 @@ LRESULT CALLBACK FixtureWindowProc(HWND window, UINT message, WPARAM wparam,
     wrong_thread = GetCurrentThreadId() != owner_thread;
     activations++;
     return result;
+  }
+  if (message == SyncNotificationGalleryMessage()) {
+    gallery_activations++;
+    return 0;
   }
   return DefWindowProcW(window, message, wparam, lparam);
 }
@@ -70,6 +75,10 @@ int wmain(int argc, wchar_t** argv) {
       const auto document = BuildSyncNotificationDocument(title, body);
       const auto nodes = document.GetElementsByTagName(L"text");
       if (nodes.Length() != 2 ||
+          document.DocumentElement().GetAttribute(L"activationType") !=
+              L"foreground" ||
+          document.DocumentElement().GetAttribute(L"launch") !=
+              L"open-gallery" ||
           nodes.Item(0).InnerText() != winrt::to_hstring(title) ||
           nodes.Item(1).InnerText() != winrt::to_hstring(body)) {
         throw std::runtime_error("Notification text was missing or changed");
@@ -136,6 +145,14 @@ int wmain(int argc, wchar_t** argv) {
         DispatchMessageW(&message);
         if (wrong_thread || activations != 1 || !IsWindowVisible(window)) {
           throw std::runtime_error("Owner thread did not restore its window");
+        }
+        if (!PeekMessageW(&message, window, SyncNotificationGalleryMessage(),
+                          SyncNotificationGalleryMessage(), PM_REMOVE)) {
+          throw std::runtime_error("Activation did not queue gallery navigation");
+        }
+        DispatchMessageW(&message);
+        if (gallery_activations != 1) {
+          throw std::runtime_error("Gallery navigation was not delivered");
         }
         if (callback->Activate(L"other.application", L"ignored", nullptr, 0) !=
                 E_INVALIDARG ||

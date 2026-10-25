@@ -616,7 +616,8 @@ impl AccountTools {
             .entries
             .retain(|_, entry| entry.removed.check().is_ok());
         let generation = registry.generation;
-        let template = shared_attestation(&mut registry, proxy_key, transport)?;
+        let template =
+            shared_attestation(&mut registry, proxy_key, transport, NxapiConfig::default())?;
         let client = account
             .and_then(|id| {
                 registry
@@ -737,7 +738,8 @@ impl AccountTools {
         }
         let mut registry = self.registry.lock().map_err(|_| poisoned())?;
         let proxy_key = hex::encode(Sha256::digest(proxy.unwrap_or("").as_bytes()));
-        let template = shared_attestation(&mut registry, proxy_key, transport)?;
+        let template =
+            shared_attestation(&mut registry, proxy_key, transport, NxapiConfig::default())?;
         let service = template.service_key();
         for id in &identities {
             if let Some(client) = registry
@@ -912,12 +914,16 @@ fn shared_attestation(
     registry: &mut Registry,
     key: String,
     transport: &HttpTransport,
+    config: NxapiConfig,
 ) -> CoreResult<NxapiAttestationClient> {
     if let Some(client) = registry.clients.get(&key) {
         return Ok(client.clone());
     }
-    let client =
-        NxapiAttestationClient::new(transport.without_redirects()?, NxapiConfig::default());
+    let strict = transport.without_redirects()?;
+    let client = NxapiAttestationClient::new(
+        strict.with_timeout(crate::transport::NXAPI_REQUEST_TIMEOUT)?,
+        config,
+    );
     registry.clients.insert(key, client.clone());
     Ok(client)
 }
@@ -1429,6 +1435,57 @@ mod tests {
             .await,
             Err(CoreError::InvalidConfig(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn shared_nxapi_client_uses_sixty_second_timeout_without_retrying_slow_config() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0; 2048];
+            let length = socket.read(&mut request).unwrap();
+            assert!(std::str::from_utf8(&request[..length])
+                .unwrap()
+                .starts_with("GET /config "));
+            std::thread::sleep(std::time::Duration::from_millis(350));
+            let body = r#"{"nso_version":"3.9.9"}"#;
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            1
+        });
+        let transport = HttpTransport::new(crate::transport::TransportConfig {
+            timeout: std::time::Duration::from_millis(80),
+            ..Default::default()
+        })
+        .unwrap();
+        let client = shared_attestation(
+            &mut Registry::default(),
+            "synthetic-proxy".into(),
+            &transport,
+            NxapiConfig {
+                znca_base_url: base,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let result = client.nso_version().await;
+        let requests = server.join().unwrap();
+
+        assert_eq!(result.unwrap(), "3.9.9");
+        assert_eq!(
+            requests, 1,
+            "the NXAPI-scoped timeout must avoid the transient-timeout retry"
+        );
     }
 
     struct OAuthProbe {

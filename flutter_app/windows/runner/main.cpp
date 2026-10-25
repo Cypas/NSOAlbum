@@ -99,11 +99,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   flutter::DartProject project(L"data");
 
-  // Keep the renderer on the stable Skia path. Do not force a GPU adapter or
-  // move the UI isolate onto the platform thread: both options change plugin
-  // callback threading/adapter selection and have caused more instability on
-  // Windows 11 26200 machines. The explicit software safe mode below remains
-  // available for machines with a broken graphics driver.
+  // Windows plugins receive method-channel callbacks on the Dart UI isolate.
+  // WebView2 requires its environment and controls to be created on the runner
+  // thread's STA, so keep the UI isolate on that same thread instead of letting
+  // it inherit an incompatible COM apartment on Flutter's separate UI thread.
+  project.set_ui_thread_policy(
+      flutter::UIThreadPolicy::RunOnPlatformThread);
+
+  // Keep the renderer on the stable Skia path. The explicit software safe mode
+  // below remains available for machines with a broken graphics driver.
   project.set_impeller_switch(flutter::ImpellerSwitch::Disabled);
 
   if (HasArgument(command_line_arguments, "--safe-mode=software")) {

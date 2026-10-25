@@ -31,7 +31,7 @@ class AndroidMediaInformation extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final unknown = context.l10n.select(zh: '未知', en: 'Unknown');
+    final unknown = context.l10n.select(zh: '未记录', en: 'Not recorded');
     final noteEmpty = item.note?.isNotEmpty != true;
     return Material(
       color: Theme.of(context).colorScheme.surface,
@@ -154,7 +154,7 @@ class AndroidMediaInformation extends StatelessWidget {
             _TimeRow(
               key: const Key('android-detail-captured'),
               icon: Icons.photo_camera_outlined,
-              label: context.l10n.select(zh: '拍摄/创建时间', en: 'Captured/created'),
+              label: context.l10n.select(zh: '拍摄时间', en: 'Captured'),
               value: item.capturedAt == null
                   ? unknown
                   : formatUserDateTime(item.capturedAt!),
@@ -163,7 +163,7 @@ class AndroidMediaInformation extends StatelessWidget {
             _TimeRow(
               key: const Key('android-detail-imported'),
               icon: Icons.file_download_outlined,
-              label: context.l10n.select(zh: '导入时间', en: 'Imported'),
+              label: context.l10n.select(zh: '录入时间', en: 'Imported'),
               value: item.importedAt == null
                   ? unknown
                   : formatUserDateTime(item.importedAt!),

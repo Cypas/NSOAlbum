@@ -40,6 +40,7 @@ class DesktopStartupClose with WindowListener {
     await windowManager.ensureInitialized();
     windowManager.addListener(this);
     await windowManager.setPreventClose(true);
+    bootstrap.requestCloseRetry = () => _requestAction(closeApplication);
   }();
 
   void adoptPolicy(Object owner, Future<void> Function() policy) {
@@ -56,6 +57,10 @@ class DesktopStartupClose with WindowListener {
 
   @override
   void onWindowClose() {
+    _requestAction(_policy ?? closeApplication);
+  }
+
+  void _requestAction(Future<void> Function() action) {
     if (_request != null) return;
     final done = Completer<void>();
     late final Future<void> request;
@@ -64,7 +69,7 @@ class DesktopStartupClose with WindowListener {
     });
     _request = request;
     unawaited(
-      Future<void>.sync(_policy ?? closeApplication).then(
+      Future<void>.sync(action).then(
         (_) => done.complete(),
         onError: (Object error, StackTrace stack) {
           if (identical(_request, request)) _request = null;

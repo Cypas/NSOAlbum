@@ -12,6 +12,23 @@ import 'package:squid_album/src/rust/models.dart';
 import '../home_shell_test.dart' show FakeBackend;
 
 void main() {
+  testWidgets('Android settings hide compact-tag option and library path', (
+    tester,
+  ) async {
+    final backend = FakeBackend(mediaItems: []);
+    await tester.pumpWidget(
+      SquidAlbumApp(backend: backend, uiPlatform: AppUiPlatform.android),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(NavigationDestination).at(3));
+    await tester.pumpAndSettle();
+    expect(find.text('标签紧凑展示'), findsNothing);
+    expect(find.text('Compact tags'), findsNothing);
+    expect(find.textContaining('图库路径：'), findsNothing);
+    expect(find.textContaining('Library:'), findsNothing);
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant({TargetPlatform.android}));
+
   testWidgets('one media per row is saved and used in library and albums', (
     tester,
   ) async {

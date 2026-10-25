@@ -1,21 +1,22 @@
-use std::io::{Read, Write};
+mod ipc {
+    include!("device_sync_ipc.rs");
+}
 
 fn main() {
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
-    loop {
-        let mut length = [0; 4];
-        if input.read_exact(&mut length).is_err() { break; }
-        let length = u32::from_be_bytes(length) as usize;
-        if length == 0 || length > 524288 { break; }
-        let mut command = vec![0; length];
-        if input.read_exact(&mut command).is_err() { break; }
-        let response = if command.windows(9).any(|v| v == b"enumerate") {
-            br#"{"value":{"Ok":[{"id":"same","name":"Synthetic A","storages":[{"id":"storage","name":"Documents","free_bytes":1024}]},{"id":"same","name":"Synthetic B","storages":[]}]}}"#.as_slice()
+    while let Some((header, payload)) = ipc::read(&mut input) {
+        if !payload.is_empty() {
+            break;
+        }
+        let request = std::str::from_utf8(&header).unwrap();
+        let response = if ipc::method(request) == "enumerate" {
+            r#"{"Ok":[{"id":"same","name":"Synthetic A","storages":[{"id":"storage","name":"Documents","free_bytes":1024}]},{"id":"same","name":"Synthetic B","storages":[]}]}"#
         } else {
-            br#"{"value":{"Ok":null}}"#.as_slice()
+            r#"{"Ok":null}"#
         };
-        if output.write_all(&(response.len() as u32).to_be_bytes()).is_err()
-            || output.write_all(response).is_err() || output.flush().is_err() { break; }
+        if ipc::write(&mut output, response, &[]).is_err() {
+            break;
+        }
     }
 }

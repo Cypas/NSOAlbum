@@ -5,6 +5,8 @@ import WebKit
 import UserNotifications
 
 class MainFlutterWindow: NSWindow {
+  private var syncNotificationChannel: FlutterMethodChannel?
+
   override func awakeFromNib() {
     let project = FlutterDartProject()
     project.dartEntrypointArguments = Array(CommandLine.arguments.dropFirst())
@@ -16,14 +18,50 @@ class MainFlutterWindow: NSWindow {
     RegisterGeneratedPlugins(registry: flutterViewController)
     configureSplatNetNetwork(flutterViewController)
     configureSyncNotifications(flutterViewController)
+    configureDesktopMediaClipboard(flutterViewController)
 
     super.awakeFromNib()
+    if (NSApp.delegate as? AppDelegate)?.takePendingGalleryOpen() == true {
+      openGalleryFromNotification()
+    }
+  }
+
+  private func configureDesktopMediaClipboard(_ controller: FlutterViewController) {
+    let channel = FlutterMethodChannel(
+      name: "io.github.cypas.nsoalbum/desktop_media_clipboard",
+      binaryMessenger: controller.engine.binaryMessenger)
+    channel.setMethodCallHandler { call, result in
+      guard call.method == "copyFile",
+            let args = call.arguments as? [String: Any],
+            let path = args["path"] as? String,
+            !path.isEmpty else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      let url = URL(fileURLWithPath: path)
+      guard FileManager.default.fileExists(atPath: url.path) else {
+        result(FlutterError(code: "FILE_NOT_FOUND",
+                            message: "The media file does not exist.",
+                            details: nil))
+        return
+      }
+      let pasteboard = NSPasteboard.general
+      pasteboard.clearContents()
+      guard pasteboard.writeObjects([url as NSURL]) else {
+        result(FlutterError(code: "CLIPBOARD_FAILED",
+                            message: "Unable to copy the media file.",
+                            details: nil))
+        return
+      }
+      result(nil)
+    }
   }
 
   private func configureSyncNotifications(_ controller: FlutterViewController) {
     let channel = FlutterMethodChannel(
       name: "io.github.cypas.nsoalbum/notifications",
       binaryMessenger: controller.engine.binaryMessenger)
+    syncNotificationChannel = channel
     channel.setMethodCallHandler { call, result in
       guard call.method == "syncCompleted",
             let args = call.arguments as? [String: Any],
@@ -65,6 +103,10 @@ class MainFlutterWindow: NSWindow {
         }
       }
     }
+  }
+
+  func openGalleryFromNotification() {
+    syncNotificationChannel?.invokeMethod("openGallery", arguments: nil)
   }
 
   private func configureSplatNetNetwork(_ controller: FlutterViewController) {

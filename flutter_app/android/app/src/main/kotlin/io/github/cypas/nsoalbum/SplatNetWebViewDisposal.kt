@@ -30,7 +30,9 @@ object SplatNetWebViewDisposal {
                 val view = owner.webView ?: error("WebView already released")
                 // Upstream removes channels, JavaScript, native handlers and the
                 // parent first, but defers destroy() to about:blank completion.
-                manager.disposeKeepAlive(id)
+                retireKeepAliveEntry(manager.keepAliveWebViews, id) {
+                    manager.disposeKeepAlive(it)
+                }
                 view.stopLoading()
                 view.webViewClient = WebViewClient()
                 view.destroy()

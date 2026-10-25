@@ -74,7 +74,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('smaller favorite icon retains a full touch target', (
+  testWidgets('favorite icon is larger while retaining a full touch target', (
     tester,
   ) async {
     var taps = 0;
@@ -92,7 +92,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(
       tester.getSize(find.byIcon(Icons.favorite_border)).width,
-      lessThan(20),
+      greaterThanOrEqualTo(20),
     );
     final surface = find.descendant(
       of: find.byType(IconButton),
@@ -105,6 +105,51 @@ void main() {
     await tester.tap(find.byTooltip('收藏'));
     await tester.pump();
     expect(taps, 1);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('favorite and selection controls use matching visual circles', (
+    tester,
+  ) async {
+    Future<IconButton> button({required bool selecting}) async {
+      await tester.pumpWidget(
+        _host(
+          AndroidMediaCard(
+            asset: _image(false),
+            settings: FakeBackend().settings,
+            onOpen: () {},
+            onMenu: () {},
+            onFavorite: () {},
+            selecting: selecting,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final tooltip = selecting ? '选择媒体' : '收藏';
+      return tester.widget<IconButton>(
+        find
+            .ancestor(
+              of: find.byTooltip(tooltip),
+              matching: find.byType(IconButton),
+            )
+            .first,
+      );
+    }
+
+    final favorite = await button(selecting: false);
+    final favoriteIcon = tester.widget<Icon>(
+      find.descendant(of: find.byWidget(favorite), matching: find.byType(Icon)),
+    );
+    final selection = await button(selecting: true);
+    final selectionIcon = tester.widget<Icon>(
+      find.descendant(
+        of: find.byWidget(selection),
+        matching: find.byType(Icon),
+      ),
+    );
+    expect(selection.style?.minimumSize, favorite.style?.minimumSize);
+    expect(selection.style?.padding, favorite.style?.padding);
+    expect(favoriteIcon.size, greaterThan(selectionIcon.size!));
     expect(tester.takeException(), isNull);
   });
 }

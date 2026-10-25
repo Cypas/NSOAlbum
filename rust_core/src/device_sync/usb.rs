@@ -3,7 +3,6 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use base64::{engine::general_purpose::STANDARD, Engine};
 use tokio::sync::{Notify, Semaphore};
 use uuid::Uuid;
 
@@ -17,6 +16,7 @@ use super::runtime::{self, Owner};
 
 const IO_DEADLINE: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(2);
+const CLEANUP_BATCH_DELAY: Duration = Duration::from_millis(250);
 const DIRECTORY_BYTES: usize = 32 * 1024 * 1024;
 const DATA_DIRECTORY_BYTES: usize = DIRECTORY_BYTES - 1024 * 1024;
 
@@ -584,12 +584,7 @@ impl UsbDriver {
             }
             self.stage = Stage::Send;
         }
-        if (self.cleanup.len() >= 8
-            || self
-                .cleanup_since
-                .is_some_and(|since| since.elapsed() >= Duration::from_millis(50)))
-            && matches!(self.stage, Stage::Receive | Stage::Read(_))
-        {
+        if self.cleanup_due() && matches!(self.stage, Stage::Receive | Stage::Read(_)) {
             // Read's name has already been removed from the directory queue.
             // Cleanup only preempts it; preserve it ahead of later entries.
             if let Stage::Read(name) = &self.stage {
@@ -659,7 +654,8 @@ impl UsbDriver {
                     }
                     (UsbActionKind::Write, self.outgoing, Some(name), bytes)
                 } else {
-                    self.stage = if let Some(name) = self.cleanup.back() {
+                    self.stage = if self.cleanup_due() {
+                        let name = self.cleanup.back().ok_or(ReadError::Internal)?;
                         Stage::Ack(name.clone())
                     } else if self.driver.state() == State::Completed
                         && self.outstanding.is_empty()
@@ -738,7 +734,13 @@ impl UsbDriver {
             {
                 self.pump.window_full();
                 self.blocked = true;
-                self.stage = Stage::Receive;
+                // The retained carrier is already authenticated and ordered.
+                // Listing before consuming its TLS tail can schedule it twice.
+                self.stage = if self.pump.has_pending_input() {
+                    Stage::DrainInput
+                } else {
+                    Stage::Receive
+                };
                 return Ok(());
             }
             return Err(error);
@@ -819,7 +821,6 @@ impl UsbDriver {
                     action.name.clone().ok_or(ReadError::Internal)?,
                     action.bytes.len(),
                 );
-                self.idle_ms = 2;
                 if self.pump.has_pending_input() {
                     Stage::DrainInput
                 } else if self.driver.state() == State::Transferring && self.outstanding.len() < 16
@@ -898,6 +899,14 @@ impl UsbDriver {
         self.stage = self.incoming.pop_front().map_or(Stage::Send, Stage::Read);
         Ok(())
     }
+    fn cleanup_due(&self) -> bool {
+        !self.cleanup.is_empty()
+            && (self.cleanup.len() >= 8
+                || self
+                    .cleanup_since
+                    .is_some_and(|since| since.elapsed() >= CLEANUP_BATCH_DELAY)
+                || self.driver.state() == State::Completed)
+    }
 }
 fn io_kind(kind: UsbActionKind) -> Option<IoKind> {
     match kind {
@@ -961,7 +970,7 @@ fn native_request(action: &UsbAction) -> Result<NativeRequest, ReadError> {
             operation,
             session,
             name,
-            bytes: STANDARD.encode(&action.bytes),
+            bytes: action.bytes.clone(),
         },
         UsbActionKind::Acknowledge => NativeRequest::Acknowledge {
             operation,
@@ -972,35 +981,54 @@ fn native_request(action: &UsbAction) -> Result<NativeRequest, ReadError> {
         UsbActionKind::Close => NativeRequest::Close,
     })
 }
-fn native_reply(response: Result<serde_json::Value, NativeError>, action: &UsbAction) -> UsbReply {
+fn native_reply(
+    response: Result<super::native_io::NativeResponse, NativeError>,
+    action: &UsbAction,
+) -> UsbReply {
     let mut reply = UsbReply::empty(action);
     let result = (|| {
-        let value = response.map_err(native_error)?;
+        let response = response.map_err(native_error)?;
         match action.kind {
-            UsbActionKind::Open if action.device.is_none() && action.storage.is_none() => {
-                match value.as_bool() {
-                    Some(true) => {}
-                    Some(false) => return Err(ReadError::Busy),
-                    None => return Err(ReadError::InvalidInput),
+            UsbActionKind::Open => {
+                if !response.payload.is_empty() {
+                    return Err(ReadError::InvalidInput);
+                }
+                if action.device.is_none() && action.storage.is_none() {
+                    match response.value.as_bool() {
+                        Some(true) => {}
+                        Some(false) => return Err(ReadError::Busy),
+                        None => return Err(ReadError::InvalidInput),
+                    }
+                } else if !response.value.is_null() {
+                    return Err(ReadError::InvalidInput);
                 }
             }
             UsbActionKind::Enumerate => {
-                reply.devices =
-                    serde_json::from_value(value).map_err(|_| ReadError::InvalidInput)?
-            }
-            UsbActionKind::List => {
-                reply.names = serde_json::from_value(value).map_err(|_| ReadError::InvalidInput)?
-            }
-            UsbActionKind::Read => {
-                let encoded = value.as_str().ok_or(ReadError::InvalidInput)?;
-                if encoded.len() > native_io::MAX_BLOCK.div_ceil(3) * 4 {
+                if !response.payload.is_empty() {
                     return Err(ReadError::InvalidInput);
                 }
-                reply.bytes = STANDARD
-                    .decode(encoded)
-                    .map_err(|_| ReadError::InvalidInput)?;
+                reply.devices =
+                    serde_json::from_value(response.value).map_err(|_| ReadError::InvalidInput)?
             }
-            _ if !value.is_null() => return Err(ReadError::InvalidInput),
+            UsbActionKind::List => {
+                if !response.payload.is_empty() {
+                    return Err(ReadError::InvalidInput);
+                }
+                reply.names =
+                    serde_json::from_value(response.value).map_err(|_| ReadError::InvalidInput)?
+            }
+            UsbActionKind::Read => {
+                if !response.value.is_null()
+                    || response.payload.is_empty()
+                    || response.payload.len() > native_io::MAX_BLOCK
+                {
+                    return Err(ReadError::InvalidInput);
+                }
+                reply.bytes = response.payload;
+            }
+            _ if !response.value.is_null() || !response.payload.is_empty() => {
+                return Err(ReadError::InvalidInput);
+            }
             _ => {}
         }
         Ok(())
@@ -1181,7 +1209,8 @@ mod completion_tests {
             request.is_ok(),
             "Desktop must discover the scanned session without a selected device"
         );
-        let value = serde_json::to_value(request.unwrap()).unwrap();
+        let packet = request.unwrap().into_packet().unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&packet.header).unwrap();
         assert_eq!(value["method"], "discover");
         assert_eq!(value["session"], "d".repeat(32));
         assert!(value.get("device").is_none());
@@ -1189,13 +1218,27 @@ mod completion_tests {
 
     #[test]
     fn desktop_discovery_absent_session_is_pending_not_a_transport_failure() {
-        let reply = native_reply(Ok(serde_json::json!(false)), &discovery_action());
+        let response = |value| {
+            Ok(native_io::NativeResponse {
+                value,
+                payload: vec![],
+            })
+        };
+        let reply = native_reply(response(serde_json::json!(false)), &discovery_action());
         assert_eq!(reply.error, Some(ReadError::Busy));
         assert!(reply.bytes.is_empty());
-        let ready = native_reply(Ok(serde_json::json!(true)), &discovery_action());
+        let ready = native_reply(response(serde_json::json!(true)), &discovery_action());
         assert_eq!(ready.error, None);
-        let malformed = native_reply(Ok(serde_json::json!("true")), &discovery_action());
+        let malformed = native_reply(response(serde_json::json!("true")), &discovery_action());
         assert_eq!(malformed.error, Some(ReadError::InvalidInput));
+        let payload_on_open = native_reply(
+            Ok(native_io::NativeResponse {
+                value: serde_json::json!(true),
+                payload: vec![1],
+            }),
+            &discovery_action(),
+        );
+        assert_eq!(payload_on_open.error, Some(ReadError::InvalidInput));
     }
 
     #[tokio::test]
@@ -1218,7 +1261,13 @@ mod completion_tests {
         assert_eq!(first.kind, UsbActionKind::Open);
         assert!(first.device.is_none() && first.storage.is_none());
         control
-            .complete(native_reply(Ok(serde_json::json!(false)), &first))
+            .complete(native_reply(
+                Ok(native_io::NativeResponse {
+                    value: serde_json::json!(false),
+                    payload: vec![],
+                }),
+                &first,
+            ))
             .unwrap();
         usb.advance(&control).unwrap();
         assert!(control.exchange.lock().unwrap().pending.is_none());
@@ -1272,6 +1321,110 @@ mod completion_tests {
         (usb, Control::new(&Start::Saf))
     }
 
+    #[test]
+    fn publishing_local_output_does_not_reset_idle_inbound_directory_backoff() {
+        let root = tempfile::tempdir().unwrap();
+        let api = CoreApi::open(root.path()).unwrap();
+        let (mut session, _, now) = confirmed(Role::Sender);
+        session.send_payload(b"synthetic control", now).unwrap();
+        let driver = Driver::new(
+            session,
+            api.database(),
+            "Phone",
+            Arc::new(SystemClock::default()),
+        )
+        .unwrap();
+        let mut usb = UsbDriver::new(driver, &Start::Saf);
+        usb.stage = Stage::Send;
+        let (name, bytes) = usb
+            .pump
+            .outgoing_without_finish(&mut usb.driver)
+            .unwrap()
+            .map(|(name, bytes)| (name.to_owned(), bytes.to_vec()))
+            .unwrap();
+        let action = UsbAction {
+            token: "a".repeat(32),
+            generation: usb.generation.clone(),
+            operation: usb.operation.clone(),
+            session: usb.session.clone(),
+            kind: UsbActionKind::Write,
+            direction: usb.outgoing,
+            name: Some(name),
+            bytes,
+            device: None,
+            storage: None,
+        };
+        usb.idle_ms = 50;
+
+        usb.accept_completion(
+            &Control::new(&Start::Saf),
+            &action,
+            UsbReply::empty(&action),
+        )
+        .unwrap();
+
+        assert_eq!(
+            usb.idle_ms, 50,
+            "outbound writes are not evidence that the peer's incoming folder changed"
+        );
+    }
+
+    #[test]
+    fn rejected_publication_resumes_the_retained_input_before_listing_it_again() {
+        let root = tempfile::tempdir().unwrap();
+        let api = CoreApi::open(root.path()).unwrap();
+        let (mut sender, receiver, now) = confirmed(Role::Sender);
+        for index in 0..9_u8 {
+            sender
+                .send_media_payload(&vec![index; 16_384], now)
+                .unwrap();
+        }
+        let mut drains = Vec::new();
+        loop {
+            let bytes = sender.drain_ciphertext(now).unwrap();
+            if bytes.is_empty() {
+                break;
+            }
+            drains.push(bytes);
+        }
+        let carrier = super::super::mailbox::bundle::BundleEncoder::default()
+            .encode(&drains)
+            .unwrap();
+        let driver = Driver::new(
+            receiver,
+            api.database(),
+            "Desktop",
+            Arc::new(SystemClock::default()),
+        )
+        .unwrap();
+        let mut usb = UsbDriver::new(driver, &Start::Saf);
+        assert!(usb
+            .pump
+            .accept(&mut usb.driver, &carrier.name, &carrier.bytes)
+            .unwrap()
+            .is_none());
+        assert!(usb.pump.has_pending_input());
+        usb.outstanding.push_back("0000000000000000.block".into());
+        let mut action = discovery_action();
+        action.kind = UsbActionKind::Write;
+        action.name = Some("0000000000000001.block".into());
+        let mut reply = UsbReply::empty(&action);
+        reply.error = Some(ReadError::WindowFull);
+
+        usb.accept_completion(&Control::new(&Start::Saf), &action, reply)
+            .unwrap();
+
+        assert!(
+            matches!(usb.stage, Stage::DrainInput),
+            "a full output directory cannot reread an authenticated carrier whose TLS tail is retained"
+        );
+        assert!(
+            usb.cleanup.is_empty(),
+            "unconsumed input is not acknowledged"
+        );
+        assert!(usb.blocked);
+    }
+
     #[tokio::test]
     async fn cleanup_deadline_preserves_the_already_selected_read_before_later_entries() {
         let root = tempfile::tempdir().unwrap();
@@ -1284,7 +1437,7 @@ mod completion_tests {
         ]
         .into();
         usb.cleanup.push_back("0000000000000000.block".into());
-        usb.cleanup_since = Some(Instant::now() - Duration::from_millis(51));
+        usb.cleanup_since = Some(Instant::now() - Duration::from_millis(251));
         let ack = take(&mut usb, &control).await;
         assert_eq!(ack.kind, UsbActionKind::Acknowledge);
         assert_eq!(ack.name.as_deref(), Some("0000000000000000.block"));
@@ -1303,6 +1456,47 @@ mod completion_tests {
         );
         control.cancel();
         assert_eq!(usb.advance(&control), Err(ReadError::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn cleanup_waits_for_batch_window_while_inbound_polling_is_due() {
+        let root = tempfile::tempdir().unwrap();
+        let api = CoreApi::open(root.path()).unwrap();
+        let (mut usb, control) = ack_driver(&api);
+        usb.stage = Stage::Receive;
+        usb.cleanup.push_back("0000000000000000.block".into());
+        usb.cleanup_since = Some(Instant::now() - Duration::from_millis(100));
+
+        let poll = take(&mut usb, &control).await;
+        assert_eq!(
+            poll.kind,
+            UsbActionKind::List,
+            "a small cleanup batch must not preempt live inbound polling"
+        );
+        assert_eq!(usb.cleanup.len(), 1);
+        control.cancel();
+        assert!(control.complete(UsbReply::empty(&poll)).is_err());
+    }
+
+    #[tokio::test]
+    async fn cleanup_waits_for_batch_window_when_output_is_temporarily_empty() {
+        let root = tempfile::tempdir().unwrap();
+        let api = CoreApi::open(root.path()).unwrap();
+        let (mut usb, control) = ack_driver(&api);
+        usb.stage = Stage::Send;
+        usb.cleanup.push_back("0000000000000000.block".into());
+        usb.cleanup_since = Some(Instant::now() - Duration::from_millis(100));
+
+        let poll = take(&mut usb, &control).await;
+        assert_eq!(
+            poll.kind,
+            UsbActionKind::List,
+            "a temporary output gap must not bypass the cleanup batch window"
+        );
+        assert_eq!(poll.direction, usb.incoming_direction);
+        assert_eq!(usb.cleanup.len(), 1);
+        control.cancel();
+        assert!(control.complete(UsbReply::empty(&poll)).is_err());
     }
 
     #[tokio::test]

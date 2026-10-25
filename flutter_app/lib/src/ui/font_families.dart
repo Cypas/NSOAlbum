@@ -10,6 +10,7 @@ String _language = 'zh';
 List<String> _customFamilies = const [];
 final appFontRevision = ValueNotifier<int>(0);
 final _loadedFamilies = <String, Future<void>>{};
+final _previewFamiliesByPath = <String, String>{};
 
 String get appFontFamily => _customFamilies.isEmpty
     ? (_language == 'zh' ? 'DFPT_ZY9' : 'BlitzMain')
@@ -48,6 +49,10 @@ Future<void> validateCustomFontFiles(List<String> paths) async {
   await prepareCustomFontFamilies(paths);
 }
 
+Future<String> loadCustomFontFamilyForPreview(String path) => _loadFont(path);
+
+String? customFontFamilyForPath(String path) => _previewFamiliesByPath[path];
+
 /// Registers fonts without changing the visible chain. Used before persistence
 /// so failed loads or settings writes cannot replace the current typography.
 Future<FontLoadReport> prepareCustomFontFamilies(List<String> paths) async {
@@ -85,6 +90,7 @@ Future<String> _loadFont(String path) async {
   final bytes = await file.readAsBytes();
   // Only the runtime family uses a content ID. Stored files keep original names.
   final family = 'NSOAlbumCustomFont_${sha256.convert(bytes)}';
+  _previewFamiliesByPath[path] = family;
   final registration = _loadedFamilies.putIfAbsent(family, () {
     final loader = FontLoader(family);
     loader.addFont(Future.value(ByteData.sublistView(bytes)));

@@ -198,6 +198,10 @@ impl BundleBuffer {
         self.flush_reason(now_ms).is_some()
     }
 
+    pub(crate) fn stop_filling(&self) -> bool {
+        self.immediate || self.drains.len() == MAX_DRAINS || self.encoded_bytes >= TARGET_BYTES
+    }
+
     pub(crate) fn flush_reason(&self, now_ms: u64) -> Option<FlushReason> {
         let first = self.first_ms?;
         if self.immediate {

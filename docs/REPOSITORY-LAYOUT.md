@@ -43,6 +43,8 @@
 | 桌面界面与共享展示组件 | `flutter_app/lib/src/ui/` 中对应模块 | 是 |
 | 视频首帧封面与受控邻近封面预取 | `flutter_app/lib/src/ui/video_preview*.dart` | 是；复用缩略图缓存；播放器准备归各媒体详情 PageView 所有，不由封面预取器创建；测试位于 `flutter_app/test/` |
 | Dart 后端门面、状态控制器 | `flutter_app/lib/src/backend/`、`flutter_app/lib/src/state/` | 是 |
+| 媒体详情展示与历史账号名称 | `flutter_app/lib/src/ui/media_details_dialog.dart`、`lib/src/backend/account_name_history.dart` | 是；展示复用秒级本地时间，名称复用原安全资料键、不访问 SQLite；回归位于 `test/media_details_test.dart`、`test/account_name_history_test.dart`，账号 v1/v2 和补偿沿用 `test/device_sync/` |
+| 图库分页与详情邻近窗口 | `lib/src/state/gallery_page_controller.dart`、`media_window_controller.dart` 与既有 `library_controller.dart`；Rust 查询集中在 `rust_core/src/database.rs` | 是；共享查询代数、双向游标、去重与窗口裁剪；回归位于 `test/state/gallery_page_controller_test.dart`、`test/gallery_pagination_test.dart` 和 `test/android/android_gallery_pagination_test.dart`；`test/gallery_query_bridge_test.dart` 显式启用当前 Debug 库验证实际 Bridge，全部只使用合成库 |
 | 自动同步通知汇总与系统展示 | `flutter_app/lib/src/state/sync_notification_content.dart`、`lib/src/platform/sync_notifications.dart`；各平台 runner 窄通道 | 是；只发送汇总数，不发送账号或媒体内容；共享回归在 `test/state/` 与 `test/sync_controller_test.dart` |
 | Windows 通知身份、COM 唤起与 DOM 展示 | `flutter_app/windows/runner/sync_notifications.{h,cpp}` | 是；使用系统 SDK，无第三方 toast 插件；COM 回调只投递既有无负载窗口唤起消息，退役后失效；真实 SDK DOM/线程/生命周期回归在 `test/windows_sync_notifications_test.dart` 和 `test/fixtures/notifications/native/`，合成探针不打开账号/图库 |
 | Windows WebView 的系统 DLL 依赖与退出对照 | `flutter_app/windows/CMakeLists.txt`、`windows/runner/main.cpp`、`test/windows_webview_loader_test.dart`、`test/fixtures/webview_lifetime/` | 是；先可选加载系统 provider，再延迟加载 WebView 消费者，成品 PE 回归在原生验收阶段显式启用；SDK 子进程探针对照动态加载/导入/预加载与退出，不改依赖缓存、不增加 COM 引用、不访问图库或账号 |
@@ -58,6 +60,7 @@
 | 好友头像展示复用、游戏图片公共缓存与保存预览 | `flutter_app/lib/src/state/account_tool_images.dart`、`lib/src/ui/account_tools/avatar_preview.dart`、`rust_core/src/nso/game_images.rs` | 是；网络仍通过 Rust transport，头像按账号隔离，公共游戏图片按游戏名和 URL 有界复用；好友码仅存系统安全存储 |
 | Nintendo/Coral/SplatNet 特殊返回分类 | `rust_core/src/nso/conditions.rs`、`session.rs`、`auth.rs`、`splatnet.rs` 与共享 UI `account_tool_errors.dart` | 是；按请求阶段识别固定状态，不输出远端错误正文或凭据，不将未关联/会员/受限混作过期；合成回归归各模块及 `test/account_tools/` |
 | 跨设备同步安全会话、清单与传输 | `rust_core/src/device_sync/` | 是，数据库访问仍集中 `database.rs` |
+| 异常已配对会话及启动反馈 | `rust_core/src/device_sync/startup_recovery.rs`、既有 `database.rs`、Flutter `startup_lifecycle.dart`/`application_bootstrap.dart`/`startup_page.dart` | 是；只记录本地会话与受控暂存操作，apply journal 保持权威；回归复用 `test/device_sync/startup_*` 与 Rust 模块合成测试，不记录凭据、不清理其他原件或缓存 |
 | 累计媒体回执、字节窗口和小文件批次 | `rust_core/src/device_sync/driver/flow.rs`、`files.rs` | 是；只管理当前会话流控，媒体校验及数据库应用仍由暂存/接收模块负责 |
 | 同步网络到本地应用的一次性权限和取消裁决 | `rust_core/src/device_sync/local_apply.rs`、`local_apply/`、`driver/local_apply_tests.rs` | 是，权限仅内存持有，不放入缓存或普通备份；源码存在不代表设备验收完成 |
 | 跨设备同步页面及平台目录/设备适配 | `flutter_app/lib/src/ui/device_sync/`、`lib/src/platform/` | 是，凭据不进入普通文件 |
@@ -68,6 +71,7 @@
 | 设备同步状态灯与方向图标 | `flutter_app/lib/src/ui/device_sync/display.dart`、`direction.dart` | 是；桌面/Android共享展示，不改变同步协议或权限；图标和圆点不重复朗读，回归位于 `test/device_sync/status_direction_test.dart` |
 | 设备同步稳定进度与速度展示 | `flutter_app/lib/src/ui/device_sync/transfer_progress.dart` | 是；共享桌面/Android组件，传输计数独立更新，不将后台工作采样当作页面重载 |
 | 桌面跨设备同步 MTP 隔离进程 | `rust_core/src/bin/nsoalbum_mtp_worker.rs` | 是，须与桌面分发的构建/签名验证一并接入 |
+| 桌面 MTP helper 的有界二进制载荷 IPC | `rust_core/src/device_sync/native_io.rs`、`native_process.rs`；独立参考夹具 `rust_core/tests/fixtures/device_sync_ipc.rs` | 是；JSON 仅控制头，原始密文有独立长度上限；验包协议探针位于 `flutter_app/tool/verify_mtp_worker.dart` |
 | USB 本次会话只读发现与目录授权复用 | `rust_core/src/device_sync/native_mtp.rs`、`usb.rs`、Android `DeviceSyncPicker.kt`/`DeviceSyncSafChannel.kt` | 是，不按设备名建立信任；已有授权失效时仍走系统目录授权 |
 | 无账号设备文件通道探针 | `rust_core/examples/device_sync_native_probe.rs`、`flutter_app/tool/device_sync_saf_probe.dart` | 是，独立开发入口，不初始化正常账号或图库 |
 | SAF 合成吞吐与校验探针 | `flutter_app/tool/device_sync_saf_benchmark.dart`、`flutter_app/test/android/device_sync_saf_benchmark_test.dart` | 是；受控新会话、最多四个在途块；只测试原生字节通道，不代表应用内同步验收 |

@@ -6,7 +6,10 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
-const maxNativeIpc = 196608;
+const maxNativeHeader = 64 * 1024;
+// This probe accepts only Close: raw media payloads are never valid here.
+const maxNativeIpc = maxNativeHeader + 16;
+const _nativeMagic = <int>[78, 83, 79, 77, 84, 80, 50, 0];
 
 Future<void> inspectNativeExecutable(File file, String platform) async {
   if (!await file.exists() ||
@@ -106,7 +109,7 @@ Future<void> probeMtpWorker(
       if (response.length >= 4) {
         final packet = response.toBytes();
         final length = ByteData.sublistView(packet).getUint32(0);
-        if (length == 0 ||
+        if (length < 16 ||
             length > maxNativeIpc ||
             packet.length > length + 4) {
           fail(StateError('MTP helper returned an invalid or excessive frame'));
@@ -142,13 +145,30 @@ Future<void> probeMtpWorker(
     try {
       if (code != 0) throw StateError('MTP helper exited with code $code');
       final packet = response.toBytes();
-      if (packet.length < 5 ||
+      if (packet.length < 21 ||
           ByteData.sublistView(packet).getUint32(0) != packet.length - 4) {
         throw StateError('MTP helper returned an incomplete Close response');
       }
-      final value = jsonDecode(utf8.decode(packet.sublist(4)));
+      final envelope = ByteData.sublistView(packet);
+      for (var index = 0; index < _nativeMagic.length; index++) {
+        if (packet[4 + index] != _nativeMagic[index]) {
+          throw StateError('MTP helper IPC version is incompatible');
+        }
+      }
+      final headerLength = envelope.getUint32(12);
+      final payloadLength = envelope.getUint32(16);
+      if (headerLength == 0 ||
+          headerLength > maxNativeHeader ||
+          payloadLength != 0 ||
+          packet.length != 20 + headerLength) {
+        throw StateError(
+          'MTP helper returned invalid Close lengths or payload',
+        );
+      }
+      final value = jsonDecode(utf8.decode(packet.sublist(20)));
       if (value is! Map ||
-          value.length != 1 ||
+          value.length != 2 ||
+          value['payload_length'] != 0 ||
           value['value'] is! Map ||
           (value['value'] as Map).length != 1 ||
           !(value['value'] as Map).containsKey('Ok') ||
@@ -162,7 +182,13 @@ Future<void> probeMtpWorker(
   });
   try {
     final request = utf8.encode('{"method":"close"}');
-    final frame = ByteData(4)..setUint32(0, request.length);
+    final frame = ByteData(20)
+      ..setUint32(0, 16 + request.length)
+      ..setUint32(12, request.length)
+      ..setUint32(16, 0);
+    for (var index = 0; index < _nativeMagic.length; index++) {
+      frame.setUint8(4 + index, _nativeMagic[index]);
+    }
     process.stdin.add(frame.buffer.asUint8List());
     process.stdin.add(request);
     await process.stdin.flush();

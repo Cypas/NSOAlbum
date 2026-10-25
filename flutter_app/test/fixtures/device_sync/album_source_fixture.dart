@@ -24,18 +24,24 @@ FakeBackend albumSourceBackend({
         mediaCount: BigInt.zero,
         sourceDeviceName: 'FAVORITES_SOURCE_MUST_NOT_APPEAR',
       ),
-      for (final entry in [(2, 'Desktop'), (3, 'Phone')])
-        AlbumSummary(
-          id: entry.$1,
-          name: 'Same name',
-          description: '',
-          albumType: 'manual',
-          pinned: false,
-          mediaCount: BigInt.zero,
-          sourceDeviceName: entry.$1 == 2 && longDeviceName
-              ? longAlbumDeviceName
-              : entry.$2,
-        ),
+      AlbumSummary(
+        id: 2,
+        name: 'Same name',
+        description: 'My regular album note',
+        albumType: 'manual',
+        pinned: false,
+        mediaCount: BigInt.zero,
+        sourceDeviceName: longDeviceName ? longAlbumDeviceName : 'Desktop',
+      ),
+      AlbumSummary(
+        id: 3,
+        name: 'Same name',
+        description: 'My smart album note',
+        albumType: 'smart',
+        pinned: false,
+        mediaCount: BigInt.zero,
+        sourceDeviceName: 'Phone',
+      ),
       AlbumSummary(
         id: 4,
         name: 'Unknown album',

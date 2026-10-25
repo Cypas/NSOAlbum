@@ -122,7 +122,7 @@ void main() {
         final sourceStore = MemoryAccountStorage(
           values: {
             accountTokensKey: '{"a":"synthetic-new"}',
-            accountProfilesKey: '{"a":{"nickname":"Alice","avatar_url":"private-not-exported"}}',
+            accountProfilesKey: '{"a":{"nickname":"Alice","avatar_url":"private-not-exported","name_updated_at":"2026-10-24T00:00:00Z"},"removed-source":{"nickname":"Previous source user","name_updated_at":"2026-10-23T00:00:00Z"}}',
           },
         );
         final targetStore = MemoryAccountStorage(
@@ -130,6 +130,7 @@ void main() {
             legacySessionKey: 'synthetic-old-legacy',
             accountTokensKey: '{"b":"synthetic-old"}',
             selectedAccountKey: 'b',
+            accountProfilesKey: '{"removed-target":{"nickname":"Previous target user","name_updated_at":"2026-10-22T00:00:00Z"}}',
           },
         );
         final sourceCoordinator = DeviceAccountCoordinator(
@@ -166,13 +167,20 @@ void main() {
           overwrite: true,
           includeAccounts: true,
         );
-        for (var n = 0; n < 1000; n++) {
+        final previewDeadline = DateTime.now().add(const Duration(seconds: 20));
+        while (DateTime.now().isBefore(previewDeadline)) {
           await pump(host, phone);
           if ((await native.deviceSyncStatus(endpoint: phone)).state ==
               'AwaitingApproval') {
             break;
           }
+          await Future<void>.delayed(const Duration(milliseconds: 5));
         }
+        expect(
+          (await native.deviceSyncStatus(endpoint: phone)).state,
+          'AwaitingApproval',
+          reason: 'Synthetic account preview must finish its asynchronous scan before confirmation.',
+        );
         final preview = await targetCoordinator.preview(phone);
         await targetCoordinator.approve(preview, authorized: true);
         expect(
@@ -180,7 +188,8 @@ void main() {
           isFalse,
           reason: 'account work stays available during original transfer; final admission must recheck both domains',
         );
-        for (var n = 0; n < 1000; n++) {
+        final applyDeadline = DateTime.now().add(const Duration(seconds: 20));
+        while (DateTime.now().isBefore(applyDeadline)) {
           await pump(host, phone);
           if ((await native.deviceSyncStatus(endpoint: phone)).state ==
               'AwaitingTargetAccountFinal') {
@@ -194,6 +203,7 @@ void main() {
               'AwaitingExternal') {
             break;
           }
+          await Future<void>.delayed(const Duration(milliseconds: 5));
         }
         expect(
           (await native.deviceSyncStatus(endpoint: phone)).state,
@@ -210,6 +220,17 @@ void main() {
         expect(targetStore.values[accountTokensKey], '{"a":"synthetic-new"}');
         expect(targetStore.values[selectedAccountKey], 'a');
         expect(targetStore.values.containsKey(legacySessionKey), isFalse);
+        final syncedNames =
+            jsonDecode(targetStore.values[accountProfilesKey]!) as Map;
+        expect(
+          syncedNames['removed-source']['nickname'],
+          'Previous source user',
+        );
+        expect(
+          syncedNames['removed-target']['nickname'],
+          'Previous target user',
+        );
+        expect(syncedNames['a']['avatar_url'], isNull);
         final journal = await native.deviceSyncJournal(
           library_: target.handle,
           operation: preview.operation,
@@ -341,6 +362,16 @@ void main() {
         expect(targetStore.values[accountTokensKey], '{"b":"synthetic-old"}');
         expect(targetStore.values[selectedAccountKey], 'b');
         expect(targetStore.values[legacySessionKey], 'synthetic-old-legacy');
+        final restoredNames =
+            jsonDecode(targetStore.values[accountProfilesKey]!) as Map;
+        expect(
+          restoredNames['removed-source']['nickname'],
+          'Previous source user',
+        );
+        expect(
+          restoredNames['removed-target']['nickname'],
+          'Previous target user',
+        );
         await expectOriginalContent();
         final records = jsonDecode(
           targetStore.values[accountCoordinationIndexKey]!,
@@ -471,8 +502,14 @@ void main() {
           targetLibrary,
           targetRoot.path,
         );
+        await verifyVersionOneAccountPreview(targetLibrary);
         await verifyLibraryOnlyBackupDoesNotReadAccounts(targetLibrary);
         await verifyAccountOwnerIsolation(targetLibrary);
+      } catch (error, stack) {
+        debugPrintSynchronously(
+          'Synthetic account Bridge original failure before strict teardown: $error\n$stack',
+        );
+        rethrow;
       } finally {
         for (final endpoint in [host, phone]) {
           if (endpoint != null) {

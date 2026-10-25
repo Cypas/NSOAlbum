@@ -1,24 +1,36 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../backend/app_backend.dart';
 import '../rust/models.dart';
 import '../search/search_normalizer.dart';
+import 'gallery_page_controller.dart';
 
 class LibraryController extends ChangeNotifier {
-  LibraryController(this.backend, {this.albumId});
+  LibraryController(this.backend, {this.albumId})
+    : pages = GalleryPageController(backend) {
+    pages.addListener(_pageChanged);
+  }
   final AppBackend backend;
+  final GalleryPageController pages;
   final int? albumId;
   GalleryKindFilter kind = GalleryKindFilter.all;
   bool favoriteOnly = false;
   bool newestFirst = true;
   List<String> gameNames = [];
+  DateTime? importedFrom;
+  DateTime? importedUntil;
   DateTime? capturedFrom;
   DateTime? capturedUntil;
   CapturedOnThisDay? capturedOnThisDay;
   String search = '';
   List<MediaAsset> items = [];
-  Object? error;
-  bool loading = false;
+  Object? get error => pages.error;
+  bool get loading => pages.loading;
+  bool get loadingMore => pages.loadingNext;
+  bool get hasAfter => pages.hasAfter;
+  bool get hasBefore => pages.hasBefore;
   bool disposed = false;
   int revision = 0;
   List<MediaAsset>? _visibleSource;
@@ -29,6 +41,8 @@ class LibraryController extends ChangeNotifier {
       kind != GalleryKindFilter.all ||
       favoriteOnly ||
       gameNames.isNotEmpty ||
+      importedFrom != null ||
+      importedUntil != null ||
       capturedFrom != null ||
       capturedUntil != null ||
       capturedOnThisDay != null;
@@ -56,33 +70,46 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> reload() async {
     if (disposed) return;
-    final request = ++revision;
-    loading = true;
-    error = null;
-    notifyListeners();
-    try {
-      final result = await query(
-        backend,
-        kind: kind,
-        favoriteOnly: favoriteOnly,
-        albumId: albumId,
-        newestFirst: newestFirst,
-        gameNames: gameNames,
-        capturedFrom: capturedFrom,
-        capturedUntil: capturedUntil,
-        capturedOnThisDay: capturedOnThisDay,
-      );
-      if (disposed || request != revision) return;
-      items = result;
-    } catch (exception) {
-      if (!disposed && request == revision) error = exception;
-    } finally {
-      if (!disposed && request == revision) {
-        loading = false;
-        notifyListeners();
-      }
-    }
+    revision++;
+    final term = search;
+    await pages.reload(
+      galleryQuery,
+      filter: term.trim().isEmpty
+          ? null
+          : (item) => normalizedTextContains(
+              [
+                item.originalName,
+                item.gameName,
+                item.note ?? '',
+                ...item.tags,
+              ].join(' '),
+              term,
+            ),
+    );
   }
+
+  void _pageChanged() {
+    if (disposed) return;
+    items = pages.items;
+    notifyListeners();
+  }
+
+  GalleryQuery get galleryQuery => GalleryQuery(
+    kind: kind,
+    limit: 60,
+    offset: 0,
+    favoriteOnly: favoriteOnly,
+    albumId: albumId,
+    newestFirst: newestFirst,
+    gameNames: List.unmodifiable(gameNames),
+    importedFrom: importedFrom,
+    importedUntil: importedUntil,
+    capturedFrom: capturedFrom,
+    capturedUntil: capturedUntil,
+    capturedOnThisDay: capturedOnThisDay,
+  );
+
+  Future<void> loadNextPage() => pages.loadNext();
 
   static Future<List<MediaAsset>> query(
     AppBackend backend, {
@@ -91,6 +118,8 @@ class LibraryController extends ChangeNotifier {
     int? albumId,
     bool newestFirst = true,
     List<String> gameNames = const [],
+    DateTime? importedFrom,
+    DateTime? importedUntil,
     DateTime? capturedFrom,
     DateTime? capturedUntil,
     CapturedOnThisDay? capturedOnThisDay,
@@ -102,6 +131,8 @@ class LibraryController extends ChangeNotifier {
         albumId: albumId,
         newestFirst: newestFirst,
         gameNames: gameNames,
+        importedFrom: importedFrom,
+        importedUntil: importedUntil,
         capturedFrom: capturedFrom,
         capturedUntil: capturedUntil,
         capturedOnThisDay: capturedOnThisDay,
@@ -110,8 +141,9 @@ class LibraryController extends ChangeNotifier {
       .timeout(const Duration(seconds: 25));
 
   void searchFor(String value) {
+    if (search == value) return;
     search = value;
-    if (!disposed) notifyListeners();
+    if (!disposed) unawaited(reload());
   }
 
   Future<void> favorite(MediaAsset item) async {
@@ -123,6 +155,8 @@ class LibraryController extends ChangeNotifier {
   void dispose() {
     disposed = true;
     revision++;
+    pages.removeListener(_pageChanged);
+    pages.dispose();
     super.dispose();
   }
 }

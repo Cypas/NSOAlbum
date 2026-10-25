@@ -13,8 +13,8 @@ use crate::error::{CoreError, CoreResult};
 use crate::models::{
     AlbumRule, AlbumSummary, GalleryQuery, GameTagAliasSummary, GameTagSummary, ImportItemError,
     ImportSummary, LibraryRelocationResult, LoginChallenge, MediaAsset, MediaCandidate,
-    MediaDeletionResult, MediaExportItemError, MediaExportSummary, MediaKind, OperationProgress,
-    SourceType, SyncProgress, SyncSummary, TagUsageSummary,
+    MediaDeletionResult, MediaDetails, MediaExportItemError, MediaExportSummary, MediaKind,
+    OperationProgress, SourceType, SyncProgress, SyncSummary, TagUsageSummary,
 };
 use crate::nso::{
     AttestationService, CoralAlbumProvider, CoralSession, MediaProvider, NintendoAuthClient,
@@ -317,7 +317,10 @@ impl CoreApi {
         let transport = self.transport(proxy_url)?;
         let auth = NintendoAuthClient::new(transport.clone());
         let code = auth.parse_callback(&callback_url, &expected_state)?;
-        let attestation = NxapiAttestationClient::new(transport, NxapiConfig::default());
+        let attestation = NxapiAttestationClient::new(
+            transport.with_timeout(crate::transport::NXAPI_REQUEST_TIMEOUT)?,
+            NxapiConfig::default(),
+        );
         let nso_version = crate::nso::AttestationService::nso_version(&attestation).await?;
         auth.exchange_session_token_code(&code, &verifier, &nso_version)
             .await
@@ -523,6 +526,24 @@ impl CoreApi {
 
     pub fn list_media(&self, query: GalleryQuery) -> CoreResult<Vec<MediaAsset>> {
         self.database.list_media(&query)
+    }
+
+    pub fn list_media_page(
+        &self,
+        request: crate::models::GalleryPageRequest,
+    ) -> CoreResult<crate::models::GalleryPage> {
+        self.database.list_media_page(&request)
+    }
+
+    pub fn list_game_media_counts(
+        &self,
+        album_id: Option<i64>,
+    ) -> CoreResult<Vec<crate::models::GameMediaCount>> {
+        self.database.list_game_media_counts(album_id)
+    }
+
+    pub fn media_details(&self, media_id: i64) -> CoreResult<MediaDetails> {
+        self.database.media_details(media_id)
     }
 
     pub fn list_albums(&self) -> CoreResult<Vec<AlbumSummary>> {

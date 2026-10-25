@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 // Replace only the OS boundary; RustBackend and FlutterSecureStorage stay real.
@@ -53,6 +54,36 @@ void main() {
     applicationRoot: root.path,
   );
 
+  test(
+    'removing a login preserves only its last known name and timestamp',
+    () async {
+      storage.values[_tokensKey] = '{"synthetic-account":"synthetic-session"}';
+      storage.values['nintendo.account_profiles.v1'] = jsonEncode({
+        _account: {
+          'nickname': 'Previous user',
+          'name_updated_at': '2026-10-24T00:00:00Z',
+          'avatar_url': 'https://example.com/synthetic.png',
+          'avatar_base64': 'AQID',
+        },
+      });
+      final backend = await open();
+      await backend.removeNintendoAccount(_account);
+      expect(await backend.listNintendoAccounts(), isEmpty);
+      final profile =
+          (jsonDecode(storage.values['nintendo.account_profiles.v1']!)
+                  as Map)[_account]
+              as Map;
+      expect(profile, {
+        'nickname': 'Previous user',
+        'name_updated_at': '2026-10-24T00:00:00Z',
+      });
+      expect(storage.values.containsKey(_tokensKey), isFalse);
+      final names = await backend.listNintendoAccountNameHistory();
+      expect(names.single.nickname, 'Previous user');
+      expect(names.single.updatedAt, DateTime.utc(2026, 10, 24));
+    },
+  );
+
   test('selected-account sync uses the account-scoped Rust refresh entry and records separate counts', () async {
     storage.values[_tokensKey] = jsonEncode({
       _account: 'synthetic-old-session',
@@ -80,6 +111,32 @@ void main() {
       _account: 'synthetic-old-session',
       'other-account': 'synthetic-other-session',
     });
+  });
+
+  test('account sync refreshes a missing cached avatar without making avatar refresh failure fail sync', () async {
+    storage.values['nintendo.account_profiles.v1'] = jsonEncode({
+      _account: {'nickname': 'Transferred account'},
+    });
+    rust.refreshedSession = CoralSession(
+      accessToken: 'synthetic-coral',
+      naId: _account,
+      nickname: 'Transferred account',
+      avatarUrl: 'https://example.com/account-avatar.png',
+      avatarBytes: Uint8List.fromList([1, 2, 3]),
+    );
+    final backend = await open();
+
+    final result = await backend.syncNintendoAccount(_account);
+
+    expect(result, rust.syncResult);
+    final profiles = jsonDecode(
+      storage.values['nintendo.account_profiles.v1']!,
+    ) as Map<String, dynamic>;
+    expect(
+      profiles[_account]['avatar_url'],
+      'https://example.com/account-avatar.png',
+    );
+    expect(profiles[_account]['avatar_base64'], 'AQID');
   });
 
   test('selected-account rate limit is recorded once without a Flutter authentication retry', () async {
@@ -417,6 +474,7 @@ class _RustBoundary with NoPendingStartupBoundary implements RustLibApi {
     errors: const [SyncItemError(message: 'synthetic media download failure')],
   );
   Object? syncError;
+  CoralSession? refreshedSession;
   int syncCancellations = 0;
   final cancelled = <String>[];
   final friendCodeDispatches = <String>[];
@@ -444,11 +502,13 @@ class _RustBoundary with NoPendingStartupBoundary implements RustLibApi {
     required String sessionToken,
     required String expectedAccount,
     String? proxyUrl,
-  }) async => CoralSession(
-    accessToken: 'synthetic-coral',
-    naId: expectedAccount,
-    nickname: 'Synthetic account',
-  );
+  }) async =>
+      refreshedSession ??
+      CoralSession(
+        accessToken: 'synthetic-coral',
+        naId: expectedAccount,
+        nickname: 'Synthetic account',
+      );
 
   @override
   Future<SyncSummary> crateBridgeSyncNso({

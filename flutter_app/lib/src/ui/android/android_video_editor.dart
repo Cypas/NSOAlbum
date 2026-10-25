@@ -14,6 +14,7 @@ import 'android_back_guard.dart';
 import 'android_page_frame.dart';
 import 'android_media_card.dart' show androidDuration;
 import 'android_operation_progress.dart';
+import 'android_video_retirement.dart';
 
 class AndroidVideoEditor extends StatefulWidget {
   const AndroidVideoEditor({
@@ -69,10 +70,13 @@ class _AndroidVideoEditorState extends State<AndroidVideoEditor> {
 
   @override
   void dispose() {
-    unawaited(durationSubscription?.cancel());
-    unawaited(positionSubscription?.cancel());
-    unawaited(player.dispose());
-    unawaited(editor.dispose());
+    final output = video.notifier.value;
+    unawaited(() async {
+      await durationSubscription?.cancel();
+      await positionSubscription?.cancel();
+      await retireAndroidVideoOutput(output, player.dispose);
+      await editor.dispose();
+    }());
     super.dispose();
   }
 

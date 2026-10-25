@@ -9,6 +9,8 @@
 
 struct SyncNotificationActivationState;
 
+UINT SyncNotificationGalleryMessage();
+
 // The COM factory can outlive this owner; Close makes all retained callbacks
 // inert before the Flutter window or engine is destroyed.
 class SyncNotificationActivation {

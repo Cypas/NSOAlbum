@@ -93,6 +93,9 @@ class AndroidTransferPage extends StatelessWidget {
                             controller.sync.state == SyncState.cancelling,
                         authPaused: controller.sync.authPausedAccountIds
                             .contains(account.accountId),
+                        attemptedAt: controller
+                            .sync
+                            .accountAttemptedAt[account.accountId],
                       ),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
@@ -107,6 +110,7 @@ class AndroidTransferPage extends StatelessWidget {
                                     await controller.sync.cancel();
                                   } else {
                                     await controller.sync.run();
+                                    await controller.refresh();
                                     if (context.mounted &&
                                         controller.sync.error != null) {
                                       androidMessage(
@@ -189,6 +193,7 @@ class _AccountStatusTile extends StatelessWidget {
     required this.current,
     required this.cancelling,
     required this.authPaused,
+    required this.attemptedAt,
   });
 
   final NintendoAccountProfile profile;
@@ -199,9 +204,11 @@ class _AccountStatusTile extends StatelessWidget {
   final bool current;
   final bool cancelling;
   final bool authPaused;
+  final DateTime? attemptedAt;
 
   @override
   Widget build(BuildContext context) {
+    final currentResult = result;
     final attempt = history?.latestAttempt;
     final status = androidAccountStatus(
       context,
@@ -254,30 +261,27 @@ class _AccountStatusTile extends StatelessWidget {
             ),
           ),
         ),
-        if (attempt != null)
+        if (attempt != null || attemptedAt != null)
           Text(
             context.l10n.select(
-              zh: '上次尝试：${formatNsoAttemptTime(attempt.attemptedAt, includeSeconds: false)}',
-              en: 'Last attempt: ${formatNsoAttemptTime(attempt.attemptedAt, includeSeconds: false)}',
+              zh: '${attemptedAt == null ? '上次尝试' : '最近同步'}：${formatNsoAttemptTime(attemptedAt ?? attempt!.attemptedAt, includeSeconds: false)}',
+              en: '${attemptedAt == null ? 'Last attempt' : 'Last sync'}: ${formatNsoAttemptTime(attemptedAt ?? attempt!.attemptedAt, includeSeconds: false)}',
             ),
           ),
-        if (result != null)
+        if (error == null && (result != null || attempt != null))
           Text(
-            context.l10n.select(
-              zh: '下载 ${result!.downloaded} · 重复 ${result!.duplicates} · 已存在 ${result!.skippedRemote} · 失败 ${result!.failed}',
-              en: 'Downloaded ${result!.downloaded} · Duplicates ${result!.duplicates} · Existing ${result!.skippedRemote} · Failed ${result!.failed}',
-            ),
-          ),
-        if (attempt != null)
-          Text(
-            context.l10n.select(
-              zh: attempt.skippedRemote == null
-                  ? '上次已存在：未记录'
-                  : '上次已存在：${attempt.skippedRemote}',
-              en: attempt.skippedRemote == null
-                  ? 'Existing last time: not recorded'
-                  : 'Existing last time: ${attempt.skippedRemote}',
-            ),
+            currentResult != null &&
+                        androidIsEmptyNsoAlbumResult(currentResult) ||
+                    currentResult == null &&
+                        androidIsEmptyNsoAlbumAttempt(attempt!)
+                ? context.l10n.select(
+                    zh: 'NSO线上相册未上传任何媒体',
+                    en: 'No media has been uploaded to the NSO album',
+                  )
+                : context.l10n.select(
+                    zh: '新增 ${result?.downloaded ?? attempt!.downloaded} · 已存在 ${result?.skippedRemote ?? attempt!.skippedRemote ?? '未记录'} · 失败 ${result?.failed ?? attempt!.failed}',
+                    en: 'New ${result?.downloaded ?? attempt!.downloaded} · Existing ${result?.skippedRemote ?? attempt!.skippedRemote ?? 'not recorded'} · Failed ${result?.failed ?? attempt!.failed}',
+                  ),
           ),
       ],
     );

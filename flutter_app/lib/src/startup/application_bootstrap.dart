@@ -25,11 +25,16 @@ class ApplicationBootstrap extends ChangeNotifier {
     required this.initializePresentation,
     required this.safeMode,
     this.preparationLimit = const Duration(seconds: 30),
+    this.closeFeedbackDelay = const Duration(milliseconds: 600),
   });
   final Future<AppBackend> Function() prepare;
   final Future<void> Function(AppBackend) initializePresentation;
   final bool safeMode;
   final Duration preparationLimit;
+  final Duration closeFeedbackDelay;
+  Timer? _closeFeedbackTimer;
+  bool closeFeedback = false;
+  VoidCallback? requestCloseRetry;
   BootstrapPhase phase = BootstrapPhase.unchecked;
   AppBackend? backend;
   Object? error;
@@ -165,10 +170,19 @@ class ApplicationBootstrap extends ChangeNotifier {
     final done = Completer<void>();
     late final Future<void> flight;
     flight = done.future.whenComplete(() {
+      _closeFeedbackTimer?.cancel();
       if (identical(_close, flight)) _close = null;
     });
     _close = flight;
+    closeFeedback = false;
+    closeError = null;
     phase = BootstrapPhase.closing;
+    _closeFeedbackTimer = Timer(closeFeedbackDelay, () {
+      if (phase == BootstrapPhase.closing && identical(_close, flight)) {
+        closeFeedback = true;
+        notifyListeners();
+      }
+    });
     notifyListeners();
     startup?.removeListener(_changed);
     final owner = backend;
@@ -198,6 +212,7 @@ class ApplicationBootstrap extends ChangeNotifier {
           await wait(() => (backend as DeviceSyncStartupBackend).close());
         }
         if (first == null) {
+          closeFeedback = false;
           phase = BootstrapPhase.closed;
           notifyListeners();
         } else {

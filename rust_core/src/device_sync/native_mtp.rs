@@ -1,7 +1,6 @@
 //! Used exclusively in the disposable native worker, never the UI process.
 use super::io_metrics::{IoMetrics, IoStep};
 use super::native_io::*;
-use base64::{engine::general_purpose::STANDARD, Engine};
 use futures::{Stream, StreamExt};
 use mtp_rs::mtp::{
     Backend, ListingItem, MtpDevice, NewObjectInfo, ObjectHandle, ObjectInfo, Storage, StorageId,
@@ -19,6 +18,7 @@ pub struct MtpWorker {
     receipts: BlockReceipts,
     indexes: [Option<Vec<ObjectInfo>>; 2],
     timings: IoMetrics,
+    response_payload: Vec<u8>,
 }
 fn builder() -> mtp_rs::mtp::MtpDeviceBuilder {
     MtpDevice::builder()
@@ -196,6 +196,9 @@ impl MtpWorker {
         self.timings
             .elapsed(IoStep::IpcEncode, started, bytes as u64);
     }
+    pub fn take_response_payload(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.response_payload)
+    }
     fn scope(&self, operation: &str, session: &str) -> Result<(), NativeError> {
         if self.operation.as_ref() != Some(&(operation.into(), session.into())) {
             return Err(NativeError::Closed);
@@ -206,6 +209,7 @@ impl MtpWorker {
         &mut self,
         request: NativeRequest,
     ) -> Result<serde_json::Value, NativeError> {
+        self.response_payload.clear();
         match request {
             NativeRequest::Discover { operation, session } => {
                 self.discover(operation, session).await
@@ -409,12 +413,8 @@ impl MtpWorker {
                 }
                 self.receipts
                     .record_identified(direction, &name, &bytes, block_identity(&node))?;
-                let started = Instant::now();
-                let size = bytes.len();
-                let encoded = STANDARD.encode(bytes);
-                self.timings
-                    .elapsed(IoStep::IpcEncode, started, size as u64);
-                Ok(serde_json::json!(encoded))
+                self.response_payload = bytes;
+                Ok(serde_json::Value::Null)
             }
             NativeRequest::Write {
                 operation,
@@ -423,15 +423,9 @@ impl MtpWorker {
                 bytes,
             } => {
                 self.scope(&operation, &session)?;
-                if !block_name(&name) || bytes.len() > MAX_BLOCK.div_ceil(3) * 4 {
+                if !block_name(&name) {
                     return Err(NativeError::InvalidBlock);
                 }
-                let started = Instant::now();
-                let bytes = STANDARD
-                    .decode(bytes)
-                    .map_err(|_| NativeError::InvalidBlock)?;
-                self.timings
-                    .elapsed(IoStep::IpcDecode, started, bytes.len() as u64);
                 if bytes.is_empty() || bytes.len() > MAX_BLOCK {
                     return Err(NativeError::Bounds);
                 }

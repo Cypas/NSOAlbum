@@ -64,8 +64,16 @@
 │  │     │                                  普通主入口USB双向复验与配置/SAF问题定位
 │  │     ├─ 2026-10-18-device-sync-usb-discovery.md
 │  │                                        USB 自动发现、WPD快照竞态、授权复用及双向账号实测计划
-│  │     └─ 2026-10-21-multiplatform-remainder.md
+│  │     ├─ 2026-10-21-multiplatform-remainder.md
 │  │                                        普通剩余需求原文、逐项验收及两大项会话协作边界
+│  │     ├─ 2026-10-24-gallery-pagination-viewer-window.md
+│  │                                        双端图库 keyset 分页、详情邻近窗口与游戏计数聚合计划
+│  │     ├─ 2026-10-24-interrupted-sync-startup-feedback.md
+│  │     │                                  [本地] 配对持久状态、异常恢复与日常启动退出反馈
+│  │     ├─ 2026-10-24-media-details-controls-account-history.md
+│  │                                        媒体详情/控制栏、时间精度与历史账号名称同步计划
+│  │     └─ 2026-10-25-desktop-android-experience-share-background-sync.md
+│  │                                        桌面/Android体验、分享、通知与后台同步计划
 │  ├─ protocol/                           [本地]
 │  │  ├─ nxapi-request-rules.md            NXAPI/Coral请求、好友码、链式token与特殊状态规则
 │  │  └─ nintendo-implementacao-para-comunidade.md
@@ -110,9 +118,25 @@
 对应批准计划和完整原始需求登记位于本地
 `docs/design/plans/2026-10-21-multiplatform-remainder.md`，同时约定另外两个
 大项会话的文件所有权和主会话集成门禁，不随应用分发。
+图库动态加载、详情邻近窗口和游戏统计聚合的后续计划位于
+`docs/design/plans/2026-10-24-gallery-pagination-viewer-window.md`；
+其中完整保留新增原始描述、分页/聚合接口边界和最终验收模板。
+其实现使用 `gallery_page_controller.dart` 和 `media_window_controller.dart` 管理
+查询代数、有限详情窗口及迟到响应；SQLite 的时间索引、相册规则编译和窄计数仍
+集中在 `database.rs`。本地核对表分别登记软件回归、Debug 构建与未验收平台。
+后续详情布局、视频控制栏、秒级时间和历史账号名称映射的需求原文及实施顺序位于
+`docs/design/plans/2026-10-24-media-details-controls-account-history.md`。
+该计划为本地未实施方案，分离 UI 小项、名称缓存和账号载荷版本/恢复验证；
+其存在不表示已经修改账号同步格式、完成实机验收或发布。
 账号工具、系统通知、视频详情与代理缓存的后续证据持续记在该表，代码与测试
 位置见目录规范。该表包含内部原始需求与未验收说明，不作为产品材料或发布证明。
 同一本地计划还记录 Android 详情页和跨平台视频首帧封面的已批准增补、测试及未验收边界。
+桌面与 Android 体验、系统字体、日期/分享、通知跳转、启动同步及后台任务的
+后续原始需求和逐项状态位于
+`docs/design/plans/2026-10-25-desktop-android-experience-share-background-sync.md`；
+该计划保留 17 条用户原文，并区分代码、自动测试、Debug 构建和实机验收。
+后续使用 `plan` 命令生成计划时，必须依照 `AGENTS.md` 的原始需求保留规则，
+在计划、核对表和最终验收记录中逐字保留用户原文；结构化摘要不能替代原始描述。
 `docs/design/device-sync-throughput-design.md` 是后续传输优化的本地设计，
 用于区分协议边界、测量口径和分阶段验收；不提交或随应用分发，
 其存在不代表新协议已经实现或通过实机测试。对应本地实施计划为
@@ -248,6 +272,9 @@ SAF 合成吞吐工具与回归的位置见目录规范的“无账号设备文�
 `task-5c-report.md` 与 `dist/device-sync-20261016/task5c/` 分别保存合同、
 作者报告和 before/after、补丁、构建及负面检查证据，不提交、不随应用分发，
 不作为真实 MTP 或 macOS 验收通过声明。
+有界二进制载荷 IPC 的源码、独立参考夹具及验包探针位置见目录规范对应条目；
+后续协议演进、定向回归和未验收平台仍记录于本地同步吞吐设计与计划，
+不把无设备的子进程回归视为 MTP 实机测速。
 
 账号工具的原生 WebView 探针及其运行前提见 `flutter_app/README.md`；
 Windows 系统 DLL 依赖的成品 PE 回归与无 UI SDK 子进程对照见 `docs/TESTING.md`

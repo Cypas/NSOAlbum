@@ -115,6 +115,7 @@ pub struct WorkControl {
     cancel: CancellationToken,
     counters: Arc<Counters>,
     preparation: Option<Arc<PreparationBytes>>,
+    pub(crate) sync_session: Option<uuid::Uuid>,
     pub(crate) validation: super::validation::ValidationMetrics,
 }
 
@@ -124,6 +125,7 @@ impl WorkControl {
             cancel,
             counters: Arc::default(),
             preparation: None,
+            sync_session: None,
             validation: Default::default(),
         }
     }
@@ -138,6 +140,7 @@ impl WorkControl {
             cancel,
             counters: self.counters.clone(),
             preparation: self.preparation.clone(),
+            sync_session: self.sync_session,
             validation: self.validation.clone(),
         }
     }
@@ -153,6 +156,12 @@ impl WorkControl {
             progress.add(bytes)?;
         }
         Ok(())
+    }
+    pub(crate) fn with_sync_session(&self, session: uuid::Uuid) -> Self {
+        Self {
+            sync_session: Some(session),
+            ..self.clone()
+        }
     }
     pub fn check(&self) -> CoreResult<()> {
         self.cancel.check()

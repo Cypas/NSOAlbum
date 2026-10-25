@@ -8,6 +8,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub const MAX_ACCOUNTS: usize = 32;
 pub const MAX_ACCOUNT_BYTES: usize = 262_144;
+const MAX_DISPLAY_NAMES: usize = 1024;
 
 #[derive(Debug, thiserror::Error)]
 #[error("device-sync account payload is invalid or exceeds its resource boundary")]
@@ -95,10 +96,82 @@ fn account_list<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Vec<Acco
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct DisplayName {
+    #[serde(deserialize_with = "account_id")]
+    account_id: String,
+    #[serde(deserialize_with = "nickname")]
+    nickname: String,
+    #[serde(deserialize_with = "updated_at")]
+    updated_at: Option<String>,
+}
+
+fn updated_at<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<String>, D::Error> {
+    let value = Option::<String>::deserialize(d)?;
+    if let Some(text) = &value {
+        if text.len() > 64 || chrono::DateTime::parse_from_rfc3339(text).is_err() {
+            return Err(de::Error::custom("invalid display name timestamp"));
+        }
+    }
+    Ok(value)
+}
+
+#[derive(Serialize)]
+#[serde(transparent)]
+struct DisplayNames(Vec<DisplayName>);
+
+impl<'de> Deserialize<'de> for DisplayNames {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct Names;
+        impl<'de> Visitor<'de> for Names {
+            type Value = DisplayNames;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a bounded display-name history")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut records: Vec<DisplayName> = Vec::new();
+                while records.len() < MAX_DISPLAY_NAMES {
+                    let Some(record) = seq.next_element::<DisplayName>()? else {
+                        return Ok(DisplayNames(records));
+                    };
+                    if records
+                        .last()
+                        .is_some_and(|old| old.account_id >= record.account_id)
+                    {
+                        return Err(de::Error::custom("display name order invalid"));
+                    }
+                    records.push(record);
+                }
+                if seq.next_element::<de::IgnoredAny>()?.is_some() {
+                    return Err(de::Error::custom("display name count exceeded"));
+                }
+                Ok(DisplayNames(records))
+            }
+        }
+        d.deserialize_seq(Names)
+    }
+}
+
+fn present_display_names<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<DisplayNames>, D::Error> {
+    DisplayNames::deserialize(d).map(Some)
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccountSet {
     version: u8,
     #[serde(deserialize_with = "account_list")]
     accounts: Vec<Account>,
+    #[serde(
+        default,
+        deserialize_with = "present_display_names",
+        skip_serializing_if = "Option::is_none"
+    )]
+    display_names: Option<DisplayNames>,
 }
 impl fmt::Debug for AccountSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -113,11 +186,13 @@ impl AccountSet {
             return Err(AccountError);
         }
         let result: Self = serde_json::from_slice(bytes).map_err(|_| AccountError)?;
-        if result.version != 1
-            || result
-                .accounts
-                .windows(2)
-                .any(|a| a[0].account_id >= a[1].account_id)
+        if !matches!(
+            (result.version, result.display_names.is_some()),
+            (1, false) | (2, true)
+        ) || result
+            .accounts
+            .windows(2)
+            .any(|a| a[0].account_id >= a[1].account_id)
         {
             return Err(AccountError);
         }

@@ -148,6 +148,26 @@ pub struct MediaAsset {
     pub tags: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaSourceDetails {
+    pub source_type: String,
+    pub source_path: Option<String>,
+    pub provider: Option<String>,
+    pub remote_id: Option<String>,
+    pub discovered_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaDetails {
+    pub media: MediaAsset,
+    pub created_at: Option<DateTime<Utc>>,
+    pub captured_at: Option<DateTime<Utc>>,
+    pub imported_at: Option<DateTime<Utc>>,
+    pub storage_path: String,
+    pub size_bytes: u64,
+    pub sources: Vec<MediaSourceDetails>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TagUsageSummary {
     pub id: i64,
@@ -296,10 +316,52 @@ pub struct GalleryQuery {
     pub newest_first: bool,
     #[serde(default)]
     pub game_names: Vec<String>,
+    #[serde(default)]
+    pub imported_from: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub imported_until: Option<DateTime<Utc>>,
     pub captured_from: Option<DateTime<Utc>>,
     pub captured_until: Option<DateTime<Utc>>,
     #[serde(default)]
     pub captured_on_this_day: Option<CapturedOnThisDay>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GalleryCursor {
+    pub filter_fingerprint: String,
+    pub effective_sort_time: Option<String>,
+    pub media_id: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GalleryPageDirection {
+    Forward,
+    Backward,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GalleryPageRequest {
+    pub query: GalleryQuery,
+    pub cursor: Option<GalleryCursor>,
+    pub direction: GalleryPageDirection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GalleryPage {
+    pub items: Vec<MediaAsset>,
+    pub before_cursor: Option<GalleryCursor>,
+    pub after_cursor: Option<GalleryCursor>,
+    pub has_before: bool,
+    pub has_after: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameMediaCount {
+    pub game_name: String,
+    pub image_count: u64,
+    pub video_count: u64,
+    pub selection_count: u64,
 }
 
 impl Default for GalleryQuery {
@@ -312,6 +374,8 @@ impl Default for GalleryQuery {
             album_id: None,
             newest_first: true,
             game_names: Vec::new(),
+            imported_from: None,
+            imported_until: None,
             captured_from: None,
             captured_until: None,
             captured_on_this_day: None,

@@ -125,8 +125,8 @@ class _AndroidAlbumsPageState extends State<AndroidAlbumsPage> {
                   // This is intentionally separate from the preview ratio.
                   mainAxisExtent:
                       tileWidth * 9 / 16 +
-                      MediaQuery.textScalerOf(context).scale(16) * 5 +
-                      32,
+                      MediaQuery.textScalerOf(context).scale(14) * 7 +
+                      26,
                 ),
                 itemCount: values.length,
                 itemBuilder: (context, index) {
@@ -183,6 +183,32 @@ class _AndroidAlbumsPageState extends State<AndroidAlbumsPage> {
                                     en: '${album.mediaCount} media',
                                   ),
                                 ),
+                                Text(
+                                  context.l10n.select(
+                                    zh: album.albumType == 'smart'
+                                        ? '自动相册'
+                                        : '普通相册',
+                                    en: album.albumType == 'smart'
+                                        ? 'Smart album'
+                                        : 'Regular album',
+                                  ),
+                                  key: Key('android-album-type-${album.id}'),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                                if (album.description.trim().isNotEmpty)
+                                  Text(
+                                    album.description.trim(),
+                                    key: Key(
+                                      'android-album-description-${album.id}',
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall,
+                                  ),
                                 AlbumSourceLabel(
                                   name: album.sourceDeviceName,
                                   systemKey: album.systemKey,

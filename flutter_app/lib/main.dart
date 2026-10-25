@@ -22,6 +22,7 @@ import 'src/backend/rust_backend.dart';
 import 'src/l10n/app_localizations.dart';
 import 'src/platform/windows_ime_context.dart';
 import 'src/platform/application_restart.dart';
+import 'src/platform/gallery_notification_navigation.dart';
 import 'src/rust/settings.dart';
 import 'src/state/automatic_sync_coordinator.dart';
 import 'src/state/android_update_controller.dart';
@@ -439,10 +440,13 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
   bool desktopLifecycleReady = false;
   bool quitting = false;
   bool startupSyncStarted = false;
+  Timer? startupSyncDelayTimer;
+  Completer<void>? startupSyncDelayCompleter;
   String? latestReleaseVersion;
   UpdateStatusKind? updateStatus;
   Object? updateStatusError;
   AndroidUpdateController? androidUpdates;
+  late final GalleryNotificationNavigation notificationNavigation;
 
   bool get supportsDesktopLifecycle =>
       widget.backend is RustBackend &&
@@ -453,17 +457,27 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    notificationNavigation = GalleryNotificationNavigation()..install();
+    if (widget.startupOptions.openGalleryOnLaunch) {
+      notificationNavigation.requestOpenGallery();
+    }
     final backend = widget.backend;
     if (backend != null) {
       selectAppFontLanguage(backend.settings.language);
       settings = SettingsController(backend)..addListener(_settingsChanged);
       sync = SyncController(
         backend,
-        allAccounts:
-            (widget.uiPlatform ?? resolveAppUiPlatform()) ==
-            AppUiPlatform.android,
+        // Nintendo synchronization is an account queue on every platform.
+        // Keeping this shared prevents desktop from falling back to the
+        // legacy selected-account path while Android runs all accounts.
+        allAccounts: true,
       );
-      automaticSync = AutomaticSyncCoordinator(backend, settings!, sync!);
+      automaticSync = AutomaticSyncCoordinator(
+        backend,
+        settings!,
+        sync!,
+        startupDelay: const Duration(seconds: 1),
+      );
       if (androidUpdateChecksEnabled(
         isAndroid: Platform.isAndroid,
         isTest: Platform.environment.containsKey('FLUTTER_TEST'),
@@ -508,10 +522,13 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
         )) {
           unawaited(_restoreAndroidUpdatesAndCheck());
         }
-        if (!widget.startupOptions.ciSmoke &&
-            !Platform.environment.containsKey('FLUTTER_TEST') &&
-            !widget.startupOptions.disableVideoThumbnails &&
-            !widget.startupOptions.safeMode) {
+        if (shouldPrewarmVideoRuntime(
+          isAndroid: Platform.isAndroid,
+          ciSmoke: widget.startupOptions.ciSmoke,
+          isTest: Platform.environment.containsKey('FLUTTER_TEST'),
+          disabled: widget.startupOptions.disableVideoThumbnails,
+          safeMode: widget.startupOptions.safeMode,
+        )) {
           unawaited(
             widget.diagnostics?.runGuarded(
                   'media-player-prewarm',
@@ -533,7 +550,7 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
                 ) ??
                 automaticSync!.start(),
           );
-          unawaited(_runStartupSync());
+          unawaited(_runStartupSync(startupDelay: const Duration(seconds: 1)));
         } else {
           unawaited(
             widget.diagnostics?.phase('automatic-sync-disabled') ??
@@ -548,6 +565,7 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     androidUpdates?.dispose();
+    notificationNavigation.dispose();
     settings?.removeListener(_settingsChanged);
     widget.desktopClose?.releasePolicy(this);
     if (desktopLifecycleReady) {
@@ -556,6 +574,13 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
       unawaited(trayManager.destroy());
     }
     automaticSync?.dispose();
+    startupSyncDelayTimer?.cancel();
+    startupSyncDelayTimer = null;
+    final startupDelay = startupSyncDelayCompleter;
+    startupSyncDelayCompleter = null;
+    if (startupDelay != null && !startupDelay.isCompleted) {
+      startupDelay.complete();
+    }
     sync?.dispose();
     settings?.dispose();
     super.dispose();
@@ -639,10 +664,21 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
     );
   }
 
-  Future<void> _runStartupSync() async {
+  Future<void> _runStartupSync({Duration startupDelay = Duration.zero}) async {
     if (widget.startupOptions.disableAutomaticSync) return;
     if (startupSyncStarted || settings?.value.autoSyncOnLaunch != true) return;
     startupSyncStarted = true;
+    if (startupDelay > Duration.zero) {
+      final delay = Completer<void>();
+      startupSyncDelayCompleter = delay;
+      startupSyncDelayTimer = Timer(startupDelay, () {
+        if (!delay.isCompleted) delay.complete();
+      });
+      await delay.future;
+      startupSyncDelayTimer = null;
+      startupSyncDelayCompleter = null;
+      if (!mounted || widget.startupOptions.disableAutomaticSync) return;
+    }
     if (await widget.backend?.isSignedIn != true) return;
     await sync?.run();
   }
@@ -884,6 +920,7 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
                 latestReleaseVersion: latestReleaseVersion,
                 updateStatus: updateStatus,
                 updateController: androidUpdates,
+                notificationNavigation: notificationNavigation,
               )
             : DesktopWindowFrame(
                 title: controller.value.language == 'en'
@@ -913,6 +950,7 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
                   latestReleaseVersion: latestReleaseVersion,
                   updateStatus: updateStatus,
                   updateStatusError: updateStatusError,
+                  notificationNavigation: notificationNavigation,
                 ),
               ),
       ),
@@ -1103,6 +1141,12 @@ ThemeData _themeFor(String name) {
       labelTextStyle: WidgetStatePropertyAll(
         TextStyle(fontWeight: FontWeight.w700, color: seed),
       ),
+    ),
+    scrollbarTheme: ScrollbarThemeData(
+      // Keep desktop scrollbars visually inside their card instead of
+      // touching the outer border of nested tab panels and dialogs.
+      crossAxisMargin: 8,
+      mainAxisMargin: 8,
     ),
     useMaterial3: true,
   );

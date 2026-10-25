@@ -32,6 +32,7 @@ mod session;
 pub mod source_names;
 pub mod space_budget;
 pub mod staging;
+pub(crate) mod startup_recovery;
 pub mod tcp;
 #[cfg(test)]
 mod tests;

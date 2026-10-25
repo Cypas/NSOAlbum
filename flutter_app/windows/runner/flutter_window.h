@@ -50,6 +50,10 @@ class FlutterWindow : public Win32Window {
       ime_context_channel_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       sync_notification_channel_;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      system_font_channel_;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      desktop_media_clipboard_channel_;
   std::unique_ptr<SyncNotificationRegistration> sync_notifications_;
   HWND flutter_view_ = nullptr;
 

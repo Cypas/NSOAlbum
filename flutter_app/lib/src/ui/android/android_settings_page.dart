@@ -9,6 +9,8 @@ import '../../release_update.dart';
 import '../../state/settings_controller.dart';
 import '../../state/settings_copy.dart';
 import '../../state/android_update_controller.dart';
+import '../../platform/android_notification_permissions.dart';
+import '../../rust/settings.dart';
 import 'android_page_frame.dart';
 import 'android_tag_management_page.dart';
 import 'android_update_controls.dart';
@@ -34,13 +36,64 @@ class AndroidSettingsPage extends StatefulWidget {
   State<AndroidSettingsPage> createState() => _AndroidSettingsPageState();
 }
 
-class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
+class _AndroidSettingsPageState extends State<AndroidSettingsPage>
+    with WidgetsBindingObserver {
   final version = loadApplicationVersion().then(
     formatApplicationVersionForDisplay,
   );
   bool checkingUpdates = false;
   bool choosingStorage = false;
   bool movingStorage = false;
+  AndroidNotificationPermissionState? notificationPermission;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _refreshNotificationPermission();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refreshNotificationPermission();
+    }
+  }
+
+  Future<void> _refreshNotificationPermission() async {
+    try {
+      final value = await const AndroidNotificationPermissions().status();
+      if (mounted) setState(() => notificationPermission = value);
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => notificationPermission =
+              AndroidNotificationPermissionState.unavailable,
+        );
+      }
+    }
+  }
+
+  Future<void> _setNotificationPreference(
+    SettingsController controller,
+    AppSettings value,
+    bool enabled,
+  ) async {
+    if (!enabled) {
+      await controller.save(copyAppSettings(value, notifyOnAutoSync: false));
+      return;
+    }
+    final allowed = await ensureAndroidNotificationPermission(context);
+    if (!mounted) return;
+    await controller.save(copyAppSettings(value, notifyOnAutoSync: allowed));
+    await _refreshNotificationPermission();
+  }
 
   Future<void> chooseStorage() async {
     if (widget.backend is! MobileStorageBackend || choosingStorage) return;
@@ -349,31 +402,9 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
                 (bool next) => copyAppSettings(value, showNotePreview: next),
               ),
               (
-                context.l10n.select(zh: '标签紧凑展示', en: 'Compact tags'),
-                value.compactTagDisplay,
-                (bool next) => copyAppSettings(value, compactTagDisplay: next),
-              ),
-              (
                 context.l10n.select(zh: '打开视频后自动播放', en: 'Auto-play videos'),
                 value.autoPlayVideo,
                 (bool next) => copyAppSettings(value, autoPlayVideo: next),
-              ),
-              (
-                context.l10n.select(
-                  zh: '自动同步新增媒体后通知',
-                  en: 'Notify after automatic sync adds media',
-                ),
-                value.notifyOnAutoSync,
-                (bool next) => copyAppSettings(value, notifyOnAutoSync: next),
-              ),
-              (
-                context.l10n.select(
-                  zh: '展示喷三日程',
-                  en: 'Show Splatoon 3 schedule',
-                ),
-                value.showSplatoonSchedule,
-                (bool next) =>
-                    copyAppSettings(value, showSplatoonSchedule: next),
               ),
             ])
               SwitchListTile(
@@ -384,6 +415,59 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
                     ? null
                     : (next) => save(controller.save(item.$3(next))),
               ),
+            Card(
+              key: const Key('android-notification-settings-card'),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.notifications_outlined),
+                      title: Text(
+                        context.l10n.select(zh: '通知', en: 'Notifications'),
+                      ),
+                      subtitle: Text(
+                        context.l10n.select(
+                          zh:
+                              notificationPermission ==
+                                  AndroidNotificationPermissionState.allowed
+                              ? '通知权限已开启'
+                              : '需要系统通知权限才能展示自动同步结果',
+                          en:
+                              notificationPermission ==
+                                  AndroidNotificationPermissionState.allowed
+                              ? 'Notification permission is enabled'
+                              : 'System notification permission is required for sync results',
+                        ),
+                      ),
+                    ),
+                    SwitchListTile(
+                      key: const Key('android-auto-sync-notifications'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        context.l10n.select(
+                          zh: '相册同步新增媒体后通知',
+                          en: 'Notify when album sync adds media',
+                        ),
+                      ),
+                      value:
+                          value.notifyOnAutoSync &&
+                          notificationPermission ==
+                              AndroidNotificationPermissionState.allowed,
+                      onChanged: controller.saving
+                          ? null
+                          : (enabled) => _setNotificationPreference(
+                              controller,
+                              value,
+                              enabled,
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
             Card(
               child: ListTile(
                 key: const Key('android-manage-tags'),
@@ -429,12 +513,6 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
                         AndroidLogViewerPage(backend: widget.backend),
                   ),
                 ),
-              ),
-            ),
-            SelectableText(
-              context.l10n.select(
-                zh: '图库路径：${value.libraryPath}',
-                en: 'Library: ${value.libraryPath}',
               ),
             ),
             Card(

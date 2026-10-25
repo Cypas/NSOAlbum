@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart'
     show debugPrintSynchronously, mapEquals;
@@ -103,6 +104,7 @@ class _Attempt {
 Future<_Attempt> _prepare(
   String targetLibrary, {
   FaultAccountStorage? storageOverride,
+  bool legacySource = false,
 }) async {
   final root = await Directory.systemTemp.createTemp(
     'nsoalbum-4b2-fault-source-',
@@ -153,7 +155,22 @@ Future<_Attempt> _prepare(
     invalidate: (_) async {},
     publish: (_) {},
   );
-  await source.authorizeSource(host, authorized: true);
+  if (legacySource) {
+    // Simulate the exact canonical v1 bytes emitted by the previous client.
+    const legacy =
+        '{"version":1,"accounts":[{"account_id":"a","nickname":"Alice","session_token":"synthetic-new"}]}';
+    final snapshot = await AccountSnapshot.read(
+      source.storage,
+      authorized: true,
+    );
+    await native.deviceSyncExportAccounts(
+      endpoint: host,
+      payload: Uint8List.fromList(utf8.encode(legacy)),
+      stateDigest: snapshot.digest,
+    );
+  } else {
+    await source.authorizeSource(host, authorized: true);
+  }
   await target.authorizeTarget(phone, authorized: true);
   await native.deviceSyncConfigure(
     endpoint: host,
@@ -161,13 +178,21 @@ Future<_Attempt> _prepare(
     overwrite: true,
     includeAccounts: true,
   );
-  for (var n = 0; n < 1000; n++) {
+  final approvalDeadline = DateTime.now().add(const Duration(seconds: 20));
+  while (DateTime.now().isBefore(approvalDeadline)) {
     await pump(host, phone);
     if ((await native.deviceSyncStatus(endpoint: phone)).state ==
         'AwaitingApproval') {
       break;
     }
+    await Future<void>.delayed(const Duration(milliseconds: 5));
   }
+  expect(
+    (await native.deviceSyncStatus(endpoint: phone)).state,
+    'AwaitingApproval',
+    reason:
+        'Wait for asynchronous snapshot scanning before binding the preview.',
+  );
   final preview = await target.preview(phone);
   return _Attempt(
     root,
@@ -179,6 +204,30 @@ Future<_Attempt> _prepare(
     storage,
     preview,
   );
+}
+
+Future<void> verifyVersionOneAccountPreview(String targetLibrary) async {
+  final cleanup = <Future<void>>[];
+  final attempt = await _prepare(targetLibrary, legacySource: true);
+  try {
+    final bytes = await native.deviceSyncAccountPayload(
+      endpoint: attempt.phone,
+    );
+    expect(
+      utf8.decode(bytes!),
+      '{"version":1,"accounts":[{"account_id":"a","nickname":"Alice","session_token":"synthetic-new"}]}',
+    );
+    // Receiving a legacy preview must not mutate any protected key.
+    _expectActive(attempt.storage, _old);
+    await attempt.target.abort(attempt.phone);
+    _expectActive(attempt.storage, _old);
+    debugPrintSynchronously(
+      '4B2 real Bridge legacy v1 canonical bytes and read-only account preview passed',
+    );
+  } finally {
+    await _close(attempt, cleanup);
+    await Future.wait(cleanup);
+  }
 }
 
 class _PausedCandidateStorage extends FaultAccountStorage {
@@ -606,7 +655,17 @@ Future<String> runSecureStoreFaultMatrix(
             expect(attempt.storage.values, beforeReads);
           }
         }
-        _expectActive(attempt.storage, _old);
+        _expectActive(
+          attempt.storage,
+          journal?.stage == 'finalized'
+              ? {
+                  ..._old,
+                  // An explicit successful restore reverts credentials while
+                  // retaining names learned from the completed account apply.
+                  accountProfilesKey: '{"a":{"nickname":"Alice"}}',
+                }
+              : _old,
+        );
         expect(await native.listTags(), ['old library']);
         expect(
           (await native.deviceSyncLibraryInfo(library_: targetLibrary))
@@ -774,13 +833,19 @@ Future<void> verifyLibraryOnlyBackupDoesNotReadAccounts(
         overwrite: true,
         includeAccounts: false,
       );
-      for (var n = 0; n < 1000; n++) {
+      final approvalDeadline = DateTime.now().add(const Duration(seconds: 20));
+      while (DateTime.now().isBefore(approvalDeadline)) {
         await pump(invitation.handle, phone);
         if ((await native.deviceSyncStatus(endpoint: phone)).state ==
             'AwaitingApproval') {
           break;
         }
+        await Future<void>.delayed(const Duration(milliseconds: 5));
       }
+      expect(
+        (await native.deviceSyncStatus(endpoint: phone)).state,
+        'AwaitingApproval',
+      );
       await native.deviceSyncApprove(endpoint: phone);
       final deadline = DateTime.now().add(const Duration(seconds: 20));
       while (DateTime.now().isBefore(deadline)) {

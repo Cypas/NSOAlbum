@@ -32,6 +32,7 @@ pub struct LibraryInfo {
     pub library_uuid: String,
     pub generation: u64,
     pub pending_operation: Option<String>,
+    pub interrupted_sessions: Option<Vec<String>>,
 }
 pub struct HostInfo {
     pub handle: String,
@@ -310,6 +311,17 @@ pub fn library_info(handle: &str) -> Result<LibraryInfo> {
             .device_sync_pending_journal()
             .map_err(failure)?
             .map(|p| p.operation_uuid.to_string()),
+        interrupted_sessions: {
+            let records = database
+                .device_sync_unfinished_sessions()
+                .map_err(failure)?;
+            (!records.is_empty()).then(|| {
+                records
+                    .into_iter()
+                    .map(|record| record.session.to_string())
+                    .collect()
+            })
+        },
     })
 }
 fn journal_info(entry: JournalEntry) -> JournalInfo {
@@ -1020,6 +1032,9 @@ pub fn close_endpoint(handle: &str) -> Result<()> {
     remove_endpoint(handle)
 }
 fn remove_endpoint(handle: &str) -> Result<()> {
+    with_driver(handle, |driver| {
+        driver.retire_session_record().map_err(failure)
+    })?;
     services()
         .lock()
         .map_err(failure)?
@@ -1028,7 +1043,64 @@ fn remove_endpoint(handle: &str) -> Result<()> {
         .ok_or_else(invalid)?;
     Ok(())
 }
+pub fn recover_interrupted_sessions(handle: &str, expected: Vec<String>) -> Result<()> {
+    if expected.len() > 64 {
+        return Err(invalid());
+    }
+    let api = library(handle)?;
+    let database = api.database();
+    // A second handle can refer to the same SQLite library. Check durable
+    // identity, not the registry handle, before treating any session as stale.
+    let active_libraries = {
+        let registry = services().lock().map_err(failure)?;
+        registry
+            .endpoints
+            .values()
+            .map(|owner| {
+                registry
+                    .libraries
+                    .get(&owner.library)
+                    .cloned()
+                    .ok_or_else(invalid)
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
+    let identity = database.device_sync_header().map_err(failure)?.library_uuid;
+    for active in active_libraries {
+        if active
+            .database()
+            .device_sync_header()
+            .map_err(failure)?
+            .library_uuid
+            == identity
+        {
+            return Err(invalid());
+        }
+    }
+    let records = database
+        .device_sync_unfinished_sessions()
+        .map_err(failure)?;
+    let expected = expected
+        .into_iter()
+        .map(|value| id(&value))
+        .collect::<Result<HashSet<_>>>()?;
+    if records
+        .iter()
+        .map(|record| record.session)
+        .collect::<HashSet<_>>()
+        != expected
+    {
+        return Err(invalid());
+    }
+    for record in records {
+        super::startup_recovery::recover_session(&database, &record).map_err(failure)?;
+    }
+    Ok(())
+}
 fn ensure_retirable(handle: &str) -> Result<()> {
+    with_driver(handle, |driver| {
+        driver.retire_session_record().map_err(failure)
+    })?;
     if status(handle)?.cleanup_pending {
         return Err("device-sync issued lease cleanup is pending".into());
     }

@@ -498,7 +498,7 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
             FilledButton(
               key: const Key('device-confirm-leave'),
               onPressed: () => Navigator.pop(context, true),
-              child: Text(context.l10n.select(zh: '结束并等待', en: 'End and wait')),
+              child: Text(context.l10n.select(zh: '结束同步', en: 'End sync')),
             ),
           ],
         ),
@@ -598,13 +598,28 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
                 en: 'Waiting for the operation to finish safely…',
               ),
             ),
-          if (widget.access.ready && (!widget.mobile || _invitationInspected))
-            DeviceSyncConnectionInfo(
-              usb: _usb,
-              mobile: widget.mobile,
-              wifi: _wifi,
-              selectedAddress: _selectedAddress?.address,
-              peerSsid: _peerSsid,
+          if (widget.access.ready)
+            AnimatedBuilder(
+              animation: session ?? widget.access,
+              builder: (context, _) {
+                final pairing = session?.snapshot?.value?.pairing;
+                final terminal = session?.snapshot?.value?.terminal == true;
+                final visible =
+                    !widget.mobile ||
+                    (_invitationInspected &&
+                        !terminal &&
+                        pairing != read.PairingStage.confirmed &&
+                        pairing != read.PairingStage.terminal);
+                return visible
+                    ? DeviceSyncConnectionInfo(
+                        usb: _usb,
+                        mobile: widget.mobile,
+                        wifi: _wifi,
+                        selectedAddress: _selectedAddress?.address,
+                        peerSsid: _peerSsid,
+                      )
+                    : const SizedBox.shrink();
+              },
             ),
           if (!widget.access.ready) ...[
             Text(
@@ -803,22 +818,49 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
             const SizedBox(height: 16),
             AnimatedBuilder(
               animation: session,
-              builder: (context, _) => OutlinedButton(
-                key: Key(
-                  session.snapshot?.value?.terminal == true || session.closed
-                      ? 'device-new-pairing'
-                      : 'device-end-session',
-                ),
-                onPressed: _leaving ? null : () => _end(leave: false),
-                child: Text(
-                  session.snapshot?.value?.terminal == true || session.closed
-                      ? context.l10n.select(zh: '重新配对', en: 'Pair again')
-                      : context.l10n.select(
-                          zh: '取消并结束连接',
-                          en: 'Cancel and end connection',
-                        ),
-                ),
-              ),
+              builder: (context, _) {
+                final view = session.snapshot?.value;
+                final cleanupPending =
+                    view?.stage == driver.State.completed &&
+                    (view?.cleanupPending == true ||
+                        session.localCleanupPending);
+                final completed =
+                    view?.stage == driver.State.completed && !cleanupPending;
+                final terminal =
+                    (view?.terminal == true && view?.cleanupPending != true) ||
+                    session.closed;
+                return OutlinedButton(
+                  key: Key(
+                    completed
+                        ? 'device-sync-complete'
+                        : cleanupPending
+                        ? 'device-cleanup-pending'
+                        : terminal
+                        ? 'device-new-pairing'
+                        : 'device-end-session',
+                  ),
+                  onPressed: _leaving || cleanupPending
+                      ? null
+                      : completed
+                      ? () => _end(leave: true)
+                      : () => _end(leave: false),
+                  child: Text(
+                    completed
+                        ? context.l10n.select(zh: '同步完成', en: 'Sync complete')
+                        : cleanupPending
+                        ? context.l10n.select(
+                            zh: '正在完成安全清理…',
+                            en: 'Finishing safe cleanup…',
+                          )
+                        : terminal
+                        ? context.l10n.select(zh: '重新配对', en: 'Pair again')
+                        : context.l10n.select(
+                            zh: '取消并结束连接',
+                            en: 'Cancel and end connection',
+                          ),
+                  ),
+                );
+              },
             ),
           ],
           if (_error case final error?)

@@ -16,6 +16,8 @@ struct SyncNotificationActivationState {
 namespace {
 
 constexpr wchar_t kNotificationIdentity[] = L"Cypas.NSOAlbum.SyncNotifications";
+constexpr wchar_t kGalleryMessageName[] =
+    L"io.github.cypas.nsoalbum.notification.open-gallery.v1";
 constexpr wchar_t kNotificationActivator[] =
     L"{D8101B18-1E37-4CE4-9FC8-D2D8BDF28325}";
 
@@ -37,9 +39,11 @@ struct NotificationActivator
     }
     // This callback can run on any COM thread. Only the existing window thread
     // restores the current instance; no Dart channel or user payload is used.
-    const auto message = NativeSingleInstance::ActivationMessage();
-    if (message == 0) return E_FAIL;
-    if (!PostMessageW(state_->window, message, 0, 0)) {
+    const auto activation_message = NativeSingleInstance::ActivationMessage();
+    const auto gallery_message = SyncNotificationGalleryMessage();
+    if (activation_message == 0 || gallery_message == 0) return E_FAIL;
+    if (!PostMessageW(state_->window, activation_message, 0, 0) ||
+        !PostMessageW(state_->window, gallery_message, 0, 0)) {
       return HRESULT_FROM_WIN32(GetLastError());
     }
     return S_OK;
@@ -135,6 +139,10 @@ winrt::hstring NotificationText(const std::string& value) {
 
 }  // namespace
 
+UINT SyncNotificationGalleryMessage() {
+  return RegisterWindowMessageW(kGalleryMessageName);
+}
+
 SyncNotificationActivation::SyncNotificationActivation(HWND window)
     : state_(std::make_shared<SyncNotificationActivationState>(window)),
       factory_(winrt::make<NotificationActivatorFactory>(state_)) {}
@@ -191,7 +199,8 @@ winrt::Windows::Data::Xml::Dom::XmlDocument BuildSyncNotificationDocument(
   const auto body_text = NotificationText(body);
   XmlDocument document;
   document.LoadXml(
-      L"<toast><visual><binding template=\"ToastGeneric\">"
+      L"<toast activationType=\"foreground\" launch=\"open-gallery\">"
+      L"<visual><binding template=\"ToastGeneric\">"
       L"<text/><text/></binding></visual></toast>");
   const auto text_nodes = document.GetElementsByTagName(L"text");
   text_nodes.Item(0).AppendChild(document.CreateTextNode(title_text));

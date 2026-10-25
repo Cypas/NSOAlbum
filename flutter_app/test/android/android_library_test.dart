@@ -6,10 +6,123 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/main.dart';
 import 'package:squid_album/src/ui/platform_ui.dart';
 import 'package:squid_album/src/rust/models.dart';
+import 'package:squid_album/src/ui/android/android_metadata_editor.dart';
+import 'package:squid_album/src/l10n/app_localizations.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 import '../home_shell_test.dart' show FakeBackend;
+import '../layout_viewport.dart';
+
+import 'package:squid_album/src/ui/android/android_media_viewer.dart';
 
 void main() {
+  testWidgets('Android gallery opens and closes detail with a fade', (
+    tester,
+  ) async {
+    await useLayoutTestViewport(tester, const Size(360, 800));
+    final backend = FakeBackend(mediaItems: [_image()]);
+    await tester.pumpWidget(
+      SquidAlbumApp(backend: backend, uiPlatform: AppUiPlatform.android),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('android-media-1')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 90));
+    expect(find.byType(AndroidMediaViewer), findsOneWidget);
+    final fadeFinder = find.byKey(const Key('android-detail-route-fade'));
+    expect(fadeFinder, findsOneWidget);
+    var fade = tester.widget<FadeTransition>(fadeFinder);
+    expect(fade.opacity.value, greaterThan(0));
+    expect(fade.opacity.value, lessThan(1));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<FadeTransition>(
+            find.byKey(const Key('android-detail-route-fade')),
+          )
+          .opacity
+          .value,
+      1,
+    );
+
+    Navigator.of(tester.element(find.byType(AndroidMediaViewer))).pop();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 70));
+    fade = tester.widget<FadeTransition>(fadeFinder);
+    expect(fade.opacity.value, greaterThan(0));
+    expect(fade.opacity.value, lessThan(1));
+    await tester.pumpAndSettle();
+    expect(find.byType(AndroidMediaViewer), findsNothing);
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant({TargetPlatform.android}));
+
+  testWidgets('Android metadata editor hides paths and saves notes', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('zh'),
+        localizationsDelegates: const [
+          AppLocalizations.delegate,
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) =>
+                      AndroidMetadataEditor(backend: backend, asset: _image()),
+                ),
+              ),
+              child: const Text('Open editor'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Open editor'));
+    await tester.pumpAndSettle();
+    expect(find.text(_image().storagePath), findsNothing);
+    expect(find.textContaining(_image().sha256), findsNothing);
+    await tester.enterText(
+      find.byKey(const Key('android-metadata-note')),
+      'Synthetic note',
+    );
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(backend.noteUpdates[1], 'Synthetic note');
+    expect(find.text('Open editor'), findsOneWidget);
+  });
+
+  testWidgets('custom Android date range stays in compact calendar dialog', (
+    tester,
+  ) async {
+    final backend = FakeBackend(mediaItems: []);
+    await tester.pumpWidget(
+      SquidAlbumApp(backend: backend, uiPlatform: AppUiPlatform.android),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('android-library-filter')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('创建日期').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('自定义日期范围'));
+    await tester.pumpAndSettle();
+    final customDialog = find.byKey(
+      const Key('android-custom-date-range-dialog'),
+    );
+    expect(customDialog, findsOneWidget);
+    expect(find.byType(CalendarDatePicker), findsOneWidget);
+    expect(tester.getSize(customDialog).height, lessThan(640));
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant({TargetPlatform.android}));
+
   testWidgets(
     'long press keeps album, tag, export and delete actions reachable',
     (tester) async {

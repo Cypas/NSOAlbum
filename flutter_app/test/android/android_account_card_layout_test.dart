@@ -103,8 +103,8 @@ void main() {
           final result = tester.getRect(
             find.text(
               locale == 'zh'
-                  ? '下载 0 · 重复 0 · 已存在 5 · 失败 0'
-                  : 'Downloaded 0 · Duplicates 0 · Existing 5 · Failed 0',
+                  ? '新增 0 · 已存在 5 · 失败 0'
+                  : 'New 0 · Existing 5 · Failed 0',
             ),
           );
           expect(status.left, greaterThan(nameRect.right));

@@ -42,10 +42,7 @@ void main() {
       evidence.parent.path,
       evidence.path,
     ]) {
-      if (await FileSystemEntity.type(
-            path,
-            followLinks: false,
-          ) ==
+      if (await FileSystemEntity.type(path, followLinks: false) ==
           FileSystemEntityType.link) {
         throw StateError('Synthetic fixture evidence must not traverse links');
       }
@@ -308,6 +305,37 @@ void main() {
       );
     });
 
+    test('[Windows] a Flutter rebuild cannot replace the explicit Cargo artifacts selected for packaging', () async {
+      await workerFixture.copy(freshWorker.path);
+      final fakeFlutter = File(p.join(root.path, 'bin', 'flutter.bat'));
+      await fakeFlutter.writeAsString(r'''
+@echo off
+if "%1"=="build" (
+  echo changed by Cargokit>"%NSO_CARGO_WORKER%"
+  echo changed by Cargokit>"%NSO_CARGO_DLL%"
+)
+exit /b 0
+''');
+      final result = await package(
+        useExistingFlutterBuild: false,
+        environment: {
+          'NSO_CARGO_WORKER': freshWorker.path,
+          'NSO_CARGO_DLL': freshLibrary.path,
+        },
+      );
+      expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+      expect(
+        await File(p.join(destination.path, 'nsoalbum_mtp_worker.exe'))
+            .readAsBytes(),
+        await workerFixture.readAsBytes(),
+      );
+      expect(
+        await File(p.join(destination.path, 'squid_album_core.dll'))
+            .readAsString(),
+        'new DLL',
+      );
+    });
+
     for (final failCargo in [false, true]) {
       test(
         '[Windows] fallback-only Cargo ${failCargo ? "failure" : "success"} restores the caller environment',
@@ -567,7 +595,23 @@ Write-Output 'Fallback-only Cargo package left CARGO absent and PATH unchanged.'
     test('[Windows] Close returns successful null and natural exit', () async {
       await expectLater(probeMtpWorker(workerFixture), completes);
     });
-    for (final behavior in ['bad', 'oversized', 'exit-error']) {
+    test('[Windows] fragmented binary Close output is accepted', () async {
+      final fragmented = await workerFixture.copy(
+        p.join(root.path, 'fragmented-worker.exe'),
+      );
+      await expectLater(probeMtpWorker(fragmented), completes);
+    });
+    for (final behavior in [
+      'bad',
+      'oversized',
+      'exit-error',
+      'legacy',
+      'wrong-magic',
+      'length-mismatch',
+      'payload',
+      'truncated',
+      'trailing',
+    ]) {
       test('[Windows] $behavior is a nonzero verifier failure', () async {
         await workerFixture.copy(
           p.join(release.path, 'nsoalbum_mtp_worker.exe'),

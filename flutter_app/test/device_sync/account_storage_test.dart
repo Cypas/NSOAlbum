@@ -4,6 +4,105 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/src/backend/device_sync/account_storage.dart';
 
 void main() {
+  test('oversized history is retained locally but cannot be exported or silently truncated', () async {
+    final profiles = {
+      for (var index = 0; index < 1025; index++)
+        'synthetic-${index.toString().padLeft(4, '0')}': {
+          'nickname': 'Synthetic',
+        },
+    };
+    final storage = MemoryAccountStorage(
+      values: {accountProfilesKey: jsonEncode(profiles)},
+    );
+    final before = Map<String, String>.of(storage.values);
+    final snapshot = await AccountSnapshot.read(storage, authorized: true);
+    expect(snapshot.payload.accounts, isEmpty);
+    expect(snapshot.payload.displayNames.length, 1025);
+    expect(
+      () => snapshot.payload.toJson(),
+      throwsA(isA<AccountPayloadInvalid>()),
+    );
+    expect(storage.values, before);
+  });
+
+  test('v1 remains byte-compatible and malformed v2 names stay bounded', () {
+    const legacy =
+        '{"version":1,"accounts":[{"account_id":"a","nickname":"Alice","session_token":"synthetic"}]}';
+    expect(AccountPayload.parse(legacy).toJson(), legacy);
+    for (final stamp in [
+      '2026-02-30T00:00:00Z',
+      '2026-10-24T00:00:00+24:00',
+      'not-a-time',
+    ]) {
+      expect(
+        () => AccountPayload.parse(
+          jsonEncode({
+            'version': 2,
+            'accounts': [],
+            'display_names': [
+              {'account_id': 'a', 'nickname': 'Alice', 'updated_at': stamp},
+            ],
+          }),
+        ),
+        throwsA(isA<AccountPayloadInvalid>()),
+      );
+    }
+    expect(
+      () => AccountPayload.parse(
+        jsonEncode({
+          'version': 2,
+          'accounts': [],
+          'display_names': [
+            {'account_id': 'a', 'nickname': '界' * 86, 'updated_at': null},
+          ],
+        }),
+      ),
+      throwsA(isA<AccountPayloadInvalid>()),
+    );
+  });
+
+  test(
+    'restore keeps exact saved credentials and newer local name history',
+    () {
+      final restored = restoreAccountStateWithNameHistory(
+        current: {
+          accountTokensKey: '{"current":"synthetic-current"}',
+          accountProfilesKey: '{"old":{"nickname":"Latest old name","name_updated_at":"2026-10-24T00:00:00Z"},"current":{"nickname":"Current user","name_updated_at":"2026-10-24T00:00:00Z"}}',
+        },
+        saved: {
+          legacySessionKey: 'synthetic-legacy',
+          accountTokensKey: '{"old":"synthetic-old"}',
+          selectedAccountKey: 'old',
+          accountProfilesKey: '{"old":{"nickname":"Older name","name_updated_at":"2026-10-22T00:00:00Z","avatar_url":"synthetic-avatar"}}',
+        },
+      );
+      expect(restored[legacySessionKey], 'synthetic-legacy');
+      expect(restored[accountTokensKey], '{"old":"synthetic-old"}');
+      expect(restored[selectedAccountKey], 'old');
+      final names = jsonDecode(restored[accountProfilesKey]!) as Map;
+      expect(names['old']['nickname'], 'Latest old name');
+      expect(names['old']['avatar_url'], 'synthetic-avatar');
+      expect(names['current']['nickname'], 'Current user');
+    },
+  );
+  test('v2 transfers removed names without creating credentials and keeps local history on overwrite', () async {
+    final target = AccountSnapshot.fromRaw({
+      accountTokensKey: '{"a":"synthetic-a"}',
+      accountProfilesKey: '{"a":{"nickname":"Alice"},"local-old":{"nickname":"Local","name_updated_at":"2026-10-23T00:00:00Z"}}',
+    });
+    final source = AccountPayload.parse(
+      '{"version":2,"accounts":[],"display_names":[{"account_id":"removed","nickname":"Previous user","updated_at":"2026-10-24T00:00:00Z"}]}',
+    );
+    expect(jsonDecode(source.toJson())['display_names'], hasLength(1));
+    final change = AccountChange.preview(target, source, overwrite: true);
+    expect(change.candidate[accountTokensKey], isNull);
+    final profiles = jsonDecode(change.candidate[accountProfilesKey]!) as Map;
+    expect(profiles['removed']['nickname'], 'Previous user');
+    expect(profiles['local-old']['nickname'], 'Local');
+    expect(profiles['a']['nickname'], 'Alice');
+    expect(change.added, isEmpty);
+    expect(change.removed, ['a']);
+  });
   test(
     'export requires separate local consent before reading any secure key',
     () async {
@@ -16,7 +115,7 @@ void main() {
   );
 
   test(
-    'raw four-key snapshot projects only stable ID nickname and session token',
+    'raw four-key snapshot projects credentials and minimal name history',
     () async {
       final storage = MemoryAccountStorage(
         values: {
@@ -39,7 +138,7 @@ void main() {
       final json = snapshot.payload.toJson();
       expect(
         json,
-        '{"version":1,"accounts":[{"account_id":"a","nickname":"Alice","session_token":"synthetic-a"},{"account_id":"b","nickname":"","session_token":"synthetic-b"}]}',
+        '{"version":2,"accounts":[{"account_id":"a","nickname":"Alice","session_token":"synthetic-a"},{"account_id":"b","nickname":"","session_token":"synthetic-b"}],"display_names":[{"account_id":"a","nickname":"Alice","updated_at":null}]}',
       );
       expect(json, isNot(contains('avatar')));
       expect(snapshot.toString(), isNot(contains('synthetic-a')));

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/src/backend/app_backend.dart';
 import 'package:squid_album/src/rust/models.dart';
@@ -47,6 +48,7 @@ void main() {
       expect(controller.completedAccounts, 2);
       expect(controller.totalAccounts, 2);
       expect(controller.accountResults.keys, ['a', 'b']);
+      expect(controller.accountAttemptedAt.keys, ['a', 'b']);
       expect(controller.state, SyncState.completed);
     },
   );
@@ -128,72 +130,75 @@ void main() {
     },
   );
 
-  test('automatic multi-account sync publishes one merged notification after all accounts', () async {
-    final backend = _NotifyingAccountBackend(
-      outcomes: {
-        'a': _summary(
-          'a',
-          downloaded: 2,
-          duplicates: 1,
-          skippedRemote: 2,
-          failed: 1,
-        ),
-        'b': _summary(
-          'b',
-          downloaded: 3,
-          duplicates: 2,
-          skippedRemote: 1,
-          failed: 2,
-        ),
-      },
-    );
-    final controller = SyncController(backend, allAccounts: true);
-
-    await controller.run(automatic: true);
-
-    expect(backend.notifications, [(5, 6, 3, 2)]);
-    expect(controller.accountResults.keys, ['a', 'b']);
-    expect(controller.state, SyncState.completed);
-    controller.dispose();
-  });
-
   test(
-    'manual sync and automatic sync without additions do not notify',
+    'multi-account sync publishes one merged notification after all accounts',
     () async {
       final backend = _NotifyingAccountBackend(
         outcomes: {
-          'a': _summary('a', duplicates: 2),
-          'b': _summary('b', skippedRemote: 3),
+          'a': _summary(
+            'a',
+            downloaded: 2,
+            duplicates: 1,
+            skippedRemote: 2,
+            failed: 1,
+          ),
+          'b': _summary(
+            'b',
+            downloaded: 3,
+            duplicates: 2,
+            skippedRemote: 1,
+            failed: 2,
+          ),
         },
       );
       final controller = SyncController(backend, allAccounts: true);
 
       await controller.run();
-      await controller.run(automatic: true);
 
-      expect(backend.notifications, isEmpty);
+      expect(backend.notifications, [(5, 6, 3, 2)]);
+      expect(controller.accountResults.keys, ['a', 'b']);
+      expect(controller.state, SyncState.completed);
       controller.dispose();
     },
   );
 
-  test('automatic summary includes account-level failures alongside downloaded media', () async {
+  test('sync without additions does not notify', () async {
     final backend = _NotifyingAccountBackend(
       outcomes: {
-        'a': _summary('a', downloaded: 2),
-        'b': StateError('network unavailable'),
+        'a': _summary('a', duplicates: 2),
+        'b': _summary('b', skippedRemote: 3),
       },
     );
     final controller = SyncController(backend, allAccounts: true);
 
+    await controller.run();
     await controller.run(automatic: true);
 
-    expect(backend.notifications, [(2, 0, 0, 2)]);
-    expect(backend.failedAccounts, 1);
-    expect(controller.accountErrors, contains('b'));
+    expect(backend.notifications, isEmpty);
     controller.dispose();
   });
 
-  test('disabled and cancelled automatic sync do not notify', () async {
+  test(
+    'summary includes account-level failures alongside downloaded media',
+    () async {
+      final backend = _NotifyingAccountBackend(
+        outcomes: {
+          'a': _summary('a', downloaded: 2),
+          'b': StateError('network unavailable'),
+        },
+      );
+      final controller = SyncController(backend, allAccounts: true);
+
+      await controller.run();
+
+      expect(backend.notifications, [(2, 0, 0, 2)]);
+      expect(backend.failedAccounts, 1);
+      expect(controller.accountErrors, contains('b'));
+      controller.dispose();
+    },
+  );
+
+  test('disabled and cancelled sync do not notify', () async {
     final disabled = _NotifyingAccountBackend(
       outcomes: {'a': _summary('a', downloaded: 1), 'b': _summary('b')},
     );
@@ -202,7 +207,7 @@ void main() {
       notifyOnAutoSync: false,
     );
     final disabledController = SyncController(disabled, allAccounts: true);
-    await disabledController.run(automatic: true);
+    await disabledController.run();
     expect(disabled.notifications, isEmpty);
     disabledController.dispose();
 
@@ -214,7 +219,7 @@ void main() {
       preparingAccount: 'a',
     );
     final cancelledController = SyncController(cancelled, allAccounts: true);
-    final pending = cancelledController.run(automatic: true);
+    final pending = cancelledController.run();
     await cancelled.preparationStarted.future;
     await cancelledController.cancel();
     await pending;
@@ -234,7 +239,7 @@ void main() {
       );
       final controller = SyncController(backend, allAccounts: true);
 
-      await expectLater(controller.run(automatic: true), completes);
+      await expectLater(controller.run(), completes);
 
       expect(controller.state, SyncState.completed);
       expect(controller.accountResults.keys, ['a', 'b']);
@@ -334,29 +339,26 @@ void main() {
     },
   );
 
-  test(
-    'selected-account desktop automatic sync also sends its completion',
-    () async {
-      final backend = _NotifyingLegacyBackend(
-        _summary(
-          'desktop',
-          downloaded: 2,
-          duplicates: 1,
-          skippedRemote: 3,
-          failed: 1,
-        ),
-      );
-      final controller = SyncController(backend);
+  test('selected-account desktop sync sends its completion for manual and automatic runs', () async {
+    final backend = _NotifyingLegacyBackend(
+      _summary(
+        'desktop',
+        downloaded: 2,
+        duplicates: 1,
+        skippedRemote: 3,
+        failed: 1,
+      ),
+    );
+    final controller = SyncController(backend);
 
-      await controller.run();
-      expect(backend.notifications, isEmpty);
-      await controller.run(automatic: true);
+    await controller.run();
+    expect(backend.notifications, [(2, 4, 1, 1)]);
+    await controller.run(automatic: true);
 
-      expect(backend.notifications, [(2, 4, 1, 1)]);
-      expect(controller.state, SyncState.completed);
-      controller.dispose();
-    },
-  );
+    expect(backend.notifications, [(2, 4, 1, 1), (2, 4, 1, 1)]);
+    expect(controller.state, SyncState.completed);
+    controller.dispose();
+  });
 
   test(
     'cancel retries bounded delivery when registration is not ready',
@@ -435,6 +437,61 @@ void main() {
       settings.dispose();
     },
   );
+
+  test(
+    'automatic coordinator can defer its first scheduling by the startup delay',
+    () async {
+      final backend = _ScheduledAccountBackend();
+      backend.settings = copyAppSettings(
+        backend.settings,
+        syncPolicy: const SyncPolicy(
+          enabled: true,
+          activeIntervalMinutes: 30,
+          sleepAfterHours: 24,
+        ),
+      );
+      final settings = SettingsController(backend);
+      final sync = SyncController(backend, allAccounts: true);
+      final coordinator = AutomaticSyncCoordinator(
+        backend,
+        settings,
+        sync,
+        startupDelay: const Duration(milliseconds: 80),
+      );
+
+      await coordinator.start();
+      expect(backend.accountCalls, isEmpty);
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      expect(backend.accountCalls, ['a']);
+
+      coordinator.dispose();
+      sync.dispose();
+      settings.dispose();
+    },
+  );
+
+  test('disposing during startup cancels the pending delay', () {
+    fakeAsync((async) {
+      final backend = _ScheduledAccountBackend();
+      final settings = SettingsController(backend);
+      final sync = SyncController(backend, allAccounts: true);
+      final coordinator = AutomaticSyncCoordinator(
+        backend,
+        settings,
+        sync,
+        startupDelay: const Duration(seconds: 1),
+      );
+
+      unawaited(coordinator.start());
+      coordinator.dispose();
+      async.flushMicrotasks();
+
+      expect(async.pendingTimers, isEmpty);
+      expect(backend.accountCalls, isEmpty);
+      sync.dispose();
+      settings.dispose();
+    });
+  });
 
   test('persisted authentication failure is excluded after restart', () async {
     final backend = _PersistedAuthBackend();

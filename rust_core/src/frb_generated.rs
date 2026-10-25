@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 124399239;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 100330738;
 
 // Section: executor
 
@@ -2273,6 +2273,43 @@ fn wire__crate__bridge__device_sync_receive_accounts_impl(
         },
     )
 }
+fn wire__crate__bridge__device_sync_recover_interrupted_sessions_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "device_sync_recover_interrupted_sessions",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_library = <String>::sse_decode(&mut deserializer);
+            let api_sessions = <Vec<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::bridge::device_sync_recover_interrupted_sessions(
+                        api_library,
+                        api_sessions,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__bridge__device_sync_shutdown_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -3097,6 +3134,39 @@ fn wire__crate__bridge__list_albums_impl(
         },
     )
 }
+fn wire__crate__bridge__list_game_media_counts_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "list_game_media_counts",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_album_id = <Option<i64>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::bridge::list_game_media_counts(api_album_id)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__bridge__list_game_tag_aliases_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -3194,6 +3264,39 @@ fn wire__crate__bridge__list_media_impl(
         },
     )
 }
+fn wire__crate__bridge__list_media_page_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "list_media_page",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_request = <crate::models::GalleryPageRequest>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::bridge::list_media_page(api_request)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__bridge__list_tag_usage_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -3284,6 +3387,39 @@ fn wire__crate__bridge__load_settings_impl(
             move |context| {
                 transform_result_sse::<_, String>((move || {
                     let output_ok = crate::bridge::load_settings()?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__media_details_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "media_details",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_media_id = <i64>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::bridge::media_details(api_media_id)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -5078,6 +5214,20 @@ impl SseDecode for crate::device_sync::read_model::EndpointView {
     }
 }
 
+impl SseDecode for crate::models::GalleryCursor {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_filterFingerprint = <String>::sse_decode(deserializer);
+        let mut var_effectiveSortTime = <Option<String>>::sse_decode(deserializer);
+        let mut var_mediaId = <i64>::sse_decode(deserializer);
+        return crate::models::GalleryCursor {
+            filter_fingerprint: var_filterFingerprint,
+            effective_sort_time: var_effectiveSortTime,
+            media_id: var_mediaId,
+        };
+    }
+}
+
 impl SseDecode for crate::models::GalleryKindFilter {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -5087,6 +5237,50 @@ impl SseDecode for crate::models::GalleryKindFilter {
             1 => crate::models::GalleryKindFilter::Image,
             2 => crate::models::GalleryKindFilter::Video,
             _ => unreachable!("Invalid variant for GalleryKindFilter: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::models::GalleryPage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_items = <Vec<crate::models::MediaAsset>>::sse_decode(deserializer);
+        let mut var_beforeCursor = <Option<crate::models::GalleryCursor>>::sse_decode(deserializer);
+        let mut var_afterCursor = <Option<crate::models::GalleryCursor>>::sse_decode(deserializer);
+        let mut var_hasBefore = <bool>::sse_decode(deserializer);
+        let mut var_hasAfter = <bool>::sse_decode(deserializer);
+        return crate::models::GalleryPage {
+            items: var_items,
+            before_cursor: var_beforeCursor,
+            after_cursor: var_afterCursor,
+            has_before: var_hasBefore,
+            has_after: var_hasAfter,
+        };
+    }
+}
+
+impl SseDecode for crate::models::GalleryPageDirection {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::models::GalleryPageDirection::Forward,
+            1 => crate::models::GalleryPageDirection::Backward,
+            _ => unreachable!("Invalid variant for GalleryPageDirection: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::models::GalleryPageRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_query = <crate::models::GalleryQuery>::sse_decode(deserializer);
+        let mut var_cursor = <Option<crate::models::GalleryCursor>>::sse_decode(deserializer);
+        let mut var_direction = <crate::models::GalleryPageDirection>::sse_decode(deserializer);
+        return crate::models::GalleryPageRequest {
+            query: var_query,
+            cursor: var_cursor,
+            direction: var_direction,
         };
     }
 }
@@ -5101,6 +5295,10 @@ impl SseDecode for crate::models::GalleryQuery {
         let mut var_albumId = <Option<i64>>::sse_decode(deserializer);
         let mut var_newestFirst = <bool>::sse_decode(deserializer);
         let mut var_gameNames = <Vec<String>>::sse_decode(deserializer);
+        let mut var_importedFrom =
+            <Option<chrono::DateTime<chrono::Utc>>>::sse_decode(deserializer);
+        let mut var_importedUntil =
+            <Option<chrono::DateTime<chrono::Utc>>>::sse_decode(deserializer);
         let mut var_capturedFrom =
             <Option<chrono::DateTime<chrono::Utc>>>::sse_decode(deserializer);
         let mut var_capturedUntil =
@@ -5115,9 +5313,27 @@ impl SseDecode for crate::models::GalleryQuery {
             album_id: var_albumId,
             newest_first: var_newestFirst,
             game_names: var_gameNames,
+            imported_from: var_importedFrom,
+            imported_until: var_importedUntil,
             captured_from: var_capturedFrom,
             captured_until: var_capturedUntil,
             captured_on_this_day: var_capturedOnThisDay,
+        };
+    }
+}
+
+impl SseDecode for crate::models::GameMediaCount {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_gameName = <String>::sse_decode(deserializer);
+        let mut var_imageCount = <u64>::sse_decode(deserializer);
+        let mut var_videoCount = <u64>::sse_decode(deserializer);
+        let mut var_selectionCount = <u64>::sse_decode(deserializer);
+        return crate::models::GameMediaCount {
+            game_name: var_gameName,
+            image_count: var_imageCount,
+            video_count: var_videoCount,
+            selection_count: var_selectionCount,
         };
     }
 }
@@ -5246,11 +5462,13 @@ impl SseDecode for crate::device_sync::headless::LibraryInfo {
         let mut var_libraryUuid = <String>::sse_decode(deserializer);
         let mut var_generation = <u64>::sse_decode(deserializer);
         let mut var_pendingOperation = <Option<String>>::sse_decode(deserializer);
+        let mut var_interruptedSessions = <Option<Vec<String>>>::sse_decode(deserializer);
         return crate::device_sync::headless::LibraryInfo {
             handle: var_handle,
             library_uuid: var_libraryUuid,
             generation: var_generation,
             pending_operation: var_pendingOperation,
+            interrupted_sessions: var_interruptedSessions,
         };
     }
 }
@@ -5349,6 +5567,18 @@ impl SseDecode for Vec<crate::device_sync::planner::Conflict> {
     }
 }
 
+impl SseDecode for Vec<crate::models::GameMediaCount> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::models::GameMediaCount>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<crate::models::GameTagAliasSummary> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -5406,6 +5636,20 @@ impl SseDecode for Vec<crate::models::MediaExportItemError> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::models::MediaExportItemError>::sse_decode(
+                deserializer,
+            ));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::models::MediaSourceDetails> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::models::MediaSourceDetails>::sse_decode(
                 deserializer,
             ));
         }
@@ -5603,6 +5847,28 @@ impl SseDecode for crate::models::MediaDeletionResult {
     }
 }
 
+impl SseDecode for crate::models::MediaDetails {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_media = <crate::models::MediaAsset>::sse_decode(deserializer);
+        let mut var_createdAt = <Option<chrono::DateTime<chrono::Utc>>>::sse_decode(deserializer);
+        let mut var_capturedAt = <Option<chrono::DateTime<chrono::Utc>>>::sse_decode(deserializer);
+        let mut var_importedAt = <Option<chrono::DateTime<chrono::Utc>>>::sse_decode(deserializer);
+        let mut var_storagePath = <String>::sse_decode(deserializer);
+        let mut var_sizeBytes = <u64>::sse_decode(deserializer);
+        let mut var_sources = <Vec<crate::models::MediaSourceDetails>>::sse_decode(deserializer);
+        return crate::models::MediaDetails {
+            media: var_media,
+            created_at: var_createdAt,
+            captured_at: var_capturedAt,
+            imported_at: var_importedAt,
+            storage_path: var_storagePath,
+            size_bytes: var_sizeBytes,
+            sources: var_sources,
+        };
+    }
+}
+
 impl SseDecode for crate::models::MediaExportItemError {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -5641,6 +5907,25 @@ impl SseDecode for crate::models::MediaKind {
             0 => crate::models::MediaKind::Image,
             1 => crate::models::MediaKind::Video,
             _ => unreachable!("Invalid variant for MediaKind: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::models::MediaSourceDetails {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_sourceType = <String>::sse_decode(deserializer);
+        let mut var_sourcePath = <Option<String>>::sse_decode(deserializer);
+        let mut var_provider = <Option<String>>::sse_decode(deserializer);
+        let mut var_remoteId = <Option<String>>::sse_decode(deserializer);
+        let mut var_discoveredAt =
+            <Option<chrono::DateTime<chrono::Utc>>>::sse_decode(deserializer);
+        return crate::models::MediaSourceDetails {
+            source_type: var_sourceType,
+            source_path: var_sourcePath,
+            provider: var_provider,
+            remote_id: var_remoteId,
+            discovered_at: var_discoveredAt,
         };
     }
 }
@@ -5955,6 +6240,17 @@ impl SseDecode for Option<crate::device_sync::read_model::EndpointView> {
     }
 }
 
+impl SseDecode for Option<crate::models::GalleryCursor> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::models::GalleryCursor>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<i64> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -6145,6 +6441,17 @@ impl SseDecode for Option<usize> {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         if (<bool>::sse_decode(deserializer)) {
             return Some(<usize>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<Vec<String>> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<Vec<String>>::sse_decode(deserializer));
         } else {
             return None;
         }
@@ -6984,107 +7291,116 @@ fn pde_ffi_dispatcher_primary_impl(
             rust_vec_len,
             data_len,
         ),
-        62 => wire__crate__bridge__device_sync_shutdown_impl(port, ptr, rust_vec_len, data_len),
-        63 => wire__crate__bridge__device_sync_source_final_impl(port, ptr, rust_vec_len, data_len),
-        64 => wire__crate__bridge__device_sync_status_impl(port, ptr, rust_vec_len, data_len),
-        65 => wire__crate__bridge__device_sync_target_final_impl(port, ptr, rust_vec_len, data_len),
-        66 => wire__crate__bridge__device_sync_usb_complete_impl(port, ptr, rust_vec_len, data_len),
-        67 => wire__crate__bridge__device_sync_usb_next_impl(port, ptr, rust_vec_len, data_len),
-        68 => wire__crate__bridge__device_sync_usb_select_impl(port, ptr, rust_vec_len, data_len),
-        69 => wire__crate__bridge__device_sync_usb_view_impl(port, ptr, rust_vec_len, data_len),
-        70 => {
+        62 => wire__crate__bridge__device_sync_recover_interrupted_sessions_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        63 => wire__crate__bridge__device_sync_shutdown_impl(port, ptr, rust_vec_len, data_len),
+        64 => wire__crate__bridge__device_sync_source_final_impl(port, ptr, rust_vec_len, data_len),
+        65 => wire__crate__bridge__device_sync_status_impl(port, ptr, rust_vec_len, data_len),
+        66 => wire__crate__bridge__device_sync_target_final_impl(port, ptr, rust_vec_len, data_len),
+        67 => wire__crate__bridge__device_sync_usb_complete_impl(port, ptr, rust_vec_len, data_len),
+        68 => wire__crate__bridge__device_sync_usb_next_impl(port, ptr, rust_vec_len, data_len),
+        69 => wire__crate__bridge__device_sync_usb_select_impl(port, ptr, rust_vec_len, data_len),
+        70 => wire__crate__bridge__device_sync_usb_view_impl(port, ptr, rust_vec_len, data_len),
+        71 => {
             wire__crate__bridge__device_sync_usb_wait_closed_impl(port, ptr, rust_vec_len, data_len)
         }
-        71 => wire__crate__bridge__device_sync_validate_restore_impl(
+        72 => wire__crate__bridge__device_sync_validate_restore_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        72 => wire__crate__bridge__device_sync_written_impl(port, ptr, rust_vec_len, data_len),
-        73 => wire__crate__bridge__establish_coral_session_impl(port, ptr, rust_vec_len, data_len),
-        74 => wire__crate__bridge__establish_coral_session_for_account_impl(
+        73 => wire__crate__bridge__device_sync_written_impl(port, ptr, rust_vec_len, data_len),
+        74 => wire__crate__bridge__establish_coral_session_impl(port, ptr, rust_vec_len, data_len),
+        75 => wire__crate__bridge__establish_coral_session_for_account_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        75 => {
+        76 => {
             wire__crate__bridge__exchange_nintendo_callback_impl(port, ptr, rust_vec_len, data_len)
         }
-        76 => wire__crate__bridge__export_media_impl(port, ptr, rust_vec_len, data_len),
-        77 => wire__crate__bridge__import_custom_files_impl(port, ptr, rust_vec_len, data_len),
-        78 => wire__crate__bridge__import_custom_files_with_progress_impl(
+        77 => wire__crate__bridge__export_media_impl(port, ptr, rust_vec_len, data_len),
+        78 => wire__crate__bridge__import_custom_files_impl(port, ptr, rust_vec_len, data_len),
+        79 => wire__crate__bridge__import_custom_files_with_progress_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        79 => wire__crate__bridge__import_local_files_impl(port, ptr, rust_vec_len, data_len),
-        80 => wire__crate__bridge__import_mtp_files_impl(port, ptr, rust_vec_len, data_len),
-        81 => wire__crate__bridge__init_core_impl(port, ptr, rust_vec_len, data_len),
-        82 => wire__crate__bridge__list_album_rules_impl(port, ptr, rust_vec_len, data_len),
-        83 => wire__crate__bridge__list_albums_impl(port, ptr, rust_vec_len, data_len),
-        84 => wire__crate__bridge__list_game_tag_aliases_impl(port, ptr, rust_vec_len, data_len),
-        85 => wire__crate__bridge__list_game_tags_impl(port, ptr, rust_vec_len, data_len),
-        86 => wire__crate__bridge__list_media_impl(port, ptr, rust_vec_len, data_len),
-        87 => wire__crate__bridge__list_tag_usage_impl(port, ptr, rust_vec_len, data_len),
-        88 => wire__crate__bridge__list_tags_impl(port, ptr, rust_vec_len, data_len),
-        89 => wire__crate__bridge__load_settings_impl(port, ptr, rust_vec_len, data_len),
-        90 => wire__crate__bridge__merge_game_tags_impl(port, ptr, rust_vec_len, data_len),
-        91 => wire__crate__bridge__merge_tags_impl(port, ptr, rust_vec_len, data_len),
-        92 => wire__crate__bridge__nintendo_friend_avatar_impl(port, ptr, rust_vec_len, data_len),
-        93 => wire__crate__bridge__nintendo_friend_code_impl(port, ptr, rust_vec_len, data_len),
-        94 => wire__crate__bridge__nintendo_friend_lookup_impl(port, ptr, rust_vec_len, data_len),
-        95 => wire__crate__bridge__nintendo_friend_play_log_impl(port, ptr, rust_vec_len, data_len),
-        96 => wire__crate__bridge__nintendo_friends_impl(port, ptr, rust_vec_len, data_len),
-        97 => wire__crate__bridge__nintendo_game_image_impl(port, ptr, rust_vec_len, data_len),
-        98 => wire__crate__bridge__nintendo_send_friend_request_impl(
+        80 => wire__crate__bridge__import_local_files_impl(port, ptr, rust_vec_len, data_len),
+        81 => wire__crate__bridge__import_mtp_files_impl(port, ptr, rust_vec_len, data_len),
+        82 => wire__crate__bridge__init_core_impl(port, ptr, rust_vec_len, data_len),
+        83 => wire__crate__bridge__list_album_rules_impl(port, ptr, rust_vec_len, data_len),
+        84 => wire__crate__bridge__list_albums_impl(port, ptr, rust_vec_len, data_len),
+        85 => wire__crate__bridge__list_game_media_counts_impl(port, ptr, rust_vec_len, data_len),
+        86 => wire__crate__bridge__list_game_tag_aliases_impl(port, ptr, rust_vec_len, data_len),
+        87 => wire__crate__bridge__list_game_tags_impl(port, ptr, rust_vec_len, data_len),
+        88 => wire__crate__bridge__list_media_impl(port, ptr, rust_vec_len, data_len),
+        89 => wire__crate__bridge__list_media_page_impl(port, ptr, rust_vec_len, data_len),
+        90 => wire__crate__bridge__list_tag_usage_impl(port, ptr, rust_vec_len, data_len),
+        91 => wire__crate__bridge__list_tags_impl(port, ptr, rust_vec_len, data_len),
+        92 => wire__crate__bridge__load_settings_impl(port, ptr, rust_vec_len, data_len),
+        93 => wire__crate__bridge__media_details_impl(port, ptr, rust_vec_len, data_len),
+        94 => wire__crate__bridge__merge_game_tags_impl(port, ptr, rust_vec_len, data_len),
+        95 => wire__crate__bridge__merge_tags_impl(port, ptr, rust_vec_len, data_len),
+        96 => wire__crate__bridge__nintendo_friend_avatar_impl(port, ptr, rust_vec_len, data_len),
+        97 => wire__crate__bridge__nintendo_friend_code_impl(port, ptr, rust_vec_len, data_len),
+        98 => wire__crate__bridge__nintendo_friend_lookup_impl(port, ptr, rust_vec_len, data_len),
+        99 => wire__crate__bridge__nintendo_friend_play_log_impl(port, ptr, rust_vec_len, data_len),
+        100 => wire__crate__bridge__nintendo_friends_impl(port, ptr, rust_vec_len, data_len),
+        101 => wire__crate__bridge__nintendo_game_image_impl(port, ptr, rust_vec_len, data_len),
+        102 => wire__crate__bridge__nintendo_send_friend_request_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        99 => {
+        103 => {
             wire__crate__bridge__nintendo_update_friend_note_impl(port, ptr, rust_vec_len, data_len)
         }
-        100 => wire__crate__bridge__prepare_seed_export_impl(port, ptr, rust_vec_len, data_len),
-        101 => {
+        104 => wire__crate__bridge__prepare_seed_export_impl(port, ptr, rust_vec_len, data_len),
+        105 => {
             wire__crate__bridge__prepare_splatnet_session_impl(port, ptr, rust_vec_len, data_len)
         }
-        102 => wire__crate__bridge__probe_library_root_impl(port, ptr, rust_vec_len, data_len),
-        103 => {
+        106 => wire__crate__bridge__probe_library_root_impl(port, ptr, rust_vec_len, data_len),
+        107 => {
             wire__crate__bridge__record_game_tag_selection_impl(port, ptr, rust_vec_len, data_len)
         }
-        104 => wire__crate__bridge__record_sync_attempt_impl(port, ptr, rust_vec_len, data_len),
-        105 => wire__crate__bridge__record_sync_outcome_impl(port, ptr, rust_vec_len, data_len),
-        106 => wire__crate__bridge__relocate_media_library_impl(port, ptr, rust_vec_len, data_len),
-        107 => wire__crate__bridge__remove_media_from_album_impl(port, ptr, rust_vec_len, data_len),
-        108 => wire__crate__bridge__rename_game_tag_impl(port, ptr, rust_vec_len, data_len),
-        109 => wire__crate__bridge__rename_tag_impl(port, ptr, rust_vec_len, data_len),
-        110 => wire__crate__bridge__replace_album_rules_impl(port, ptr, rust_vec_len, data_len),
-        111 => wire__crate__bridge__replace_tags_impl(port, ptr, rust_vec_len, data_len),
-        112 => wire__crate__bridge__save_settings_impl(port, ptr, rust_vec_len, data_len),
-        113 => wire__crate__bridge__save_sync_policy_impl(port, ptr, rust_vec_len, data_len),
-        114 => wire__crate__bridge__save_video_frame_impl(port, ptr, rust_vec_len, data_len),
-        115 => wire__crate__bridge__set_favorite_impl(port, ptr, rust_vec_len, data_len),
-        116 => wire__crate__bridge__set_note_impl(port, ptr, rust_vec_len, data_len),
-        117 => {
+        108 => wire__crate__bridge__record_sync_attempt_impl(port, ptr, rust_vec_len, data_len),
+        109 => wire__crate__bridge__record_sync_outcome_impl(port, ptr, rust_vec_len, data_len),
+        110 => wire__crate__bridge__relocate_media_library_impl(port, ptr, rust_vec_len, data_len),
+        111 => wire__crate__bridge__remove_media_from_album_impl(port, ptr, rust_vec_len, data_len),
+        112 => wire__crate__bridge__rename_game_tag_impl(port, ptr, rust_vec_len, data_len),
+        113 => wire__crate__bridge__rename_tag_impl(port, ptr, rust_vec_len, data_len),
+        114 => wire__crate__bridge__replace_album_rules_impl(port, ptr, rust_vec_len, data_len),
+        115 => wire__crate__bridge__replace_tags_impl(port, ptr, rust_vec_len, data_len),
+        116 => wire__crate__bridge__save_settings_impl(port, ptr, rust_vec_len, data_len),
+        117 => wire__crate__bridge__save_sync_policy_impl(port, ptr, rust_vec_len, data_len),
+        118 => wire__crate__bridge__save_video_frame_impl(port, ptr, rust_vec_len, data_len),
+        119 => wire__crate__bridge__set_favorite_impl(port, ptr, rust_vec_len, data_len),
+        120 => wire__crate__bridge__set_note_impl(port, ptr, rust_vec_len, data_len),
+        121 => {
             wire__crate__bridge__set_runtime_proxy_policy_impl(port, ptr, rust_vec_len, data_len)
         }
-        118 => wire__crate__bridge__sync_account_history_impl(port, ptr, rust_vec_len, data_len),
-        119 => wire__crate__bridge__sync_nso_impl(port, ptr, rust_vec_len, data_len),
-        120 => {
+        122 => wire__crate__bridge__sync_account_history_impl(port, ptr, rust_vec_len, data_len),
+        123 => wire__crate__bridge__sync_nso_impl(port, ptr, rust_vec_len, data_len),
+        124 => {
             wire__crate__bridge__sync_nso_from_session_token_impl(port, ptr, rust_vec_len, data_len)
         }
-        121 => wire__crate__bridge__sync_nso_from_session_token_for_account_impl(
+        125 => wire__crate__bridge__sync_nso_from_session_token_for_account_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        122 => wire__crate__bridge__sync_schedule_status_impl(port, ptr, rust_vec_len, data_len),
-        123 => wire__crate__bridge__update_album_impl(port, ptr, rust_vec_len, data_len),
+        126 => wire__crate__bridge__sync_schedule_status_impl(port, ptr, rust_vec_len, data_len),
+        127 => wire__crate__bridge__update_album_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -7636,6 +7952,25 @@ impl flutter_rust_bridge::IntoIntoDart<crate::device_sync::read_model::EndpointV
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::models::GalleryCursor {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.filter_fingerprint.into_into_dart().into_dart(),
+            self.effective_sort_time.into_into_dart().into_dart(),
+            self.media_id.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::models::GalleryCursor {}
+impl flutter_rust_bridge::IntoIntoDart<crate::models::GalleryCursor>
+    for crate::models::GalleryCursor
+{
+    fn into_into_dart(self) -> crate::models::GalleryCursor {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::models::GalleryKindFilter {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
@@ -7658,6 +7993,68 @@ impl flutter_rust_bridge::IntoIntoDart<crate::models::GalleryKindFilter>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::models::GalleryPage {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.items.into_into_dart().into_dart(),
+            self.before_cursor.into_into_dart().into_dart(),
+            self.after_cursor.into_into_dart().into_dart(),
+            self.has_before.into_into_dart().into_dart(),
+            self.has_after.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::models::GalleryPage {}
+impl flutter_rust_bridge::IntoIntoDart<crate::models::GalleryPage> for crate::models::GalleryPage {
+    fn into_into_dart(self) -> crate::models::GalleryPage {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::models::GalleryPageDirection {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Forward => 0.into_dart(),
+            Self::Backward => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::models::GalleryPageDirection
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::models::GalleryPageDirection>
+    for crate::models::GalleryPageDirection
+{
+    fn into_into_dart(self) -> crate::models::GalleryPageDirection {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::models::GalleryPageRequest {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.query.into_into_dart().into_dart(),
+            self.cursor.into_into_dart().into_dart(),
+            self.direction.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::models::GalleryPageRequest
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::models::GalleryPageRequest>
+    for crate::models::GalleryPageRequest
+{
+    fn into_into_dart(self) -> crate::models::GalleryPageRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::models::GalleryQuery {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -7668,6 +8065,8 @@ impl flutter_rust_bridge::IntoDart for crate::models::GalleryQuery {
             self.album_id.into_into_dart().into_dart(),
             self.newest_first.into_into_dart().into_dart(),
             self.game_names.into_into_dart().into_dart(),
+            self.imported_from.into_into_dart().into_dart(),
+            self.imported_until.into_into_dart().into_dart(),
             self.captured_from.into_into_dart().into_dart(),
             self.captured_until.into_into_dart().into_dart(),
             self.captured_on_this_day.into_into_dart().into_dart(),
@@ -7680,6 +8079,26 @@ impl flutter_rust_bridge::IntoIntoDart<crate::models::GalleryQuery>
     for crate::models::GalleryQuery
 {
     fn into_into_dart(self) -> crate::models::GalleryQuery {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::models::GameMediaCount {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.game_name.into_into_dart().into_dart(),
+            self.image_count.into_into_dart().into_dart(),
+            self.video_count.into_into_dart().into_dart(),
+            self.selection_count.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::models::GameMediaCount {}
+impl flutter_rust_bridge::IntoIntoDart<crate::models::GameMediaCount>
+    for crate::models::GameMediaCount
+{
+    fn into_into_dart(self) -> crate::models::GameMediaCount {
         self
     }
 }
@@ -7841,6 +8260,7 @@ impl flutter_rust_bridge::IntoDart for crate::device_sync::headless::LibraryInfo
             self.library_uuid.into_into_dart().into_dart(),
             self.generation.into_into_dart().into_dart(),
             self.pending_operation.into_into_dart().into_dart(),
+            self.interrupted_sessions.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -7970,6 +8390,29 @@ impl flutter_rust_bridge::IntoIntoDart<crate::models::MediaDeletionResult>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::models::MediaDetails {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.media.into_into_dart().into_dart(),
+            self.created_at.into_into_dart().into_dart(),
+            self.captured_at.into_into_dart().into_dart(),
+            self.imported_at.into_into_dart().into_dart(),
+            self.storage_path.into_into_dart().into_dart(),
+            self.size_bytes.into_into_dart().into_dart(),
+            self.sources.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::models::MediaDetails {}
+impl flutter_rust_bridge::IntoIntoDart<crate::models::MediaDetails>
+    for crate::models::MediaDetails
+{
+    fn into_into_dart(self) -> crate::models::MediaDetails {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::models::MediaExportItemError {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -8027,6 +8470,30 @@ impl flutter_rust_bridge::IntoDart for crate::models::MediaKind {
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::models::MediaKind {}
 impl flutter_rust_bridge::IntoIntoDart<crate::models::MediaKind> for crate::models::MediaKind {
     fn into_into_dart(self) -> crate::models::MediaKind {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::models::MediaSourceDetails {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.source_type.into_into_dart().into_dart(),
+            self.source_path.into_into_dart().into_dart(),
+            self.provider.into_into_dart().into_dart(),
+            self.remote_id.into_into_dart().into_dart(),
+            self.discovered_at.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::models::MediaSourceDetails
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::models::MediaSourceDetails>
+    for crate::models::MediaSourceDetails
+{
+    fn into_into_dart(self) -> crate::models::MediaSourceDetails {
         self
     }
 }
@@ -9366,6 +9833,15 @@ impl SseEncode for crate::device_sync::read_model::EndpointView {
     }
 }
 
+impl SseEncode for crate::models::GalleryCursor {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.filter_fingerprint, serializer);
+        <Option<String>>::sse_encode(self.effective_sort_time, serializer);
+        <i64>::sse_encode(self.media_id, serializer);
+    }
+}
+
 impl SseEncode for crate::models::GalleryKindFilter {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -9383,6 +9859,42 @@ impl SseEncode for crate::models::GalleryKindFilter {
     }
 }
 
+impl SseEncode for crate::models::GalleryPage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<crate::models::MediaAsset>>::sse_encode(self.items, serializer);
+        <Option<crate::models::GalleryCursor>>::sse_encode(self.before_cursor, serializer);
+        <Option<crate::models::GalleryCursor>>::sse_encode(self.after_cursor, serializer);
+        <bool>::sse_encode(self.has_before, serializer);
+        <bool>::sse_encode(self.has_after, serializer);
+    }
+}
+
+impl SseEncode for crate::models::GalleryPageDirection {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::models::GalleryPageDirection::Forward => 0,
+                crate::models::GalleryPageDirection::Backward => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::models::GalleryPageRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::models::GalleryQuery>::sse_encode(self.query, serializer);
+        <Option<crate::models::GalleryCursor>>::sse_encode(self.cursor, serializer);
+        <crate::models::GalleryPageDirection>::sse_encode(self.direction, serializer);
+    }
+}
+
 impl SseEncode for crate::models::GalleryQuery {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -9393,12 +9905,24 @@ impl SseEncode for crate::models::GalleryQuery {
         <Option<i64>>::sse_encode(self.album_id, serializer);
         <bool>::sse_encode(self.newest_first, serializer);
         <Vec<String>>::sse_encode(self.game_names, serializer);
+        <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.imported_from, serializer);
+        <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.imported_until, serializer);
         <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.captured_from, serializer);
         <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.captured_until, serializer);
         <Option<crate::models::CapturedOnThisDay>>::sse_encode(
             self.captured_on_this_day,
             serializer,
         );
+    }
+}
+
+impl SseEncode for crate::models::GameMediaCount {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.game_name, serializer);
+        <u64>::sse_encode(self.image_count, serializer);
+        <u64>::sse_encode(self.video_count, serializer);
+        <u64>::sse_encode(self.selection_count, serializer);
     }
 }
 
@@ -9491,6 +10015,7 @@ impl SseEncode for crate::device_sync::headless::LibraryInfo {
         <String>::sse_encode(self.library_uuid, serializer);
         <u64>::sse_encode(self.generation, serializer);
         <Option<String>>::sse_encode(self.pending_operation, serializer);
+        <Option<Vec<String>>>::sse_encode(self.interrupted_sessions, serializer);
     }
 }
 
@@ -9564,6 +10089,16 @@ impl SseEncode for Vec<crate::device_sync::planner::Conflict> {
     }
 }
 
+impl SseEncode for Vec<crate::models::GameMediaCount> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::models::GameMediaCount>::sse_encode(item, serializer);
+        }
+    }
+}
+
 impl SseEncode for Vec<crate::models::GameTagAliasSummary> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -9610,6 +10145,16 @@ impl SseEncode for Vec<crate::models::MediaExportItemError> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::models::MediaExportItemError>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::models::MediaSourceDetails> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::models::MediaSourceDetails>::sse_encode(item, serializer);
         }
     }
 }
@@ -9750,6 +10295,19 @@ impl SseEncode for crate::models::MediaDeletionResult {
     }
 }
 
+impl SseEncode for crate::models::MediaDetails {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::models::MediaAsset>::sse_encode(self.media, serializer);
+        <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.created_at, serializer);
+        <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.captured_at, serializer);
+        <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.imported_at, serializer);
+        <String>::sse_encode(self.storage_path, serializer);
+        <u64>::sse_encode(self.size_bytes, serializer);
+        <Vec<crate::models::MediaSourceDetails>>::sse_encode(self.sources, serializer);
+    }
+}
+
 impl SseEncode for crate::models::MediaExportItemError {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -9782,6 +10340,17 @@ impl SseEncode for crate::models::MediaKind {
             },
             serializer,
         );
+    }
+}
+
+impl SseEncode for crate::models::MediaSourceDetails {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.source_type, serializer);
+        <Option<String>>::sse_encode(self.source_path, serializer);
+        <Option<String>>::sse_encode(self.provider, serializer);
+        <Option<String>>::sse_encode(self.remote_id, serializer);
+        <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.discovered_at, serializer);
     }
 }
 
@@ -10005,6 +10574,16 @@ impl SseEncode for Option<crate::device_sync::read_model::EndpointView> {
     }
 }
 
+impl SseEncode for Option<crate::models::GalleryCursor> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::models::GalleryCursor>::sse_encode(value, serializer);
+        }
+    }
+}
+
 impl SseEncode for Option<i64> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -10161,6 +10740,16 @@ impl SseEncode for Option<usize> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <usize>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<Vec<String>> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <Vec<String>>::sse_encode(value, serializer);
         }
     }
 }

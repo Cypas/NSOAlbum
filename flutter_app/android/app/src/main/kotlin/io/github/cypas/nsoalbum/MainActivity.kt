@@ -7,17 +7,40 @@ import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.widget.Toast
+import android.webkit.MimeTypeMap
+import androidx.core.content.FileProvider
 import java.io.File
+import java.util.Locale
 
 class MainActivity : FlutterActivity() {
+    companion object {
+        const val ACTION_OPEN_GALLERY = "io.github.cypas.nsoalbum.OPEN_GALLERY"
+        private const val EXTRA_OPEN_GALLERY = "open_gallery"
+        private const val SHARE_AUTHORITY_SUFFIX = ".update_files"
+        private const val SHARE_REQUEST_CODE = 7302
+        private const val SHARE_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000L
+    }
+
     private var notificationPermissionResult: MethodChannel.Result? = null
+    private var syncPermissionResult: MethodChannel.Result? = null
     private var deviceSyncSaf: DeviceSyncSafChannel? = null
+    private var pendingOpenGallery = false
+    private var pendingShare: PendingShare? = null
+
+    private data class PendingShare(
+        val result: MethodChannel.Result,
+        val uris: List<Uri>,
+        val directory: File,
+    )
     private val syncNotificationPermissions by lazy {
         val preferences = getSharedPreferences("nsoalbum-notifications", MODE_PRIVATE)
         SyncNotificationPermissionCoordinator(
@@ -44,13 +67,18 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        pendingOpenGallery = isGalleryIntent(intent)
         super.onCreate(savedInstanceState)
         handleUpdateNotification(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
         setIntent(intent)
+        if (isGalleryIntent(intent)) {
+            pendingOpenGallery = true
+        }
+        super.onNewIntent(intent)
+        notifyGalleryIntent()
         handleUpdateNotification(intent)
     }
 
@@ -126,19 +154,70 @@ class MainActivity : FlutterActivity() {
         }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
             "io.github.cypas.nsoalbum/notifications").setMethodCallHandler { call, result ->
-            if (call.method != "syncCompleted") {
-                result.notImplemented()
-                return@setMethodCallHandler
-            }
             try {
-                val args = call.arguments as? Map<*, *> ?: throw IllegalArgumentException("INVALID_NOTIFICATION")
-                syncNotificationPermissions.syncCompleted(
-                    title = (args["title"] as? String) ?: "鱿型相册 · 自动同步完成",
-                    body = (args["body"] as? String) ?: "",
-                )
-                result.success(null)
+                when (call.method) {
+                    "notificationPermissionStatus" ->
+                        result.success(notificationPermissionStatus())
+                    "requestSyncPermission" -> {
+                        val status = notificationPermissionStatus()
+                        if (status == "allowed" || status == "unavailable") {
+                            result.success(status)
+                        } else if (!syncNotificationPermissions.beginExternalRequest(
+                                SyncNotificationPermissionCoordinator.SYNC_REQUEST_CODE)) {
+                            result.error("PERMISSION_REQUEST_BUSY", "A permission request is already open.", null)
+                        } else {
+                            syncPermissionResult = result
+                            requestPermissions(
+                                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                                SyncNotificationPermissionCoordinator.SYNC_REQUEST_CODE,
+                            )
+                        }
+                    }
+                    "openNotificationSettings" -> {
+                        val intent = Intent(
+                            android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS,
+                        ).apply {
+                            putExtra(
+                                android.provider.Settings.EXTRA_APP_PACKAGE,
+                                packageName,
+                            )
+                        }
+                        startActivity(intent)
+                        result.success(null)
+                    }
+                    "takePendingGalleryIntent" -> {
+                        val pending = pendingOpenGallery
+                        pendingOpenGallery = false
+                        result.success(pending)
+                    }
+                    "acknowledgeGalleryIntent" -> {
+                        pendingOpenGallery = false
+                        result.success(null)
+                    }
+                    "syncCompleted" -> {
+                        val args = call.arguments as? Map<*, *>
+                            ?: throw IllegalArgumentException("INVALID_NOTIFICATION")
+                        syncNotificationPermissions.syncCompleted(
+                            title = (args["title"] as? String) ?: "鱿型相册 · 自动同步完成",
+                            body = (args["body"] as? String) ?: "",
+                        )
+                        result.success(null)
+                    }
+                    else -> result.notImplemented()
+                }
             } catch (failure: Exception) {
                 result.error("NOTIFICATION_FAILED", null, null)
+            }
+        }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
+            "io.github.cypas.nsoalbum/share").setMethodCallHandler { call, result ->
+            try {
+                when (call.method) {
+                    "shareMedia" -> shareMedia(call.arguments, result)
+                    else -> result.notImplemented()
+                }
+            } catch (failure: Exception) {
+                result.error("SHARE_FAILED", "The media could not be shared.", null)
             }
         }
     }
@@ -166,15 +245,32 @@ class MainActivity : FlutterActivity() {
         } else {
             Notification.Builder(this)
         }
+        val openGallery = Intent(this, MainActivity::class.java).apply {
+            action = ACTION_OPEN_GALLERY
+            putExtra(EXTRA_OPEN_GALLERY, true)
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pending = android.app.PendingIntent.getActivity(
+            this,
+            7301,
+            openGallery,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                android.app.PendingIntent.FLAG_IMMUTABLE,
+        )
         manager.notify(
             7301,
             builder.setSmallIcon(applicationInfo.icon)
                 .setContentTitle(title)
                 .setContentText(body)
+                .setContentIntent(pending)
                 .setAutoCancel(true)
                 .build(),
         )
     }
+
+    private fun isGalleryIntent(intent: Intent?): Boolean =
+        intent?.action == ACTION_OPEN_GALLERY &&
+            intent.getBooleanExtra(EXTRA_OPEN_GALLERY, false)
 
     override fun onRequestPermissionsResult(
         requestCode: Int,
@@ -186,6 +282,10 @@ class MainActivity : FlutterActivity() {
             notificationPermissionResult?.success(AndroidUpdateController.get(this).notificationAllowed())
             notificationPermissionResult = null
         }
+        if (requestCode == SyncNotificationPermissionCoordinator.SYNC_REQUEST_CODE) {
+            syncPermissionResult?.success(notificationPermissionStatus())
+            syncPermissionResult = null
+        }
         if (requestCode == 9216 ||
             requestCode == SyncNotificationPermissionCoordinator.SYNC_REQUEST_CODE) {
             try {
@@ -195,6 +295,36 @@ class MainActivity : FlutterActivity() {
                     "[sync] stage=notification_failed reason=system_delivery_failed")
             }
         }
+    }
+
+    private fun notificationPermissionStatus(): String {
+        val notifications = getSystemService(NotificationManager::class.java)
+        val syncChannel = if (Build.VERSION.SDK_INT >= 26) {
+            notifications.getNotificationChannel("sync-completed")
+        } else {
+            null
+        }
+        val systemEnabled = notifications.areNotificationsEnabled() &&
+            (syncChannel == null ||
+                syncChannel.importance != NotificationManager.IMPORTANCE_NONE)
+        if (Build.VERSION.SDK_INT < 33) {
+            return if (systemEnabled) {
+                "allowed"
+            } else {
+                "blocked"
+            }
+        }
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED &&
+            systemEnabled) {
+            return "allowed"
+        }
+        val preferences = getSharedPreferences("nsoalbum-notifications", MODE_PRIVATE)
+        if (!preferences.getBoolean("sync-permission-requested", false) ||
+            shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)) {
+            return "requestable"
+        }
+        return "blocked"
     }
 
     private fun handleUpdateNotification(intent: Intent?) {
@@ -211,14 +341,117 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         deviceSyncSaf?.close()
         deviceSyncSaf = null
+        pendingShare?.let { share ->
+            pendingShare = null
+            share.uris.forEach {
+                revokeUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            share.directory.deleteRecursively()
+        }
         syncNotificationPermissions.close()
         notificationPermissionResult?.success(false)
         notificationPermissionResult = null
+        syncPermissionResult?.success("blocked")
+        syncPermissionResult = null
         super.onDestroy()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         if (deviceSyncSaf?.onActivityResult(requestCode, resultCode, data) == true) return
+        if (requestCode == SHARE_REQUEST_CODE) {
+            finishShare()
+            return
+        }
         super.onActivityResult(requestCode, resultCode, data)
     }
+
+    private fun finishShare() {
+        val share = pendingShare ?: return
+        pendingShare = null
+        share.uris.forEach { revokeUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        share.directory.deleteRecursively()
+        share.result.success(null)
+    }
+
+    private fun shareMedia(arguments: Any?, result: MethodChannel.Result) {
+        if (pendingShare != null) {
+            result.error("SHARE_BUSY", "A media share is already open.", null)
+            return
+        }
+        val args = arguments as? Map<*, *>
+            ?: throw IllegalArgumentException("INVALID_SHARE")
+        val paths = (args["paths"] as? List<*>)
+            ?.mapNotNull { it as? String }
+            ?.map(String::trim)
+            ?.filter(String::isNotEmpty)
+            ?: throw IllegalArgumentException("INVALID_SHARE")
+        if (paths.isEmpty()) throw IllegalArgumentException("INVALID_SHARE")
+        val root = File(cacheDir, "nsoalbum-share")
+        if (!root.exists() && !root.mkdirs()) {
+            throw IllegalStateException("SHARE_CACHE_UNAVAILABLE")
+        }
+        root.listFiles()?.filter {
+            it.isDirectory && System.currentTimeMillis() - it.lastModified() > SHARE_CACHE_MAX_AGE_MS
+        }?.forEach(File::deleteRecursively)
+        val session = File(root, "share-${System.currentTimeMillis()}-${android.os.Process.myPid()}")
+        if (!session.mkdirs() && !session.isDirectory) {
+            throw IllegalStateException("SHARE_CACHE_UNAVAILABLE")
+        }
+        val uris = mutableListOf<Uri>()
+        try {
+            paths.forEachIndexed { index, path ->
+                val source = File(path)
+                if (!source.isFile) throw IllegalArgumentException("SHARE_FILE_UNAVAILABLE")
+                val target = File(session, "$index-${source.name}")
+                source.copyTo(target, overwrite = false)
+                uris += FileProvider.getUriForFile(
+                    this,
+                    "${applicationContext.packageName}$SHARE_AUTHORITY_SUFFIX",
+                    target,
+                )
+            }
+            val mimeTypes = paths.map(::mimeTypeFor).toSet()
+            val share = Intent(
+                if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE,
+            ).apply {
+                type = if (mimeTypes.size == 1) mimeTypes.single() else "*/*"
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                clipData = ClipData.newRawUri("media", uris.first()).also { clip ->
+                    uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
+                }
+                if (uris.size == 1) putExtra(Intent.EXTRA_STREAM, uris.first())
+                else putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+            }
+            val launch = Intent.createChooser(share, getString(R.string.app_name)).apply {
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            pendingShare = PendingShare(result, uris, session)
+            startActivityForResult(launch, SHARE_REQUEST_CODE)
+        } catch (failure: ActivityNotFoundException) {
+            pendingShare = null
+            uris.forEach { revokeUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            session.deleteRecursively()
+            result.error("SHARE_UNAVAILABLE", "No compatible sharing app was found.", null)
+        } catch (failure: Exception) {
+            pendingShare = null
+            uris.forEach { revokeUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            session.deleteRecursively()
+            throw failure
+        }
+    }
+
+    private fun mimeTypeFor(path: String): String {
+        val extension = path.substringAfterLast('.', "").lowercase(Locale.ROOT)
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "*/*"
+    }
+
+    private fun notifyGalleryIntent() {
+        if (!pendingOpenGallery) return
+        val messenger = flutterEngine?.dartExecutor?.binaryMessenger ?: return
+        MethodChannel(
+            messenger,
+            "io.github.cypas.nsoalbum/notifications",
+        ).invokeMethod("openGallery", null)
+    }
+
 }

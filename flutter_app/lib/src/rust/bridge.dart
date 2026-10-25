@@ -32,6 +32,14 @@ Future<LibraryInfo> deviceSyncOpenLibrary({required String libraryRoot}) =>
 Future<LibraryInfo> deviceSyncLibraryInfo({required String library_}) =>
     RustLib.instance.api.crateBridgeDeviceSyncLibraryInfo(library_: library_);
 
+Future<void> deviceSyncRecoverInterruptedSessions({
+  required String library_,
+  required List<String> sessions,
+}) => RustLib.instance.api.crateBridgeDeviceSyncRecoverInterruptedSessions(
+  library_: library_,
+  sessions: sessions,
+);
+
 Future<void> deviceSyncCloseLibrary({required String library_}) =>
     RustLib.instance.api.crateBridgeDeviceSyncCloseLibrary(library_: library_);
 
@@ -670,6 +678,12 @@ Future<SyncProgress?> currentSyncProgress() =>
 Future<List<MediaAsset>> listMedia({required GalleryQuery query}) =>
     RustLib.instance.api.crateBridgeListMedia(query: query);
 
+Future<GalleryPage> listMediaPage({required GalleryPageRequest request}) =>
+    RustLib.instance.api.crateBridgeListMediaPage(request: request);
+
+Future<MediaDetails> mediaDetails({required PlatformInt64 mediaId}) =>
+    RustLib.instance.api.crateBridgeMediaDetails(mediaId: mediaId);
+
 Future<List<AlbumSummary>> listAlbums() =>
     RustLib.instance.api.crateBridgeListAlbums();
 
@@ -699,6 +713,9 @@ Future<void> mergeTags({
 
 Future<List<GameTagSummary>> listGameTags() =>
     RustLib.instance.api.crateBridgeListGameTags();
+
+Future<List<GameMediaCount>> listGameMediaCounts({PlatformInt64? albumId}) =>
+    RustLib.instance.api.crateBridgeListGameMediaCounts(albumId: albumId);
 
 Future<List<GameTagAliasSummary>> listGameTagAliases() =>
     RustLib.instance.api.crateBridgeListGameTagAliases();

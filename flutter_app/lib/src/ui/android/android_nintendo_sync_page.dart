@@ -7,6 +7,7 @@ import '../../rust/settings.dart';
 import '../../state/settings_copy.dart';
 import '../../state/sync_controller.dart';
 import '../../state/transfer_controller.dart';
+import '../../platform/android_notification_permissions.dart';
 import '../nxapi_disclosure_card.dart';
 import '../display_time.dart';
 import '../account_tools/avatar_preview.dart';
@@ -46,6 +47,17 @@ class _AndroidNintendoSyncPageState extends State<AndroidNintendoSyncPage> {
         ),
       );
       await state.onAccountChanged?.call();
+    } catch (error) {
+      if (mounted) androidMessage(context, error);
+    }
+  }
+
+  Future<void> disableSyncNotifications() async {
+    final state = widget.controller;
+    try {
+      await state.settings.save(
+        copyAppSettings(state.settings.value, notifyOnAutoSync: false),
+      );
     } catch (error) {
       if (mounted) androidMessage(context, error);
     }
@@ -145,6 +157,9 @@ class _AndroidNintendoSyncPageState extends State<AndroidNintendoSyncPage> {
                                   error: state
                                       .sync
                                       .accountErrors[account.accountId],
+                                  attemptedAt: state
+                                      .sync
+                                      .accountAttemptedAt[account.accountId],
                                   result: state
                                       .sync
                                       .accountResults[account.accountId],
@@ -283,6 +298,15 @@ class _AndroidNintendoSyncPageState extends State<AndroidNintendoSyncPage> {
                           if (success) {
                             callback.clear();
                             setState(() => adding = false);
+                            final allowed =
+                                await ensureAndroidNotificationPermission(
+                                  context,
+                                );
+                            if (!allowed &&
+                                mounted &&
+                                state.settings.value.notifyOnAutoSync) {
+                              await disableSyncNotifications();
+                            }
                           } else if (state.error != null) {
                             androidMessage(context, state.error!);
                           }
@@ -337,32 +361,6 @@ class _AndroidNintendoSyncPageState extends State<AndroidNintendoSyncPage> {
                         onChanged: state.settings.saving
                             ? null
                             : (value) => savePolicy(enabled: value),
-                      ),
-                      SwitchListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(
-                          context.l10n.select(
-                            zh: '同步完成后通知',
-                            en: 'Notify when sync completes',
-                          ),
-                        ),
-                        value: settings.notifyOnAutoSync,
-                        onChanged: state.settings.saving
-                            ? null
-                            : (value) async {
-                                try {
-                                  await state.settings.save(
-                                    copyAppSettings(
-                                      settings,
-                                      notifyOnAutoSync: value,
-                                    ),
-                                  );
-                                } catch (error) {
-                                  if (context.mounted) {
-                                    androidMessage(context, error);
-                                  }
-                                }
-                              },
                       ),
                       SwitchListTile(
                         contentPadding: EdgeInsets.zero,
@@ -457,6 +455,7 @@ class _AndroidAccountStatus extends StatelessWidget {
     required this.active,
     required this.syncState,
     required this.error,
+    required this.attemptedAt,
     required this.result,
     required this.authPaused,
   });
@@ -464,11 +463,13 @@ class _AndroidAccountStatus extends StatelessWidget {
   final bool active;
   final SyncState syncState;
   final Object? error;
+  final DateTime? attemptedAt;
   final SyncSummary? result;
   final bool authPaused;
 
   @override
   Widget build(BuildContext context) {
+    final currentResult = result;
     final attempt = history?.latestAttempt;
     final status = androidAccountStatus(
       context,
@@ -503,19 +504,29 @@ class _AndroidAccountStatus extends StatelessWidget {
             ),
           ),
         ),
-        if (attempt != null) ...[
+        if (attempt != null || attemptedAt != null) ...[
           const SizedBox(height: 4),
           Text(
             context.l10n.select(
-              zh: '上次尝试：${formatNsoAttemptTime(attempt.attemptedAt, includeSeconds: false)}',
-              en: 'Last attempt: ${formatNsoAttemptTime(attempt.attemptedAt, includeSeconds: false)}',
+              zh: '${attemptedAt == null ? '上次尝试' : '最近同步'}：${formatNsoAttemptTime(attemptedAt ?? attempt!.attemptedAt, includeSeconds: false)}',
+              en: '${attemptedAt == null ? 'Last attempt' : 'Last sync'}: ${formatNsoAttemptTime(attemptedAt ?? attempt!.attemptedAt, includeSeconds: false)}',
             ),
           ),
+        ],
+        if (error == null && (result != null || attempt != null)) ...[
           Text(
-            context.l10n.select(
-              zh: '媒体：${attempt.downloaded} 已下载 · ${attempt.duplicates} 重复 · 已存在 ${attempt.skippedRemote ?? '未记录'} · ${attempt.failed} 失败',
-              en: 'Media: ${attempt.downloaded} downloaded · ${attempt.duplicates} duplicate · Existing ${attempt.skippedRemote ?? 'not recorded'} · ${attempt.failed} failed',
-            ),
+            currentResult != null &&
+                        androidIsEmptyNsoAlbumResult(currentResult) ||
+                    currentResult == null &&
+                        androidIsEmptyNsoAlbumAttempt(attempt!)
+                ? context.l10n.select(
+                    zh: 'NSO线上相册未上传任何媒体',
+                    en: 'No media has been uploaded to the NSO album',
+                  )
+                : context.l10n.select(
+                    zh: '新增 ${result?.downloaded ?? attempt!.downloaded} · 已存在 ${result?.skippedRemote ?? attempt!.skippedRemote ?? '未记录'} · 失败 ${result?.failed ?? attempt!.failed}',
+                    en: 'New ${result?.downloaded ?? attempt!.downloaded} · Existing ${result?.skippedRemote ?? attempt!.skippedRemote ?? 'not recorded'} · Failed ${result?.failed ?? attempt!.failed}',
+                  ),
             softWrap: true,
           ),
         ],

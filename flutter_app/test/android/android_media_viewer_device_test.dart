@@ -384,7 +384,7 @@ Future<void> main() async {
                 .evaluate()
                 .isNotEmpty;
             secondMediaSelected = find
-                .text('2 / 2', skipOffstage: false)
+                .text(assets[1].originalName, skipOffstage: false)
                 .evaluate()
                 .isNotEmpty;
           } finally {
@@ -447,7 +447,7 @@ Future<void> main() async {
             );
             await _pumpUntil(
               tester,
-              () => find.text('4 / 5').evaluate().isNotEmpty,
+              () => find.text(assets[3].originalName).evaluate().isNotEmpty,
             );
             await _pumpUntil(tester, () {
               final warm = _activeVideoSurfaces(tester);
@@ -543,7 +543,7 @@ Future<void> main() async {
               );
               await _pumpUntil(
                 tester,
-                () => find.text('2 / 2').evaluate().isNotEmpty,
+                () => find.text(assets[1].originalName).evaluate().isNotEmpty,
               );
               await _pumpUntil(
                 tester,

@@ -277,6 +277,11 @@ void main() {
       );
       final close = guard(bootstrap);
       await close.install();
+      var policies = 0;
+      close.adoptPolicy(Object(), () async {
+        policies++;
+        await close.closeApplication();
+      });
       await bootstrap.start();
       await tester.pumpWidget(_app(bootstrap, () {}));
       await nativeWindow.event();
@@ -285,11 +290,19 @@ void main() {
       expect(nativeWindow.preventClose, isTrue);
       expect(nativeWindow.destroyed, 0);
       expect(bootstrap.phase, BootstrapPhase.closing);
-      expect(find.text('Unable to close safely'), findsOneWidget);
+      expect(
+        find.textContaining('The current operation could not finish safely.'),
+        findsOneWidget,
+      );
       expect(find.byType(FilledButton), findsNothing);
-      await nativeWindow.event();
+      await tester.tap(find.text('Retry closing'));
       await tester.pumpAndSettle();
       expect(errors, hasLength(2));
+      expect(
+        policies,
+        1,
+        reason: 'Retry an already approved exit without opening another policy dialog.',
+      );
       expect(nativeWindow.destroyed, 0);
     },
   );

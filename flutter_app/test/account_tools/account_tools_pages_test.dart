@@ -34,6 +34,19 @@ Widget app(Widget page, {Locale locale = const Locale('zh')}) => MaterialApp(
 void main() => registerAccountToolsPageTests();
 
 void registerAccountToolsPageTests({bool layoutOnly = false}) {
+  test('friend offline time uses relative text only for less than 30 days', () {
+    final now = DateTime(2026, 10, 25, 12);
+    expect(formatFriendLastOnline(now, now: now, english: false), '今天在线');
+    expect(
+      formatFriendLastOnline(now.subtract(const Duration(days: 29)), now: now),
+      '29 days ago',
+    );
+    expect(
+      formatFriendLastOnline(now.subtract(const Duration(days: 30)), now: now),
+      '2026-09-25 12:00:00',
+    );
+  });
+
   for (final language in ['zh', 'en']) {
     for (final width in [320.0, 360.0, 412.0]) {
       for (final scale in [1.0, 2.0]) {
@@ -218,6 +231,7 @@ void registerAccountToolsPageTests({bool layoutOnly = false}) {
         ),
       );
       await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 100));
       await tester.tap(find.byIcon(Icons.person_add_alt_1));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'SW-1234－5678－9012');
@@ -471,6 +485,102 @@ void registerAccountToolsPageTests({bool layoutOnly = false}) {
       expect(tester.takeException(), isNull);
     },
   );
+  testWidgets(
+    'mobile friend cards use larger avatars and a Japanese-capable nickname fallback',
+    (tester) async {
+      tester.view.physicalSize = const Size(360, 1200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final backend = ToolsBackend(
+        friends: const [
+          NintendoFriend(
+            friendId: 'jp',
+            nickname: 'こんにちは',
+            note: '',
+            isFavorite: false,
+            presence: 'ONLINE',
+          ),
+        ],
+      );
+      await tester.pumpWidget(
+        app(
+          NintendoFriendsPage(backend: backend, profile: profile, mobile: true),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final avatar = find.descendant(
+        of: find.ancestor(of: find.text('こんにちは'), matching: find.byType(Card)),
+        matching: find.byType(CircleAvatar),
+      );
+      expect(
+        tester.widget<CircleAvatar>(avatar).radius,
+        greaterThanOrEqualTo(28),
+      );
+      final name = tester.widget<Text>(find.text('こんにちは'));
+      expect(name.locale?.languageCode, 'ja');
+      expect(
+        name.style?.fontSize,
+        lessThan(
+          Theme.of(tester.element(find.text('こんにちは')))
+              .textTheme
+              .titleMedium!
+              .fontSize!,
+        ),
+      );
+      await tester.pumpWidget(
+        app(
+          NintendoFriendsPage(
+            key: UniqueKey(),
+            backend: ToolsBackend(
+              friends: const [
+                NintendoFriend(
+                  friendId: 'cn',
+                  nickname: '中文好友',
+                  note: '',
+                  isFavorite: false,
+                  presence: 'ONLINE',
+                ),
+              ],
+            ),
+            profile: profile,
+            mobile: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.widget<Text>(find.text('中文好友')).locale, isNull);
+    },
+  );
+  testWidgets('mobile friend detail scales avatar up and nickname down', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      app(
+        NintendoFriendDetailPage(
+          backend: ToolsBackend(),
+          friend: const NintendoFriend(
+            friendId: 'detail-scale',
+            nickname: 'Friend detail',
+            note: '',
+            isFavorite: false,
+            presence: 'ONLINE',
+          ),
+          accountId: 'clicked-b',
+          mobile: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      tester.widgetList<CircleAvatar>(find.byType(CircleAvatar)).first.radius,
+      60,
+    );
+    final name = tester.widget<Text>(find.text('Friend detail'));
+    expect(name.style?.fontSize, 22);
+  });
   testWidgets(
     'the whole friend card opens a detail page with editable metadata',
     (tester) async {
@@ -798,6 +908,16 @@ void registerAccountToolsPageTests({bool layoutOnly = false}) {
           .first,
     );
     expect(image.image, isA<MemoryImage>());
+    final imageSize = tester.getSize(
+      find
+          .byKey(
+            const ValueKey(
+              'friend-game-image:https://example.invalid/game.png',
+            ),
+          )
+          .first,
+    );
+    expect(imageSize.width, imageSize.height);
     await show('second-friend');
     expect(backend.gameImageRequests, ['Shared game']);
   });
@@ -1019,6 +1139,15 @@ void registerAccountToolsPageTests({bool layoutOnly = false}) {
       expect(backend.friendAccounts, ['clicked-b']);
       expect(find.text('在线好友'), findsOneWidget);
       expect(find.text('特别关注'), findsOneWidget);
+      for (final group in ['favorites', 'online', 'offline']) {
+        final bubble = tester.widget<DecoratedBox>(
+          find.byKey(Key('friend-group-bubble-$group')),
+        );
+        expect(
+          (bubble.decoration as BoxDecoration).borderRadius,
+          BorderRadius.circular(18),
+        );
+      }
       expect(find.text('Online friend'), findsOneWidget);
       // Best friends are in their own expanded group, even when offline.
       expect(find.text('Offline friend'), findsOneWidget);
@@ -1031,6 +1160,98 @@ void registerAccountToolsPageTests({bool layoutOnly = false}) {
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
+    },
+  );
+  testWidgets(
+    'mobile friend group headings use compact text and show their own counts',
+    (tester) async {
+      final backend = ToolsBackend(
+        friends: const [
+          NintendoFriend(
+            friendId: 'favorite-online',
+            nickname: 'Favorite online',
+            note: '',
+            isFavorite: true,
+            presence: 'ONLINE',
+          ),
+          NintendoFriend(
+            friendId: 'ordinary-online',
+            nickname: 'Ordinary online',
+            note: '',
+            isFavorite: false,
+            presence: 'ONLINE',
+          ),
+          NintendoFriend(
+            friendId: 'favorite-offline',
+            nickname: 'Favorite offline',
+            note: '',
+            isFavorite: true,
+            presence: 'OFFLINE',
+          ),
+          NintendoFriend(
+            friendId: 'ordinary-offline',
+            nickname: 'Ordinary offline',
+            note: '',
+            isFavorite: false,
+            presence: 'OFFLINE',
+          ),
+        ],
+      );
+      await tester.pumpWidget(
+        app(
+          NintendoFriendsPage(backend: backend, profile: profile, mobile: true),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final favorites = tester.widget<Text>(find.text('特别关注'));
+      final online = tester.widget<Text>(find.text('在线好友'));
+      final offline = tester.widget<Text>(find.text('离线好友'));
+      expect(
+        tester
+            .widget<Text>(find.byKey(const Key('friend-group-count-favorites')))
+            .data,
+        '· 2',
+      );
+      expect(
+        tester
+            .widget<Text>(find.byKey(const Key('friend-group-count-online')))
+            .data,
+        '· 1',
+      );
+      expect(
+        tester
+            .widget<Text>(find.byKey(const Key('friend-group-count-offline')))
+            .data,
+        '· 1',
+      );
+      expect(
+        favorites.style?.fontSize,
+        lessThan(
+          Theme.of(tester.element(find.text('特别关注')))
+              .textTheme
+              .titleMedium!
+              .fontSize!,
+        ),
+      );
+      expect(
+        online.style?.fontSize,
+        lessThan(
+          Theme.of(tester.element(find.text('在线好友')))
+              .textTheme
+              .titleMedium!
+              .fontSize!,
+        ),
+      );
+      expect(
+        offline.style?.fontSize,
+        lessThan(
+          Theme.of(tester.element(find.text('离线好友')))
+              .textTheme
+              .titleMedium!
+              .fontSize!,
+        ),
+      );
     },
   );
 
