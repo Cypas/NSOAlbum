@@ -55,6 +55,7 @@ uses-permission: name='android.permission.INTERNET'
 uses-permission: name='android.permission.POST_NOTIFICATIONS'
 uses-permission: name='android.permission.REQUEST_INSTALL_PACKAGES'
 uses-permission: name='android.permission.CAMERA'
+uses-permission: name='android.permission.MANAGE_EXTERNAL_STORAGE'
   uses-feature-not-required: name='android.hardware.camera'
   uses-feature-not-required: name='android.hardware.camera.autofocus'
 launchable-activity: name='io.github.cypas.nsoalbum.MainActivity' label='NSOAlbum' icon=''
@@ -89,7 +90,8 @@ native-code: 'arm64-v8a'
     }
     $script:caseCount++
     Assert-Rejected { Assert-AndroidBadging "$badging`napplication-debuggable" '0.2.14' '47' } 'debuggable APK'
-    Assert-Rejected { Assert-AndroidBadging "$badging`nuses-permission: name='android.permission.MANAGE_EXTERNAL_STORAGE'" '0.2.14' '47' } 'all-files permission'
+    Assert-Rejected { Assert-AndroidBadging ($badging.Replace("uses-permission: name='android.permission.MANAGE_EXTERNAL_STORAGE'", '')) '0.2.14' '47' } 'missing requested all-files access capability'
+    Assert-Rejected { Assert-AndroidBadging "$badging`nuses-permission: name='android.permission.FOREGROUND_SERVICE'" '0.2.14' '47' } 'unrelated foreground service permission'
     Assert-Rejected { Assert-AndroidBadging ($badging.Replace("native-code: 'arm64-v8a'", "native-code: 'arm64-v8a' 'x86'")) '0.2.14' '47' } 'multiple packaged ABIs'
     $digest = 'ab' * 32
     $signature = "Verified using v2 scheme (APK Signature Scheme v2): true`nSigner #1 certificate DN: CN=NSOAlbum Fixture`nSigner #1 certificate SHA-256 digest: $digest"

@@ -94,6 +94,7 @@ pub enum NativeError {
     Bounds,
     WindowFull,
     Duplicate,
+    NoMtpCandidate,
     Unavailable,
     Closed,
     Timeout,

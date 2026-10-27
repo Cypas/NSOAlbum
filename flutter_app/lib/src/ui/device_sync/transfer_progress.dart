@@ -5,6 +5,7 @@ import '../../l10n/app_localizations.dart';
 import '../../rust/device_sync/driver.dart' as driver;
 import '../../rust/device_sync/read_model.dart' as read;
 import 'capacity_format.dart';
+import 'display.dart';
 
 /// Keeps transfer counters independent of the session controls and preview.
 class DeviceSyncTransferProgress extends StatefulWidget {
@@ -123,6 +124,21 @@ class _DeviceSyncTransferProgressState
             context.l10n.select(
               zh: '已处理项目 ${progress.scannedItems} / ${progress.totalItems ?? '…'}',
               en: 'Items processed ${progress.scannedItems} / ${progress.totalItems ?? '…'}',
+            ),
+          ),
+        ],
+        if (stage != driver.State.transferring &&
+            !progress.workActive &&
+            deviceSyncStageShowsProgress(stage)) ...[
+          const SizedBox(height: 12),
+          Semantics(
+            key: const Key('device-stage-progress'),
+            label: deviceSyncStageProgressLabel(context, stage),
+            liveRegion: true,
+            child: ExcludeSemantics(
+              child: LinearProgressIndicator(
+                key: const Key('device-stage-progress-bar'),
+              ),
             ),
           ),
         ],

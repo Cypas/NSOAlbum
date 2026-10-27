@@ -197,18 +197,6 @@ class _AndroidAlbumsPageState extends State<AndroidAlbumsPage> {
                                   overflow: TextOverflow.ellipsis,
                                   style: Theme.of(context).textTheme.bodySmall,
                                 ),
-                                if (album.description.trim().isNotEmpty)
-                                  Text(
-                                    album.description.trim(),
-                                    key: Key(
-                                      'android-album-description-${album.id}',
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodySmall,
-                                  ),
                                 AlbumSourceLabel(
                                   name: album.sourceDeviceName,
                                   systemKey: album.systemKey,

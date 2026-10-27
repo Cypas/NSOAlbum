@@ -1,9 +1,10 @@
 import 'dart:async';
+import 'dart:math' as math;
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../../backend/app_backend.dart';
+import '../../app_branding.dart';
 import '../../l10n/app_localizations.dart';
 import '../../rust/models.dart';
 import '../../state/library_controller.dart';
@@ -17,6 +18,7 @@ import 'android_page_frame.dart';
 import 'android_video_merge_page.dart';
 import 'android_text_prompt.dart';
 import '../device_sync/album_source_label.dart';
+import '../font_families.dart';
 import '../../platform/android_media_share.dart';
 
 PageRoute<void> _androidMediaViewerRoute(WidgetBuilder builder) =>
@@ -49,10 +51,17 @@ class AndroidLibraryPage extends StatefulWidget {
 
 class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
   final search = TextEditingController();
+  final searchFocus = FocusNode();
   final scroll = ScrollController();
   final selected = <int>{};
+  final selectedAssets = <int, MediaAsset>{};
+  List<MediaAsset>? selectedSource;
+  final Set<int> favoriteBusy = {};
+  final Map<int, bool> favoriteOverrides = {};
   bool selecting = false;
+  bool searchExpanded = false;
   bool busy = false;
+  bool groupByImportedDate = false;
   AppBackend get backend => widget.controller.backend;
 
   @override
@@ -78,9 +87,31 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
     widget.controller.searchFor(search.text);
   }
 
+  void toggleSearch() {
+    if (searchExpanded) {
+      searchFocus.unfocus();
+      setState(() => searchExpanded = false);
+      return;
+    }
+    setState(() => searchExpanded = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || !searchExpanded) return;
+      if (mounted && searchExpanded) searchFocus.requestFocus();
+    });
+  }
+
+  void enterSelection() {
+    searchFocus.unfocus();
+    setState(() {
+      searchExpanded = false;
+      selecting = true;
+    });
+  }
+
   @override
   void dispose() {
     search.dispose();
+    searchFocus.dispose();
     scroll.dispose();
     super.dispose();
   }
@@ -95,6 +126,46 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
       if (mounted) androidMessage(context, error);
     } finally {
       if (mounted) setState(() => busy = false);
+    }
+  }
+
+  MediaAsset _withFavoriteOverride(MediaAsset asset) {
+    final favorite = favoriteOverrides[asset.id];
+    if (favorite == null || favorite == asset.favorite) return asset;
+    return MediaAsset(
+      id: asset.id,
+      sha256: asset.sha256,
+      originalName: asset.originalName,
+      storagePath: asset.storagePath,
+      kind: asset.kind,
+      capturedAt: asset.capturedAt,
+      importedAt: asset.importedAt,
+      gameTitleId: asset.gameTitleId,
+      gameName: asset.gameName,
+      favorite: favorite,
+      note: asset.note,
+      tags: asset.tags,
+    );
+  }
+
+  Future<void> _toggleFavorite(MediaAsset asset) async {
+    if (favoriteBusy.contains(asset.id)) return;
+    final next = !asset.favorite;
+    setState(() {
+      favoriteBusy.add(asset.id);
+      favoriteOverrides[asset.id] = next;
+    });
+    try {
+      await backend.setFavorite(asset.id, next);
+      if (!mounted) return;
+      setState(() => favoriteBusy.remove(asset.id));
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        favoriteBusy.remove(asset.id);
+        favoriteOverrides.remove(asset.id);
+      });
+      androidMessage(context, error);
     }
   }
 
@@ -212,39 +283,6 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
     }
   }
 
-  Future<void> export(List<MediaAsset> items) async {
-    final template = await androidTextPrompt(
-      context,
-      title: context.l10n.select(zh: '导出命名', en: 'Export naming'),
-      initialValue: '{game}_{date}_{time}',
-      confirmLabel: context.l10n.select(zh: '选择目录', en: 'Choose folder'),
-    );
-    if (template == null) return;
-    try {
-      final path = await FilePicker.getDirectoryPath();
-      if (path == null || !mounted) return;
-      await run(() async {
-        final result = await backend.exportMedia(
-          items.map((item) => item.id).toList(),
-          path,
-          template,
-        );
-        if (mounted) {
-          androidMessage(
-            context,
-            context.l10n.select(
-              zh: '已导出 ${result.exported} · 失败 ${result.failed}',
-              en: 'Exported ${result.exported} · Failed ${result.failed}',
-            ),
-            isError: result.failed > BigInt.zero,
-          );
-        }
-      });
-    } catch (error) {
-      if (mounted) androidMessage(context, error);
-    }
-  }
-
   Future<void> tags(List<MediaAsset> items, {required bool replace}) async {
     final value = await androidTextPrompt(
       context,
@@ -265,10 +303,24 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
         .toSet();
     await run(() async {
       for (final item in items) {
-        await backend.replaceTags(
-          item.id,
-          (replace ? values : {...item.tags, ...values}).toList(),
-        );
+        final tags = (replace ? values : {...item.tags, ...values}).toList();
+        await backend.replaceTags(item.id, tags);
+        if (selected.contains(item.id)) {
+          selectedAssets[item.id] = MediaAsset(
+            id: item.id,
+            sha256: item.sha256,
+            originalName: item.originalName,
+            storagePath: item.storagePath,
+            kind: item.kind,
+            capturedAt: item.capturedAt,
+            importedAt: item.importedAt,
+            gameTitleId: item.gameTitleId,
+            gameName: item.gameName,
+            favorite: item.favorite,
+            note: item.note,
+            tags: tags,
+          );
+        }
       }
     });
   }
@@ -310,11 +362,6 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
       onPressed: busy || items.isEmpty
           ? null
           : () => tags(items, replace: true),
-    ),
-    AndroidAction(
-      label: context.l10n.select(zh: '导出', en: 'Export'),
-      icon: Icons.file_download_outlined,
-      onPressed: busy || items.isEmpty ? null : () => export(items),
     ),
     AndroidAction(
       label: context.l10n.select(zh: '分享', en: 'Share'),
@@ -390,6 +437,7 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
 
   Future<void> filters() async {
     final state = widget.controller;
+    var draftGroupByDate = groupByImportedDate;
     final games = state.albumId == null
         ? await backend.listGameTags()
         : (await backend.listGameMediaCounts(albumId: state.albumId))
@@ -413,56 +461,149 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SwitchListTile(
-                title: Text(
-                  context.l10n.select(zh: '仅收藏', en: 'Favorites only'),
-                ),
-                value: state.favoriteOnly,
-                onChanged: (value) => update(() => state.favoriteOnly = value),
-              ),
-              SwitchListTile(
-                title: Text(
-                  context.l10n.select(zh: '最新优先', en: 'Newest first'),
-                ),
-                value: state.newestFirst,
-                onChanged: (value) => update(() => state.newestFirst = value),
-              ),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final game in games)
-                    FilterChip(
-                      label: Text(game.name),
-                      selected: state.gameNames.contains(game.name),
-                      onSelected: (value) => update(() {
-                        state.gameNames = value
-                            ? {...state.gameNames, game.name}.toList()
-                            : state.gameNames
-                                  .where((name) => name != game.name)
-                                  .toList();
-                      }),
-                    ),
-                ],
-              ),
-              OutlinedButton.icon(
-                icon: const Icon(Icons.date_range),
-                label: Text(
-                  context.l10n.select(
-                    zh: _captureRangeLabel(state),
-                    en: _captureRangeLabel(state, english: true),
+              Card(
+                key: const Key('android-filter-game-section'),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.sports_esports_outlined, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              context.l10n.select(
+                                zh: '游戏标签筛选',
+                                en: 'Game tag filters',
+                              ),
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                          ),
+                          const Spacer(),
+                          if (state.gameNames.isNotEmpty)
+                            TextButton(
+                              onPressed: () =>
+                                  update(() => state.gameNames = []),
+                              child: Text(
+                                context.l10n.select(zh: '清除', en: 'Clear'),
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final game in games)
+                            FilterChip(
+                              label: Text(game.name),
+                              selected: state.gameNames.contains(game.name),
+                              onSelected: (value) => update(() {
+                                state.gameNames = value
+                                    ? {...state.gameNames, game.name}.toList()
+                                    : state.gameNames
+                                          .where((name) => name != game.name)
+                                          .toList();
+                              }),
+                            ),
+                        ],
+                      ),
+                    ],
                   ),
                 ),
-                onPressed: () async {
-                  final range = await _chooseCaptureRange(context, state);
-                  if (range != null) {
-                    update(() {
-                      state.importedFrom = range.from;
-                      state.importedUntil = range.until;
-                      state.capturedOnThisDay = range.anniversary;
-                    });
-                  }
-                },
+              ),
+              const SizedBox(height: 12),
+              Card(
+                key: const Key('android-filter-date-section'),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.date_range_outlined, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              context.l10n.select(
+                                zh: '日期筛选',
+                                en: 'Date filters',
+                              ),
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      OutlinedButton.icon(
+                        key: const Key('android-filter-date-button'),
+                        icon: const Icon(Icons.date_range),
+                        label: Text(
+                          context.l10n.select(
+                            zh: _captureRangeLabel(state),
+                            en: _captureRangeLabel(state, english: true),
+                          ),
+                        ),
+                        onPressed: () async {
+                          final selection = await _chooseCaptureRange(
+                            context,
+                            state,
+                          );
+                          if (selection == null) return;
+                          update(() {
+                            state.importedFrom = selection.range?.start;
+                            state.importedUntil = selection.range == null
+                                ? null
+                                : DateTime(
+                                    selection.range!.end.year,
+                                    selection.range!.end.month,
+                                    selection.range!.end.day + 1,
+                                  );
+                            state.capturedOnThisDay = selection.anniversary;
+                          });
+                        },
+                      ),
+                      SwitchListTile(
+                        key: const Key('android-filter-group-by-date'),
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                          context.l10n.select(zh: '按日期归类', en: 'Group by date'),
+                        ),
+                        value: draftGroupByDate,
+                        onChanged: (value) =>
+                            update(() => draftGroupByDate = value),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Card(
+                key: const Key('android-filter-other-section'),
+                child: Column(
+                  children: [
+                    SwitchListTile(
+                      title: Text(
+                        context.l10n.select(zh: '仅收藏', en: 'Favorites only'),
+                      ),
+                      value: state.favoriteOnly,
+                      onChanged: (value) =>
+                          update(() => state.favoriteOnly = value),
+                    ),
+                    SwitchListTile(
+                      title: Text(
+                        context.l10n.select(zh: '最新优先', en: 'Newest first'),
+                      ),
+                      value: state.newestFirst,
+                      onChanged: (value) =>
+                          update(() => state.newestFirst = value),
+                    ),
+                  ],
+                ),
               ),
               TextButton(
                 onPressed: () => update(() {
@@ -472,13 +613,19 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                   state.importedFrom = null;
                   state.importedUntil = null;
                   state.capturedOnThisDay = null;
+                  draftGroupByDate = false;
                 }),
                 child: Text(
                   context.l10n.select(zh: '清除筛选', en: 'Clear filters'),
                 ),
               ),
               FilledButton(
-                onPressed: () => Navigator.pop(context),
+                onPressed: () {
+                  if (mounted) {
+                    setState(() => groupByImportedDate = draftGroupByDate);
+                  }
+                  Navigator.pop(context);
+                },
                 child: Text(context.l10n.select(zh: '应用', en: 'Apply')),
               ),
             ],
@@ -489,126 +636,25 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
     if (mounted) await state.reload();
   }
 
-  Future<_CaptureDateSelection?> _chooseCaptureRange(
+  Future<GalleryDateFilterSelection?> _chooseCaptureRange(
     BuildContext context,
     LibraryController state,
   ) async {
-    return showDialog<_CaptureDateSelection>(
+    return showDialog<GalleryDateFilterSelection>(
       context: context,
-      builder: (context) => Dialog(
-        key: const Key('android-date-range-dialog'),
-        insetPadding: const EdgeInsets.all(24),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 420, maxHeight: 560),
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  context.l10n.select(zh: '选择时间范围', en: 'Choose date range'),
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                const SizedBox(height: 8),
-                if (state.importedFrom != null ||
-                    state.importedUntil != null ||
-                    state.capturedOnThisDay != null)
-                  Text(
-                    context.l10n.select(
-                      zh: '当前：${_formatDateRange(state)}',
-                      en: 'Current: ${_formatDateRange(state, english: true)}',
-                    ),
-                  ),
-                const SizedBox(height: 12),
-                Text(
-                  context.l10n.select(zh: '快速时间范围', en: 'Quick date ranges'),
-                  style: Theme.of(context).textTheme.labelLarge,
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final entry in _quickRanges(context).entries)
-                      OutlinedButton(
-                        key: Key('android-filter-${entry.key}'),
-                        onPressed: () => Navigator.pop(
-                          context,
-                          _CaptureDateSelection.range(
-                            entry.value.$1,
-                            entry.value.$2,
-                          ),
-                        ),
-                        child: Text(entry.value.$3),
-                      ),
-                    OutlinedButton(
-                      key: const Key('android-filter-anniversary'),
-                      onPressed: () {
-                        final now = DateTime.now();
-                        Navigator.pop(
-                          context,
-                          _CaptureDateSelection.anniversary(
-                            CapturedOnThisDay(
-                              month: now.month,
-                              day: now.day,
-                              beforeYear: now.year,
-                              utcOffsetSeconds: now.timeZoneOffset.inSeconds,
-                            ),
-                          ),
-                        );
-                      },
-                      child: Text(
-                        context.l10n.select(
-                          zh: '那年今日',
-                          en: 'This date in history',
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.edit_calendar_outlined),
-                  label: Text(
-                    context.l10n.select(zh: '自定义日期范围', en: 'Custom date range'),
-                  ),
-                  onPressed: () async {
-                    final range = await showDialog<DateTimeRange>(
-                      context: context,
-                      builder: (_) => _AndroidCustomDateRangeDialog(
-                        firstDate: DateTime(2000),
-                        lastDate: DateTime(2100),
-                      ),
-                    );
-                    if (!context.mounted || range == null) return;
-                    Navigator.pop(
-                      context,
-                      _CaptureDateSelection.range(
-                        _dayStart(range.start),
-                        DateTime(
-                          range.end.year,
-                          range.end.month,
-                          range.end.day + 1,
-                        ),
-                      ),
-                    );
-                  },
-                ),
-                TextButton(
-                  onPressed: () => Navigator.pop(context, null),
-                  child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
-                ),
-              ],
-            ),
-          ),
-        ),
+      builder: (context) => _AndroidDateFilterDialog(
+        initialRange: state.importedFrom == null
+            ? null
+            : DateTimeRange(
+                start: state.importedFrom!,
+                end:
+                    (state.importedUntil ??
+                            state.importedFrom!.add(const Duration(days: 1)))
+                        .subtract(const Duration(days: 1)),
+              ),
       ),
     );
   }
-
-  DateTime _dayStart(DateTime value) =>
-      DateTime(value.year, value.month, value.day);
 
   String _formatDate(DateTime value, {bool english = false}) => english
       ? '${value.year}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}'
@@ -642,76 +688,160 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
     return _formatDateRange(state, english: english);
   }
 
-  Map<String, (DateTime, DateTime, String)> _quickRanges(BuildContext context) {
-    final now = DateTime.now();
-    final today = _dayStart(now);
-    final tomorrow = DateTime(today.year, today.month, today.day + 1);
-    final monday = DateTime(
-      today.year,
-      today.month,
-      today.day - today.weekday + 1,
-    );
-    final nextMonday = DateTime(monday.year, monday.month, monday.day + 7);
-    final previousMonday = DateTime(monday.year, monday.month, monday.day - 7);
-    final monthStart = DateTime(today.year, today.month);
-    final nextMonth = DateTime(today.year, today.month + 1);
-    return {
-      'today': (today, tomorrow, context.l10n.select(zh: '本日', en: 'Today')),
-      'this-week': (
-        monday,
-        nextMonday,
-        context.l10n.select(zh: '本周', en: 'This week'),
-      ),
-      'this-month': (
-        monthStart,
-        nextMonth,
-        context.l10n.select(zh: '本月', en: 'This month'),
-      ),
-      'last-week': (
-        previousMonday,
-        monday,
-        context.l10n.select(zh: '上周', en: 'Last week'),
-      ),
-    };
-  }
-
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: Listenable.merge([widget.controller, widget.settings]),
     builder: (context, _) {
       final state = widget.controller;
-      final items = state.visible;
+      final items = state.visible
+          .map(_withFavoriteOverride)
+          .where(
+            (item) =>
+                (!state.favoriteOnly &&
+                    widget.album?.systemKey != 'favorites') ||
+                item.favorite,
+          )
+          .toList(growable: false);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && !state.loading) _loadWhenNearEnd();
       });
-      final chosen = state.items
-          .where((item) => selected.contains(item.id))
-          .toList();
+      // Search and paging replace state.items; retain metadata for selected
+      // items outside the current result so bulk actions match the count.
+      selectedAssets.removeWhere((id, _) => !selected.contains(id));
+      final sourceChanged = !identical(selectedSource, state.items);
+      for (final item in state.items) {
+        if (selected.contains(item.id) &&
+            (sourceChanged || !selectedAssets.containsKey(item.id))) {
+          selectedAssets[item.id] = item;
+        }
+      }
+      // Do not overwrite successful local edits with the same pre-edit list
+      // when a later item in the batch fails before a backend refresh.
+      selectedSource = state.items;
+      final chosen = [
+        for (final id in selected)
+          if (selectedAssets[id] case final item?) _withFavoriteOverride(item),
+      ];
+      final searchMode = searchExpanded && !selecting;
+      final secondary = selecting || searchExpanded || widget.onBack != null;
+      final pageTitle = selecting
+          ? context.l10n.select(
+              zh: '已选择 ${selected.length} 项',
+              en: '${selected.length} selected',
+            )
+          : widget.album?.name ??
+                context.l10n.select(zh: appChineseName, en: appEnglishName);
+      final searchHeight = math.max(
+        48.0,
+        MediaQuery.textScalerOf(context).scale(16) * 1.5 + 20,
+      );
+      final searchField = SizedBox(
+        height: searchHeight,
+        child: KeyedSubtree(
+          key: const Key('android-library-search-input'),
+          child: TextField(
+            key: const Key('android-library-search'),
+            controller: search,
+            focusNode: searchFocus,
+            style: Theme.of(context).textTheme.bodyLarge,
+            textInputAction: TextInputAction.search,
+            decoration: InputDecoration(
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 8,
+              ),
+              hintText: context.l10n.select(
+                zh: '搜索游戏、标签、备注',
+                en: 'Search games, tags, notes',
+              ),
+              suffixIcon: search.text.isEmpty
+                  ? null
+                  : IconButton(
+                      tooltip: context.l10n.select(
+                        zh: '清除搜索',
+                        en: 'Clear search',
+                      ),
+                      onPressed: () {
+                        search.clear();
+                        applySearch();
+                        setState(() {});
+                      },
+                      icon: const Icon(Icons.clear),
+                    ),
+            ),
+            onChanged: (_) => setState(() {}),
+            onSubmitted: (_) => applySearch(),
+          ),
+        ),
+      );
+      final rootBrandTitle = !secondary && widget.album == null;
       return PopScope<Object?>(
         canPop:
-            !selecting && !busy && MediaQuery.viewInsetsOf(context).bottom == 0,
+            !selecting &&
+            !searchExpanded &&
+            !busy &&
+            MediaQuery.viewInsetsOf(context).bottom == 0,
         onPopInvokedWithResult: (didPop, _) {
           if (didPop) return;
           if (MediaQuery.viewInsetsOf(context).bottom > 0) {
             FocusManager.instance.primaryFocus?.unfocus();
             return;
           }
+          if (searchExpanded && !selecting) {
+            setState(() => searchExpanded = false);
+            return;
+          }
           if (!didPop && selecting && !busy) {
             setState(() {
               selecting = false;
               selected.clear();
+              selectedAssets.clear();
             });
           }
         },
         child: AndroidPageFrame(
-          title: selecting
-              ? context.l10n.select(
-                  zh: '已选择 ${selected.length} 项',
-                  en: '${selected.length} selected',
+          title: pageTitle,
+          secondary: secondary,
+          toolbarTitle: searchMode
+              ? searchField
+              : rootBrandTitle
+              ? Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        pageTitle,
+                        key: const Key('android-library-title'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontFamily: appBrandFontFamily,
+                          fontFamilyFallback: appBrandFontFallback,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      DecoratedBox(
+                        key: const Key('android-library-brand-underline'),
+                        decoration: const BoxDecoration(
+                          color: Color(0xffffc107),
+                          borderRadius: BorderRadius.all(Radius.circular(2)),
+                        ),
+                        child: const SizedBox(width: 40, height: 3),
+                      ),
+                    ],
+                  ),
                 )
-              : widget.album?.name ??
-                    context.l10n.select(zh: '图库', en: 'Library'),
-          secondary: selecting || widget.onBack != null,
+              : null,
+          toolbarHeight: searchMode ? searchHeight : 48,
+          scrollController: scroll,
+          scrollToTopTooltip: context.l10n.select(
+            zh: '回到顶部',
+            en: 'Back to top',
+          ),
           onBack: selecting
               ? () {
                   if (busy) return;
@@ -722,12 +852,30 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                   setState(() {
                     selecting = false;
                     selected.clear();
+                    selectedAssets.clear();
+                    searchExpanded = false;
                   });
+                }
+              : searchExpanded
+              ? () {
+                  searchFocus.unfocus();
+                  setState(() => searchExpanded = false);
                 }
               : widget.onBack == null
               ? null
               : () => Navigator.of(context).maybePop(),
           actions: [
+            if (!searchExpanded && !selecting)
+              IconButton(
+                key: const Key('android-library-search-toggle'),
+                tooltip: context.l10n.select(zh: '搜索', en: 'Search'),
+                isSelected: state.search.trim().isNotEmpty,
+                color: state.search.trim().isNotEmpty
+                    ? Theme.of(context).colorScheme.primary
+                    : null,
+                onPressed: toggleSearch,
+                icon: const Icon(Icons.search),
+              ),
             if (!selecting) ...[
               MergeSemantics(
                 child: Semantics(
@@ -748,7 +896,7 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
               IconButton(
                 key: const Key('android-select-media'),
                 tooltip: context.l10n.select(zh: '批量选择', en: 'Select'),
-                onPressed: () => setState(() => selecting = true),
+                onPressed: enterSelection,
                 icon: const Icon(Icons.checklist),
               ),
             ] else
@@ -794,6 +942,12 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                 textScaler: MediaQuery.textScalerOf(context),
                 spacing: spacing,
               );
+              final rows = _galleryRows(
+                items,
+                columns: columns,
+                grouped: groupByImportedDate,
+                english: context.l10n.locale.languageCode == 'en',
+              );
               return CustomScrollView(
                 controller: scroll,
                 key: PageStorageKey(
@@ -816,38 +970,6 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                             ),
                             const SizedBox(height: 8),
                           ],
-                          KeyedSubtree(
-                            key: const Key('android-library-search-input'),
-                            child: TextField(
-                              key: const Key('android-library-search'),
-                              controller: search,
-                              textInputAction: TextInputAction.search,
-                              decoration: InputDecoration(
-                                prefixIcon: const Icon(Icons.search),
-                                hintText: context.l10n.select(
-                                  zh: '搜索游戏、标签、备注',
-                                  en: 'Search games, tags, notes',
-                                ),
-                                suffixIcon: search.text.isEmpty
-                                    ? null
-                                    : IconButton(
-                                        tooltip: context.l10n.select(
-                                          zh: '清除搜索',
-                                          en: 'Clear search',
-                                        ),
-                                        onPressed: () {
-                                          search.clear();
-                                          applySearch();
-                                          setState(() {});
-                                        },
-                                        icon: const Icon(Icons.clear),
-                                      ),
-                              ),
-                              onChanged: (_) => setState(() {}),
-                              onSubmitted: (_) => applySearch(),
-                            ),
-                          ),
-                          const SizedBox(height: 8),
                           SegmentedButton<GalleryKindFilter>(
                             key: const Key('android-kind-filter'),
                             showSelectedIcon: false,
@@ -913,75 +1035,97 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                   SliverPadding(
                     padding: EdgeInsets.fromLTRB(padding, 0, padding, padding),
                     sliver: SliverList.builder(
-                      itemCount: (items.length / columns).ceil(),
-                      itemBuilder: (context, row) => Padding(
-                        padding: EdgeInsets.only(bottom: spacing),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            for (
-                              var column = 0;
-                              column < columns;
-                              column++
-                            ) ...[
-                              if (column > 0) SizedBox(width: spacing),
-                              Expanded(
-                                child: row * columns + column >= items.length
-                                    ? const SizedBox.shrink()
-                                    : Builder(
-                                        builder: (context) {
-                                          final item =
-                                              items[row * columns + column];
-                                          return AndroidMediaCard(
-                                            key: ValueKey(
-                                              'android-media-${item.id}',
-                                            ),
-                                            asset: item,
-                                            settings: widget.settings.value,
-                                            selecting: selecting,
-                                            selected: selected.contains(
-                                              item.id,
-                                            ),
-                                            onOpen: () async {
-                                              if (selecting) {
-                                                setState(() {
-                                                  selected.contains(item.id)
-                                                      ? selected.remove(item.id)
-                                                      : selected.add(item.id);
-                                                });
-                                                return;
-                                              }
-                                              await Navigator.of(context).push(
-                                                _androidMediaViewerRoute(
-                                                  (_) => AndroidMediaViewer(
-                                                    backend: backend,
-                                                    settings:
-                                                        widget.settings.value,
-                                                    items: items,
-                                                    initialIndex:
-                                                        row * columns + column,
-                                                    galleryQuery:
-                                                        state.galleryQuery,
-                                                    initialPage:
-                                                        state.pages.snapshot,
-                                                    mediaFilter:
-                                                        state.pages.accept,
+                      itemCount: rows.length,
+                      itemBuilder: (context, row) {
+                        final galleryRow = rows[row];
+                        if (galleryRow.header != null) {
+                          return Padding(
+                            padding: EdgeInsets.only(
+                              top: row == 0 ? 0 : spacing,
+                              bottom: spacing / 2,
+                            ),
+                            child: Text(
+                              galleryRow.header!,
+                              style: Theme.of(context).textTheme.titleSmall
+                                  ?.copyWith(fontWeight: FontWeight.w700),
+                            ),
+                          );
+                        }
+                        return Padding(
+                          padding: EdgeInsets.only(bottom: spacing),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              for (
+                                var column = 0;
+                                column < columns;
+                                column++
+                              ) ...[
+                                if (column > 0) SizedBox(width: spacing),
+                                Expanded(
+                                  child: column >= galleryRow.items.length
+                                      ? const SizedBox.shrink()
+                                      : Builder(
+                                          builder: (context) {
+                                            final indexed =
+                                                galleryRow.items[column];
+                                            final item = indexed.$1;
+                                            return AndroidMediaCard(
+                                              key: ValueKey(
+                                                'android-media-${item.id}',
+                                              ),
+                                              asset: item,
+                                              settings: widget.settings.value,
+                                              selecting: selecting,
+                                              selected: selected.contains(
+                                                item.id,
+                                              ),
+                                              onOpen: () async {
+                                                if (selecting) {
+                                                  setState(() {
+                                                    selected.contains(item.id)
+                                                        ? selected.remove(
+                                                            item.id,
+                                                          )
+                                                        : selected.add(item.id);
+                                                  });
+                                                  return;
+                                                }
+                                                await Navigator.of(
+                                                  context,
+                                                ).push(
+                                                  _androidMediaViewerRoute(
+                                                    (_) => AndroidMediaViewer(
+                                                      backend: backend,
+                                                      settings:
+                                                          widget.settings.value,
+                                                      items: items,
+                                                      initialIndex: indexed.$2,
+                                                      galleryQuery:
+                                                          state.galleryQuery,
+                                                      initialPage:
+                                                          state.pages.snapshot,
+                                                      mediaFilter:
+                                                          state.pages.accept,
+                                                    ),
                                                   ),
-                                                ),
-                                              );
-                                              if (mounted) await state.reload();
-                                            },
-                                            onMenu: () => menu(item),
-                                            onFavorite: () =>
-                                                run(() => state.favorite(item)),
-                                          );
-                                        },
-                                      ),
-                              ),
+                                                );
+                                                if (mounted) {
+                                                  await state.reload();
+                                                }
+                                              },
+                                              onMenu: () => menu(item),
+                                              onFavorite: () =>
+                                                  _toggleFavorite(item),
+                                            );
+                                          },
+                                        ),
+                                ),
+                              ],
                             ],
-                          ],
-                        ),
-                      ),
+                          ),
+                        );
+                      },
                     ),
                   ),
                   if (state.loadingMore)
@@ -1014,45 +1158,103 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
   );
 }
 
-class _CaptureDateSelection {
-  const _CaptureDateSelection.range(this.from, this.until) : anniversary = null;
-  const _CaptureDateSelection.anniversary(this.anniversary)
-    : from = null,
-      until = null;
+class GalleryDateFilterSelection {
+  const GalleryDateFilterSelection.range(this.range) : anniversary = null;
+  const GalleryDateFilterSelection.anniversary(this.anniversary) : range = null;
 
-  final DateTime? from;
-  final DateTime? until;
+  final DateTimeRange? range;
   final CapturedOnThisDay? anniversary;
 }
 
-class _AndroidCustomDateRangeDialog extends StatefulWidget {
-  const _AndroidCustomDateRangeDialog({
-    required this.firstDate,
-    required this.lastDate,
-  });
+class _AndroidGalleryRow {
+  const _AndroidGalleryRow({this.header, this.items = const []});
 
-  final DateTime firstDate;
-  final DateTime lastDate;
-
-  @override
-  State<_AndroidCustomDateRangeDialog> createState() =>
-      _AndroidCustomDateRangeDialogState();
+  final String? header;
+  final List<(MediaAsset, int)> items;
 }
 
-class _AndroidCustomDateRangeDialogState
-    extends State<_AndroidCustomDateRangeDialog> {
-  late DateTime start = DateUtils.dateOnly(DateTime.now());
-  DateTime? end;
+List<_AndroidGalleryRow> _galleryRows(
+  List<MediaAsset> items, {
+  required int columns,
+  required bool grouped,
+  required bool english,
+}) {
+  if (!grouped) {
+    return [
+      for (var offset = 0; offset < items.length; offset += columns)
+        _AndroidGalleryRow(
+          items: [
+            for (
+              var index = offset;
+              index < math.min(offset + columns, items.length);
+              index++
+            )
+              (items[index], index),
+          ],
+        ),
+    ];
+  }
+  final rows = <_AndroidGalleryRow>[];
+  final today = DateUtils.dateOnly(DateTime.now());
+  final yesterday = today.subtract(const Duration(days: 1));
+  String? previousKey;
+  for (var offset = 0; offset < items.length;) {
+    final first = items[offset];
+    final date = first.importedAt?.toLocal();
+    final key = date == null
+        ? 'unknown'
+        : '${date.year}-${date.month}-${date.day}';
+    if (key != previousKey) {
+      final label = date == null
+          ? (english ? 'Unknown date' : '日期未知')
+          : DateUtils.dateOnly(date) == today
+          ? (english ? 'Today' : '今天')
+          : DateUtils.dateOnly(date) == yesterday
+          ? (english ? 'Yesterday' : '昨天')
+          : english
+          ? '${date.month}/${date.day}/${date.year}'
+          : '${date.month}月${date.day}日';
+      rows.add(_AndroidGalleryRow(header: label));
+      previousKey = key;
+    }
+    final groupItems = <(MediaAsset, int)>[];
+    while (offset < items.length) {
+      final item = items[offset];
+      final itemDate = item.importedAt?.toLocal();
+      final itemKey = itemDate == null
+          ? 'unknown'
+          : '${itemDate.year}-${itemDate.month}-${itemDate.day}';
+      if (itemKey != key) break;
+      groupItems.add((item, offset));
+      offset++;
+      if (groupItems.length == columns) {
+        rows.add(_AndroidGalleryRow(items: List.of(groupItems)));
+        groupItems.clear();
+      }
+    }
+    if (groupItems.isNotEmpty) {
+      rows.add(_AndroidGalleryRow(items: List.of(groupItems)));
+    }
+  }
+  return rows;
+}
+
+class _AndroidDateFilterDialog extends StatefulWidget {
+  const _AndroidDateFilterDialog({this.initialRange});
+
+  final DateTimeRange? initialRange;
+
+  @override
+  State<_AndroidDateFilterDialog> createState() =>
+      _AndroidDateFilterDialogState();
+}
+
+class _AndroidDateFilterDialogState extends State<_AndroidDateFilterDialog> {
+  late DateTime? start = widget.initialRange?.start;
+  late DateTime? end = widget.initialRange?.end;
   bool choosingEnd = false;
 
-  String _date(DateTime? value) {
-    if (value == null) return '—';
-    return '${value.year.toString().padLeft(4, '0')}-'
-        '${value.month.toString().padLeft(2, '0')}-'
-        '${value.day.toString().padLeft(2, '0')}';
-  }
-
-  void _choose(DateTime value) {
+  void _chooseDate(DateTime value) {
     final selected = DateUtils.dateOnly(value);
     if (!choosingEnd) {
       setState(() {
@@ -1062,79 +1264,176 @@ class _AndroidCustomDateRangeDialogState
       });
       return;
     }
-    final first = selected.isBefore(start) ? selected : start;
-    final last = selected.isBefore(start) ? start : selected;
-    Navigator.of(context).pop(DateTimeRange(start: first, end: last));
+    final anchor = start ?? selected;
+    final first = selected.isBefore(anchor) ? selected : anchor;
+    final last = selected.isBefore(anchor) ? anchor : selected;
+    Navigator.of(context).pop(
+      GalleryDateFilterSelection.range(DateTimeRange(start: first, end: last)),
+    );
   }
 
   @override
   Widget build(BuildContext context) => Dialog(
-    key: const Key('android-custom-date-range-dialog'),
+    key: const Key('android-date-filter-dialog'),
     insetPadding: const EdgeInsets.all(24),
     child: ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 420, maxHeight: 540),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Text(
-              context.l10n.select(zh: '选择创建时间', en: 'Select creation dates'),
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              choosingEnd
-                  ? context.l10n.select(zh: '请选择结束日期', en: 'Choose an end date')
-                  : context.l10n.select(
-                      zh: '请先选择开始日期',
-                      en: 'Choose a start date first',
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              Text(
+                context.l10n.select(zh: '选择日期范围', en: 'Select date range'),
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  context.l10n.select(zh: '快捷日期', en: 'Quick ranges'),
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final entry in _androidQuickRanges(context).entries)
+                    OutlinedButton(
+                      key: Key('android-filter-${entry.key}'),
+                      onPressed: () => Navigator.pop(
+                        context,
+                        GalleryDateFilterSelection.range(entry.value.$1),
+                      ),
+                      child: Text(entry.value.$2),
                     ),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: _DateRangeStep(
-                    label: context.l10n.select(zh: '开始日期', en: 'Start date'),
-                    value: _date(start),
-                    active: !choosingEnd,
+                  OutlinedButton(
+                    key: const Key('android-filter-anniversary'),
+                    onPressed: () {
+                      final now = DateTime.now();
+                      Navigator.pop(
+                        context,
+                        GalleryDateFilterSelection.anniversary(
+                          CapturedOnThisDay(
+                            month: now.month,
+                            day: now.day,
+                            beforeYear: now.year,
+                            utcOffsetSeconds: now.timeZoneOffset.inSeconds,
+                          ),
+                        ),
+                      );
+                    },
+                    child: Text(
+                      context.l10n.select(
+                        zh: '那年今日',
+                        en: 'This date in history',
+                      ),
+                    ),
                   ),
-                ),
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 8),
-                  child: Icon(Icons.arrow_forward_rounded, size: 18),
-                ),
-                Expanded(
-                  child: _DateRangeStep(
-                    label: context.l10n.select(zh: '结束日期', en: 'End date'),
-                    value: _date(end),
-                    active: choosingEnd,
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                choosingEnd
+                    ? context.l10n.select(
+                        zh: '请选择结束日期',
+                        en: 'Choose an end date',
+                      )
+                    : context.l10n.select(
+                        zh: '请先选择开始日期',
+                        en: 'Choose a start date first',
+                      ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: _DateRangeStep(
+                      label: context.l10n.select(zh: '开始日期', en: 'Start date'),
+                      value: _formatDialogDate(start),
+                      active: !choosingEnd,
+                    ),
                   ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 8),
+                    child: Icon(Icons.arrow_forward_rounded, size: 18),
+                  ),
+                  Expanded(
+                    child: _DateRangeStep(
+                      label: context.l10n.select(zh: '结束日期', en: 'End date'),
+                      value: _formatDialogDate(end),
+                      active: choosingEnd,
+                    ),
+                  ),
+                ],
+              ),
+              const Divider(height: 12),
+              SizedBox(
+                height: 300,
+                child: CalendarDatePicker(
+                  key: ValueKey(choosingEnd),
+                  initialDate: choosingEnd
+                      ? start ?? DateUtils.dateOnly(DateTime.now())
+                      : start ?? DateUtils.dateOnly(DateTime.now()),
+                  firstDate: DateTime(2000),
+                  lastDate: DateTime(DateTime.now().year + 1, 12, 31),
+                  onDateChanged: _chooseDate,
                 ),
-              ],
-            ),
-            const Divider(height: 12),
-            Expanded(
-              child: CalendarDatePicker(
-                key: ValueKey(choosingEnd),
-                initialDate: choosingEnd ? start : DateUtils.dateOnly(start),
-                firstDate: widget.firstDate,
-                lastDate: widget.lastDate,
-                onDateChanged: _choose,
               ),
-            ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     ),
   );
+}
+
+String _formatDialogDate(DateTime? value) {
+  if (value == null) return '—';
+  return '${value.year.toString().padLeft(4, '0')}-'
+      '${value.month.toString().padLeft(2, '0')}-'
+      '${value.day.toString().padLeft(2, '0')}';
+}
+
+Map<String, (DateTimeRange, String)> _androidQuickRanges(BuildContext context) {
+  final today = DateUtils.dateOnly(DateTime.now());
+  final tomorrow = today.add(const Duration(days: 1));
+  final monday = today.subtract(Duration(days: today.weekday - 1));
+  final nextMonday = monday.add(const Duration(days: 7));
+  final previousMonday = monday.subtract(const Duration(days: 7));
+  final monthStart = DateTime(today.year, today.month);
+  final nextMonth = DateTime(today.year, today.month + 1);
+  DateTimeRange inclusive(DateTime start, DateTime exclusive) => DateTimeRange(
+    start: start,
+    end: exclusive.subtract(const Duration(days: 1)),
+  );
+  return {
+    'today': (
+      inclusive(today, tomorrow),
+      context.l10n.select(zh: '本日', en: 'Today'),
+    ),
+    'this-week': (
+      inclusive(monday, nextMonday),
+      context.l10n.select(zh: '本周', en: 'This week'),
+    ),
+    'this-month': (
+      inclusive(monthStart, nextMonth),
+      context.l10n.select(zh: '本月', en: 'This month'),
+    ),
+    'last-week': (
+      inclusive(previousMonday, monday),
+      context.l10n.select(zh: '上周', en: 'Last week'),
+    ),
+  };
 }
 
 class _DateRangeStep extends StatelessWidget {

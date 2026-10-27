@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../fade_page_transitions.dart';
+
 ThemeData androidTheme(String name) {
   final seed = switch (name) {
     'teal' => const Color(0xff159b88),
@@ -26,5 +28,6 @@ ThemeData androidTheme(String name) {
       border: OutlineInputBorder(),
       contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 14),
     ),
+    pageTransitionsTheme: appFadePageTransitionsTheme,
   );
 }

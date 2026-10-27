@@ -83,6 +83,14 @@ class _AndroidNintendoSyncPageState extends State<AndroidNintendoSyncPage> {
     builder: (context, _) {
       final state = widget.controller;
       final settings = state.settings.value;
+      final sleepHours = {
+        6,
+        12,
+        24,
+        48,
+        72,
+        settings.syncPolicy.sleepAfterHours,
+      }.toList()..sort();
       final syncing =
           state.sync.state == SyncState.running ||
           state.sync.state == SyncState.cancelling;
@@ -389,8 +397,10 @@ class _AndroidNintendoSyncPageState extends State<AndroidNintendoSyncPage> {
                               },
                       ),
                       DropdownButtonFormField<int>(
+                        key: const Key('android-nso-auto-sync-interval'),
                         initialValue: settings.syncPolicy.activeIntervalMinutes,
                         isExpanded: true,
+                        style: Theme.of(context).textTheme.bodyLarge,
                         decoration: InputDecoration(
                           labelText: context.l10n.select(
                             zh: '活跃期检查周期',
@@ -414,21 +424,34 @@ class _AndroidNintendoSyncPageState extends State<AndroidNintendoSyncPage> {
                             : (value) => savePolicy(interval: value),
                       ),
                       const SizedBox(height: 16),
-                      TextFormField(
-                        initialValue: '${settings.syncPolicy.sleepAfterHours}',
-                        keyboardType: TextInputType.number,
+                      DropdownButtonFormField<int>(
+                        key: const Key('android-nso-sleep-after'),
+                        initialValue: settings.syncPolicy.sleepAfterHours,
+                        isExpanded: true,
+                        style: Theme.of(context).textTheme.bodyLarge,
                         decoration: InputDecoration(
                           labelText: context.l10n.select(
-                            zh: '无新媒体后进入休眠（小时）',
-                            en: 'Sleep after no new media (hours)',
+                            zh: '连续无更新后进入休眠',
+                            en: 'Sleep after no new media',
                           ),
                         ),
-                        onFieldSubmitted: (value) {
-                          final hours = int.tryParse(value);
-                          if (hours != null && hours > 0) {
-                            savePolicy(sleep: hours);
-                          }
-                        },
+                        items: [
+                          for (final hours in sleepHours)
+                            DropdownMenuItem(
+                              value: hours,
+                              child: Text(
+                                context.l10n.select(
+                                  zh: '$hours 小时',
+                                  en: '$hours hours',
+                                ),
+                              ),
+                            ),
+                        ],
+                        onChanged: state.settings.saving
+                            ? null
+                            : (hours) {
+                                if (hours != null) savePolicy(sleep: hours);
+                              },
                       ),
                       const SizedBox(height: 8),
                       Text(

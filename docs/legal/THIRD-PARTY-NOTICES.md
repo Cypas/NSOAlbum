@@ -2,7 +2,7 @@
 
 NSOAlbum（简体中文界面名“鱿型相册”）的 Rust 实现参考了以下项目公开展示的协议流程和相册目录行为。项目没有把这些参考项目作为 Python/C++ 运行时依赖，也没有直接复制其框架耦合代码。以下引用仅说明协议研究来源，应用当前行为以仓库内 Rust 实现为准。
 
-The repository's MIT `LICENSE` covers original source code only. Artwork, personal images, Nintendo marks, fonts, and bundled native dependencies retain separate rights and licenses. See [`ASSET-ATTRIBUTION.md`](ASSET-ATTRIBUTION.md) for the known image assets and the pre-release permission review requirement.
+The repository's MIT `LICENSE` covers original source code only. Artwork, personal images, Nintendo marks, fonts, and bundled native dependencies retain separate rights and licenses. See [`ASSET-ATTRIBUTION.md`](ASSET-ATTRIBUTION.md) for known assets and their documented rights status. Inclusion in a source checkout or published package does not by itself establish a license or grant redistribution rights.
 
 ## NSO-Album-Sync
 
@@ -11,11 +11,11 @@ The repository's MIT `LICENSE` covers original source code only. Artwork, person
 - Referenced concepts: Nintendo/Coral media fields, Album directory naming, folder matching, atomic `.part` publishing, capture timestamp preservation and download safety checks.
 - The upstream repository's `LICENSE` and `THIRD-PARTY-NOTICES.txt` must be reviewed and included in distributable packages where required.
 
-## splatoon3-nso / s3s iksm.py
+## [Cypas/splatoon3-nso](https://github.com/Cypas/splatoon3-nso) and upstream s3s
 
-- Project: `Cypas/splatoon3-nso`
-- Referenced concepts: Nintendo Account PKCE flow, NXAPI OAuth and attestation calls, encrypted Coral request/response flow, NSO headers, Nintendo error retry behavior, Coral friends, SplatNet game credentials, and the gear-seed JSON wire format.
-- The referenced file includes GPLv3/upstream attribution. No Python source is shipped as part of the Dart/Rust runtime. Before public distribution, complete a license review of any behavior or material retained from this reference.
+- The repository is licensed under [MIT](https://github.com/Cypas/splatoon3-nso/blob/master/LICENSE). Its protocol and feature behavior was consulted for Nintendo Account PKCE, NXAPI OAuth, encrypted Coral calls, friend data, SplatNet credentials, and related integration behavior.
+- The [`iksm.py` reference file](https://github.com/Cypas/splatoon3-nso/blob/master/nonebot_plugin_splatoon3_nso/s3s/iksm.py) separately identifies the [`frozenpandaman/s3s`](https://github.com/frozenpandaman/s3s) source, copyright attribution, and GPLv3 license. The containing repository's MIT license does not replace that file-level notice.
+- No Python source or runtime dependency from these projects is included in the Dart/Rust application. Protocol behavior is implemented in Rust. This notice records research sources; it is not a legal determination that any code derived from a reference is covered by the repository MIT license. Review source-level attribution and license obligations before redistributing material that includes copied or adapted code.
 
 ## WeAchieve Nintendo Switch Online (Coral) integration write-up
 
@@ -85,9 +85,11 @@ The repository's MIT `LICENSE` covers original source code only. Artwork, person
 
 - `network_info_plus` 8.2.2 and `network_info_plus_platform_interface` 3.1.0:
   BSD-3-Clause, with Chromium Authors / Flutter Community notices.
-- `permission_handler` 12.0.3 and its resolved platform implementations:
-  MIT, Baseflow. Exact resolved platform package versions are in
-  `flutter_app/pubspec.lock`; preserve their individual license files.
+- `permission_handler_android` 13.0.1 and
+  `permission_handler_platform_interface` 4.4.1: MIT, Baseflow. These are the
+  Android-specific implementation and shared interface pinned in
+  `flutter_app/pubspec.lock`; the umbrella `permission_handler` package is not
+  a direct dependency. Preserve the applicable upstream notices.
 - Used only for on-demand current-network hints and optional foreground
   Android permission requests during pairing. No Wi-Fi scans, BSSID collection,
   background location or network history is added. Declining access does not

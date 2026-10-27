@@ -16,6 +16,10 @@ import 'android_tag_management_page.dart';
 import 'android_update_controls.dart';
 import 'android_log_viewer_page.dart';
 
+const _androidSettingsCardShape = RoundedRectangleBorder(
+  borderRadius: BorderRadius.all(Radius.circular(16)),
+);
+
 class AndroidSettingsPage extends StatefulWidget {
   const AndroidSettingsPage({
     super.key,
@@ -42,8 +46,6 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage>
     formatApplicationVersionForDisplay,
   );
   bool checkingUpdates = false;
-  bool choosingStorage = false;
-  bool movingStorage = false;
   AndroidNotificationPermissionState? notificationPermission;
 
   @override
@@ -95,124 +97,6 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage>
     await _refreshNotificationPermission();
   }
 
-  Future<void> chooseStorage() async {
-    if (widget.backend is! MobileStorageBackend || choosingStorage) return;
-    setState(() => choosingStorage = true);
-    try {
-      final locations = await (widget.backend as MobileStorageBackend)
-          .mobileStorageLocations();
-      if (!mounted) return;
-      final selected = await showModalBottomSheet<MobileStorageLocation>(
-        context: context,
-        builder: (context) => SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final location in locations)
-                ListTile(
-                  leading: Icon(
-                    location.removable ? Icons.sd_storage : Icons.phone_android,
-                  ),
-                  title: Text(
-                    context.l10n.select(
-                      zh: location.removable ? 'SD 卡' : '内部存储',
-                      en: location.removable ? 'SD card' : 'Internal storage',
-                    ),
-                  ),
-                  subtitle: Text(
-                    context.l10n.select(
-                      zh: '应用专用目录',
-                      en: 'App-specific directory',
-                    ),
-                  ),
-                  onTap: () => Navigator.pop(context, location),
-                ),
-              if (!locations.any((location) => location.removable))
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Text(
-                    context.l10n.select(
-                      zh: '没有可用的 SD 卡。',
-                      en: 'No SD card is available.',
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      );
-      if (selected == null ||
-          !mounted ||
-          selected.path == widget.controller.value.libraryPath) {
-        return;
-      }
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: Text(
-            context.l10n.select(zh: '更改图库位置？', en: 'Change library location?'),
-          ),
-          content: Text(
-            context.l10n.select(
-              zh: '将复制并校验媒体后切换图库。请保持存储设备连接；失败时仍使用原图库。',
-              en: 'Media will be copied and verified before switching. Keep storage connected; a failure leaves the original library active.',
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
-            ),
-            FilledButton(
-              key: const Key('android-confirm-storage'),
-              onPressed: () => Navigator.pop(context, true),
-              child: Text(context.l10n.select(zh: '继续', en: 'Continue')),
-            ),
-          ],
-        ),
-      );
-      if (confirmed != true || !mounted) return;
-      setState(() => movingStorage = true);
-      // Re-enumerate after confirmation: an external card may have been removed.
-      final available = await (widget.backend as MobileStorageBackend)
-          .mobileStorageLocations();
-      if (!available.any(
-        (item) => item.id == selected.id && item.path == selected.path,
-      )) {
-        if (mounted) {
-          androidMessage(
-            context,
-            context.l10n.select(
-              zh: '所选存储不可用，请重新连接后再试。',
-              en: 'Selected storage is unavailable. Reconnect it and try again.',
-            ),
-            isError: true,
-          );
-        }
-        return;
-      }
-      await widget.controller.relocateMediaLibrary(
-        copyAppSettings(widget.controller.value, libraryPath: selected.path),
-      );
-      if (mounted) {
-        androidMessage(
-          context,
-          context.l10n.select(zh: '图库位置已更新。', en: 'Library location updated.'),
-          isError: false,
-        );
-      }
-    } catch (error) {
-      if (mounted) androidMessage(context, error);
-    } finally {
-      if (mounted) {
-        setState(() {
-          choosingStorage = false;
-          movingStorage = false;
-        });
-      }
-    }
-  }
-
   Future<void> checkForUpdates() async {
     final callback = widget.onCheckForUpdates;
     if (callback == null || checkingUpdates) return;
@@ -256,167 +140,172 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage>
 
         return AndroidPageList(
           children: [
-            DropdownButtonFormField<String>(
-              isExpanded: true,
-              itemHeight: null,
-              initialValue: value.language,
-              decoration: InputDecoration(
-                labelText: context.l10n.select(
-                  zh: '界面语言',
-                  en: 'Interface language',
-                ),
-              ),
-              items: const [
-                DropdownMenuItem(value: 'zh', child: Text('简体中文')),
-                DropdownMenuItem(value: 'en', child: Text('English')),
-              ],
-              onChanged: controller.saving
-                  ? null
-                  : (language) => save(
-                      controller.save(
-                        copyAppSettings(value, language: language),
+            Card(
+              key: const Key('android-appearance-settings-card'),
+              shape: _androidSettingsCardShape,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    DropdownButtonFormField<String>(
+                      isExpanded: true,
+                      itemHeight: null,
+                      initialValue: value.language,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                      decoration: InputDecoration(
+                        labelText: context.l10n.select(
+                          zh: '界面语言',
+                          en: 'Interface language',
+                        ),
                       ),
-                    ),
-            ),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final entry in {
-                  'ocean': Colors.blue,
-                  'teal': Colors.teal,
-                  'orange': Colors.orange,
-                  'purple': Colors.purple,
-                  'rose': Colors.pink,
-                }.entries)
-                  IconButton(
-                    tooltip: switch (entry.key) {
-                      'teal' => context.l10n.select(zh: '青绿', en: 'Teal'),
-                      'orange' => context.l10n.select(zh: '橙色', en: 'Orange'),
-                      'purple' => context.l10n.select(zh: '紫色', en: 'Purple'),
-                      'rose' => context.l10n.select(zh: '玫瑰', en: 'Rose'),
-                      _ => context.l10n.select(zh: '海洋蓝', en: 'Ocean blue'),
-                    },
-                    onPressed: controller.saving
-                        ? null
-                        : () => save(
-                            controller.save(
-                              copyAppSettings(value, theme: entry.key),
+                      items: [
+                        DropdownMenuItem(
+                          value: 'zh',
+                          child: Text(
+                            '简体中文',
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                        ),
+                        DropdownMenuItem(
+                          value: 'en',
+                          child: Text(
+                            'English',
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                        ),
+                      ],
+                      onChanged: controller.saving
+                          ? null
+                          : (language) => save(
+                              controller.save(
+                                copyAppSettings(value, language: language),
+                              ),
                             ),
-                          ),
-                    icon: Icon(
-                      value.theme == entry.key
-                          ? Icons.check_circle
-                          : Icons.circle,
-                      color: entry.value,
                     ),
-                  ),
-              ],
-            ),
-            if (widget.backend is MobileStorageBackend)
-              Card(
-                key: const Key('android-storage-card'),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: const Icon(Icons.folder_outlined),
-                        title: Text(
-                          context.l10n.select(
-                            zh: '图库位置',
-                            en: 'Library location',
-                          ),
-                        ),
-                        subtitle: Text(
-                          value.libraryPath.split(RegExp(r'[/\\]')).last,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: OutlinedButton.icon(
-                          key: const Key('android-storage-location'),
-                          onPressed: choosingStorage || controller.saving
-                              ? null
-                              : chooseStorage,
-                          icon: movingStorage
-                              ? const SizedBox.square(
-                                  dimension: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final entry in {
+                          'ocean': Colors.blue,
+                          'teal': Colors.teal,
+                          'orange': Colors.orange,
+                          'purple': Colors.purple,
+                          'rose': Colors.pink,
+                        }.entries)
+                          IconButton(
+                            tooltip: switch (entry.key) {
+                              'teal' => context.l10n.select(
+                                zh: '青绿',
+                                en: 'Teal',
+                              ),
+                              'orange' => context.l10n.select(
+                                zh: '橙色',
+                                en: 'Orange',
+                              ),
+                              'purple' => context.l10n.select(
+                                zh: '紫色',
+                                en: 'Purple',
+                              ),
+                              'rose' => context.l10n.select(
+                                zh: '玫瑰',
+                                en: 'Rose',
+                              ),
+                              _ => context.l10n.select(
+                                zh: '海洋蓝',
+                                en: 'Ocean blue',
+                              ),
+                            },
+                            onPressed: controller.saving
+                                ? null
+                                : () => save(
+                                    controller.save(
+                                      copyAppSettings(value, theme: entry.key),
+                                    ),
                                   ),
-                                )
-                              : const Icon(Icons.drive_file_move_outlined),
-                          label: Text(
-                            context.l10n.select(
-                              zh: movingStorage ? '正在处理，请稍后' : '更改图库位置',
-                              en: movingStorage
-                                  ? 'Processing, please wait'
-                                  : 'Change library location',
+                            icon: Icon(
+                              value.theme == entry.key
+                                  ? Icons.check_circle
+                                  : Icons.circle,
+                              color: entry.value,
                             ),
                           ),
-                        ),
-                      ),
-                    ],
-                  ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
-            Text(
-              context.l10n.select(
-                zh: '每行最多 ${value.galleryColumns} 个媒体',
-                en: 'Up to ${value.galleryColumns} media per row',
-              ),
             ),
-            Slider(
-              value: value.galleryColumns.clamp(1, 7).toDouble(),
-              min: 1,
-              max: 7,
-              divisions: 6,
-              onChanged: controller.saving
-                  ? null
-                  : (next) => save(
-                      controller.save(
-                        copyAppSettings(value, galleryColumns: next.round()),
+            Card(
+              key: const Key('android-display-settings-card'),
+              shape: _androidSettingsCardShape,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      context.l10n.select(
+                        zh: '每行最多 ${value.galleryColumns} 个媒体',
+                        en: 'Up to ${value.galleryColumns} media per row',
                       ),
                     ),
-            ),
-            Text(
-              context.l10n.select(
-                zh: '屏幕空间不足时会自动减少列数。',
-                en: 'Fewer columns are used when screen space is limited.',
+                    Slider(
+                      value: value.galleryColumns.clamp(1, 7).toDouble(),
+                      min: 1,
+                      max: 7,
+                      divisions: 6,
+                      onChanged: controller.saving
+                          ? null
+                          : (next) => save(
+                              controller.save(
+                                copyAppSettings(
+                                  value,
+                                  galleryColumns: next.round(),
+                                ),
+                              ),
+                            ),
+                    ),
+                    Text(
+                      context.l10n.select(
+                        zh: '屏幕空间不足时会自动减少列数。',
+                        en: 'Fewer columns are used when screen space is limited.',
+                      ),
+                    ),
+                    for (final item in [
+                      (
+                        context.l10n.select(zh: '显示游戏标签', en: 'Show game tags'),
+                        value.showGameTag,
+                        (bool next) =>
+                            copyAppSettings(value, showGameTag: next),
+                      ),
+                      (
+                        context.l10n.select(
+                          zh: '打开视频后自动播放',
+                          en: 'Auto-play videos',
+                        ),
+                        value.autoPlayVideo,
+                        (bool next) =>
+                            copyAppSettings(value, autoPlayVideo: next),
+                      ),
+                    ])
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(item.$1),
+                        value: item.$2,
+                        onChanged: controller.saving
+                            ? null
+                            : (next) => save(controller.save(item.$3(next))),
+                      ),
+                  ],
+                ),
               ),
             ),
-            for (final item in [
-              (
-                context.l10n.select(zh: '显示游戏标签', en: 'Show game tags'),
-                value.showGameTag,
-                (bool next) => copyAppSettings(value, showGameTag: next),
-              ),
-              (
-                context.l10n.select(zh: '显示备注摘要', en: 'Show note previews'),
-                value.showNotePreview,
-                (bool next) => copyAppSettings(value, showNotePreview: next),
-              ),
-              (
-                context.l10n.select(zh: '打开视频后自动播放', en: 'Auto-play videos'),
-                value.autoPlayVideo,
-                (bool next) => copyAppSettings(value, autoPlayVideo: next),
-              ),
-            ])
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: Text(item.$1),
-                value: item.$2,
-                onChanged: controller.saving
-                    ? null
-                    : (next) => save(controller.save(item.$3(next))),
-              ),
             Card(
               key: const Key('android-notification-settings-card'),
+              shape: _androidSettingsCardShape,
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
                 child: Column(
@@ -469,6 +358,7 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage>
               ),
             ),
             Card(
+              shape: _androidSettingsCardShape,
               child: ListTile(
                 key: const Key('android-manage-tags'),
                 leading: const Icon(Icons.sell_outlined),
@@ -491,6 +381,7 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage>
               ),
             ),
             Card(
+              shape: _androidSettingsCardShape,
               child: ListTile(
                 key: const Key('android-view-logs'),
                 leading: const Icon(Icons.article_outlined),
@@ -517,6 +408,7 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage>
             ),
             Card(
               key: const Key('android-about-card'),
+              shape: _androidSettingsCardShape,
               child: Padding(
                 padding: const EdgeInsets.all(16),
                 child: Column(
@@ -555,12 +447,14 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage>
                                   zh: '关于$appChineseName',
                                   en: 'About $appEnglishName',
                                 ),
-                                style: Theme.of(context).textTheme.titleMedium,
+                                key: const Key('android-about-app-title'),
+                                style: Theme.of(context).textTheme.titleSmall,
                               ),
                               const SizedBox(height: 4),
                               Text(
                                 'Cypas_Nya',
-                                style: Theme.of(context).textTheme.titleLarge,
+                                key: const Key('android-about-author'),
+                                style: Theme.of(context).textTheme.titleMedium,
                               ),
                               Text(
                                 context.l10n.select(

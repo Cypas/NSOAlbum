@@ -216,16 +216,6 @@ class AndroidMediaCard extends StatelessWidget {
                       AndroidTag(label: tag, compact: true),
                   ],
                 ),
-                if (settings.showNotePreview &&
-                    asset.note?.trim().isNotEmpty == true) ...[
-                  const SizedBox(height: 3),
-                  Text(
-                    _notePreview(asset.note!),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
               ],
             ),
           ),
@@ -233,13 +223,6 @@ class AndroidMediaCard extends StatelessWidget {
       ),
     ),
   );
-}
-
-String _notePreview(String value) {
-  final characters = value.trim().characters;
-  return characters.length <= 15
-      ? characters.toString()
-      : '${characters.take(15)}…';
 }
 
 String androidDuration(Duration value) {

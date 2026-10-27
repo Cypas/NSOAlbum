@@ -242,7 +242,8 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
     if (_observation case final current?) return current;
     final epoch = _epoch;
     late final Future<void> flight;
-    flight = () async {
+    // Publish the observation owner before refresh can throw synchronously.
+    flight = Future<void>.microtask(() async {
       var reading = true;
       try {
         final before = (
@@ -337,7 +338,7 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
           });
         }
       }
-    }();
+    });
     _observation = flight;
     return flight;
   }

@@ -8,6 +8,51 @@ import org.junit.Test
 
 class SyncNotificationPermissionPolicyTest {
     @Test
+    fun storageAccessWaitsWithoutClaimingNotificationConsent() {
+        val fixture = PermissionFixture()
+        assertTrue(fixture.delivery.beginStorageRequest())
+        assertFalse(fixture.requested)
+        fixture.delivery.syncCompleted("title", "added 2")
+        assertEquals(0, fixture.requests)
+        assertFalse(fixture.delivery.beginExternalRequest(9216))
+
+        fixture.delivery.completeStorageRequest()
+        assertEquals(1, fixture.requests)
+        assertTrue(fixture.requested)
+        fixture.granted = true
+        fixture.delivery.complete(9217)
+        assertEquals(listOf("title" to "added 2"), fixture.posted)
+    }
+
+    @Test
+    fun notificationPromptDefersStorageWithoutLosingItsPendingSummary() {
+        val fixture = PermissionFixture()
+        fixture.delivery.syncCompleted("title", "added 2")
+        assertFalse(fixture.delivery.beginStorageRequest())
+        fixture.delivery.completeStorageRequest()
+        assertEquals(1, fixture.requests)
+        fixture.granted = true
+        fixture.delivery.complete(9217)
+        assertEquals(listOf("title" to "added 2"), fixture.posted)
+        assertTrue(fixture.delivery.beginStorageRequest())
+        fixture.delivery.completeStorageRequest()
+        assertTrue(fixture.delivery.beginExternalRequest(9216))
+    }
+
+    @Test
+    fun storageRetirementDiscardsPendingDeliveryAndLateReleaseIsHarmless() {
+        val fixture = PermissionFixture()
+        assertTrue(fixture.delivery.beginStorageRequest())
+        fixture.delivery.syncCompleted("title", "added 2")
+        fixture.delivery.close()
+        fixture.delivery.completeStorageRequest()
+        assertFalse(fixture.delivery.beginStorageRequest())
+        assertEquals(0, fixture.requests)
+        assertTrue(fixture.posted.isEmpty())
+        assertFalse(fixture.requested)
+    }
+
+    @Test
     fun syncCompletionWaitsForAnExistingUpdatePermissionRequest() {
         val fixture = PermissionFixture()
         assertTrue(fixture.delivery.beginExternalRequest(9216))

@@ -8,6 +8,7 @@ import '../../backend/app_logger.dart';
 import '../account_tools/account_tool_errors.dart';
 import 'android_back_guard.dart';
 import 'android_layout.dart';
+import '../scroll_to_top_button.dart';
 
 class AndroidPageFrame extends StatelessWidget {
   const AndroidPageFrame({
@@ -15,34 +16,71 @@ class AndroidPageFrame extends StatelessWidget {
     required this.title,
     required this.child,
     this.actions,
+    this.toolbarTitle,
+    this.toolbarHeight,
     this.secondary = false,
     this.onBack,
+    this.scrollController,
+    this.scrollToTopTooltip,
   });
 
   final String title;
   final Widget child;
   final List<Widget>? actions;
+  final Widget? toolbarTitle;
+  final double? toolbarHeight;
   final bool secondary;
   final VoidCallback? onBack;
+  final ScrollController? scrollController;
+  final String? scrollToTopTooltip;
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      automaticallyImplyLeading: false,
-      toolbarHeight: secondary ? 48 : null,
-      leading: secondary
-          ? IconButton(
-              key: const Key('android-page-back'),
-              tooltip: context.l10n.select(zh: '返回', en: 'Back'),
-              icon: const Icon(Icons.arrow_back, size: 20),
-              onPressed: onBack ?? () => AndroidBackGuard.back(context),
+  Widget build(BuildContext context) {
+    final hasAppBar = secondary || (actions?.isNotEmpty ?? false);
+    return Scaffold(
+      appBar: hasAppBar
+          ? AppBar(
+              automaticallyImplyLeading: false,
+              toolbarHeight: toolbarHeight ?? (secondary ? 48 : null),
+              leading: secondary
+                  ? IconButton(
+                      key: const Key('android-page-back'),
+                      tooltip: context.l10n.select(zh: '返回', en: 'Back'),
+                      icon: const Icon(Icons.arrow_back, size: 20),
+                      onPressed: onBack ?? () => AndroidBackGuard.back(context),
+                    )
+                  : null,
+              title:
+                  toolbarTitle ??
+                  (secondary
+                      ? Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        )
+                      : null),
+              actions: actions,
             )
           : null,
-      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      actions: actions,
-    ),
-    body: SafeArea(top: false, child: child),
-  );
+      body: SafeArea(
+        top: !hasAppBar,
+        child: Stack(
+          children: [
+            child,
+            if (scrollController != null && scrollToTopTooltip != null)
+              Positioned(
+                right: 16,
+                bottom: 18,
+                child: ScrollToTopButton(
+                  controller: scrollController!,
+                  tooltip: scrollToTopTooltip!,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class AndroidPageList extends StatelessWidget {

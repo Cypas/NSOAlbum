@@ -47,4 +47,25 @@ void main() {
       'DFPT_ZY9',
     );
   });
+
+  testWidgets('Chinese brand title uses one complete CJK family', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(
+          fontFamily: appFontFamily,
+          fontFamilyFallback: appFontFallback,
+        ),
+        home: const DesktopTitleBar(
+          title: '鱿型相册',
+          iconAsset: 'assets/tray/app_icon.png',
+        ),
+      ),
+    );
+
+    final title = tester.widget<Text>(
+      find.byKey(const Key('desktop-titlebar-title')),
+    );
+    expect(title.style?.fontFamily, 'DFP_GBZY9');
+    expect(title.style?.fontFamilyFallback, ['DFPT_ZY9', 'BlitzMain']);
+  });
 }

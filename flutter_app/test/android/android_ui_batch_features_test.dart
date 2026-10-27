@@ -366,7 +366,7 @@ void registerAndroidBatchFeatureTests({bool layoutOnly = false}) {
     },
   );
 
-  testWidgets('library search is always editable and applies on submit', (
+  testWidgets('expanded library search is editable and applies on submit', (
     tester,
   ) async {
     final backend = FakeBackend(mediaItems: [_image()]);
@@ -383,6 +383,8 @@ void registerAndroidBatchFeatureTests({bool layoutOnly = false}) {
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(find.byKey(const Key('android-library-search-toggle')));
+    await tester.pumpAndSettle();
     expect(
       tester
           .widget<TextField>(find.byKey(const Key('android-library-search')))

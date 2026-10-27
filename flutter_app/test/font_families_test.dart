@@ -127,6 +127,15 @@ void main() {
     ]);
   });
 
+  test('uses one complete bundled family for the Chinese brand title', () {
+    selectAppFontLanguage('zh');
+    expect(appBrandFontFamily, 'DFP_GBZY9');
+    expect(appBrandFontFallback, ['DFPT_ZY9', 'BlitzMain']);
+    selectAppFontLanguage('en');
+    expect(appBrandFontFamily, 'BlitzMain');
+    expect(appBrandFontFallback, ['DFPT_ZY9', 'DFP_GBZY9']);
+  });
+
   test('uses the configured default priority for English', () {
     selectAppFontLanguage('en');
     expect(appFontFamily, 'BlitzMain');

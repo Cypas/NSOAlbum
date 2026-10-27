@@ -358,6 +358,16 @@ pub(crate) fn retain(endpoint: Arc<Endpoint>, receiver: Receiver<Job>) {
     control.transport_closed();
     {
         let mut owner = endpoint.owner.lock().unwrap_or_else(|e| e.into_inner());
+        let transport_success = control.view().error.is_none()
+            && control.usb.as_ref().is_none_or(|usb| {
+                let view = usb.view();
+                view.closed
+                    && view.error.is_none()
+                    && view.reason == Some(super::usb::UsbCloseReason::Success)
+            });
+        owner
+            .driver_mut()
+            .benchmark_transport_finished(transport_success);
         owner.driver_mut().disconnect();
         endpoint.publish(owner.driver());
     }

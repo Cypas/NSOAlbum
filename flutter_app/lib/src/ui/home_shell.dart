@@ -27,6 +27,7 @@ import 'app_image_viewer.dart';
 import 'video_merge_page.dart';
 import 'video_thumbnail.dart';
 import 'active_page_host.dart';
+import 'scroll_to_top_button.dart';
 import 'font_families.dart';
 import 'display_time.dart';
 import 'account_tools/account_tools_expander.dart';
@@ -914,7 +915,23 @@ class _PageFrame extends StatelessWidget {
       child: Listener(
         onPointerMove: onPointerMove,
         onPointerUp: onPointerUp,
-        child: content,
+        child: Stack(
+          children: [
+            content,
+            if (controller != null)
+              Positioned(
+                right: 28,
+                bottom: 24,
+                child: ScrollToTopButton(
+                  controller: controller!,
+                  tooltip: context.l10n.select(
+                    zh: '回到顶部',
+                    en: 'Back to top',
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

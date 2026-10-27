@@ -36,7 +36,7 @@ void main() => registerAccountToolsPageTests();
 void registerAccountToolsPageTests({bool layoutOnly = false}) {
   test('friend offline time uses relative text only for less than 30 days', () {
     final now = DateTime(2026, 10, 25, 12);
-    expect(formatFriendLastOnline(now, now: now, english: false), '今天在线');
+    expect(formatFriendLastOnline(now, now: now, english: false), '1分钟前');
     expect(
       formatFriendLastOnline(now.subtract(const Duration(days: 29)), now: now),
       '29 days ago',
@@ -286,7 +286,7 @@ void registerAccountToolsPageTests({bool layoutOnly = false}) {
           ),
           findsOneWidget,
         );
-        expect(backend.friendAccounts, ['clicked-b', 'clicked-b']);
+        expect(backend.friendAccounts, ['clicked-b']);
         expect(backend.friendRequests, isEmpty);
       },
     );
@@ -316,7 +316,7 @@ void registerAccountToolsPageTests({bool layoutOnly = false}) {
     },
   );
 
-  testWidgets('a failed friendship check cannot enable the send action', (
+  testWidgets('lookup uses the existing friend snapshot without reloading it', (
     tester,
   ) async {
     final backend = ToolsBackend();
@@ -332,13 +332,9 @@ void registerAccountToolsPageTests({bool layoutOnly = false}) {
     await tester.enterText(find.byType(TextField), '123456789012');
     await tester.tap(find.text('查询'));
     await tester.pumpAndSettle();
-    expect(find.text('确认发送'), findsNothing);
-    expect(find.text('重试'), findsOneWidget);
-    expect(backend.friendRequests, isEmpty);
-    backend.failRefresh = false;
-    await tester.tap(find.text('重试'));
-    await tester.pumpAndSettle();
     expect(find.text('确认发送'), findsOneWidget);
+    expect(backend.friendAccounts, ['clicked-b']);
+    expect(backend.friendRequests, isEmpty);
   });
 
   testWidgets('the current account code cannot be used to request itself', (
@@ -1141,7 +1137,7 @@ void registerAccountToolsPageTests({bool layoutOnly = false}) {
       expect(find.text('特别关注'), findsOneWidget);
       for (final group in ['favorites', 'online', 'offline']) {
         final bubble = tester.widget<DecoratedBox>(
-          find.byKey(Key('friend-group-bubble-$group')),
+          find.byKey(Key('friend-group-header-bubble-$group')),
         );
         expect(
           (bubble.decoration as BoxDecoration).borderRadius,

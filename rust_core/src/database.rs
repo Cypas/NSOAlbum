@@ -3138,10 +3138,21 @@ pub(crate) mod staging_test_support {
 }
 
 impl Database {
+    #[allow(dead_code)]
     pub(crate) fn device_sync_metadata_cost(
         &self,
         snapshot: &crate::device_sync::receiver::Snapshot,
         plan: &crate::device_sync::planner::SyncPlan,
+        work: &crate::device_sync::work::WorkControl,
+    ) -> CoreResult<crate::device_sync::space_budget::MetadataCost> {
+        self.device_sync_metadata_cost_for_receiver(snapshot, plan, false, work)
+    }
+
+    pub(crate) fn device_sync_metadata_cost_for_receiver(
+        &self,
+        snapshot: &crate::device_sync::receiver::Snapshot,
+        plan: &crate::device_sync::planner::SyncPlan,
+        strict_noop: bool,
         work: &crate::device_sync::work::WorkControl,
     ) -> CoreResult<crate::device_sync::space_budget::MetadataCost> {
         work.check()?;
@@ -3156,12 +3167,22 @@ impl Database {
         let database_bytes = pages
             .checked_mul(page_size)
             .ok_or_else(|| ds::invalid("database size overflow"))?;
-        let backup = ReceiverBackup {
-            version: 1,
-            snapshot: snapshot.clone(),
-            tables: capture_receiver_tables(&connection, &work.cancellation())?,
+        let backup_bytes = if strict_noop {
+            bounded_json_count(
+                &StrictNoopBackup::for_measurement(
+                    &snapshot.manifest.header.library_uuid,
+                    snapshot.manifest.header.generation,
+                ),
+                work,
+            )?
+        } else {
+            let backup = ReceiverBackup {
+                version: 1,
+                snapshot: snapshot.clone(),
+                tables: capture_receiver_tables(&connection, &work.cancellation())?,
+            };
+            bounded_json_count(&backup, work)?
         };
-        let backup_bytes = bounded_json_count(&backup, work)?;
         let plan_bytes = bounded_json_count(plan, work)?;
         work.check()?;
         Ok(crate::device_sync::space_budget::MetadataCost {
@@ -3498,7 +3519,7 @@ impl Database {
         work.checkpoint(crate::device_sync::work::WorkStage::Pinning, 0)?;
         lease.validate(&self.gate)?;
         let originals =
-            self.controlled_originals_work(root, Some(&work.cancellation()), Some(work))?;
+            self.controlled_originals_indexed_work(root, Some(&work.cancellation()), work)?;
         work.check()?;
         let retained = self.gate.snapshot(originals);
         work.check()?;
@@ -3596,6 +3617,104 @@ impl Database {
     ) -> CoreResult<Vec<OriginalIdentity>> {
         self.controlled_originals_work(root, cancel, None)
     }
+
+    /// Validates the managed-original index without reading unchanged file
+    /// contents. The database row is authoritative for a stable original
+    /// path/length; only an absent or mismatched file enters the deep
+    /// checksum path below.
+    pub(crate) fn controlled_originals_indexed_work(
+        &self,
+        root: &Path,
+        cancel: Option<&crate::sync::CancellationToken>,
+        work: &crate::device_sync::work::WorkControl,
+    ) -> CoreResult<Vec<OriginalIdentity>> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+
+        self.ensure_original_root(root)?;
+        let current = self
+            .get_setting::<AppSettings>("app.settings")?
+            .map(|settings| std::path::PathBuf::from(settings.library_path))
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| self.default_media_root.clone());
+        if crate::device_sync::library_guard::path_key(&root.canonicalize()?)
+            != crate::device_sync::library_guard::path_key(&current.canonicalize()?)
+        {
+            return Err(ds::invalid(
+                "original reference root is not the current local library",
+            ));
+        }
+        let entries = {
+            let mut connection = self.connection.lock().expect("database mutex poisoned");
+            let interrupt =
+                ScanSqlInterrupt::new(&mut connection, cancel.cloned().unwrap_or_default());
+            let mut statement = interrupt.connection.prepare(
+                "SELECT storage_path,sha256,size FROM media_asset WHERE status='ready' ORDER BY id",
+            )?;
+            let mut query = statement.query([])?;
+            let mut values = Vec::new();
+            while let Some(row) = query.next().map_err(|error| {
+                if cancel.is_some_and(|token| token.check().is_err()) {
+                    CoreError::Cancelled
+                } else {
+                    error.into()
+                }
+            })? {
+                if let Some(cancel) = cancel {
+                    cancel.check()?;
+                }
+                values.push((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ));
+            }
+            values
+        };
+        let mut originals = Vec::with_capacity(entries.len());
+        let mut buffer = vec![0_u8; 1024 * 1024];
+        for (path, sha, length) in entries {
+            if let Some(cancel) = cancel {
+                cancel.check()?;
+            }
+            let length =
+                u64::try_from(length).map_err(|_| ds::invalid("invalid local original length"))?;
+            let identity = crate::device_sync::library_guard::OriginalIdentity::controlled(
+                root,
+                Path::new(&path),
+                &sha,
+                length,
+            )?;
+            let metadata = std::fs::symlink_metadata(identity.path())?;
+            let needs_deep_check = !metadata.file_type().is_file() || metadata.len() != length;
+            if needs_deep_check {
+                let mut file = std::fs::File::open(identity.path())?;
+                let mut digest = Sha256::new();
+                let mut actual_length = 0_u64;
+                loop {
+                    if let Some(cancel) = cancel {
+                        cancel.check()?;
+                    }
+                    let read = file.read(&mut buffer)?;
+                    if read == 0 {
+                        break;
+                    }
+                    actual_length = actual_length
+                        .checked_add(read as u64)
+                        .ok_or_else(|| ds::invalid("local original length overflow"))?;
+                    digest.update(&buffer[..read]);
+                    work.validation.checksum_read(read as u64);
+                    work.checkpoint(crate::device_sync::work::WorkStage::Pinning, read)?;
+                }
+                if actual_length != length || hex::encode(digest.finalize()) != identity.sha256 {
+                    return Err(ds::invalid("local original index mismatch"));
+                }
+            }
+            originals.push(identity);
+        }
+        Ok(originals)
+    }
+
     fn controlled_originals_work(
         &self,
         root: &Path,
@@ -3671,6 +3790,7 @@ impl Database {
                 }
                 digest.update(&buffer[..read]);
                 if let Some(work) = work {
+                    work.validation.checksum_read(read as u64);
                     work.checkpoint(crate::device_sync::work::WorkStage::Pinning, read)?;
                 }
             }
@@ -6061,15 +6181,18 @@ impl Database {
 }
 
 const MAX_RECEIVER_BACKUP_BYTES: usize = 128 * 1024 * 1024;
+const MAX_STRICT_NOOP_BACKUP_BYTES: usize = 16 * 1024;
+const STRICT_NOOP_BACKUP_KIND: &str = "strict_noop";
 
 #[cfg(test)]
 mod receiver_metadata_cost_tests {
     use super::*;
     use crate::device_sync::{
         planner::{build_plan, SyncMode},
-        receiver::Snapshot,
+        receiver::{ReceiveOperation, Snapshot},
         work::WorkControl,
     };
+    use crate::sync::CancellationToken;
 
     // A changed backup shape, estimated DB size, or a hidden write breaks this.
     #[test]
@@ -6157,6 +6280,251 @@ mod receiver_metadata_cost_tests {
         assert!(!db.device_sync_recovery_pending());
     }
 
+    #[tokio::test]
+    async fn strict_noop_backup_is_not_a_full_snapshot_or_catalog_copy() {
+        let source_root = tempfile::tempdir().unwrap();
+        let target_root = tempfile::tempdir().unwrap();
+        let source = crate::api::CoreApi::open(source_root.path()).unwrap();
+        let target = crate::api::CoreApi::open(target_root.path()).unwrap();
+        let source_uuid = source.database().device_sync_header().unwrap().library_uuid;
+        let source_album = source
+            .create_album("Forwarded".into(), String::new(), false)
+            .unwrap();
+        let source_sync_uuid: String = source
+            .database()
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT sync_uuid FROM album WHERE id=?1",
+                [source_album],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let target_album = target
+            .create_album("Forwarded".into(), String::new(), false)
+            .unwrap();
+        {
+            let database = target.database();
+            let connection = database.connection.lock().unwrap();
+            connection
+                .execute(
+                    "UPDATE album SET sync_uuid=?1,source_library_uuid=?2 WHERE id=?3",
+                    params![source_sync_uuid, source_uuid, target_album],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO device_sync_source_name(library_uuid,display_name)
+                     VALUES(?1,'Source')",
+                    [source_uuid.as_str()],
+                )
+                .unwrap();
+        }
+        for index in 0..4096 {
+            let tag = format!("strict-noop-{index:04}");
+            source.create_tag(tag.clone()).unwrap();
+            target.create_tag(tag).unwrap();
+        }
+        let source_tag_revisions = source
+            .database()
+            .connection
+            .lock()
+            .unwrap()
+            .prepare(
+                "SELECT normalized_name,revision,deleted
+                 FROM sync_tag_state ORDER BY normalized_name",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, bool>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let target_database = target.database();
+        let target_connection = target_database.connection.lock().unwrap();
+        for (normalized, revision, deleted) in source_tag_revisions {
+            target_connection
+                .execute(
+                    "UPDATE sync_tag_state SET revision=?2,deleted=?3
+                     WHERE normalized_name=?1",
+                    params![normalized, revision, deleted],
+                )
+                .unwrap();
+        }
+        drop(target_connection);
+        let source_snapshot = Snapshot::read(&source.database(), "Source").unwrap();
+        let target_snapshot = Snapshot::read(&target.database(), "Target").unwrap();
+        let plan = build_plan(
+            &source_snapshot.manifest,
+            &target_snapshot.manifest,
+            SyncMode::Merge,
+        )
+        .unwrap();
+        assert!(
+            plan.is_strict_noop(
+                &source_snapshot.manifest,
+                &target_snapshot.manifest,
+                &source_snapshot.sources,
+                &target_snapshot.sources,
+            ),
+            "fixture must be a strict no-op"
+        );
+        let mut operation = ReceiveOperation::prepare(
+            target.database(),
+            source_snapshot,
+            "Target",
+            SyncMode::Merge,
+        )
+        .unwrap();
+        let mut authorization = operation.authorize().unwrap();
+        let receipt = operation
+            .apply(
+                Some(&mut authorization),
+                None,
+                &CancellationToken::default(),
+                &mut |_| {},
+            )
+            .unwrap();
+        let payload: Vec<u8> = target
+            .database()
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT payload FROM device_sync_backup WHERE backup_uuid=?1",
+                [receipt.backup_uuid.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+
+        assert!(
+            payload.len() < 4096,
+            "strict no-op backup unexpectedly copied full catalog: {} bytes",
+            payload.len()
+        );
+        assert!(
+            value.get("snapshot").is_none() && value.get("tables").is_none(),
+            "strict no-op backup must not serialize a snapshot or table rows: {value}"
+        );
+        assert_eq!(target.list_tags().unwrap().len(), 4096);
+        assert!(!target.database().device_sync_recovery_pending());
+    }
+
+    #[tokio::test]
+    async fn strict_noop_rejects_a_missing_original_before_creating_journal() {
+        let source_root = tempfile::tempdir().unwrap();
+        let target_root = tempfile::tempdir().unwrap();
+        let input_root = tempfile::tempdir().unwrap();
+        let source = crate::api::CoreApi::open(source_root.path()).unwrap();
+        let target = crate::api::CoreApi::open(target_root.path()).unwrap();
+        let input = input_root.path().join("unchanged.jpg");
+        std::fs::write(&input, b"strict no-op original").unwrap();
+        target
+            .import_local_files(vec![input.to_string_lossy().into_owned()])
+            .await
+            .unwrap();
+        let source_library = source.database().device_sync_header().unwrap().library_uuid;
+        let source_album = source
+            .create_album("Forwarded".into(), String::new(), false)
+            .unwrap();
+        let source_sync_uuid: String = source
+            .database()
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT sync_uuid FROM album WHERE id=?1",
+                [source_album],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let target_album = target
+            .create_album("Forwarded".into(), String::new(), false)
+            .unwrap();
+        target
+            .database()
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE album SET sync_uuid=?1,source_library_uuid=?2 WHERE id=?3",
+                params![source_sync_uuid, source_library, target_album],
+            )
+            .unwrap();
+        target
+            .database()
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO device_sync_source_name(library_uuid,display_name)
+                 VALUES(?1,'Source')
+                 ON CONFLICT(library_uuid) DO UPDATE SET display_name=excluded.display_name",
+                [&source_library],
+            )
+            .unwrap();
+        let source_snapshot = Snapshot::read(&source.database(), "Source").unwrap();
+        let target_snapshot = Snapshot::read(&target.database(), "Target").unwrap();
+        let plan = build_plan(
+            &source_snapshot.manifest,
+            &target_snapshot.manifest,
+            SyncMode::Merge,
+        )
+        .unwrap();
+        assert!(plan.is_strict_noop(
+            &source_snapshot.manifest,
+            &target_snapshot.manifest,
+            &source_snapshot.sources,
+            &target_snapshot.sources,
+        ));
+
+        let mut operation = crate::device_sync::receiver::ReceiveOperation::prepare(
+            target.database(),
+            source_snapshot,
+            "Target",
+            SyncMode::Merge,
+        )
+        .unwrap();
+        let mut authorization = operation.authorize().unwrap();
+        let storage_path = target
+            .list_media(crate::models::GalleryQuery::default())
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .storage_path;
+        std::fs::remove_file(&storage_path).unwrap();
+        let result = operation.apply(
+            Some(&mut authorization),
+            None,
+            &crate::sync::CancellationToken::default(),
+            &mut |_| {},
+        );
+        assert!(result.is_err());
+        assert!(target
+            .database()
+            .device_sync_pending_journal()
+            .unwrap()
+            .is_none());
+        let backup_count: i64 = target
+            .database()
+            .connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM device_sync_backup", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(backup_count, 0);
+    }
+
     #[test]
     fn counting_serialization_honors_cancellation_between_actual_json_writes() {
         struct CancelBetweenFields(crate::sync::CancellationToken);
@@ -6221,6 +6589,39 @@ struct ReceiverBackup {
     version: u32,
     snapshot: crate::device_sync::receiver::Snapshot,
     tables: Vec<LocalTable>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StrictNoopBackup {
+    version: u32,
+    kind: String,
+    operation_uuid: String,
+    library_uuid: String,
+    generation: u64,
+    preview_digest: String,
+}
+
+impl StrictNoopBackup {
+    fn new(
+        operation: uuid::Uuid,
+        library_uuid: &str,
+        generation: u64,
+        preview_digest: &str,
+    ) -> Self {
+        Self {
+            version: 1,
+            kind: STRICT_NOOP_BACKUP_KIND.into(),
+            operation_uuid: operation.to_string(),
+            library_uuid: library_uuid.into(),
+            generation,
+            preview_digest: preview_digest.into(),
+        }
+    }
+
+    fn for_measurement(library_uuid: &str, generation: u64) -> Self {
+        Self::new(uuid::Uuid::nil(), library_uuid, generation, &"0".repeat(64))
+    }
 }
 
 fn migrate_receiver(transaction: &rusqlite::Transaction<'_>) -> CoreResult<()> {
@@ -6460,7 +6861,7 @@ fn bounded_json_count(
     Ok(output.bytes)
 }
 
-fn bounded_backup_json(value: &ReceiverBackup) -> CoreResult<Vec<u8>> {
+fn bounded_backup_json(value: &impl serde::Serialize) -> CoreResult<Vec<u8>> {
     struct Bounded(Vec<u8>);
     impl std::io::Write for Bounded {
         fn write(&mut self, value: &[u8]) -> std::io::Result<usize> {
@@ -6482,6 +6883,70 @@ fn bounded_backup_json(value: &ReceiverBackup) -> CoreResult<Vec<u8>> {
     let mut output = Bounded(Vec::new());
     serde_json::to_writer(&mut output, value)?;
     Ok(output.0)
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ReceiverBackupKind {
+    Full,
+    StrictNoop(StrictNoopBackup),
+}
+
+fn validate_strict_noop_backup(
+    backup: &StrictNoopBackup,
+    row_library_uuid: &str,
+) -> CoreResult<()> {
+    if backup.version != 1
+        || backup.kind != STRICT_NOOP_BACKUP_KIND
+        || backup.library_uuid != row_library_uuid
+    {
+        return Err(ds::invalid("invalid strict no-op backup shape"));
+    }
+    ds::validate_uuid(&backup.operation_uuid)?;
+    ds::validate_uuid(&backup.library_uuid)?;
+    ds::validate_sha(&backup.preview_digest)?;
+    Ok(())
+}
+
+fn receiver_backup_kind_from_connection(
+    connection: &Connection,
+    backup: uuid::Uuid,
+    work: &crate::device_sync::work::WorkControl,
+) -> CoreResult<ReceiverBackupKind> {
+    work.check()?;
+    let (version, library, payload): (u32, String, Option<Vec<u8>>) = connection.query_row(
+        "SELECT version,library_uuid,
+                CASE WHEN length(payload)<=?2 THEN payload ELSE NULL END
+         FROM device_sync_backup WHERE backup_uuid=?1",
+        params![backup.to_string(), MAX_STRICT_NOOP_BACKUP_BYTES as i64],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let Some(payload) = payload else {
+        return Ok(ReceiverBackupKind::Full);
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) else {
+        return Ok(ReceiverBackupKind::Full);
+    };
+    if value.get("kind").and_then(|value| value.as_str()) != Some(STRICT_NOOP_BACKUP_KIND) {
+        return Ok(ReceiverBackupKind::Full);
+    }
+    let noop: StrictNoopBackup =
+        serde_json::from_value(value).map_err(|_| ds::invalid("invalid strict no-op backup"))?;
+    if version != 1 {
+        return Err(ds::invalid("invalid strict no-op backup version"));
+    }
+    validate_strict_noop_backup(&noop, &library)?;
+    let owner_kind: Option<String> = connection
+        .query_row(
+            "SELECT kind FROM device_sync_backup_ownership WHERE backup_uuid=?1",
+            [backup.to_string()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if owner_kind.as_deref() != Some(STRICT_NOOP_BACKUP_KIND) {
+        return Err(ds::invalid("strict no-op backup ownership is invalid"));
+    }
+    work.check()?;
+    Ok(ReceiverBackupKind::StrictNoop(noop))
 }
 
 fn insert_receiver_backup(
@@ -6620,20 +7085,27 @@ impl Database {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn receiver_prepare(
         &self,
         lease: &ExclusiveLease,
         operation: uuid::Uuid,
         preview_digest: &str,
         snapshot: &crate::device_sync::receiver::Snapshot,
+        strict_noop: bool,
         external: Option<uuid::Uuid>,
         cancel: &crate::sync::CancellationToken,
+        work: &crate::device_sync::work::WorkControl,
     ) -> CoreResult<uuid::Uuid> {
         lease.validate(&self.gate)?;
         if self.gate.pending() {
             return Err(crate::error::CoreError::LibraryBusy);
         }
+        let validation_timing = work
+            .validation
+            .time_apply(crate::device_sync::validation::ApplyTimingPhase::Plan);
         snapshot.validate()?;
+        drop(validation_timing);
         ds::validate_uuid(&operation.to_string())?;
         if let Some(reference) = external {
             ds::validate_uuid(&reference.to_string())?;
@@ -6644,21 +7116,39 @@ impl Database {
         crate::device_sync::diagnostics::checkpoint(
             crate::device_sync::diagnostics::Boundary::BackupOriginalHashBegin,
         );
-        let originals = self.controlled_originals_cancellable(&root, Some(cancel))?;
+        let _scope = work.begin(crate::device_sync::work::WorkStage::Pinning)?;
+        let originals_timing = work
+            .validation
+            .time_apply(crate::device_sync::validation::ApplyTimingPhase::Originals);
+        let originals = self.controlled_originals_indexed_work(&root, Some(cancel), work)?;
+        let originals = if strict_noop { Vec::new() } else { originals };
+        drop(originals_timing);
         crate::device_sync::diagnostics::checkpoint(
             crate::device_sync::diagnostics::Boundary::BackupOriginalHashEnd,
         );
         cancel.check()?;
         let root = root.canonicalize()?;
         let backup = uuid::Uuid::new_v4();
+        let _backup_timing = work
+            .validation
+            .time_apply(crate::device_sync::validation::ApplyTimingPhase::Backup);
         let mut connection = self.connection.lock().expect("database mutex poisoned");
         connection.execute_batch("PRAGMA synchronous=FULL;")?;
         let transaction = connection.transaction()?;
-        let payload = bounded_backup_json(&ReceiverBackup {
-            version: 1,
-            snapshot: snapshot.clone(),
-            tables: capture_receiver_tables(&transaction, cancel)?,
-        })?;
+        let payload = if strict_noop {
+            bounded_backup_json(&StrictNoopBackup::new(
+                operation,
+                &snapshot.manifest.header.library_uuid,
+                snapshot.manifest.header.generation,
+                preview_digest,
+            ))?
+        } else {
+            bounded_backup_json(&ReceiverBackup {
+                version: 1,
+                snapshot: snapshot.clone(),
+                tables: capture_receiver_tables(&transaction, cancel)?,
+            })?
+        };
         // Conservative metadata headroom, not a reservation or filesystem guarantee.
         let required = (payload.len() as u64)
             .checked_mul(2)
@@ -6676,7 +7166,18 @@ impl Database {
             &payload,
             &snapshot.manifest.header.library_uuid,
         )?;
-        insert_backup_ownership(&transaction, backup, "overwrite", operation, external, None)?;
+        insert_backup_ownership(
+            &transaction,
+            backup,
+            if strict_noop {
+                STRICT_NOOP_BACKUP_KIND
+            } else {
+                "overwrite"
+            },
+            operation,
+            external,
+            None,
+        )?;
         transaction.execute(
             "INSERT INTO device_sync_apply_journal(operation_uuid,version,library_uuid,stage,backup_uuid,preview_digest,external_reference)
              VALUES(?1,1,?2,'prepare',?3,?4,?5)",
@@ -6746,12 +7247,56 @@ impl Database {
         publications: &[crate::device_sync::staging::PublishedOriginal<'_>],
         cancel: &crate::sync::CancellationToken,
         guard: Option<std::sync::Arc<dyn crate::device_sync::receiver::CommitGuard>>,
+        external: Option<uuid::Uuid>,
+        work: &crate::device_sync::work::WorkControl,
     ) -> CoreResult<()> {
         use crate::device_sync::planner::Action;
         lease.validate(&self.gate)?;
+        let validation_timing = work
+            .validation
+            .time_apply(crate::device_sync::validation::ApplyTimingPhase::Plan);
         plan.verify_against(&source.manifest, &target.manifest)?;
         source.validate()?;
         target.validate()?;
+        let strict_noop = external.is_none()
+            && publications.is_empty()
+            && plan.is_strict_noop(
+                &source.manifest,
+                &target.manifest,
+                &source.sources,
+                &target.sources,
+            );
+        drop(validation_timing);
+        if strict_noop {
+            let _sql_timing = work
+                .validation
+                .time_apply(crate::device_sync::validation::ApplyTimingPhase::Sql);
+            let mut connection = self.connection.lock().expect("database mutex poisoned");
+            let transaction = connection.transaction()?;
+            let current = device_sync_header(&transaction)?;
+            if current.library_uuid != target.manifest.header.library_uuid
+                || current.generation != plan.target_generation
+            {
+                return Err(ds::invalid("confirmed target changed"));
+            }
+            let stage: String = transaction.query_row(
+                "SELECT stage FROM device_sync_apply_journal
+                 WHERE operation_uuid=?1 AND library_uuid=?2",
+                params![operation.to_string(), current.library_uuid],
+                |row| row.get(0),
+            )?;
+            if stage != "prepare" {
+                return Err(ds::invalid("operation is not prepared"));
+            }
+            transaction.execute(
+                "UPDATE device_sync_apply_journal SET stage='library_applied'
+                 WHERE operation_uuid=?1 AND library_uuid=?2 AND stage='prepare'",
+                params![operation.to_string(), current.library_uuid],
+            )?;
+            transaction.commit()?;
+            work.validation.strict_noop_applied();
+            return Ok(());
+        }
         let live_tags: std::collections::BTreeSet<_> = plan
             .tags
             .iter()
@@ -6793,6 +7338,9 @@ impl Database {
         }
         let mut connection = self.connection.lock().expect("database mutex poisoned");
         let interrupt_cancel = cancel.clone();
+        let _sql_timing = work
+            .validation
+            .time_apply(crate::device_sync::validation::ApplyTimingPhase::Sql);
         let interrupt_guard = guard.clone();
         if let Some(guard) = &guard {
             guard.sql_started();
@@ -6980,12 +7528,16 @@ impl Database {
             if described_sources > crate::device_sync::source_names::MAX_SOURCES as u64 {
                 return Err(ds::invalid("final source description count limit exceeded"));
             }
+            let postcheck_timing = work
+                .validation
+                .time_apply(crate::device_sync::validation::ApplyTimingPhase::Postcheck);
             receiver_validate_applied_catalogs(
                 &transaction,
                 plan,
                 target.manifest.header.clone(),
                 cancel,
             )?;
+            drop(postcheck_timing);
             cancel.check()?;
             transaction.execute(
                 "UPDATE sync_write_context SET preserve_revisions=0 WHERE id=1",
@@ -7888,7 +8440,19 @@ impl Database {
                     Ok(Some(bytes)) => {
                         let value: serde_json::Value =
                             serde_json::from_slice(&bytes).map_err(|_| Reason::InvalidPayload)?;
-                        if value.get("version").and_then(|v| v.as_u64()) != Some(1)
+                        if value.get("kind").and_then(|v| v.as_str())
+                            == Some(STRICT_NOOP_BACKUP_KIND)
+                        {
+                            let noop: StrictNoopBackup = serde_json::from_value(value)
+                                .map_err(|_| Reason::InvalidPayload)?;
+                            if noop.version != 1
+                                || ds::validate_uuid(&noop.operation_uuid).is_err()
+                                || ds::validate_uuid(&noop.library_uuid).is_err()
+                                || ds::validate_sha(&noop.preview_digest).is_err()
+                            {
+                                return Err(Reason::InvalidPayload);
+                            }
+                        } else if value.get("version").and_then(|v| v.as_u64()) != Some(1)
                             || !value.get("snapshot").is_some_and(|v| v.is_object())
                             || !value.get("tables").is_some_and(|v| v.is_array())
                         {
@@ -7909,7 +8473,7 @@ impl Database {
                     if owner_version != Some(1)
                         || !matches!(
                             kind.as_deref(),
-                            Some("overwrite" | "user_restore" | "compensation")
+                            Some("overwrite" | "strict_noop" | "user_restore" | "compensation")
                         )
                         || owner_operation
                             .as_ref()
@@ -7920,7 +8484,8 @@ impl Database {
                         || owner_source
                             .as_ref()
                             .is_some_and(|v| ds::validate_uuid(v).is_err() || v == backup)
-                        || (kind.as_deref() == Some("overwrite")) != owner_source.is_none()
+                        || matches!(kind.as_deref(), Some("overwrite" | "strict_noop"))
+                            != owner_source.is_none()
                         || (owner_source.is_some()
                             && text(22, 36).ok().flatten().as_deref() != Some(library.as_str()))
                     {
@@ -8006,7 +8571,6 @@ impl Database {
         ) {
             return Err(CoreError::DeviceSyncRecoveryRequired);
         }
-        self.receiver_backup_snapshot_controlled(backup, work)?;
         let connection = self.connection.lock().expect("database mutex poisoned");
         let operations = connection
             .prepare(
@@ -8023,9 +8587,23 @@ impl Database {
         ds::validate_uuid(&operations[0])?;
         let operation = uuid::Uuid::parse_str(&operations[0])
             .map_err(|_| ds::invalid("invalid backup operation identity"))?;
-        self.device_sync_journal(operation)?
+        let journal = self
+            .device_sync_journal(operation)?
             .filter(|entry| entry.backup_uuid == backup)
-            .ok_or_else(|| ds::invalid("backup journal ownership disappeared"))
+            .ok_or_else(|| ds::invalid("backup journal ownership disappeared"))?;
+        match self.receiver_backup_kind_controlled(backup, work)? {
+            ReceiverBackupKind::Full => {
+                self.receiver_backup_snapshot_controlled(backup, work)?;
+            }
+            ReceiverBackupKind::StrictNoop(noop)
+                if noop.operation_uuid == journal.operation_uuid.to_string()
+                    && noop.library_uuid == journal.library_uuid
+                    && noop.preview_digest == journal.preview_digest => {}
+            ReceiverBackupKind::StrictNoop(_) => {
+                return Err(ds::invalid("strict no-op journal proof changed"));
+            }
+        }
+        Ok(journal)
     }
 
     pub(crate) fn device_sync_restore_proof(
@@ -8097,7 +8675,6 @@ impl Database {
                 "recovery operation does not match pending journal",
             ));
         }
-        self.receiver_backup_snapshot_controlled(entry.backup_uuid, work)?;
         // Recovery never runs migrations or silently accepts a newer schema.
         let version: i64 = self
             .connection
@@ -8109,7 +8686,36 @@ impl Database {
                 "pending library schema is not supported for recovery",
             ));
         }
+        let kind = receiver_backup_kind_from_connection(
+            &self.connection.lock().expect("database mutex poisoned"),
+            entry.backup_uuid,
+            work,
+        )?;
+        match kind {
+            ReceiverBackupKind::Full => {
+                self.receiver_backup_snapshot_controlled(entry.backup_uuid, work)?;
+            }
+            ReceiverBackupKind::StrictNoop(noop) => {
+                let header = self.device_sync_header()?;
+                if noop.operation_uuid != entry.operation_uuid.to_string()
+                    || noop.library_uuid != entry.library_uuid
+                    || noop.generation != header.generation
+                    || noop.preview_digest != entry.preview_digest
+                {
+                    return Err(ds::invalid("strict no-op journal proof changed"));
+                }
+            }
+        }
         Ok(lease)
+    }
+
+    pub(crate) fn receiver_backup_kind_controlled(
+        &self,
+        backup: uuid::Uuid,
+        work: &crate::device_sync::work::WorkControl,
+    ) -> CoreResult<ReceiverBackupKind> {
+        let connection = self.connection.lock().expect("database mutex poisoned");
+        receiver_backup_kind_from_connection(&connection, backup, work)
     }
 
     #[cfg(test)]
@@ -8247,6 +8853,51 @@ impl Database {
         let cancel = &work.cancellation();
         work.check()?;
         self.validate_recovery_access(access, operation)?;
+        if let ReceiverBackupKind::StrictNoop(noop) =
+            self.receiver_backup_kind_controlled(backup, work)?
+        {
+            if !matches!(access, RecoveryAccess::Pending(..)) || external.is_some() {
+                return Err(ds::invalid(
+                    "strict no-op recovery requires pending offline compensation",
+                ));
+            }
+            let entry = self
+                .device_sync_journal(operation)?
+                .ok_or_else(|| ds::invalid("operation disappeared"))?;
+            let header = self.device_sync_header()?;
+            if entry.backup_uuid != backup
+                || !matches!(
+                    entry.stage,
+                    crate::device_sync::recovery::JournalStage::Prepared
+                        | crate::device_sync::recovery::JournalStage::LibraryApplied
+                )
+                || noop.operation_uuid != operation.to_string()
+                || noop.library_uuid != entry.library_uuid
+                || noop.generation != header.generation
+                || noop.preview_digest != entry.preview_digest
+            {
+                return Err(ds::invalid("strict no-op recovery proof changed"));
+            }
+            cancel.check()?;
+            let mut connection = self.connection.lock().expect("database mutex poisoned");
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let changed = transaction.execute(
+                "UPDATE device_sync_apply_journal
+                 SET stage='rolled_back'
+                 WHERE operation_uuid=?1 AND stage IN ('prepare','library_applied')",
+                [operation.to_string()],
+            )?;
+            if changed != 1 {
+                return Err(ds::invalid("strict no-op journal changed"));
+            }
+            cancel.check()?;
+            transaction.commit()?;
+            self.gate.publish_pending(false);
+            // No catalog rows or generation changed, so the existing tiny
+            // no-op receipt remains the complete recovery proof.
+            return Ok(backup);
+        }
         if matches!(access, RecoveryAccess::New(_)) {
             let (ownership, _) = self.device_sync_restore_proof(backup, work)?;
             if ownership.external_reference.is_some() != external.is_some() {

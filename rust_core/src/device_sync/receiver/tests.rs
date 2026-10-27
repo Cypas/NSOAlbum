@@ -584,6 +584,77 @@ fn receiver_provenance_survives_a_b_c_forwarding_and_conflicts() {
     );
 }
 
+#[test]
+fn receiver_strict_noop_reapplies_changed_source_name() {
+    let source_root = tempfile::tempdir().unwrap();
+    let target_root = tempfile::tempdir().unwrap();
+    let source = CoreApi::open(source_root.path()).unwrap();
+    let target = CoreApi::open(target_root.path()).unwrap();
+    source
+        .create_album("Forwarded".into(), String::new(), false)
+        .unwrap();
+    let source_uuid = source.database().device_sync_header().unwrap().library_uuid;
+
+    let mut first = ReceiveOperation::prepare(
+        target.database(),
+        Snapshot::read(&source.database(), "Source old").unwrap(),
+        "Target",
+        SyncMode::Merge,
+    )
+    .unwrap();
+    let mut authorization = first.authorize().unwrap();
+    first
+        .apply(
+            Some(&mut authorization),
+            None,
+            &CancellationToken::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+    assert_eq!(
+        target
+            .database()
+            .device_sync_source_name(&source_uuid)
+            .unwrap()
+            .unwrap()
+            .display_name,
+        "Source old"
+    );
+
+    let renamed = Snapshot::read(&source.database(), "Source renamed").unwrap();
+    let mut repeat = ReceiveOperation::prepare(
+        target.database(),
+        renamed.clone(),
+        "Target",
+        SyncMode::Merge,
+    )
+    .unwrap();
+    assert!(!repeat.plan().is_strict_noop(
+        &renamed.manifest,
+        &repeat.target().manifest,
+        &renamed.sources,
+        &repeat.target().sources
+    ));
+    let mut authorization = repeat.authorize().unwrap();
+    repeat
+        .apply(
+            Some(&mut authorization),
+            None,
+            &CancellationToken::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+    assert_eq!(
+        target
+            .database()
+            .device_sync_source_name(&source_uuid)
+            .unwrap()
+            .unwrap()
+            .display_name,
+        "Source renamed"
+    );
+}
+
 // Publishing the pending state only in memory would admit writes on reopen.
 #[test]
 fn receiver_external_pending_reopens_readonly_and_cancel_after_apply_stays_pending() {

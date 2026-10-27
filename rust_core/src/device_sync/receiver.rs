@@ -11,6 +11,7 @@ use super::manifest::{Manifest, ManifestCollector, ManifestHeader};
 use super::planner::{SyncMode, SyncPlan};
 use super::source_names::{SourceDescription, SourceDescriptions};
 use super::staging::{Progress, StagingError, StagingOperation};
+use super::validation::ApplyTimingPhase as Timing;
 use crate::database::Database;
 use crate::error::{CoreError, CoreResult};
 use crate::sync::CancellationToken;
@@ -248,6 +249,7 @@ pub struct ReceiveOperation {
     source_digest: String,
     target_digest: String,
     prepared_binding: String,
+    benchmark_noop_binding: Option<String>,
 }
 
 impl ReceiveOperation {
@@ -308,8 +310,14 @@ impl ReceiveOperation {
         .inspect_err(|error| {
             diagnostics::receiver(Boundary::ReceiverStaging, &ReceiverError::Staging(*error))
         })?;
+        let strict_noop = plan.is_strict_noop(
+            &source.manifest,
+            &target.manifest,
+            &source.sources,
+            &target.sources,
+        );
         let metadata = database
-            .device_sync_metadata_cost(&target, &plan, work)
+            .device_sync_metadata_cost_for_receiver(&target, &plan, strict_noop, work)
             .inspect_err(|error| diagnostics::core(Boundary::ReceiverMetadataCost, error))?;
         let receiver_budget =
             super::space_budget::measure(&staging, metadata, work).inspect_err(|error| {
@@ -341,11 +349,30 @@ impl ReceiveOperation {
             source_digest,
             target_digest,
             prepared_binding,
+            benchmark_noop_binding: None,
         })
     }
 
     pub fn operation_id(&self) -> Uuid {
         self.staging.operation_id()
+    }
+    pub(crate) fn benchmark_require_noop(&mut self) -> ReceiverResult<()> {
+        if !cfg!(debug_assertions)
+            || self.finished
+            || self.authorization_issued
+            || self.plan.mode != SyncMode::Merge
+            || !self.plan.is_strict_noop(
+                &self.source.manifest,
+                &self.target.manifest,
+                &self.source.sources,
+                &self.target.sources,
+            )
+            || !super::benchmark::business_equivalent(&self.source, &self.target)
+        {
+            return Err(ReceiverError::PlanChanged);
+        }
+        self.benchmark_noop_binding = Some(self.prepared_binding.clone());
+        Ok(())
     }
     pub fn plan(&self) -> &SyncPlan {
         &self.plan
@@ -444,6 +471,7 @@ impl ReceiveOperation {
         guard: Option<Arc<dyn CommitGuard>>,
     ) -> ReceiverResult<ApplyReceipt> {
         let authorization = authorization.ok_or(ReceiverError::AuthorizationRequired)?;
+        let binding_timing = self.work.validation.time_apply(Timing::Binding);
         if authorization.used || authorization.operation != self.operation_id() {
             return Err(ReceiverError::AuthorizationMismatch);
         }
@@ -466,6 +494,7 @@ impl ReceiveOperation {
         if final_binding != authorization.binding {
             return Err(ReceiverError::AuthorizationMismatch);
         }
+        drop(binding_timing);
         cancel.check()?;
         if let Some(guard) = &guard {
             guard.check()?;
@@ -473,6 +502,7 @@ impl ReceiveOperation {
         let database = self.database.clone();
         let work = self.work.with_cancellation(cancel.clone());
         let lease = database.device_sync_exclusive()?;
+        let snapshot_timing = work.validation.time_apply(Timing::Snapshot);
         // Preserve the approved clock sample; only persistent contents are reread.
         diagnostics::checkpoint(Boundary::ApplySnapshotBegin);
         let current = Snapshot::read_with_header_controlled(
@@ -489,6 +519,8 @@ impl ReceiveOperation {
             }
         })?;
         diagnostics::checkpoint(Boundary::ApplySnapshotEnd);
+        drop(snapshot_timing);
+        let plan_timing = work.validation.time_apply(Timing::Plan);
         work.checkpoint(super::work::WorkStage::FinalCheck, 0)?;
         if current.digest_controlled(&work)? != self.target_digest {
             return Err(ReceiverError::PlanChanged);
@@ -502,13 +534,36 @@ impl ReceiveOperation {
                     ReceiverError::PlanChanged
                 }
             })?;
+        let strict_noop = self.plan.is_strict_noop(
+            &self.source.manifest,
+            &current.manifest,
+            &self.source.sources,
+            &current.sources,
+        );
+        if self.benchmark_noop_binding.as_ref().is_some_and(|binding| {
+            binding != &authorization.binding
+                || external_reference.is_some()
+                || self.plan.mode != SyncMode::Merge
+                || !strict_noop
+                || !super::benchmark::business_equivalent(&self.source, &current)
+        }) {
+            return Err(ReceiverError::PlanChanged);
+        }
+        drop(plan_timing);
+        let space_timing = work.validation.time_apply(Timing::Space);
         diagnostics::checkpoint(Boundary::ApplyBudgetBegin);
         self.receiver_budget = super::space_budget::measure(
             &self.staging,
-            database.device_sync_metadata_cost(&current, &self.plan, &work)?,
+            database.device_sync_metadata_cost_for_receiver(
+                &current,
+                &self.plan,
+                strict_noop,
+                &work,
+            )?,
             &work,
         )?;
         diagnostics::checkpoint(Boundary::ApplyBudgetEnd);
+        drop(space_timing);
         let operation = self.operation_id();
         diagnostics::checkpoint(Boundary::ApplyReceiverPrepareBegin);
         let backup = database.receiver_prepare(
@@ -516,8 +571,10 @@ impl ReceiveOperation {
             operation,
             &authorization.binding,
             &current,
+            strict_noop,
             external_reference,
             cancel,
+            &work,
         )?;
         diagnostics::checkpoint(Boundary::ApplyReceiverPrepareEnd);
         self.finished = true;
@@ -558,6 +615,8 @@ impl ReceiveOperation {
                 &publications,
                 cancel,
                 guard.clone(),
+                external_reference,
+                &work,
             )?;
             Ok(())
         })();
@@ -580,6 +639,7 @@ impl ReceiveOperation {
         let state = if external_reference.is_some() {
             ApplyState::LibraryAppliedPending
         } else {
+            let _journal_timing = work.validation.time_apply(Timing::Journal);
             database.receiver_finalize(&lease, operation)?;
             observer(ApplyBoundary::Finalized);
             ApplyState::Finalized

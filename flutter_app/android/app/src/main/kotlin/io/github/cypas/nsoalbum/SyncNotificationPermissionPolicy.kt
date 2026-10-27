@@ -25,6 +25,24 @@ internal class SyncNotificationPermissionCoordinator(
     private var pending: Pair<String, String>? = null
     private var closed = false
 
+    fun beginStorageRequest(): Boolean {
+        if (closed || activeRequest != null) return false
+        // Shared-storage access has separate consent state. It must not mark
+        // notification permission as requested when taking the prompt owner.
+        activeRequest = STORAGE_REQUEST_CODE
+        return true
+    }
+
+    fun completeStorageRequest() {
+        if (closed || activeRequest != STORAGE_REQUEST_CODE) return
+        activeRequest = null
+        val message = pending
+        pending = null
+        // Resume the normal notification decision after the settings Activity
+        // returns; unlike a notification denial, storage consent cannot drop it.
+        if (message != null) syncCompleted(message.first, message.second)
+    }
+
     fun beginExternalRequest(requestCode: Int): Boolean {
         if (closed || activeRequest != null) return false
         markRequested()
@@ -81,5 +99,6 @@ internal class SyncNotificationPermissionCoordinator(
 
     companion object {
         const val SYNC_REQUEST_CODE = 9217
+        private const val STORAGE_REQUEST_CODE = 9218
     }
 }

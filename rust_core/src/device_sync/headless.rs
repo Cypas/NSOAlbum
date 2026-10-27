@@ -354,10 +354,13 @@ pub fn backup_journal(handle: &str, backup: &str) -> Result<JournalInfo> {
         .map_err(failure)
 }
 fn insert_endpoint(
-    driver: Driver,
+    mut driver: Driver,
     library: Uuid,
     start: Option<super::runtime::Start>,
 ) -> Result<String> {
+    if start.is_some() {
+        driver.require_transport_cleanup();
+    }
     let handle = Uuid::new_v4();
     let cancellation = driver.cancellation();
     let lifecycle = driver.lifecycle_control();
@@ -766,6 +769,14 @@ pub fn read_preview(handle: &str) -> PreviewRead {
             .ok_or(ReadError::Unavailable)
     })()
     .into()
+}
+pub fn benchmark_metrics(handle: &str) -> std::result::Result<Option<String>, ReadError> {
+    if !cfg!(debug_assertions) {
+        return Err(ReadError::PermissionDenied);
+    }
+    let owner = read_owner(handle)?;
+    let inner = read_lock(&owner.owner)?;
+    Ok(inner.driver().benchmark_metrics())
 }
 pub fn read_conflicts(
     handle: &str,

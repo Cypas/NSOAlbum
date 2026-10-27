@@ -56,7 +56,7 @@ function Assert-AndroidBadging {
             $Badging -match '(?m)^application-debuggable') {
         throw 'APK must have the expected launcher, minSdk 24, ARM64 only, and non-debuggable Release code.'
     }
-    foreach ($required in @('INTERNET', 'POST_NOTIFICATIONS', 'REQUEST_INSTALL_PACKAGES', 'CAMERA')) {
+    foreach ($required in @('INTERNET', 'POST_NOTIFICATIONS', 'REQUEST_INSTALL_PACKAGES', 'CAMERA', 'MANAGE_EXTERNAL_STORAGE')) {
         if ($Badging -notmatch "(?m)^uses-permission: name='android\.permission\.$required'") {
             throw "Final Release APK is missing $required."
         }
@@ -76,7 +76,7 @@ function Assert-AndroidBadging {
             throw "Scanner hardware must remain optional in the final Release APK: $feature. Actual badging: $actual"
         }
     }
-    foreach ($denied in @('MANAGE_EXTERNAL_STORAGE', 'FOREGROUND_SERVICE')) {
+    foreach ($denied in @('FOREGROUND_SERVICE')) {
         if ($Badging -match "uses-permission[^\r\n]*name='android\.permission\.$denied'") {
             throw "Final Release APK must not request $denied."
         }

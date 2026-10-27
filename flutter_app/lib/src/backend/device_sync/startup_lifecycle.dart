@@ -23,6 +23,7 @@ part 'controlled_session.dart';
 part 'controlled_progress.dart';
 part 'controlled_usb.dart';
 part 'controlled_backups.dart';
+part 'benchmark_debug.dart';
 
 enum DeviceStartupPhase {
   unchecked,

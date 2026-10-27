@@ -14,6 +14,7 @@ import 'package:squid_album/src/l10n/app_localizations.dart';
 import 'package:squid_album/src/rust/models.dart';
 import 'package:squid_album/src/rust/settings.dart';
 import 'package:squid_album/src/state/settings_controller.dart';
+import 'package:squid_album/src/state/settings_copy.dart';
 import 'package:squid_album/src/state/sync_controller.dart';
 import 'package:squid_album/src/state/transfer_controller.dart';
 import 'package:squid_album/src/ui/android/android_transfer_page.dart';
@@ -63,13 +64,13 @@ void main() {
           );
           await tester.pumpAndSettle();
           final sleepLabel = find.text(
-            language == 'zh'
-                ? '无新媒体后进入休眠（小时）'
-                : 'Sleep after no new media (hours)',
+            language == 'zh' ? '连续无更新后进入休眠' : 'Sleep after no new media',
           );
           await tester.ensureVisible(sleepLabel);
           await tester.pumpAndSettle();
-          final interval = find.byType(DropdownButtonFormField<int>);
+          final interval = find.byKey(
+            const Key('android-nso-auto-sync-interval'),
+          );
           expect(
             tester.getTopLeft(sleepLabel).dy,
             greaterThan(tester.getBottomLeft(interval).dy),
@@ -83,6 +84,111 @@ void main() {
       );
     }
   }
+
+  testWidgets(
+    'automatic sync interval value and menu use the normal input text style',
+    (tester) async {
+      await _pumpAutomaticSyncSettings(tester);
+      final interval = find.byType(DropdownButtonFormField<int>).first;
+      await tester.ensureVisible(interval);
+      await tester.pumpAndSettle();
+      _expectSyncInputTextStyle(tester, find.text('30 分钟'));
+
+      await tester.tap(interval);
+      await tester.pumpAndSettle();
+      _expectSyncInputTextStyle(tester, find.text('45 分钟').last);
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant({TargetPlatform.android}),
+  );
+
+  for (final language in ['zh', 'en']) {
+    for (final textScale in [1.0, 2.0]) {
+      testWidgets(
+        'automatic sync sleep dropdown offers desktop choices and saves in $language at ${textScale}x',
+        (tester) async {
+          final backend = await _pumpAutomaticSyncSettings(
+            tester,
+            language: language,
+            textScale: textScale,
+          );
+          expect(find.byType(DropdownButtonFormField<int>), findsNWidgets(2));
+          final sleep = find.byKey(const Key('android-nso-sleep-after'));
+          await tester.ensureVisible(sleep);
+          await tester.pumpAndSettle();
+          _expectSyncInputTextStyle(
+            tester,
+            find.text(language == 'zh' ? '24 小时' : '24 hours'),
+            textScale: textScale,
+          );
+          await tester.tap(sleep);
+          await tester.pumpAndSettle();
+          for (final hours in [6, 12, 24, 48, 72]) {
+            final option = find.text(
+              language == 'zh' ? '$hours 小时' : '$hours hours',
+            );
+            expect(option, findsWidgets);
+            _expectSyncInputTextStyle(
+              tester,
+              option.last,
+              textScale: textScale,
+            );
+          }
+          await tester.tap(
+            find.text(language == 'zh' ? '6 小时' : '6 hours').last,
+          );
+          await tester.pumpAndSettle();
+          expect(backend.settings.syncPolicy.sleepAfterHours, 6);
+          expect(backend.settings.syncPolicy.activeIntervalMinutes, 30);
+          expect(backend.settings.syncPolicy.enabled, isFalse);
+
+          final interval = find.byKey(
+            const Key('android-nso-auto-sync-interval'),
+          );
+          await tester.ensureVisible(interval);
+          await tester.pumpAndSettle();
+          await tester.tap(interval);
+          await tester.pumpAndSettle();
+          await tester.tap(
+            find.text(language == 'zh' ? '45 分钟' : '45 minutes').last,
+          );
+          await tester.pumpAndSettle();
+          expect(backend.settings.syncPolicy.activeIntervalMinutes, 45);
+          expect(backend.settings.syncPolicy.sleepAfterHours, 6);
+          expect(backend.settings.syncPolicy.enabled, isFalse);
+          expect(tester.takeException(), isNull);
+        },
+        variant: TargetPlatformVariant({TargetPlatform.android}),
+      );
+    }
+  }
+
+  testWidgets(
+    'automatic sync sleep preserves a legacy custom threshold until changed',
+    (tester) async {
+      final backend = await _pumpAutomaticSyncSettings(
+        tester,
+        sleepAfterHours: 18,
+      );
+      expect(find.byType(DropdownButtonFormField<int>), findsNWidgets(2));
+      final sleep = find.byKey(const Key('android-nso-sleep-after'));
+      await tester.ensureVisible(sleep);
+      await tester.pumpAndSettle();
+      expect(find.text('18 小时'), findsOneWidget);
+      expect(backend.settings.syncPolicy.sleepAfterHours, 18);
+
+      await tester.tap(sleep);
+      await tester.pumpAndSettle();
+      expect(find.text('18 小时'), findsWidgets);
+      expect(find.text('24 小时'), findsWidgets);
+      await tester.tap(find.text('24 小时').last);
+      await tester.pumpAndSettle();
+      expect(backend.settings.syncPolicy.sleepAfterHours, 24);
+      expect(backend.settings.syncPolicy.activeIntervalMinutes, 30);
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant({TargetPlatform.android}),
+  );
 
   testWidgets(
     'automatic sync card groups and saves the notification preference',
@@ -735,6 +841,71 @@ void main() {
       );
     }
   }
+}
+
+Future<FakeBackend> _pumpAutomaticSyncSettings(
+  WidgetTester tester, {
+  String language = 'zh',
+  int sleepAfterHours = 24,
+  double textScale = 1,
+}) async {
+  tester.view.physicalSize = const Size(320, 1400);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  final backend = FakeBackend(signedIn: true, mediaItems: []);
+  backend.settings = copyAppSettings(
+    backend.settings,
+    syncPolicy: SyncPolicy(
+      enabled: false,
+      activeIntervalMinutes: 30,
+      sleepAfterHours: sleepAfterHours,
+    ),
+  );
+  final settings = SettingsController(backend);
+  final sync = SyncController(backend, allAccounts: true);
+  final transfer = TransferController(backend, settings, sync);
+  addTearDown(() async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    transfer.dispose();
+    sync.dispose();
+    settings.dispose();
+  });
+  await transfer.refresh();
+  await tester.pumpWidget(
+    MaterialApp(
+      locale: Locale(language),
+      theme: androidTheme('ocean'),
+      localizationsDelegates: const [
+        AppLocalizations.delegate,
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: AppLocalizations.supportedLocales,
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(context)
+            .copyWith(textScaler: TextScaler.linear(textScale)),
+        child: child!,
+      ),
+      home: AndroidNintendoSyncPage(controller: transfer),
+    ),
+  );
+  await tester.pumpAndSettle();
+  return backend;
+}
+
+void _expectSyncInputTextStyle(
+  WidgetTester tester,
+  Finder text, {
+  double textScale = 1,
+}) {
+  final rendered = tester.widget<RichText>(
+    find.descendant(of: text, matching: find.byType(RichText)),
+  );
+  expect(rendered.text.style?.fontSize, 16);
+  expect(rendered.text.style?.fontWeight, FontWeight.w400);
+  expect(rendered.textScaler.scale(16), 16 * textScale);
 }
 
 Color _statusDotColor(WidgetTester tester, String accountId) {

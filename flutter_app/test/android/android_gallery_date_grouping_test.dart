@@ -1,0 +1,128 @@
+@Tags(['platform-android'])
+library;
+
+import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:squid_album/src/l10n/app_localizations.dart';
+import 'package:squid_album/src/state/library_controller.dart';
+import 'package:squid_album/src/state/settings_controller.dart';
+import 'package:squid_album/src/ui/android/android_library_page.dart';
+import 'package:squid_album/src/ui/android/android_theme.dart';
+import 'package:squid_album/src/rust/models.dart';
+
+import '../home_shell_test.dart' show FakeBackend;
+
+void main() {
+  testWidgets(
+    'Android date filter opens the compact picker directly with quick ranges',
+    (tester) async {
+      final backend = FakeBackend(mediaItems: [_media(1)]);
+      final settings = SettingsController(backend);
+      final library = LibraryController(backend);
+      addTearDown(settings.dispose);
+      addTearDown(library.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          locale: const Locale('zh'),
+          localizationsDelegates: const [
+            AppLocalizations.delegate,
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          supportedLocales: AppLocalizations.supportedLocales,
+          theme: androidTheme('ocean'),
+          home: AndroidLibraryPage(controller: library, settings: settings),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('android-library-filter')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('android-filter-game-section')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('android-filter-date-section')),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const Key('android-filter-date-button')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('android-date-filter-dialog')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('android-filter-today')), findsOneWidget);
+      expect(find.byKey(const Key('android-filter-this-week')), findsOneWidget);
+      expect(
+        find.byKey(const Key('android-filter-anniversary')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant({TargetPlatform.android}),
+  );
+
+  testWidgets(
+    'Android date grouping shows today, yesterday and unknown-date headers',
+    (tester) async {
+      final today = DateUtils.dateOnly(DateTime.now());
+      final yesterday = today.subtract(const Duration(days: 1));
+      final backend = FakeBackend(
+        mediaItems: [
+          _media(1, importedAt: today.add(const Duration(hours: 9))),
+          _media(2, importedAt: yesterday.add(const Duration(hours: 9))),
+          _media(3, importedAt: null),
+        ],
+      );
+      final settings = SettingsController(backend);
+      final library = LibraryController(backend);
+      addTearDown(settings.dispose);
+      addTearDown(library.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          locale: const Locale('zh'),
+          localizationsDelegates: const [
+            AppLocalizations.delegate,
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          supportedLocales: AppLocalizations.supportedLocales,
+          theme: androidTheme('ocean'),
+          home: AndroidLibraryPage(controller: library, settings: settings),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('今天'), findsNothing);
+      await tester.tap(find.byKey(const Key('android-library-filter')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('android-filter-group-by-date')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('应用'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('今天'), findsOneWidget);
+      expect(find.text('昨天'), findsOneWidget);
+      expect(find.text('日期未知'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant({TargetPlatform.android}),
+  );
+}
+
+MediaAsset _media(int id, {DateTime? importedAt}) => MediaAsset(
+  id: id,
+  sha256: 'group-$id',
+  originalName: 'group-$id.png',
+  storagePath: 'missing-$id.png',
+  kind: MediaKind.image,
+  importedAt: importedAt,
+  gameName: 'Game',
+  favorite: false,
+  tags: const [],
+);

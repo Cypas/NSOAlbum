@@ -253,29 +253,22 @@ void registerAndroidExperienceTests({bool layoutOnly = false}) {
     );
   }
 
-  testWidgets('mobile settings offer confirmed private storage, not a proxy', (
-    tester,
-  ) async {
-    final backend = StorageBackend();
-    await tester.pumpWidget(
-      SquidAlbumApp(backend: backend, uiPlatform: AppUiPlatform.android),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.byType(NavigationDestination).at(3));
-    await tester.pumpAndSettle();
-    expect(find.text('网络代理'), findsNothing);
-    final choose = find.byKey(const Key('android-storage-location'));
-    expect(choose, findsOneWidget);
-    await tester.ensureVisible(choose);
-    await tester.tap(choose);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('SD 卡'));
-    await tester.pumpAndSettle();
-    expect(backend.settings.libraryPath, isNot('/sd/app/NSOAlbum/media'));
-    await tester.tap(find.byKey(const Key('android-confirm-storage')));
-    await tester.pumpAndSettle();
-    expect(backend.settings.libraryPath, '/sd/app/NSOAlbum/media');
-  });
+  testWidgets(
+    'mobile settings hide storage controls without changing storage backend',
+    (tester) async {
+      final backend = StorageBackend();
+      await tester.pumpWidget(
+        SquidAlbumApp(backend: backend, uiPlatform: AppUiPlatform.android),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(NavigationDestination).at(3));
+      await tester.pumpAndSettle();
+      expect(find.text('网络代理'), findsNothing);
+      expect(find.byKey(const Key('android-storage-location')), findsNothing);
+      expect(find.byKey(const Key('android-storage-card')), findsNothing);
+      expect(backend.settings.libraryPath, 'C:/library');
+    },
+  );
   testWidgets('albums use gallery columns and the latest member as cover', (
     tester,
   ) async {
@@ -505,7 +498,7 @@ void registerAndroidExperienceTests({bool layoutOnly = false}) {
       1,
     );
   });
-  testWidgets('media cards show truncated tags and a one-line note preview', (
+  testWidgets('media cards show truncated tags without note previews', (
     tester,
   ) async {
     final backend = FakeBackend(mediaItems: [media(1)]);
@@ -514,67 +507,59 @@ void registerAndroidExperienceTests({bool layoutOnly = false}) {
     );
     await tester.pumpAndSettle();
     expect(find.text('private-file-1.png'), findsNothing);
-    expect(find.text('Hidden card not…'), findsOneWidget);
+    expect(find.text('Hidden card not…'), findsNothing);
     expect(find.text('超级马力欧..'), findsOneWidget);
     expect(find.text('abcdefghij..'), findsOneWidget);
     expect(find.byType(AndroidMediaCard), findsOneWidget);
   });
-  testWidgets(
-    'card note stops at fifteen complete characters and obeys its setting',
-    (tester) async {
-      final asset = MediaAsset(
-        id: 87,
-        sha256: 'note-preview',
-        originalName: 'note.png',
-        storagePath: 'missing.png',
-        kind: MediaKind.image,
-        gameName: '',
-        favorite: false,
-        tags: const [],
-        note: '  一二三四五六七八九十甲乙丙丁👨‍👩‍👧‍👦戊己  ',
-      );
-      final backend = FakeBackend();
-      Widget card(bool show) => MaterialApp(
-        locale: const Locale('en'),
-        supportedLocales: AppLocalizations.supportedLocales,
-        localizationsDelegates: const [
-          AppLocalizations.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: Scaffold(
-          body: Center(
-            child: SizedBox(
-              width: 180,
-              child: AndroidMediaCard(
-                asset: asset,
-                settings: copyAppSettings(
-                  backend.settings,
-                  showNotePreview: show,
-                ),
-                onOpen: () {},
-                onMenu: () {},
-                onFavorite: () {},
+  testWidgets('Android media cards never show note previews', (tester) async {
+    final asset = MediaAsset(
+      id: 87,
+      sha256: 'note-preview',
+      originalName: 'note.png',
+      storagePath: 'missing.png',
+      kind: MediaKind.image,
+      gameName: '',
+      favorite: false,
+      tags: const [],
+      note: '  一二三四五六七八九十甲乙丙丁👨‍👩‍👧‍👦戊己  ',
+    );
+    final backend = FakeBackend();
+    Widget card(bool show) => MaterialApp(
+      locale: const Locale('en'),
+      supportedLocales: AppLocalizations.supportedLocales,
+      localizationsDelegates: const [
+        AppLocalizations.delegate,
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      home: Scaffold(
+        body: Center(
+          child: SizedBox(
+            width: 180,
+            child: AndroidMediaCard(
+              asset: asset,
+              settings: copyAppSettings(
+                backend.settings,
+                showNotePreview: show,
               ),
+              onOpen: () {},
+              onMenu: () {},
+              onFavorite: () {},
             ),
           ),
         ),
-      );
-      await tester.pumpWidget(card(true));
-      await tester.pumpAndSettle();
-      final note = find.text('一二三四五六七八九十甲乙丙丁👨‍👩‍👧‍👦…');
-      expect(note, findsOneWidget);
-      final text = tester.widget<Text>(note);
-      expect(text.maxLines, 1);
-      expect(text.overflow, TextOverflow.ellipsis);
-      expect(tester.getSize(note).width, lessThanOrEqualTo(180));
-      await tester.pumpWidget(card(false));
-      await tester.pumpAndSettle();
-      expect(note, findsNothing);
-      expect(tester.takeException(), isNull);
-    },
-  );
+      ),
+    );
+    await tester.pumpWidget(card(true));
+    await tester.pumpAndSettle();
+    expect(find.text('一二三四五六七八九十甲乙丙丁👨‍👩‍👧‍👦…'), findsNothing);
+    await tester.pumpWidget(card(false));
+    await tester.pumpAndSettle();
+    expect(find.text('一二三四五六七八九十甲乙丙丁👨‍👩‍👧‍👦…'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
   testWidgets(
     'navigation disappears in a secondary route and returns after back',
     (tester) async {

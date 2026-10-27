@@ -2,6 +2,13 @@ use crate::error::{CoreError, CoreResult};
 use serde_json::Value;
 
 pub(crate) fn ensure_coral_success(value: &Value) -> CoreResult<()> {
+    ensure_coral_success_for_endpoint(value, None)
+}
+
+pub(crate) fn ensure_coral_success_for_endpoint(
+    value: &Value,
+    endpoint: Option<&str>,
+) -> CoreResult<()> {
     let status = value
         .get("status")
         .and_then(Value::as_i64)
@@ -19,6 +26,9 @@ pub(crate) fn ensure_coral_success(value: &Value) -> CoreResult<()> {
             )));
         }
         9400 => "nintendo_request_invalid",
+        9408 if endpoint == Some("/v3/Friend/GetUserByFriendCode") => {
+            "nintendo_friend_code_not_found"
+        }
         9405 | 9406 => "nintendo_request_forbidden",
         9407 => "nintendo_account_not_linked",
         9423 => "nintendo_age_restricted",
@@ -131,6 +141,24 @@ mod tests {
             "PRIVATE splatnet_access_restricted".into()
         ))
         .is_none());
+    }
+
+    #[test]
+    fn friend_code_not_found_is_endpoint_specific() {
+        let response = json!({"status":9408, "errorMessage":"PRIVATE"});
+        let lookup =
+            ensure_coral_success_for_endpoint(&response, Some("/v3/Friend/GetUserByFriendCode"))
+                .unwrap_err();
+        assert!(lookup
+            .to_string()
+            .contains("nintendo_friend_code_not_found"));
+        assert!(!lookup.to_string().contains("PRIVATE"));
+
+        for endpoint in [None, Some("/v4/Friend/List")] {
+            let other = ensure_coral_success_for_endpoint(&response, endpoint).unwrap_err();
+            assert!(other.to_string().contains("nintendo_request_failed"));
+            assert!(!other.to_string().contains("nintendo_friend_code_not_found"));
+        }
     }
 
     #[test]

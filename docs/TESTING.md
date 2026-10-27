@@ -2,7 +2,8 @@
 
 测试分为可移植 Rust/Flutter 验证、平台专用测试和真实发布包冒烟。通过
 `flutter test` 不等于真实桌面窗口、播放器、FFmpeg 或 USB 设备已通过验收。
-所有测试均使用合成数据，不需要真实 Nintendo 账号或个人媒体。
+默认自动测试均使用合成数据，不需要真实 Nintendo 账号或个人媒体。下述真实图库
+严格无变化测速是必须单独授权的设备验收例外，不属于 CI 或普通测试套件。
 
 `test/windows_media_viewer_device_test.dart` 需显式使用
 `flutter run --debug -d windows -t test/windows_media_viewer_device_test.dart`
@@ -17,12 +18,24 @@
 
 ## 本地构建空间约定
 
+外部贡献者按自己的工作区和工具链选择构建目录，并避免将生成包、缓存或用户
+数据提交到仓库。本项目维护者工作站另有被 Git 忽略的根目录 `AGENTS.md`，
+规定源码副本、固定构建副本和本机输出目录；该机器专用流程不是外部贡献者的
+路径要求。维护者在该工作站构建、打包、热重载或热重启前，应将本次修改的源码、
+资源、生成 Bridge 与原生配置按相对路径非删除式覆盖到指定副本，核对关键文件后
+再从副本操作；不得镜像删除、清理缓存或复制凭据/个人数据。固定副本不可用时
+应暂停维护者本机运行/构建，不改用其他目录。
+
+构建前确认 Flutter、Cargo、Gradle 的实际输出配置；构建后核对 APK/EXE、
+Gradle 中间目录、Cargo target 和用户级缓存的位置。不要并行启动会争用同一
+原生构建目录的任务，也不要擅自清理或替换已有构建缓存/产物。
+
 图库生成 Bridge 的实际 DLL 回归位于 `test/gallery_query_bridge_test.dart`。
 仅在已验证为当前源码/生成接口的 Debug 库后，将其绝对路径放入
 `NSOALBUM_DEVICE_SYNC_TEST_LIBRARY`，再单独执行该测试。它通过正式 Rust API
 建立全新合成库，检查分页、录入日期/拍摄顺序、相册窄计数及媒体来源，不访问
 安全凭据或个人图库；SQLite 进程句柄退出前可能仍占用文件，因此合成夹具保留在
-约定的 C 盘 TEMP 内，不抢先删除。默认完整套件显式 skip，此单独结果另外记账，
+约定的本机 TEMP 内，不抢先删除。默认完整套件显式 skip，此单独结果另外记账，
 不能据此声称系统窗口、播放器或手机已验收。
 
 同一环境变量也可显式启用 `test/device_sync/account_bridge_test.dart`。它通过
@@ -40,15 +53,10 @@ Flutter 的 `test/device_sync/startup_lifecycle_test.dart` 和
 关闭保留同一应用树、必要等待和失败后的显式重试；不能以这些合成结果声称
 已验证系统杀进程、真实账号补偿或 macOS 窗口退出。
 
-本地 Windows、Android 和 macOS Debug/原生验证优先在 C 盘独立构建副本中执行，
-不要把大型 Rust target、Flutter build、Gradle 中间目录长期写入 F 盘源码工作区。
-本地副本及工具缓存复用维护环境中已约定的固定基准目录，不按日期、轮次或
-普通源码改动重复创建隔离构建根。使用其他隔离根须先说明原因、路径并取得
-维护者同意；已有缓存及历史产物不得擅自清理、移动或删除。
-
-Flutter 构建和测试在 C 盘构建副本的 `flutter_app` 下运行；不要使用
-`flutter --build-dir …`，该全局参数并不适用于当前工具链。源码修改后用
-非删除式复制更新副本，不用镜像删除覆盖其中保留的验收资料。例如：
+下列命令是本项目维护者工作站的 PowerShell 示例。维护者先按本机忽略的
+`AGENTS.md` 配置 `$buildRoot` 为固定构建根，并将源码同步到 `$buildRoot\source`；
+外部贡献者不应依赖这个机器专用变量，可在自己的 checkout 中按工具链惯例构建。
+不要使用未经当前 Flutter 版本验证的构建参数：
 
 ```powershell
 $env:CARGO_TARGET_DIR = Join-Path $buildRoot 'cargo-target'
@@ -62,19 +70,13 @@ flutter test
 cargo test --manifest-path ..\rust_core\Cargo.toml --lib
 ```
 
-Rust 可从源码目录运行并使用 C 盘 `--target-dir`。不要为单次测试改写全局
-Flutter 配置或并行启动争用同一构建目录的原生构建。
-
-`$buildRoot` 必须在开始前解析到该维护环境已批准的 C 盘固定基准；示例不负责
-创建或清理它。构建后核对 APK/EXE、Gradle 项目/用户缓存、intermediates、
-Cargo/Cargokit 输出均位于基准内；发现意外写入立即报告，不自行清理。
-这些路径不写入应用配置、发布包或 CI。CI runner 使用工作流自己的
-临时构建目录和缓存；仓库中的 `flutter_app/build/`、`.dart_tool/`、
-`rust_core/target/`、Android/Gradle 输出仍是可重建的忽略目录。
+不要并行启动会争用同一构建目录的原生构建。构建意外写入固定根目录外时，
+停止并报告，不擅自清理或移动产物。CI runner 使用工作流自己的隔离目录；
+本机副本约束不改变 CI runner 的工作方式。
 
 ## 分支与触发规则
 
-| 事件 | 工作流与检查 | 可下载产物 | 正式发布 |
+| 事件 | 工作流与检查 | 工作流产物（GitHub Actions） | 正式发布 |
 | --- | --- | --- | --- |
 | push 到 `dev` | Dev validation：Ubuntu Rust fmt/Clippy/单测、Dart 分析、完整 Flutter 测试、Git 历史敏感扫描 | 不构建安装包 | 否 |
 | 新建/更新目标为 `main` 的 PR | Validate：Ubuntu/历史扫描及 Windows x64、macOS arm64/x64 各自完整测试、构建、签名和原生媒体验收；Android ARM64 测试构建/包体检查；Required validation 汇总 | Windows 运行目录、两种 DMG、Android CI 测试 APK；不编译 Inno | 否 |
@@ -97,16 +99,19 @@ Windows 验收无需等待 macOS 构建完成，反之亦然。每个平台仅�
 失败、取消或跳过均不能使 Required validation 或正式 publish 成功。
 按平台独立验收只改变调度顺序，不改变三平台齐备和统一版本的正式发布要求。
 
-## 本地下载的 CI 数据
+## CI 结果核验与既有下载归档
 
-完整文件分类与 Git 忽略边界见 [仓库目录规范](REPOSITORY-LAYOUT.md)。
-本地下载的 Actions 产物、历史报告、截图和日志统一存放在
-`dist/ci/history-downloads/`，新下载按 `<run-id>/<platform-or-artifact>/`
-分目录，禁止在仓库根目录为每次检查新建 `ci-artifacts-*` 文件夹。
-整理旧下载时保留原目录名称与文件内容，不凭目录名推测缺失的 run ID。
-这些文件不参与应用编译和打包，也不提交 Git；失败报告仍可用于历史问题排查，
-但不能代替当前提交的验证。Android 本地 `flutter_app/android/build/`
-同样属于可再生成的忽略构建产物，不包含应提交的 Gradle 配置或 Kotlin 源码。
+核验一次 GitHub Actions 运行时，使用 `gh run watch <run-id> --exit-status
+--interval 60` 等待完整工作流结束，然后检查提交 SHA、run/job/step 结论、
+失败日志及 GitHub 上的 artifact 元数据。CI 结果核验不得在本机下载、解压、
+复制或安装 workflow artifact/打包产物。Actions runner 为构建、验包、签名及
+发布而在同一工作流内部传递 artifact 是 CI 实现的一部分，不属于本机下载。
+
+本地已经存在的 CI 历史下载统一归档于 `dist/ci/history-downloads/`，
+按 `<run-id>/<platform-or-artifact>/` 保留原始文件和可追溯目录名，不覆盖或
+猜测缺失的 run ID。该归档规则不构成下载 CI 产物的许可。历史报告不能替代
+当前提交验证，也不提交 Git。Android `flutter_app/android/build/` 是可再生成
+的忽略输出，不包含应提交的 Gradle 配置或 Kotlin 源码。
 
 ## Android ARM64 CI
 
@@ -132,11 +137,10 @@ Android 构建与验收之间直接传递 APK、同提交的封存清单及 SHA-
 工作流不再自行创建 ZIP/TAR。中间 artifact 绑定平台、架构、版本、构建号和
 提交；最终测试 artifact 名为 `android-arm64-ci-test-<version>-<build>`，
 内容为可安装的 ARM64 测试 APK、同提交封存清单和 SHA-256 文件。
-GitHub artifact 服务自身的下载容器不由仓库
-控制，不代表 APK 仍需执行项目自定义解包步骤。正式签名 artifact 名称及
-Release 签名、Secrets 门禁保持不变。
+正式签名 artifact 名称及 Release 签名、Secrets 门禁保持不变。
 
-验收 job 只下载同次 run、同提交的中间 artifact，不重新构建。使用现有
+验收 job 在 GitHub runner 内获取同次 run、同提交的中间 artifact，
+不重新构建应用。使用现有
 `ci_bundle.ps1` 核对提交、平台、SemVer、构建号和所有文件 SHA-256，再通过
 `verify_android_apk.ps1` 检查最终 APK 的应用 ID、启动 Activity、版本、
 minSdk、非 debuggable、网络/受限权限和 v2 签名，并逐个读取 ELF 头验证
@@ -148,9 +152,8 @@ AArch64；Rust Core、Flutter AOT/引擎、libmpv 和 FFmpeg 必须存在。
 `android-arm64-ci-test-<version>-<build>`。
 它不是正式签名发布包，不能作为稳定升级渠道；不匹配 Release 的
 `native-*` 下载范围，也不进入正式 Release 资产。
-ARM64 运行节点尚未确认，本阶段不自动配置自托管 runner、
-不新增 x86/其他 ABI，也没有安装、启动或真实媒体 smoke。
-静态包体检查通过不等于 Android 真机或后台调度验收通过。
+CI 只针对 `arm64-v8a` 构建。静态包体检查通过不等于 Android 真机、
+媒体流程或后台调度验收通过。
 
 ### 正式密钥签名
 
@@ -171,15 +174,15 @@ key.properties、Gradle 缓存或 artifact。结束时清理私钥；失败删�
 必须等于配置密钥导出的证书，并拒绝 Android Debug 证书。
 正式密钥签名后的 APK 命名为 `NSOAlbum-Android-arm64-<SemVer>.apk`，
 与摘要上传 `android-arm64-signed` artifact；公开证书指纹与检查结果上传
-`signing-android-arm64`。下载前仍需确认本次完整工作流成功。
-稳定 Release 的 publish 在完整门禁成功后，单独下载同次 run 的
+`signing-android-arm64`。Release publish job 在完整门禁成功后，从同次 run
+内部获取
 `android-arm64-signed`（不使用 CI 测试 APK），核对签名 job 的摘要只包含当前
 版本 APK 且 SHA-256 匹配，再与 Windows Inno、两架构 macOS DMG 一并收集。
 APK 缺失/为空、版本文件名不符、摘要缺失/不匹配或桌面包缺失/重复均阻止发布。
 统一 `SHA256SUMS.txt` 包含四个安装包，不上传测试 APK、运行目录或 ZIP。
 Validate 和单独 Android 手动工作流仍只输出 Actions artifacts，不发布 Release。
-尚未运行 Android 设备 smoke，不能把“正式密钥签名”表述为“设备验收完成”；
-Release 说明保留主机/静态检查与设备运行检查的区别。
+正式密钥签名与静态包体检查不能表述为 Android 设备验收；发布说明须区分
+主机/静态检查与设备运行检查。
 
 每次 Android 构建使用临时生成的测试密钥执行真实签名回归，包括正常签名、
 输入文件保持不变、错误密码、缺失 Secret、非法 Base64、拒绝覆盖和清理。
@@ -204,17 +207,20 @@ Android 正式模式启动时按本地自然日自动检查稳定版本；发现
 不在广播时限内复制整个 APK。通知和应用内按钮都再次校验后调用系统安装器。未知来源安装权限由
 系统设置确认，不静默安装、卸载、退出或清除数据；Debug 同包名测试应用
 与正式签名不兼容时拒绝安装，不自动清理测试库。
-更新功能需要 POST_NOTIFICATIONS 和 REQUEST_INSTALL_PACKAGES，
-不允许 MANAGE_EXTERNAL_STORAGE 或 FOREGROUND_SERVICE。
+更新功能需要 POST_NOTIFICATIONS 和 REQUEST_INSTALL_PACKAGES，本身不依赖
+所有文件访问。应用按启动存储授权需求声明 MANAGE_EXTERNAL_STORAGE；
+最终包仍禁止 FOREGROUND_SERVICE。存储权限回归需要验证 API 30+ 的首次
+前台请求、已授权跳过、拒绝后不重复启动请求、设置页手动重试、与通知请求互斥，
+以及测试/安全模式豁免；系统授权页和实际返回状态另列 Android 真机验收，
+不能用 Manifest 声明或静态验包代替。
 
 官方元数据大小须大于零且不超过 512 MiB，前台查询到超限下载会取消，
 完成复制也实行大小上限；应用进程不在时，DownloadManager 的网络下载
 不能保证实时硬上限，超限文件会在恢复/完成校验时拒绝，不交给安装器。
 
-既有稳定 Release 尚未包含 Android APK，客户端显示缺包状态、不下载 CI
-测试 artifact。后续 Release 工作流将发布同版本正式签名 ARM64 APK；
-跨版本更新仍要求递增构建号及兼容签名。真机通知点击、进程终止恢复、
-未知来源权限及系统安装需另行验收，不以 widget/包体检查替代。
+客户端只接受官方稳定 Release 中符合应用身份、版本递增、签名和摘要约束的
+正式 ARM64 APK；不得将 CI 测试 artifact 当作更新包。真机通知点击、进程终止
+恢复、未知来源权限及系统安装需独立验收，不以 widget/包体检查替代。
 
 ## 本地基础验证
 
@@ -222,8 +228,8 @@ Android 正式模式启动时按本地自然日自动检查稳定版本；发现
 
 Windows/macOS 桌面端及 Android 的本地运行和交互测试默认使用 Debug。
 只有用户明确要求时才使用 Profile 或 Release，性能测试也不例外；
-Debug 性能数据不能作为正式包性能结论。此约定优先于既有本地非 Debug
-验收建议，但不改写历史证据，也不改变 CI、正式打包及发布的 Release 门禁。
+Debug 性能数据不能作为正式包性能结论。CI、正式打包及发布继续按 Release
+门禁执行。
 
 Dart 界面修改优先热重载，初始化变化使用热重启。Rust、Bridge、原生代码
 或原生依赖变化仍需重新编译相应 Debug 原生组件并重启，不能通过 Dart
@@ -241,10 +247,6 @@ Android 不使用该桌面入口；合法 `--ci-smoke` 仍使用独立新根，
 OS 文件锁和回环连接验证选主、并发、退出/崩溃后重开与无效请求拒绝。
 `test/device_sync/startup_desktop_close_test.dart` 覆盖关闭失败不能提前释放锁。
 这些 Common 测试不代替 Windows/macOS 真实窗口的托盘、最小化及聚焦验收。
-
-磁盘空间不足时，可在空间充足的位置建立独立源码构建副本，核对源码摘要后
-沿用副本内的工具默认输出路径。保留主工作区及原缓存，不以目录联接绕过测试
-对构建路径的检查，也不拿旧编译产物代替新源码验证。
 
 从仓库根目录分别进入对应目录，执行全部命令：
 
@@ -264,6 +266,63 @@ flutter test
 修改跨语言 API 时，先在 `flutter_app` 运行
 `.\tool\generate_bridge.ps1`，再检查 Rust 和 Dart 两侧；不得手工修改生成桥接。
 CI 使用完整测试套件，不通过排除平台测试隐藏不支持的平台行为。
+
+### 设备同步 Debug 免扫码连接
+
+正常 `lib/main.dart` Debug 包提供已认证 VM Service 扩展
+`ext.squid_album.deviceSyncPairing`。PC 可读取当前未过期邀请，调试客户端
+在内存中直接转交手机注入，跳过相机扫码和二维码截图转发；具体启动、参数、
+页面代次和失效处理见
+[Flutter 免扫码传递连接码](../flutter_app/README.md#免扫码传递连接码)。
+Release/Profile 不提供该入口。不得把真实邀请或认证地址写入命令行、文件或日志。
+
+该入口仅替换扫码输入，保留版本/有效期检查、USB/局域网选择、目录授权、
+TLS 握手、确认码及预览确认。`accepted=true` 不是连接或同步完成的验收证据。
+测速须另外记录连接发现、扫描、比较、校验、传输、应用和清理的实际阶段；
+用户确认等待与数据处理耗时分开记账，未进入的阶段不能填作实测零耗时。
+普通个人图库的实测必须单独获得授权，不用免扫码入口扩大读写范围。
+
+合成回归位于 `test/device_sync/debug_pairing_test.dart`、
+`debug_pairing_page_test.dart` 和 `automatic_connection_test.dart`，从 Flutter
+工程目录运行对应 `flutter test`。它们验证输入边界、前后台/路由限制及同路接线，
+不能替代相机识别、真实 USB 握手、目录权限或媒体同步的设备验收。
+
+### 真实图库严格无变化测速
+
+`tool/device_sync_real_noop.dart` 是独立 Windows/Android Debug 入口，须显式启用
+`DEVICE_SYNC_REAL_NOOP=true`。它读取系统解析的现有应用图库，使用正式启动恢复、
+配对、授权和 Rust 同步流程；不接受任意图库路径，不生成媒体，不传账号，不覆盖
+或删除数据。普通应用的 `deviceSyncPairing` 扩展仍然只负责扫码输入，不能用于
+批准同步。
+
+取得真实图库测速授权、准备并核对构建副本后，在 Flutter 工程目录执行：
+
+```powershell
+$env:NSOALBUM_REAL_NOOP_SOURCE = (Get-Location).Path
+dart tool/device_sync_real_noop_client.dart --device <Android设备ID> --output <新建数字报告.json>
+```
+
+沿用前述 Flutter/Cargo/Gradle 缓存配置。客户端依次构建、启动 Windows 和 Android，
+保留两份带认证的 machine 会话；两端就绪后才生成邀请并在内存立即转交。不要并行
+启动争用同一原生输出的构建。Windows 仍受普通单实例约束，须先正常关闭既有应用；
+不得用合成入口参数绕开实例锁，也不得强杀正在安全收尾的进程。
+系统若枚举出多个私有地址接口，可先只读核实物理局域网接口，再通过临时环境变量
+`NSOALBUM_REAL_NOOP_INTERFACE` 指定其精确接口名。它仍须在正式候选中唯一匹配，
+不接受任意监听地址，不改系统网络设置，也不对缺失或多地址情况自动回退猜测。
+
+矩阵为 Wi-Fi、USB 各双向三轮。两端必须先通过绑定预览的 Rust 无变化保护，接收端
+应用前再检查。除普通方向性 no-op 外，还比较同步业务投影；录入/拍摄时间、备注、
+收藏、标签、相册、来源等存在差异即停止，不自动对齐。0 KB 本身不证明内容相同。
+USB 仍需手机文件传输模式和正式 SAF 目录授权。
+
+报告只保留白名单数字和固定状态。邀请、确认码、认证调试地址和原始 machine 流
+不写文件或终端。双方成功且安全清理完成才记有效轮次；缺少指标或未执行阶段不补零。
+原生阶段可能嵌套，不能相加冒充总耗时。规格与验收边界见
+`docs/design/device-sync-real-noop-benchmark.md`。
+
+结束后重新构建普通 `lib/main.dart` Windows/Android Debug，Android 覆盖安装保留数据；
+核对实际入口与原生库来源后再交回日常使用。构建通过、合成测试通过和真实测速结果
+分别记账，Debug 用时不能作为 Release 性能结论。
 
 ### Windows WebView DLL 生命周期
 
@@ -315,7 +374,7 @@ Remove-Item Env:NSO_VERIFY_WINDOWS_WEBVIEW_LOADER, Env:NSO_WINDOWS_WEBVIEW_BUNDL
   -PreloadProvider
 ```
 
-先按仓库本地构建约定设置 `$buildRoot`，输出目录必须已存在且位于该根内。
+维护者先按本地构建约定设置 `$buildRoot`；输出目录必须已存在且位于该根内。
 脚本要求 PowerShell 7。探针使用 Debug C++ 运行库、真实 Windows SDK 与独立 DLL，不创建 UI、不初始化
 Flutter/Rust、不访问任何应用账号或个人库；动态加载负对照可能故意以原生异常
 退出，不代表正式应用已修复。报告保存实测退出码，SDK 初始化失败不能作为
@@ -340,7 +399,7 @@ flutter run -d windows --debug --no-pub `
   -t test/windows_sync_notifications_device_test.dart
 ```
 
-遵守仓库固定 C 盘输出约定，先确认没有用户应用实例。此入口不得附加
+遵守维护者工作站的本地构建目录约定，并先确认没有用户应用实例。此入口不得附加
 `--ci-smoke`，因为该 runner 模式有意禁止系统通知注册。普通宿主套件
 明确 skip，系统通知关闭/不支持时保留实际失败，不能以模拟成功代替。
 COM 激活是系统回调路径验收，不等同于人工点击通知横幅；结束后核对测试
@@ -444,7 +503,7 @@ macOS 的 SwiftPM binary artifact / CocoaPods 缓存按架构、Xcode、Flutter
    Release 和 Cargokit 分别缓存其编译目录，不混用 Debug DLL。MSBuild 环境
    变化可能让 C 依赖重编译；不强行共享指纹或压制 Cargo 的失效判断。
    发布 DLL 仍使用本次显式 Release 构建结果替换并逐项核对。
-2. `Verify and package <platform>`：只下载当前 workflow run 的对应中间
+2. `Verify and package <platform>`：CI runner 只获取当前 workflow run 的对应中间
    artifact，验证提交、版本、构建号、平台和全部文件 SHA-256，拒绝缺失/
    新增文件和越界链接。tar 只作为内部传输容器，保留 macOS framework 链接和
    执行权限，不是用户发布包。随后重新检查签名、依赖和架构，执行原生
@@ -596,10 +655,10 @@ gh workflow run validate.yml --ref dev \
 合入 `main` 后，现有 Validate 自动生成 Windows Inno 安装器及两种 macOS DMG，
 复用该次验证中的构建产物，不额外触发构建工作流。PR 仍执行完整原生门禁，
 但不自动编译 Inno；手动运行继续由 `package_installer` 控制。
-测试安装包可在该次 Actions 运行的 `native-windows-x64`、
-`native-macos-arm64` 和 `native-macos-x64` artifacts 中下载，保留 7 天。
-下载前须确认整个工作流和 `Required validation` 成功；某个平台先上传了
-artifact 不代表其他平台或完整验证已通过。
+该次 Actions 运行可在 GitHub 上保留 `native-windows-x64`、
+`native-macos-arm64` 和 `native-macos-x64` 等测试 artifacts；它们只表示该平台
+已完成其上传步骤，不代表其他平台或完整验证已通过。核验 CI 时查看 GitHub
+上的产物元数据，不在本机下载包体。
 
 测试产物仅上传 Actions artifacts，没有 publish job、写入 Release 权限或标签
 操作。`package_installer=false` 仍执行完整签名/测试/运行检查，只省略 Inno 编译。

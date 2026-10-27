@@ -167,6 +167,21 @@ Future<EndpointRead> deviceSyncReadEndpoint({required String endpoint}) =>
 Future<PreviewRead> deviceSyncReadPreview({required String endpoint}) =>
     RustLib.instance.api.crateBridgeDeviceSyncReadPreview(endpoint: endpoint);
 
+/// Debug acceptance-test guard; non-Debug binaries reject before endpoint lookup.
+Future<bool> deviceSyncBenchmarkRequireNoop({
+  required String endpoint,
+  required String binding,
+}) => RustLib.instance.api.crateBridgeDeviceSyncBenchmarkRequireNoop(
+  endpoint: endpoint,
+  binding: binding,
+);
+
+/// Fixed-field measurements are available only after successful safe cleanup.
+Future<String?> deviceSyncBenchmarkMetrics({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncBenchmarkMetrics(
+      endpoint: endpoint,
+    );
+
 Future<ConflictPageRead> deviceSyncReadConflicts({
   required String endpoint,
   required String binding,

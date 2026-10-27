@@ -15,6 +15,123 @@ struct Pair {
 }
 
 #[tokio::test]
+async fn benchmark_managed_tcp_and_usb_finish_only_after_real_owner_cleanup() {
+    let _serial = owner_test_tools::SERIAL.lock().await;
+    for usb in [false, true] {
+        let pair = if usb { Pair::usb() } else { Pair::tcp() };
+        let source = owner_test_tools::runtime_api(&pair.libraries[0]);
+        let target = owner_test_tools::runtime_api(&pair.libraries[1]);
+        source
+            .create_album("Synthetic shared".into(), String::new(), false)
+            .unwrap();
+        let mut first = super::super::receiver::ReceiveOperation::prepare(
+            target.database(),
+            super::super::receiver::Snapshot::read(&source.database(), "Desktop").unwrap(),
+            "Phone",
+            SyncMode::Merge,
+        )
+        .unwrap();
+        let mut authorization = first.authorize().unwrap();
+        first
+            .apply(
+                Some(&mut authorization),
+                None,
+                &CancellationToken::default(),
+                &mut |_| {},
+            )
+            .unwrap();
+        pair.wait(|| {
+            read_endpoint(&pair.endpoints[1])
+                .value
+                .is_some_and(|view| view.pairing == PairingStage::AwaitingConfirmation)
+        })
+        .await;
+        command(&pair.endpoints[1], |driver| driver.confirm_pairing())
+            .await
+            .unwrap();
+        pair.wait(|| {
+            pair.endpoints
+                .iter()
+                .all(|endpoint| status(endpoint).unwrap().state == "Configuring")
+        })
+        .await;
+        command(&pair.endpoints[1], |driver| {
+            driver.configure(Direction::DesktopToPhone, SyncMode::Merge, false)
+        })
+        .await
+        .unwrap();
+        pair.wait(|| {
+            pair.endpoints
+                .iter()
+                .all(|endpoint| status(endpoint).unwrap().state == "AwaitingApproval")
+        })
+        .await;
+        let generation = target.database().device_sync_header().unwrap().generation;
+        for endpoint in &pair.endpoints {
+            let binding = status(endpoint).unwrap().binding.unwrap();
+            assert!(
+                crate::bridge::device_sync_benchmark_require_noop(endpoint.clone(), binding)
+                    .await
+                    .unwrap()
+            );
+            pair.wait(|| {
+                matches!(
+                    crate::bridge::device_sync_benchmark_metrics(endpoint.clone()),
+                    Ok(None)
+                )
+            })
+            .await;
+        }
+        let binding = status(&pair.endpoints[1]).unwrap().binding.unwrap();
+        command(&pair.endpoints[1], move |driver| {
+            driver.approve_controlled_preview(&binding)
+        })
+        .await
+        .unwrap();
+        pair.wait(|| {
+            pair.endpoints
+                .iter()
+                .all(|endpoint| benchmark_metrics(endpoint).ok().flatten().is_some())
+        })
+        .await;
+        assert_eq!(
+            target.database().device_sync_header().unwrap().generation,
+            generation
+        );
+        let source_result = read_benchmark(&pair, &pair.endpoints[0]).await;
+        let target_result = read_benchmark(&pair, &pair.endpoints[1]).await;
+        assert!(source_result.contains("benchmark_noop_armed=1"));
+        assert!(target_result.contains("strict_noop_applied=1"));
+        assert!(target_result.contains("media_bytes=0"));
+        if usb {
+            for endpoint in &pair.endpoints {
+                let view = usb_view(endpoint).unwrap();
+                assert!(view.closed);
+                assert_eq!(
+                    view.reason,
+                    Some(super::super::usb::UsbCloseReason::Success)
+                );
+            }
+        }
+    }
+}
+
+async fn read_benchmark(pair: &Pair, endpoint: &str) -> String {
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(Some(record)) = benchmark_metrics(endpoint) {
+            return record;
+        }
+        assert!(
+            Instant::now() < until,
+            "benchmark read deadline: {:?}",
+            status(&pair.endpoints[1])
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+}
+
+#[tokio::test]
 async fn runtime_local_transport_only_signal_preserves_real_external_journal() {
     let _serial = owner_test_tools::SERIAL.lock().await;
     let pair = Pair::usb();

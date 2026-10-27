@@ -58,7 +58,7 @@ void main() {
             of: card,
             matching: find.text('My regular album note'),
           ),
-          findsOneWidget,
+          findsNothing,
         );
         for (final entry in [
           (3, language == 'zh' ? '来源：Phone' : 'Source: Phone'),
@@ -97,7 +97,7 @@ void main() {
             of: smartCard,
             matching: find.text('My smart album note'),
           ),
-          findsOneWidget,
+          findsNothing,
         );
         await tester.scrollUntilVisible(
           card,

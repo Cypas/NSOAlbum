@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod account_tests;
 pub mod accounts;
+pub(crate) mod benchmark;
 pub mod clock;
 pub mod connection;
 pub(crate) mod diagnostics;

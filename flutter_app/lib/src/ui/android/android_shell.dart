@@ -16,6 +16,7 @@ import 'android_library_page.dart';
 import 'android_settings_page.dart';
 import 'android_transfer_page.dart';
 import 'android_page_frame.dart';
+import '../active_page_host.dart';
 
 class AndroidShell extends StatefulWidget {
   const AndroidShell({
@@ -171,7 +172,7 @@ class _AndroidShellState extends State<AndroidShell> {
             onGenerateRoute: (_) => MaterialPageRoute<void>(
               builder: (context) => ValueListenableBuilder<int>(
                 valueListenable: destination,
-                builder: (context, value, _) => IndexedStack(
+                builder: (context, value, _) => FadeIndexedPageHost(
                   index: value,
                   children: [
                     AndroidLibraryPage(
@@ -201,7 +202,8 @@ class _AndroidShellState extends State<AndroidShell> {
             ),
           ),
         ),
-        bottomNavigationBar: !atRoot
+        bottomNavigationBar:
+            !atRoot || MediaQuery.viewInsetsOf(context).bottom > 0
             ? null
             : NavigationBar(
                 selectedIndex: selected,

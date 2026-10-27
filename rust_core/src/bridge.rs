@@ -135,6 +135,23 @@ pub fn device_sync_read_endpoint(endpoint: String) -> EndpointRead {
 pub fn device_sync_read_preview(endpoint: String) -> PreviewRead {
     headless::read_preview(&endpoint)
 }
+/// Debug acceptance-test guard; non-Debug binaries reject before endpoint lookup.
+pub async fn device_sync_benchmark_require_noop(
+    endpoint: String,
+    binding: String,
+) -> Result<bool, DeviceCommandError> {
+    if !cfg!(debug_assertions) {
+        return Err(DeviceCommandError::rejected(ReadError::PermissionDenied));
+    }
+    headless::command(&endpoint, move |driver| {
+        driver.benchmark_require_noop(&binding)
+    })
+    .await
+}
+/// Fixed-field measurements are available only after successful safe cleanup.
+pub fn device_sync_benchmark_metrics(endpoint: String) -> Result<Option<String>, ReadError> {
+    headless::benchmark_metrics(&endpoint)
+}
 pub fn device_sync_read_conflicts(
     endpoint: String,
     binding: String,

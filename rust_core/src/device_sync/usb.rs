@@ -934,7 +934,7 @@ fn native_error(error: NativeError) -> ReadError {
             ReadError::InvalidInput
         }
         NativeError::WindowFull => ReadError::WindowFull,
-        NativeError::Unavailable => ReadError::Unavailable,
+        NativeError::NoMtpCandidate | NativeError::Unavailable => ReadError::Unavailable,
         NativeError::Closed | NativeError::Io => ReadError::Disconnected,
         NativeError::Timeout => ReadError::Timeout,
     }

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:squid_album/main.dart';
+import 'package:squid_album/src/state/settings_copy.dart';
 import 'package:squid_album/src/ui/platform_ui.dart';
 import 'package:squid_album/src/ui/android/android_settings_page.dart';
 import 'package:squid_album/src/rust/models.dart';
@@ -24,10 +25,82 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('标签紧凑展示'), findsNothing);
     expect(find.text('Compact tags'), findsNothing);
+    expect(find.text('显示备注摘要'), findsNothing);
+    expect(find.text('Show note previews'), findsNothing);
+    expect(
+      find.byKey(const Key('android-storage-permission-card')),
+      findsNothing,
+    );
+    expect(find.byKey(const Key('android-storage-permission')), findsNothing);
+    expect(find.byKey(const Key('android-storage-card')), findsNothing);
+    expect(find.byKey(const Key('android-storage-location')), findsNothing);
     expect(find.textContaining('图库路径：'), findsNothing);
     expect(find.textContaining('Library:'), findsNothing);
     expect(tester.takeException(), isNull);
   }, variant: TargetPlatformVariant({TargetPlatform.android}));
+
+  for (final language in ['zh', 'en']) {
+    testWidgets(
+      'Android settings uses rounded sections and compact language options in $language at large text',
+      (tester) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = const Size(360, 800);
+        tester.platformDispatcher.textScaleFactorTestValue = 2;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+        final backend = FakeBackend(mediaItems: []);
+        backend.settings = copyAppSettings(
+          backend.settings,
+          language: language,
+        );
+        await tester.pumpWidget(
+          SquidAlbumApp(backend: backend, uiPlatform: AppUiPlatform.android),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byType(NavigationDestination).at(3));
+        await tester.pumpAndSettle();
+
+        final appearanceCard = find.byKey(
+          const Key('android-appearance-settings-card'),
+        );
+        final displayCard = find.byKey(
+          const Key('android-display-settings-card'),
+        );
+        expect(appearanceCard, findsOneWidget);
+        expect(displayCard, findsOneWidget);
+        expect(
+          tester.widget<Card>(appearanceCard).shape,
+          isA<RoundedRectangleBorder>(),
+        );
+        final appearanceShape =
+            tester.widget<Card>(appearanceCard).shape as RoundedRectangleBorder;
+        final appearanceRadius = appearanceShape.borderRadius as BorderRadius;
+        expect(appearanceRadius.topLeft.x, 16);
+        expect(
+          tester.widget<Card>(displayCard).shape,
+          isA<RoundedRectangleBorder>(),
+        );
+        expect(
+          find.byKey(const Key('android-storage-permission-card')),
+          findsNothing,
+        );
+        expect(find.byKey(const Key('android-storage-card')), findsNothing);
+
+        final languageField = find.byType(DropdownButtonFormField<String>);
+        await tester.ensureVisible(languageField);
+        await tester.tap(languageField);
+        await tester.pumpAndSettle();
+        final englishOption = find.text('English').last;
+        expect(englishOption, findsOneWidget);
+        expect(tester.widget<Text>(englishOption).style?.fontSize, 14);
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+      },
+      variant: TargetPlatformVariant({TargetPlatform.android}),
+    );
+  }
 
   testWidgets('one media per row is saved and used in library and albums', (
     tester,

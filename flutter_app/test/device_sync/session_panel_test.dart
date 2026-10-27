@@ -444,7 +444,10 @@ void main() {
         ),
       );
       finish.complete();
-      await tester.pumpAndSettle();
+      // Verifying now exposes an honest indeterminate stage bar, so there is
+      // intentionally an active ticker; one frame is enough to observe the
+      // queued action being dropped.
+      await tester.pump();
       expect(session.approvalCalls, 1);
       expect(session.approvals, isEmpty);
       await tester.pumpWidget(const SizedBox.shrink());
@@ -553,6 +556,65 @@ void main() {
       await tester.pump();
       expect(find.text('Transferred 0.02 KB / 0.1 KB'), findsOneWidget);
       expect(find.text('Current speed: 0.02 KB/s'), findsOneWidget);
+    },
+  );
+  testWidgets(
+    'stage progress remains visible while native work counters are temporarily idle',
+    (tester) async {
+      final semantics = tester.ensureSemantics();
+      const stages = [
+        driver.State.scanning,
+        driver.State.comparing,
+        driver.State.verifying,
+        driver.State.applying,
+      ];
+      for (final language in ['zh', 'en']) {
+        for (final stage in stages) {
+          final session = PanelSession()
+            ..state = endpoint(
+              stage,
+              transferProgress: read.ProgressView(
+                workStage: WorkStage.idle,
+                workActive: false,
+                scannedItems: BigInt.zero,
+              ),
+            );
+          await tester.pumpWidget(panelApp(session, language: language));
+
+          final progress = find.byKey(const Key('device-stage-progress'));
+          expect(progress, findsOneWidget);
+          expect(
+            find.byKey(const Key('device-stage-progress-bar')),
+            findsOneWidget,
+          );
+          expect(find.byKey(const Key('device-item-progress')), findsNothing);
+          expect(
+            tester.getSemantics(progress).label,
+            language == 'zh'
+                ? switch (stage) {
+                    driver.State.scanning => '正在扫描图库，正在处理',
+                    driver.State.comparing => '正在比较图库，正在处理',
+                    driver.State.verifying => '正在校验，正在处理',
+                    driver.State.applying => '正在应用更改，正在处理',
+                    _ => '',
+                  }
+                : switch (stage) {
+                    driver.State.scanning => 'Scanning library, in progress',
+                    driver.State.comparing =>
+                      'Comparing libraries, in progress',
+                    driver.State.verifying => 'Verifying, in progress',
+                    driver.State.applying => 'Applying changes, in progress',
+                    _ => '',
+                  },
+          );
+          expect(
+            tester.getSemantics(progress).flagsCollection.isLiveRegion,
+            isTrue,
+          );
+          await tester.pumpWidget(const SizedBox.shrink());
+        }
+      }
+      semantics.dispose();
     },
   );
   testWidgets(

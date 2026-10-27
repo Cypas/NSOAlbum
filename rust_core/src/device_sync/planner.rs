@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::manifest::*;
+use super::source_names::SourceDescriptions;
 use crate::error::CoreResult;
 
 pub const MAX_ALBUM_EVALUATION_WORK_UNITS: usize = 32_000_000;
@@ -395,6 +396,39 @@ pub fn build_plan_controlled(
 }
 
 impl SyncPlan {
+    pub(crate) fn is_strict_noop(
+        &self,
+        source: &Manifest,
+        target: &Manifest,
+        source_sources: &SourceDescriptions,
+        target_sources: &SourceDescriptions,
+    ) -> bool {
+        if self.account_authorization.is_some()
+            || !self.conflicts.is_empty()
+            || self
+                .media
+                .iter()
+                .any(|decision| decision.action != Action::Keep || decision.revision_only)
+            || self
+                .albums
+                .iter()
+                .any(|decision| decision.action != Action::Keep || decision.revision_only)
+        {
+            return false;
+        }
+        let (Ok(source), Ok(target)) = (source.validate(), target.validate()) else {
+            return false;
+        };
+        source.tags == target.tags
+            && source.mappings == target.mappings
+            && source_descriptions_are_strict_noop(
+                &source.header.library_uuid,
+                &target.header.library_uuid,
+                source_sources,
+                target_sources,
+            )
+    }
+
     pub fn verify_against(&self, source: &Manifest, target: &Manifest) -> CoreResult<()> {
         self.verify_controlled(source, target, &super::work::WorkControl::default())
     }
@@ -409,6 +443,49 @@ impl SyncPlan {
         }
         Ok(())
     }
+}
+
+/// Returns whether applying the source descriptions would leave the target's
+/// persisted source-name catalog unchanged.
+///
+/// `receiver_source_names` always preserves an existing forwarded name and
+/// skips an entry whose UUID is the target library. Every other source entry
+/// must already be represented by the target snapshot because an absent row
+/// would be inserted by the apply SQL. The source library's own name is also
+/// compared when present on both sides; forwarded display names intentionally
+/// remain target-owned.
+fn source_descriptions_are_strict_noop(
+    source_library_uuid: &str,
+    target_library_uuid: &str,
+    source: &SourceDescriptions,
+    target: &SourceDescriptions,
+) -> bool {
+    for entry in &source.entries {
+        if entry.library_uuid == target_library_uuid {
+            continue;
+        }
+        if entry.library_uuid == source_library_uuid {
+            let Some(existing) = target
+                .entries
+                .iter()
+                .find(|candidate| candidate.library_uuid == entry.library_uuid)
+            else {
+                return false;
+            };
+            if existing.display_name != entry.display_name {
+                return false;
+            }
+            continue;
+        }
+        if !target
+            .entries
+            .iter()
+            .any(|candidate| candidate.library_uuid == entry.library_uuid)
+        {
+            return false;
+        }
+    }
+    true
 }
 
 struct Policy {
@@ -647,6 +724,7 @@ fn add_bytes(first: u64, second: u64) -> CoreResult<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::device_sync::source_names::{SourceDescription, SourceDescriptions};
     use crate::device_sync::work::{WorkControl, WorkStage};
 
     fn cancel_inside<T: Send>(
@@ -729,6 +807,141 @@ mod tests {
             build_plan(&source, &target, SyncMode::Merge).unwrap(),
             build_plan_controlled(&source, &target, SyncMode::Merge, None, &control).unwrap()
         );
+    }
+
+    #[test]
+    fn strict_noop_requires_identical_catalogs_and_only_keep_actions() {
+        let mut source = manifest(true);
+        let mut target = manifest(false);
+        let source_uuid = source.header.library_uuid.clone();
+        let shared_album = AlbumRecord {
+            uuid: "66666666-6666-4666-8666-666666666666".into(),
+            source_library_uuid: source_uuid.clone(),
+            name: "Forwarded".into(),
+            description: String::new(),
+            album_type: "manual".into(),
+            pinned: false,
+            system_key: None,
+            revision: None,
+        };
+        source
+            .records
+            .push(ManifestRecord::Album(shared_album.clone()));
+        target.records.push(ManifestRecord::Album(shared_album));
+        let plan = build_plan(&source, &target, SyncMode::Merge).unwrap();
+        let source_sources = SourceDescriptions::new(
+            &source,
+            vec![
+                SourceDescription::new(source.header.library_uuid.clone(), "Source".into())
+                    .unwrap(),
+            ],
+        )
+        .unwrap();
+        let target_sources = SourceDescriptions::new(
+            &target,
+            vec![
+                SourceDescription::new(target.header.library_uuid.clone(), "Target".into())
+                    .unwrap(),
+                SourceDescription::new(source_uuid, "Source".into()).unwrap(),
+            ],
+        )
+        .unwrap();
+        assert!(plan.is_strict_noop(&source, &target, &source_sources, &target_sources));
+
+        let mut changed = target.clone();
+        changed.records.push(ManifestRecord::Tag(TagRecord {
+            name: "changed".into(),
+            revision: None,
+            deleted: false,
+        }));
+        let changed_plan = build_plan(&source, &changed, SyncMode::Merge).unwrap();
+        let changed_sources = SourceDescriptions::new(
+            &changed,
+            vec![
+                SourceDescription::new(changed.header.library_uuid.clone(), "Target".into())
+                    .unwrap(),
+                SourceDescription::new(
+                    changed
+                        .records
+                        .iter()
+                        .find_map(|record| match record {
+                            ManifestRecord::Album(album)
+                                if album.uuid == "66666666-6666-4666-8666-666666666666" =>
+                            {
+                                Some(album.source_library_uuid.clone())
+                            }
+                            _ => None,
+                        })
+                        .unwrap(),
+                    "Source".into(),
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        assert!(!changed_plan.is_strict_noop(&source, &changed, &source_sources, &changed_sources));
+    }
+
+    #[test]
+    fn strict_noop_rejects_source_name_changes_and_new_forwarded_sources() {
+        let source_uuid = "11111111-1111-4111-8111-111111111111";
+        let target_uuid = "22222222-2222-4222-8222-222222222222";
+        let forwarded_uuid = "33333333-3333-4333-8333-333333333333";
+        let mut source = manifest(true);
+        let mut target = manifest(false);
+        source.records.push(ManifestRecord::Album(AlbumRecord {
+            uuid: "44444444-4444-4444-8444-444444444444".into(),
+            source_library_uuid: source_uuid.into(),
+            name: "Forwarded".into(),
+            description: String::new(),
+            album_type: "manual".into(),
+            pinned: false,
+            system_key: None,
+            revision: None,
+        }));
+        source.records.push(ManifestRecord::Album(AlbumRecord {
+            uuid: "55555555-5555-4555-8555-555555555555".into(),
+            source_library_uuid: forwarded_uuid.into(),
+            name: "Forwarded again".into(),
+            description: String::new(),
+            album_type: "manual".into(),
+            pinned: false,
+            system_key: None,
+            revision: None,
+        }));
+        target
+            .records
+            .extend(source.records.iter().skip(1).cloned());
+        let plan = build_plan(&source, &target, SyncMode::Merge).unwrap();
+
+        let source_sources = SourceDescriptions::new(
+            &source,
+            vec![
+                SourceDescription::new(source_uuid.into(), "Source".into()).unwrap(),
+                SourceDescription::new(forwarded_uuid.into(), "Forwarded source".into()).unwrap(),
+            ],
+        )
+        .unwrap();
+        let target_sources = SourceDescriptions::new(
+            &target,
+            vec![
+                SourceDescription::new(target_uuid.into(), "Target".into()).unwrap(),
+                SourceDescription::new(source_uuid.into(), "Source".into()).unwrap(),
+                SourceDescription::new(forwarded_uuid.into(), "Forwarded source".into()).unwrap(),
+            ],
+        )
+        .unwrap();
+        assert!(plan.is_strict_noop(&source, &target, &source_sources, &target_sources));
+
+        let mut renamed_source_sources = source_sources.clone();
+        renamed_source_sources.entries[0].display_name = "Renamed source".into();
+        assert!(!plan.is_strict_noop(&source, &target, &renamed_source_sources, &target_sources));
+
+        let mut target_without_forwarded = target_sources.clone();
+        target_without_forwarded
+            .entries
+            .retain(|entry| entry.library_uuid != forwarded_uuid);
+        assert!(!plan.is_strict_noop(&source, &target, &source_sources, &target_without_forwarded));
     }
 
     #[test]

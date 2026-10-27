@@ -33,12 +33,12 @@ gradle.projectsEvaluated {
                     commandLine(aapt.absolutePath, "dump", "badging", apk.absolutePath)
                 }
                 def badging = new String(dump.standardOutput.asBytes.get(), java.nio.charset.StandardCharsets.UTF_8)
-                for (def required in ["INTERNET", "POST_NOTIFICATIONS", "REQUEST_INSTALL_PACKAGES"]) {
+                for (def required in ["INTERNET", "POST_NOTIFICATIONS", "REQUEST_INSTALL_PACKAGES", "MANAGE_EXTERNAL_STORAGE"]) {
                     if (!badging.contains("uses-permission: name='android.permission.${required}'")) {
                         throw new GradleException("Final Release APK is missing ${required}")
                     }
                 }
-                for (def denied in ["MANAGE_EXTERNAL_STORAGE", "FOREGROUND_SERVICE"]) {
+                for (def denied in ["FOREGROUND_SERVICE"]) {
                     if (badging.contains("uses-permission: name='android.permission.${denied}'")) {
                         throw new GradleException("Final Release APK must not request ${denied}")
                     }

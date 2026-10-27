@@ -1,5 +1,6 @@
 import 'dart:async';
-import 'dart:typed_data';
+
+import 'package:flutter/services.dart';
 
 import 'package:flutter/material.dart';
 
@@ -23,6 +24,12 @@ String? normalizeNintendoFriendCode(String input) {
   return digits.length == 12 ? digits : null;
 }
 
+String formatNintendoFriendCode(String input) {
+  final digits = normalizeNintendoFriendCode(input);
+  if (digits == null) return input;
+  return 'SW-${digits.substring(0, 4)}-${digits.substring(4, 8)}-${digits.substring(8)}';
+}
+
 String formatFriendLastOnline(
   DateTime value, {
   DateTime? now,
@@ -30,10 +37,22 @@ String formatFriendLastOnline(
 }) {
   final current = (now ?? DateTime.now()).toLocal();
   final local = value.toLocal();
-  final days = current.difference(local).inDays;
+  final elapsed = current.difference(local);
+  final minutes = elapsed.inMinutes.clamp(1, 1 << 31);
+  if (minutes < 60) {
+    return english
+        ? '$minutes ${minutes == 1 ? 'minute' : 'minutes'} ago'
+        : '$minutes分钟前';
+  }
+  final hours = minutes ~/ 60;
+  if (hours < 24) {
+    return english
+        ? '$hours ${hours == 1 ? 'hour' : 'hours'} ago'
+        : '$hours小时前';
+  }
+  final days = hours ~/ 24;
   if (days < 30) {
-    if (days <= 0) return english ? 'Today' : '今天在线';
-    return english ? '$days days ago' : '$days 天前在线';
+    return english ? '$days ${days == 1 ? 'day' : 'days'} ago' : '$days天前在线';
   }
   return formatUserDateTime(local);
 }
@@ -101,49 +120,35 @@ class _NintendoFriendsPageState extends State<NintendoFriendsPage> {
   }
 
   Future<void> addFriend() async {
-    final codeOperation = accountToolOperationId('friend-code');
-    try {
-      final own = await widget.backend.loadNintendoFriendCode(
-        widget.profile.accountId,
-        codeOperation,
-      );
+    if (!mounted) return;
+    final requestedFriendId = await showDialog<String>(
+      context: context,
+      builder: (context) => _AddFriendDialog(
+        backend: widget.backend,
+        accountId: widget.profile.accountId,
+        friendsSnapshot: snapshot,
+      ),
+    );
+    if (requestedFriendId != null && mounted) {
+      await load();
       if (!mounted) return;
-      final requestedFriendId = await showDialog<String>(
-        context: context,
-        builder: (context) => _AddFriendDialog(
-          backend: widget.backend,
-          accountId: widget.profile.accountId,
-          ownCode: own.friendCode,
+      final nowFriends =
+          snapshot?.friends.any(
+            (friend) => friend.friendId == requestedFriendId,
+          ) ==
+          true;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            nowFriends
+                ? context.l10n.select(zh: '已成为好友。', en: 'You are now friends.')
+                : context.l10n.select(
+                    zh: '好友申请已发送。',
+                    en: 'Friend request sent.',
+                  ),
+          ),
         ),
       );
-      if (requestedFriendId != null && mounted) {
-        await load();
-        if (!mounted) return;
-        final nowFriends =
-            snapshot?.friends.any(
-              (friend) => friend.friendId == requestedFriendId,
-            ) ==
-            true;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              nowFriends
-                  ? context.l10n.select(
-                      zh: '已成为好友。',
-                      en: 'You are now friends.',
-                    )
-                  : context.l10n.select(
-                      zh: '好友申请已发送。',
-                      en: 'Friend request sent.',
-                    ),
-            ),
-          ),
-        );
-      }
-    } catch (failure) {
-      if (mounted) androidMessage(context, failure);
-    } finally {
-      unawaited(cancelAccountToolQuietly(widget.backend, codeOperation));
     }
   }
 
@@ -159,16 +164,32 @@ class _NintendoFriendsPageState extends State<NintendoFriendsPage> {
 
   @override
   Widget build(BuildContext context) {
-    final friends = [...?snapshot?.friends]
+    final friends = [...?snapshot?.friends];
+    int byName(NintendoFriend a, NintendoFriend b) {
+      final name = a.nickname.compareTo(b.nickname);
+      return name == 0 ? a.friendId.compareTo(b.friendId) : name;
+    }
+
+    final sortedFriends = [...friends]
       ..sort((a, b) {
         final favorite = (b.isFavorite ? 1 : 0) - (a.isFavorite ? 1 : 0);
         if (favorite != 0) return favorite;
-        final name = a.nickname.compareTo(b.nickname);
-        return name == 0 ? a.friendId.compareTo(b.friendId) : name;
+        return byName(a, b);
       });
-    final online = friends.where((f) => f.presence == 'ONLINE').toList();
-    final offline = friends.where((f) => f.presence != 'ONLINE').toList();
-    final favorites = friends.where((f) => f.isFavorite).toList();
+    final online = sortedFriends.where((f) => f.presence == 'ONLINE').toList()
+      ..sort(byName);
+    final offline = sortedFriends.where((f) => f.presence != 'ONLINE').toList()
+      ..sort((a, b) {
+        final aLogout = a.logoutAt;
+        final bLogout = b.logoutAt;
+        if (aLogout == null && bLogout == null) return byName(a, b);
+        if (aLogout == null) return 1;
+        if (bLogout == null) return -1;
+        final time = bLogout.compareTo(aLogout);
+        return time == 0 ? byName(a, b) : time;
+      });
+    final favorites = sortedFriends.where((f) => f.isFavorite).toList()
+      ..sort(byName);
     final list = CustomScrollView(
       physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
@@ -230,105 +251,79 @@ class _NintendoFriendsPageState extends State<NintendoFriendsPage> {
             'offline',
           ),
         ]) ...[
-          SliverToBoxAdapter(
-            child: ListTile(
-              title: DecoratedBox(
-                key: Key('friend-group-bubble-${group.$4}'),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(18),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 7,
-                  ),
-                  child: widget.mobile
-                      ? Row(
-                          mainAxisSize: MainAxisSize.max,
-                          children: [
-                            Flexible(
-                              child: Text(
-                                group.$3,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: Theme.of(context).textTheme.titleSmall,
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              '· ${group.$1.length}',
-                              key: Key('friend-group-count-${group.$4}'),
-                              style: Theme.of(context).textTheme.labelMedium
-                                  ?.copyWith(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
+          SliverMainAxisGroup(
+            key: Key('friend-group-bubble-${group.$4}'),
+            slivers: [
+              SliverLayoutBuilder(
+                builder: (context, constraints) {
+                  final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
+                  final minCardWidth = widget.mobile ? 120.0 : 160.0;
+                  final columns =
+                      (constraints.crossAxisExtent /
+                              (minCardWidth * scale.clamp(1, 2)))
+                          .floor()
+                          .clamp(1, 8);
+                  final rows = (group.$1.length / columns).ceil();
+                  return SliverList.builder(
+                    itemCount: group.$2 ? rows + 1 : 1,
+                    itemBuilder: (context, row) {
+                      if (row == 0) {
+                        return _FriendGroupHeader(
+                          title: group.$3,
+                          count: group.$1.length,
+                          groupId: group.$4,
+                          mobile: widget.mobile,
+                          expanded: group.$2,
+                          onTap: () => setState(() {
+                            if (group.$4 == 'favorites') {
+                              favoritesExpanded = !favoritesExpanded;
+                            } else if (group.$4 == 'online') {
+                              onlineExpanded = !onlineExpanded;
+                            } else if (group.$4 == 'offline') {
+                              offlineExpanded = !offlineExpanded;
+                            }
+                          }),
+                          bottomRadius: !group.$2 || rows == 0,
+                        );
+                      }
+                      final cardRow = row - 1;
+                      return _FriendGroupRow(
+                        bottomRadius: cardRow == rows - 1,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 4,
+                            vertical: 4,
+                          ),
+                          child: IntrinsicHeight(
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                for (var column = 0; column < columns; column++)
+                                  Expanded(
+                                    child:
+                                        cardRow * columns + column <
+                                            group.$1.length
+                                        ? _FriendTile(
+                                            friend: group
+                                                .$1[cardRow * columns + column],
+                                            accountId: widget.profile.accountId,
+                                            backend: widget.backend,
+                                            mobile: widget.mobile,
+                                            onChanged: load,
+                                          )
+                                        : const SizedBox.shrink(),
                                   ),
+                              ],
                             ),
-                          ],
-                        )
-                      : Text(
-                          group.$3,
-                          style: Theme.of(context).textTheme.titleMedium,
+                          ),
                         ),
-                ),
+                      );
+                    },
+                  );
+                },
               ),
-              trailing: Icon(group.$2 ? Icons.expand_less : Icons.expand_more),
-              onTap: () => setState(() {
-                if (group.$4 == 'favorites') {
-                  favoritesExpanded = !favoritesExpanded;
-                } else if (group.$4 == 'online') {
-                  onlineExpanded = !onlineExpanded;
-                } else if (group.$4 == 'offline') {
-                  offlineExpanded = !offlineExpanded;
-                }
-              }),
-            ),
+            ],
           ),
-          if (group.$2)
-            SliverLayoutBuilder(
-              builder: (context, constraints) {
-                final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
-                final minCardWidth = widget.mobile ? 120.0 : 160.0;
-                final columns =
-                    (constraints.crossAxisExtent /
-                            (minCardWidth * scale.clamp(1, 2)))
-                        .floor()
-                        .clamp(1, 8);
-                return SliverList.builder(
-                  itemCount: (group.$1.length / columns).ceil(),
-                  itemBuilder: (context, row) => Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 4,
-                      vertical: 4,
-                    ),
-                    child: IntrinsicHeight(
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          for (var column = 0; column < columns; column++)
-                            Expanded(
-                              child: row * columns + column < group.$1.length
-                                  ? _FriendTile(
-                                      key: ValueKey(
-                                        '${widget.profile.accountId}:${group.$1[row * columns + column].friendId}',
-                                      ),
-                                      friend: group.$1[row * columns + column],
-                                      accountId: widget.profile.accountId,
-                                      backend: widget.backend,
-                                      mobile: widget.mobile,
-                                      onChanged: load,
-                                    )
-                                  : const SizedBox.shrink(),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
         ],
       ],
     );
@@ -354,15 +349,103 @@ class _NintendoFriendsPageState extends State<NintendoFriendsPage> {
   }
 }
 
+class _FriendGroupHeader extends StatelessWidget {
+  const _FriendGroupHeader({
+    required this.title,
+    required this.count,
+    required this.groupId,
+    required this.mobile,
+    required this.expanded,
+    required this.onTap,
+    required this.bottomRadius,
+  });
+
+  final String title;
+  final int count;
+  final String groupId;
+  final bool mobile;
+  final bool expanded;
+  final VoidCallback onTap;
+  final bool bottomRadius;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      key: Key('friend-group-header-bubble-$groupId'),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Material(
+        type: MaterialType.transparency,
+        child: ListTile(
+          key: Key('friend-group-header-$groupId'),
+          dense: mobile,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 14),
+          title: Row(
+            children: [
+              Flexible(
+                child: Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: mobile
+                      ? Theme.of(context).textTheme.titleSmall
+                      : Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '· $count',
+                key: Key('friend-group-count-$groupId'),
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+          trailing: IconButton(
+            key: Key('friend-group-toggle-$groupId'),
+            tooltip: expanded
+                ? context.l10n.select(zh: '收起', en: 'Collapse')
+                : context.l10n.select(zh: '展开', en: 'Expand'),
+            onPressed: onTap,
+            icon: Icon(expanded ? Icons.expand_less : Icons.expand_more),
+          ),
+          onTap: onTap,
+        ),
+      ),
+    );
+  }
+}
+
+class _FriendGroupRow extends StatelessWidget {
+  const _FriendGroupRow({required this.child, required this.bottomRadius});
+
+  final Widget child;
+  final bool bottomRadius;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.vertical(
+        bottom: bottomRadius ? const Radius.circular(18) : Radius.zero,
+      ),
+    ),
+    child: child,
+  );
+}
+
 class _AddFriendDialog extends StatefulWidget {
   const _AddFriendDialog({
     required this.backend,
     required this.accountId,
-    required this.ownCode,
+    required this.friendsSnapshot,
   });
   final NintendoAccountToolsBackend backend;
   final String accountId;
-  final String ownCode;
+  final NintendoFriendsSnapshot? friendsSnapshot;
 
   @override
   State<_AddFriendDialog> createState() => _AddFriendDialogState();
@@ -371,16 +454,68 @@ class _AddFriendDialog extends StatefulWidget {
 class _AddFriendDialogState extends State<_AddFriendDialog> {
   final code = TextEditingController();
   final operations = <String>{};
+  String? ownCode;
+  Object? ownCodeError;
+  bool ownCodeBusy = true;
   NintendoFriendCodeUser? preview;
   String? previewCode;
   bool? alreadyFriend;
   Object? error;
-  bool busy = false;
+  bool lookupBusy = false;
+  bool sendBusy = false;
   bool invalidCode = false;
   bool ownAccount = false;
+  int lookupGeneration = 0;
+  String? activeLookupOperation;
+
+  bool get busy => lookupBusy || sendBusy;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadOwnCode());
+  }
+
+  Future<void> _loadOwnCode() async {
+    final operation = accountToolOperationId('friend-code');
+    operations.add(operation);
+    if (mounted) {
+      setState(() {
+        ownCodeBusy = true;
+        ownCodeError = null;
+      });
+    }
+    try {
+      final result = await widget.backend.loadNintendoFriendCode(
+        widget.accountId,
+        operation,
+      );
+      if (!mounted) return;
+      setState(() {
+        ownCode = normalizeNintendoFriendCode(result.friendCode);
+        ownCodeBusy = false;
+        ownCodeError = null;
+        if (ownCode != null && previewCode != null && ownCode == previewCode) {
+          ownAccount = true;
+          alreadyFriend = null;
+        }
+      });
+    } catch (failure) {
+      if (mounted) {
+        setState(() {
+          ownCodeBusy = false;
+          ownCodeError = failure;
+        });
+      }
+    } finally {
+      unawaited(cancelAccountToolQuietly(widget.backend, operation));
+      operations.remove(operation);
+    }
+  }
 
   @override
   void dispose() {
+    lookupGeneration++;
     for (final operation in operations) {
       unawaited(cancelAccountToolQuietly(widget.backend, operation));
     }
@@ -388,8 +523,24 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
     super.dispose();
   }
 
+  void _invalidateLookup() {
+    lookupGeneration++;
+    final operation = activeLookupOperation;
+    activeLookupOperation = null;
+    if (operation != null) {
+      operations.remove(operation);
+      unawaited(cancelAccountToolQuietly(widget.backend, operation));
+    }
+    lookupBusy = false;
+    preview = null;
+    previewCode = null;
+    alreadyFriend = null;
+    error = null;
+    ownAccount = false;
+  }
+
   Future<void> lookup() async {
-    if (busy) return;
+    if (lookupBusy || sendBusy) return;
     final normalized = normalizeNintendoFriendCode(code.text);
     if (normalized == null) {
       setState(() {
@@ -398,7 +549,7 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
       });
       return;
     }
-    if (normalized == normalizeNintendoFriendCode(widget.ownCode)) {
+    if (normalized == ownCode) {
       setState(() {
         ownAccount = true;
         invalidCode = false;
@@ -410,10 +561,11 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
       return;
     }
     final operation = accountToolOperationId('friend-lookup');
-    final friendshipOperation = accountToolOperationId('friend-check');
-    operations.addAll([operation, friendshipOperation]);
+    operations.add(operation);
+    activeLookupOperation = operation;
+    final generation = ++lookupGeneration;
     setState(() {
-      busy = true;
+      lookupBusy = true;
       invalidCode = false;
       ownAccount = false;
       error = null;
@@ -428,26 +580,37 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
         operation,
       );
       if (!mounted) return;
-      setState(() => preview = result);
-      final friends = await widget.backend.loadNintendoFriends(
-        widget.accountId,
-        friendshipOperation,
-      );
-      if (mounted) {
-        setState(() {
-          alreadyFriend = friends.friends.any(
-            (friend) => friend.friendId == result.friendId,
-          );
-          previewCode = normalized;
-        });
+      if (generation != lookupGeneration ||
+          normalizeNintendoFriendCode(code.text) != normalized) {
+        return;
       }
+      final friends = widget.friendsSnapshot?.friends;
+      setState(() {
+        preview = result;
+        alreadyFriend = friends?.any(
+          (friend) => friend.friendId == result.friendId,
+        );
+        previewCode = normalized;
+        if (ownCode == normalized) {
+          ownAccount = true;
+          alreadyFriend = null;
+        }
+      });
     } catch (failure) {
-      if (mounted) setState(() => error = failure);
+      if (mounted && generation == lookupGeneration) {
+        setState(() => error = failure);
+      }
     } finally {
       unawaited(cancelAccountToolQuietly(widget.backend, operation));
-      unawaited(cancelAccountToolQuietly(widget.backend, friendshipOperation));
-      operations.removeAll([operation, friendshipOperation]);
-      if (mounted) setState(() => busy = false);
+      operations.remove(operation);
+      if (mounted && generation == lookupGeneration) {
+        setState(() {
+          lookupBusy = false;
+          if (activeLookupOperation == operation) {
+            activeLookupOperation = null;
+          }
+        });
+      }
     }
   }
 
@@ -456,13 +619,15 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
     if (target == null ||
         busy ||
         alreadyFriend != false ||
-        previewCode != normalizeNintendoFriendCode(code.text)) {
+        previewCode != normalizeNintendoFriendCode(code.text) ||
+        ownCode == null ||
+        ownAccount) {
       return;
     }
     final operation = accountToolOperationId('friend-request');
     operations.add(operation);
     setState(() {
-      busy = true;
+      sendBusy = true;
       error = null;
     });
     try {
@@ -478,7 +643,7 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
     } finally {
       unawaited(cancelAccountToolQuietly(widget.backend, operation));
       operations.remove(operation);
-      if (mounted) setState(() => busy = false);
+      if (mounted) setState(() => sendBusy = false);
     }
   }
 
@@ -490,24 +655,86 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            context.l10n.select(
-              zh: '我的 Switch 码：SW-${widget.ownCode}',
-              en: 'My Switch code: SW-${widget.ownCode}',
+          if (ownCodeBusy)
+            Row(
+              children: [
+                const SizedBox.square(
+                  dimension: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  context.l10n.select(
+                    zh: 'Switch码获取中...',
+                    en: 'Loading Switch code...',
+                  ),
+                ),
+              ],
+            )
+          else if (ownCodeError != null)
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    context.l10n.select(
+                      zh: 'Switch码获取失败',
+                      en: 'Could not load Switch code',
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: busy ? null : _loadOwnCode,
+                  child: Text(
+                    context.l10n.select(zh: '重试获取Switch码', en: 'Retry'),
+                  ),
+                ),
+              ],
+            )
+          else if (ownCode != null)
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    context.l10n.select(
+                      zh: '我的 Switch 码：${formatNintendoFriendCode(ownCode!)}',
+                      en: 'My Switch code: ${formatNintendoFriendCode(ownCode!)}',
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: context.l10n.select(
+                    zh: '复制Switch码',
+                    en: 'Copy Switch code',
+                  ),
+                  onPressed: () async {
+                    await Clipboard.setData(
+                      ClipboardData(text: formatNintendoFriendCode(ownCode!)),
+                    );
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            context.l10n.select(
+                              zh: '已复制Switch码',
+                              en: 'Switch code copied',
+                            ),
+                          ),
+                        ),
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.copy_outlined),
+                ),
+              ],
             ),
-          ),
           const SizedBox(height: 12),
           TextField(
             controller: code,
-            enabled: !busy,
+            enabled: !sendBusy,
             keyboardType: TextInputType.number,
             onChanged: (_) => setState(() {
-              preview = null;
-              previewCode = null;
-              alreadyFriend = null;
-              error = null;
+              _invalidateLookup();
               invalidCode = false;
-              ownAccount = false;
             }),
             decoration: InputDecoration(
               labelText: context.l10n.select(
@@ -534,7 +761,10 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
                   ? Text(context.l10n.select(zh: '已是好友', en: 'Already friends'))
                   : null,
             ),
-          if (ownAccount || invalidCode || error != null)
+          if (ownAccount ||
+              invalidCode ||
+              error != null ||
+              (preview != null && alreadyFriend == null))
             Text(
               ownAccount
                   ? context.l10n.select(
@@ -545,6 +775,11 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
                   ? context.l10n.select(
                       zh: '请输入 sw-xxxx-xxxx-xxxx 格式的好友码。',
                       en: 'Enter a friend code in the format sw-xxxx-xxxx-xxxx.',
+                    )
+                  : preview != null && alreadyFriend == null
+                  ? context.l10n.select(
+                      zh: '好友关系待核验，暂不能发送申请。',
+                      en: 'Friendship could not be verified yet.',
                     )
                   : androidReadableError(context, error!),
               style: TextStyle(color: Theme.of(context).colorScheme.error),
@@ -557,19 +792,36 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
         onPressed: busy ? null : () => Navigator.pop(context),
         child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
       ),
+      if (preview != null && !ownAccount && alreadyFriend != true)
+        FilledButton(
+          onPressed:
+              busy || ownCode == null || ownAccount || alreadyFriend != false
+              ? null
+              : send,
+          child: Text(context.l10n.select(zh: '确认发送', en: 'Send request')),
+        ),
       if (preview == null || alreadyFriend == null)
         FilledButton(
           onPressed: busy ? null : lookup,
-          child: Text(
-            error != null
-                ? context.l10n.select(zh: '重试', en: 'Retry')
-                : context.l10n.select(zh: '查询', en: 'Look up'),
-          ),
-        )
-      else if (alreadyFriend == false)
-        FilledButton(
-          onPressed: busy ? null : send,
-          child: Text(context.l10n.select(zh: '确认发送', en: 'Send request')),
+          child: lookupBusy
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox.square(
+                      dimension: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      context.l10n.select(zh: '查询中...', en: 'Looking up...'),
+                    ),
+                  ],
+                )
+              : Text(
+                  error != null
+                      ? context.l10n.select(zh: '重试', en: 'Retry')
+                      : context.l10n.select(zh: '查询', en: 'Look up'),
+                ),
         ),
     ],
   );
@@ -577,7 +829,6 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
 
 class _FriendTile extends StatelessWidget {
   const _FriendTile({
-    super.key,
     required this.friend,
     required this.accountId,
     required this.backend,
@@ -645,8 +896,8 @@ class _FriendTile extends StatelessWidget {
       _ => null,
     };
     return Card(
+      key: Key('friend-card-open-${friend.friendId}'),
       child: InkWell(
-        key: Key('friend-card-open-${friend.friendId}'),
         onTap: () => _openDetail(context),
         onLongPress: () => _editNote(context),
         child: Padding(

@@ -78,6 +78,12 @@ impl RecoveryOperation {
         work.check()?;
         let lease = database.device_sync_exclusive()?;
         let ownership = database.device_sync_restore_proof(backup, work)?;
+        if matches!(
+            database.receiver_backup_kind_controlled(backup, work)?,
+            crate::database::ReceiverBackupKind::StrictNoop(_)
+        ) {
+            return Err(ReceiverError::InvalidState);
+        }
         let current = Snapshot::read_with_header_controlled(
             &database,
             database.device_sync_header()?,
@@ -129,7 +135,12 @@ impl RecoveryOperation {
             work,
         )?;
         work.check()?;
-        let restored = database.receiver_backup_snapshot_controlled(entry.backup_uuid, work)?;
+        let restored = match database.receiver_backup_kind_controlled(entry.backup_uuid, work)? {
+            crate::database::ReceiverBackupKind::Full => {
+                database.receiver_backup_snapshot_controlled(entry.backup_uuid, work)?
+            }
+            crate::database::ReceiverBackupKind::StrictNoop(_) => current.clone(),
+        };
         work.check()?;
         drop(lease);
         Ok(Self {
@@ -247,12 +258,24 @@ impl RecoveryOperation {
             return Err(ReceiverError::PlanChanged);
         }
         work.check()?;
-        if self
+        match self
             .database
-            .receiver_backup_snapshot_controlled(self.backup, &work)?
-            != self.restored
+            .receiver_backup_kind_controlled(self.backup, &work)?
         {
-            return Err(ReceiverError::PlanChanged);
+            crate::database::ReceiverBackupKind::Full => {
+                if self
+                    .database
+                    .receiver_backup_snapshot_controlled(self.backup, &work)?
+                    != self.restored
+                {
+                    return Err(ReceiverError::PlanChanged);
+                }
+            }
+            crate::database::ReceiverBackupKind::StrictNoop(_) => {
+                if self.restored != self.current {
+                    return Err(ReceiverError::PlanChanged);
+                }
+            }
         }
         work.check()?;
         Ok(access)

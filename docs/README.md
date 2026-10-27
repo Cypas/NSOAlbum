@@ -1,37 +1,26 @@
 # 鱿型相册项目文档
 
-仓库根目录只保留工程入口与仓库级约束，项目文档统一存放在本目录。
+本目录集中保存项目设计、测试、许可与开发指南。按主题阅读对应文档；
+不要将计划、历史验收报告或内部诊断材料视为当前产品行为或发布证据。
 
-- [第三方声明](legal/THIRD-PARTY-NOTICES.md)
-- [项目素材授权说明](legal/ASSET-ATTRIBUTION.md)
-- [测试分类与三平台原生 Release 门禁](TESTING.md)
-- [仓库目录、文件存放与忽略规则](REPOSITORY-LAYOUT.md)
-- [完整文档树与各层文档用途](DOCUMENTATION-MAP.md)
+- [测试、构建、CI 触发和原生验收](TESTING.md)
+- [仓库目录与忽略规则](REPOSITORY-LAYOUT.md)
+- [完整文档树、职责和公开/本地边界](DOCUMENTATION-MAP.md)
+- [第三方依赖与字体声明](legal/THIRD-PARTY-NOTICES.md)
+- [图片、图标和其他素材授权](legal/ASSET-ATTRIBUTION.md)
+- [Flutter 子工程与本机开发流程](../flutter_app/README.md)
+- [贡献指南](../CONTRIBUTING.md)
+- [安全漏洞报告](../SECURITY.md)
 
-目录规范说明“文件放哪里”，文档树说明“每份文档负责什么、是否提交”。
-内层子工程和测试夹具 README 用于就近说明，第三方文档保留来源；
-内部设计、原型和诊断报告在文档树中标记为本地，不因此纳入公开提交。
-NXAPI/Coral 请求层、好友码输入及服务阶段的本地核对规则也由文档树登记；
-这类协议工作记录不随应用分发。
-普通剩余体验需求的原文、分阶段计划及独立会话协作边界由文档树登记为本地
-内部材料；其执行核对表持续区分代码、测试、构建、实机和 CI 结果。
+目录规范说明文件放置与忽略边界；文档树说明每份文档的职责及公开/本地属性。
+内层 README 负责相应子工程或夹具的具体操作，法律声明保留其原始来源和许可。
 
-正式运行时代码位于 `flutter_app/` 与 `rust_core/`。内部设计文档、原型和本地变更记录不随公开快照提交。
+正式运行时代码位于 `flutter_app/` 与 `rust_core/`。当前工作流触发条件、门禁、
+包体和验收范围以 [测试文档](TESTING.md) 及 `.github/workflows/` 为准；
+本页不复制易过期的 CI 触发清单，也不记录某次构建或设备验收状态。
 
-正常应用的 Debug 配对输入接口及安全边界见
-[Flutter 开发说明](../flutter_app/README.md#debug-配对输入接口)，
-仅供替代调试时的扫码输入，不自动确认或应用同步。
-设备同步由手机确认本次连接、同步选项和最终预览；桌面创建一次性二维码、
-展示进度并保留取消入口。协议控制与真实传输速率的源码位置见目录规范；
-内部设计及验收记录的本地边界见文档树。
-设备同步吞吐及原生通道测量的本地技术设计同由文档树导航，
-不属于面向使用者的说明或已经完成的性能验收。
-
-当前 Windows 开发环境已启用 Developer Mode，Flutter 插件可以直接创建符号链接；其他开发机若未启用，可使用 Windows 打包脚本的 CMake/目录联接回退流程。
-
-应用版本和构建号以 `flutter_app/pubspec.yaml` 为准，Rust crate 使用相同 SemVer，正式发布标签使用 `v<SemVer>`。升级时会优先使用 `NSOAlbum` 应用支持目录；若新目录没有有效数据，则继续使用 `Fresh Album`、`FreshAlbum` 或 `squid_album` 中检测到的旧库。Windows 默认图库目录按 `Pictures\NSOAlbum`、`Pictures\FreshAlbum` 的顺序探测，已有设置中的手动路径始终优先。Rust 会在单个 SQLite 事务中显式补齐历史缺失列并回滚失败迁移。
-
-当前公开开发流程为 `dev → main` pull request；`dev` push 仅运行 Ubuntu 快速检查和历史扫描，目标为 `main` 的 PR、`main` push、手动打包和稳定 tag 才运行完整 Windows/macOS 原生门禁。正式 Windows 发布只生成 NSOAlbum 目录版和 Inno Setup 安装器，不生成 ZIP。
+应用版本以 `flutter_app/pubspec.yaml` 为准，Rust crate 使用一致的 SemVer，
+稳定发布 tag 为 `v<SemVer>`。数据迁移与旧库兼容行为以当前实现及测试为准。
 
 ## Windows 打包
 

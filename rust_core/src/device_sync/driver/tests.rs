@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "benchmark_tests.rs"]
+mod benchmark_tests;
+
 #[path = "bundle_pump_tests.rs"]
 mod bundle_pump_tests;
 use crate::api::CoreApi;
@@ -1584,6 +1587,11 @@ async fn driver_same_sha_jpeg_full_version_album_provenance_and_fresh_pair_idemp
     assert!(result[0].tags.is_empty());
     assert!(!result[0].favorite);
     assert_eq!(pair.phone.progress().transferred_bytes, 0);
+    assert_eq!(
+        pair.phone.work.validation_metrics().checksum_read_bytes,
+        0,
+        "unchanged originals must not be rehashed during a zero-byte apply"
+    );
     let before = Snapshot::read(&pair.b.database(), "Phone").unwrap();
     assert_eq!(
         Snapshot::read(&pair.a.database(), "Desktop")
@@ -1660,6 +1668,63 @@ async fn driver_same_sha_jpeg_full_version_album_provenance_and_fresh_pair_idemp
             .display_name,
         "Desktop"
     );
+}
+
+#[tokio::test]
+async fn driver_strict_zero_byte_noop_skips_catalog_rewrite_and_original_rehash() {
+    let mut pair = Pair::new();
+    let input = tempfile::tempdir().unwrap();
+    let source = input.path().join("source.png");
+    let target = input.path().join("target.png");
+    std::fs::write(&source, b"unchanged original").unwrap();
+    std::fs::write(&target, b"unchanged original").unwrap();
+    pair.a
+        .import_local_files(vec![source.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+    pair.b
+        .import_local_files(vec![target.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+
+    let source_id = pair.a.list_media(GalleryQuery::default()).unwrap()[0].id;
+    let album = pair
+        .a
+        .create_album("Forwarded".into(), String::new(), false)
+        .unwrap();
+    pair.a.add_media_to_album(album, source_id).unwrap();
+    let mut seeded = ReceiveOperation::prepare(
+        pair.b.database(),
+        Snapshot::read(&pair.a.database(), "Desktop").unwrap(),
+        "Phone",
+        SyncMode::Merge,
+    )
+    .unwrap();
+    let mut authorization = seeded.authorize().unwrap();
+    seeded
+        .apply(
+            Some(&mut authorization),
+            None,
+            &CancellationToken::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+
+    pair.preview(Direction::DesktopToPhone, SyncMode::Merge);
+    let source_snapshot = Snapshot::read(&pair.a.database(), "Desktop").unwrap();
+    let target_snapshot = Snapshot::read(&pair.b.database(), "Phone").unwrap();
+    let plan = pair.phone.plan().unwrap().clone();
+    assert_eq!(plan.space.new_staging_bytes, 0);
+    assert!(plan.is_strict_noop(
+        &source_snapshot.manifest,
+        &target_snapshot.manifest,
+        &source_snapshot.sources,
+        &target_snapshot.sources
+    ));
+
+    pair.complete(Direction::DesktopToPhone);
+    assert_eq!(pair.phone.work.validation_metrics().checksum_read_bytes, 0);
+    assert_eq!(pair.b.list_media(GalleryQuery::default()).unwrap().len(), 1);
 }
 
 #[test]

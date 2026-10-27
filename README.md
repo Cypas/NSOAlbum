@@ -8,8 +8,9 @@ This is an independent community project and is not affiliated with, endorsed by
 
 - Windows, macOS, and Android Flutter client with a Rust core.
 - Local SQLite metadata and SHA-256 content-addressed media storage.
-- Albums, favorites, game names, custom tags, notes, search, and video tools.
-- Nintendo Account sync and Switch/Switch 2 USB media import.
+- Albums, favorites, game names, custom tags, notes, search, export, and video tools.
+- Nintendo Account album sync, account-specific friend tools, and optional device-to-device sync.
+- Desktop Switch / Switch 2 USB import and user-selected file or folder import.
 
 Nintendo's services and community attestation providers are third-party services. Their availability and terms can change. Review [third-party notices](docs/legal/THIRD-PARTY-NOTICES.md) and [asset permissions](docs/legal/ASSET-ATTRIBUTION.md) before building or redistributing the application. Internal protocol research and product design notes are not included in this public source tree.
 
@@ -52,55 +53,56 @@ third-party notices and local-only records; the
 [repository layout](docs/REPOSITORY-LAYOUT.md) defines file locations and Git ignore boundaries.
 [Testing and native release gates](docs/TESTING.md) distinguish portable tests,
 platform-specific tests and real packaged-app diagnostics. GitHub Actions
-validates Windows x64, macOS Apple Silicon arm64 and Intel x64 on their own
-native runners before version-tag publication.
+validates Windows x64, macOS Apple Silicon arm64 and Intel x64 on native
+runners, and performs Android ARM64 build and package checks. Static Android
+checks do not claim on-device acceptance.
 
 ## Releases and updates
 
-The current development version is `0.2.14+47` (Rust `0.2.14`); the latest
-stable release is `v0.2.14`. Development work is performed on `dev` and merged
-to `main` by pull request. The full native validation matrix is required for
-the pull request and for release publication; a failed or cancelled platform
-gate blocks the merge/release.
+This source checkout is version `0.2.15+48` (Rust `0.2.15`). As of
+October 25, 2026, the latest published stable release is `v0.2.14`; a
+development version is not a stable release. Development work is performed on
+`dev` and proposed for `main` by pull request.
 
-To test packaging without changing the version or creating a tag, run the
-**Validate** workflow manually with `package_installer=true` and an optional
-`ref` (branch or commit). It runs the same signing, testing and packaged-app
-checks and uploads the Windows installer and both macOS DMGs as Actions
-artifacts, without creating a GitHub Release:
+Pushes to `dev` run the fast Ubuntu checks and history scan. Pull requests
+targeting `main` and pushes to `main` run the full validation workflow, including
+the native Windows, macOS and Android gates. Stable release publication has
+additional tag and `main` ancestry checks.
+
+To run full validation on demand without publishing a release, start the
+**Validate** workflow with an optional exact `ref`. Set `package_installer=true`
+when the run should also build distribution packages as workflow artifacts:
 
 ```sh
 gh workflow run validate.yml --ref dev \
   -f ref=dev -f package_installer=true
 ```
 
-Stable releases are published from tags in the form `v<major>.<minor>.<patch>`. The application version in `flutter_app/pubspec.yaml` is authoritative; the Rust crate version must use the same semantic version. Update checks query the latest stable release from `Cypas/NSOAlbum`. CI produces a Windows runtime directory for validation and packaging; the public GitHub Release publishes `NSOAlbum-<version>-Setup.exe`, the arm64/x64 macOS DMGs, and `SHA256SUMS.txt`. No ZIP package is generated. The installer is verified against the SHA-256 digest published by GitHub before the user can launch it. The app never installs an update silently.
+The application version in `flutter_app/pubspec.yaml` is authoritative; the
+Rust crate uses the same semantic version. Stable releases use tags in the form
+`v<major>.<minor>.<patch>`. On successful publication, the Release workflow
+produces the Windows Inno Setup installer, separate Apple Silicon arm64 and
+Intel x64 macOS DMGs, an ARM64 Android APK, and `SHA256SUMS.txt`. No ZIP package
+is generated. The existing `v0.2.14` release predates Android APK publication.
+The Windows installer is verified against its published SHA-256 digest before
+an update can be installed; updates are never installed silently.
 
-`main` is the default stable branch. Maintainers develop on `dev` and merge
-`dev` into `main` through pull requests after `Required validation` succeeds.
-Pushes to `dev` run the faster Ubuntu Rust/Flutter checks and history scan;
-the full Windows/macOS native matrix runs on the pull request, `main` pushes,
-manual packaging checks and stable release tags. Stable release tags must
-point to commits already merged into `main`.
-
-Each native platform starts verifying its own build as soon as it is ready.
-All platform builds and verification jobs still use the same pinned commit,
-version and build number. `Required validation` and official publication
-wait for all three platforms, Ubuntu checks and the history scan.
-The [CI trigger table](docs/TESTING.md#分支与触发规则) documents each event.
-
-After a merge to `main`, the existing Validate run also builds the Windows
-installer and both macOS DMGs as test artifacts, retained for seven days.
-Download them from a run whose `Required validation` and all jobs succeeded;
-an individual platform artifact does not imply the whole run passed.
-This does not create a tag or GitHub Release. Official publication still
-requires every platform gate to pass for the same stable tag commit.
+For CI verification, wait for the complete workflow and review its pinned
+commit, final result, jobs, steps, and failure logs. Do not judge success from
+an individual job or artifact. Do not download workflow artifacts or package
+outputs while verifying CI results; workflow jobs may transfer artifacts
+internally for automated checks.
 
 Upgrades reuse an existing library in `NSOAlbum`, `Fresh Album`, `FreshAlbum`, or
 `squid_album` application data directories when a valid database is found. The
-application does not copy or delete legacy media during this detection. Releases
-from `0.2.9` onward publish only the canonical
-`NSOAlbum-<version>-Setup.exe` installer asset.
+application does not copy or delete legacy media during this detection. The
+Windows installer uses the canonical asset name
+`NSOAlbum-<version>-Setup.exe`.
+
+The current Android application ID is `io.github.cypas.nsoalbum`. The older
+`io.squidalbum.squid_album` package is a separate app installation; installing
+the current app does not automatically uninstall the old app or migrate its
+private app data.
 
 macOS DMGs are distributed separately for arm64 and Intel x64, outside the App
 Sandbox, with ad-hoc integrity signatures. They are not Developer ID signed or
@@ -114,9 +116,9 @@ arm64 or Intel x64 DMG manually. Dismissing a prompt postpones it; ignoring a
 version suppresses only that version's automatic prompt. Manual checks bypass
 the daily limit and ignored-version preference. Safe mode and CI smoke do not
 perform automatic update checks.
-Every platform must pass its full Rust/Flutter suite, real image/video playback,
-FFmpeg cover/duration, trim/merge, and isolated-library restart checks before
-publication. No real Nintendo credentials or personal media are used by CI.
+Each required platform gate must pass the checks defined in
+[Testing and native release gates](docs/TESTING.md) before publication. CI uses
+synthetic data and does not use real Nintendo credentials or personal media.
 
 ## License and assets
 

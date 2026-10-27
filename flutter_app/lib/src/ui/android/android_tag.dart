@@ -26,9 +26,21 @@ class AndroidTag extends StatelessWidget {
   final bool compact;
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
     return Tooltip(
       message: label,
+      constraints: const BoxConstraints(minHeight: 24),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      margin: const EdgeInsets.symmetric(horizontal: 12),
+      textStyle:
+          (theme.tooltipTheme.textStyle ??
+                  theme.textTheme.bodySmall!.copyWith(
+                    color: theme.brightness == Brightness.dark
+                        ? Colors.black
+                        : Colors.white,
+                  ))
+              .copyWith(fontSize: 11, height: 1.2),
       child: Container(
         padding: EdgeInsets.symmetric(
           horizontal: compact ? 5 : 6,

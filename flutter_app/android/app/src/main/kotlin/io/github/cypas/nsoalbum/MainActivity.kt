@@ -90,6 +90,55 @@ class MainActivity : FlutterActivity() {
             flutterEngine.dartExecutor.binaryMessenger, "io.github.cypas.nsoalbum/device_sync_saf"))
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
             "io.github.cypas.nsoalbum/storage").setMethodCallHandler { call, result ->
+            when (call.method) {
+                "allFilesAccessStatus" -> {
+                    try {
+                        result.success(allFilesAccessStatus())
+                    } catch (_: Exception) {
+                        result.error("STORAGE_ACCESS_UNAVAILABLE", null, null)
+                    }
+                    return@setMethodCallHandler
+                }
+                "beginAllFilesAccessRequest" -> {
+                    var ownsRequest = false
+                    try {
+                        val status = allFilesAccessStatus()
+                        val automatic = call.argument<Boolean>("automatic") == true
+                        if (status["supported"] != true || status["allowed"] == true ||
+                            (automatic && status["requested"] == true)) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        ownsRequest = syncNotificationPermissions.beginStorageRequest()
+                        if (!ownsRequest) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        // Persist before opening another Activity. This contains
+                        // only consent-flow state, never a path or account.
+                        val recorded = getSharedPreferences(
+                            "nsoalbum-storage-permissions", MODE_PRIVATE,
+                        ).edit().putBoolean("all-files-requested", true).commit()
+                        if (!recorded) throw IllegalStateException("CONSENT_STATE_UNAVAILABLE")
+                        result.success(true)
+                    } catch (_: Exception) {
+                        if (ownsRequest) {
+                            runCatching { syncNotificationPermissions.completeStorageRequest() }
+                        }
+                        result.error("STORAGE_ACCESS_UNAVAILABLE", null, null)
+                    }
+                    return@setMethodCallHandler
+                }
+                "endAllFilesAccessRequest" -> {
+                    try {
+                        syncNotificationPermissions.completeStorageRequest()
+                        result.success(null)
+                    } catch (_: Exception) {
+                        result.error("STORAGE_ACCESS_UNAVAILABLE", null, null)
+                    }
+                    return@setMethodCallHandler
+                }
+            }
             if (call.method != "locations") {
                 result.notImplemented()
                 return@setMethodCallHandler
@@ -326,6 +375,15 @@ class MainActivity : FlutterActivity() {
         }
         return "blocked"
     }
+
+    private fun allFilesAccessStatus(): Map<String, Boolean> = mapOf(
+        "supported" to (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R),
+        "allowed" to (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            Environment.isExternalStorageManager()),
+        "requested" to getSharedPreferences(
+            "nsoalbum-storage-permissions", MODE_PRIVATE,
+        ).getBoolean("all-files-requested", false),
+    )
 
     private fun handleUpdateNotification(intent: Intent?) {
         val updater = AndroidUpdateController.get(this)

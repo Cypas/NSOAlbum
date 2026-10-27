@@ -126,6 +126,34 @@ struct RouteEntry {
     name: String,
     directory: bool,
 }
+
+/// The mailbox route is created incrementally by the Android SAF owner:
+/// session, direction folders, then the first carrier block. Discovery must
+/// bind to the random session directory first, and may create missing
+/// direction folders after that match. The remaining fields are retained in
+/// this small projection so tests make the ordering requirement explicit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DiscoveryRoute {
+    session: Option<ObjectHandle>,
+    desktop: Option<ObjectHandle>,
+    mobile: Option<ObjectHandle>,
+    marker: bool,
+}
+
+fn discovery_candidate(route: DiscoveryRoute) -> Option<ObjectHandle> {
+    let DiscoveryRoute {
+        session,
+        desktop: _,
+        mobile: _,
+        marker: _,
+    } = route;
+    session
+}
+
+fn discovery_candidate_error(candidate_count: usize) -> Option<NativeError> {
+    (candidate_count == 0).then_some(NativeError::NoMtpCandidate)
+}
+
 async fn scan_route_entries(
     parent: ObjectHandle,
     storage: StorageId,
@@ -553,12 +581,27 @@ impl MtpWorker {
             return Err(NativeError::Bounds);
         }
         let candidate_count = candidates.len();
+        if discovery_candidate_error(candidate_count).is_some() {
+            // This is intentionally a retryable, fixed-vocabulary diagnostic.
+            // A WPD-visible device can still be absent from the raw MTP list;
+            // do not guess a physical device or log serial/path data here.
+            eprintln!(
+                "device_sync boundary=UsbDiscovery category=CandidateEmpty reason=raw_mtp_candidates_zero"
+            );
+            return Err(NativeError::NoMtpCandidate);
+        }
+        eprintln!(
+            "device_sync boundary=UsbDiscovery category=CandidateSnapshot reason=count_{candidate_count}"
+        );
         let mut opened = 0;
         let mut found = None;
         for candidate in candidates {
             // Enumeration is advisory. A disconnected/unavailable candidate is
             // not the phone possessing this invitation and cannot be selected.
             let Ok(device) = builder().open_by_location(candidate.location_id).await else {
+                eprintln!(
+                    "device_sync boundary=UsbDiscovery category=CandidateOpen reason=unavailable"
+                );
                 continue;
             };
             opened += 1;
@@ -579,34 +622,41 @@ impl MtpWorker {
                 let Some(root) = find_directory(&storage, documents, "NSOAlbumSync").await? else {
                     continue;
                 };
-                let Some(folder) = find_directory(&storage, root, &session_name).await? else {
+                let session = find_directory(&storage, root, &session_name).await?;
+                let Some(folder) = discovery_candidate(DiscoveryRoute {
+                    session,
+                    desktop: None,
+                    mobile: None,
+                    marker: false,
+                }) else {
+                    eprintln!(
+                        "device_sync boundary=UsbDiscovery category=SessionMissing reason=not_found"
+                    );
                     continue;
                 };
-                let Some(mobile) = find_directory(&storage, folder, "mobile").await? else {
-                    continue;
-                };
-                let Some(desktop) = find_directory(&storage, folder, "desktop").await? else {
-                    continue;
-                };
-                let nodes = children(&storage, mobile).await?;
-                let names = validate_entries(
-                    &nodes
-                        .iter()
-                        .map(|n| (n.filename.clone(), n.size, n.is_folder()))
-                        .collect::<Vec<_>>(),
-                )?;
-                if !names.iter().any(|name| name == "0000000000000000.block") {
-                    continue;
-                }
                 if matched.is_some() || found.is_some() {
+                    eprintln!(
+                        "device_sync boundary=UsbDiscovery category=DuplicateMatch reason=multiple_sessions"
+                    );
                     return Err(NativeError::Duplicate);
                 }
                 if !device.capabilities().can_upload
                     || !device.capabilities().can_rename
                     || !device.capabilities().can_create_folder
                 {
+                    eprintln!(
+                        "device_sync boundary=UsbDiscovery category=Capabilities reason=write_support_missing"
+                    );
                     return Err(NativeError::Unavailable);
                 }
+                // The phone publishes the direction folders and first block
+                // after creating the session. Create only the two bounded
+                // folders after the random session match; never require a
+                // marker block to identify the peer.
+                let desktop =
+                    directory(&storage, folder, "desktop", true, &mut self.timings).await?;
+                let mobile = directory(&storage, folder, "mobile", true, &mut self.timings).await?;
+                eprintln!("device_sync boundary=UsbDiscovery category=SessionMatch reason=matched");
                 matched = Some((storage, [desktop, mobile]));
             }
             if let Some((storage, folders)) = matched {
@@ -766,6 +816,38 @@ mod tests {
     fn storage_root_listing_is_not_object_handle_zero() {
         assert_eq!(listing_parent(ObjectHandle::ROOT), None);
         assert_eq!(listing_parent(ObjectHandle(9)), Some(ObjectHandle(9)));
+    }
+    #[test]
+    fn session_directory_is_a_discovery_match_before_mailbox_marker_appears() {
+        let route = DiscoveryRoute {
+            session: Some(ObjectHandle(9)),
+            desktop: None,
+            mobile: None,
+            marker: false,
+        };
+        assert_eq!(
+            discovery_candidate(route),
+            Some(ObjectHandle(9)),
+            "a newly-created session can be discovered before either direction or block zero exists"
+        );
+    }
+    #[test]
+    fn missing_session_directory_is_not_a_discovery_match() {
+        let route = DiscoveryRoute {
+            session: None,
+            desktop: None,
+            mobile: None,
+            marker: false,
+        };
+        assert_eq!(discovery_candidate(route), None);
+    }
+    #[test]
+    fn empty_raw_mtp_candidate_list_reports_a_retryable_discovery_error() {
+        assert_eq!(
+            discovery_candidate_error(0),
+            Some(NativeError::NoMtpCandidate)
+        );
+        assert_eq!(discovery_candidate_error(1), None);
     }
     fn historical_routes() -> impl Stream<Item = Result<RouteEntry, NativeError>> {
         futures::stream::iter((0..140).map(|i| {

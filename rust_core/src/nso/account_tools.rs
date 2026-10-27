@@ -1016,7 +1016,8 @@ pub(crate) async fn coral_call<A: AttestationService>(
     {
         return Err(CoreError::Provider("nso_membership_required".into()));
     }
-    super::conditions::ensure_coral_success(&value)?;
+    let endpoint = url::Url::parse(url).ok().map(|url| url.path().to_owned());
+    super::conditions::ensure_coral_success_for_endpoint(&value, endpoint.as_deref())?;
     Ok(value)
 }
 
@@ -2144,6 +2145,33 @@ mod tests {
         )
         .await;
         assert!(matches!(error, CoreError::RateLimited { .. }));
+    }
+
+    #[tokio::test]
+    async fn friend_lookup_9408_is_mapped_to_endpoint_specific_not_found() {
+        let error = coral_error_response(
+            "/v3/Friend/GetUserByFriendCode",
+            200,
+            json!({"status":9408, "errorMessage":"private"}),
+        )
+        .await;
+        assert!(matches!(error, CoreError::Provider(_)));
+        assert!(error.to_string().contains("nintendo_friend_code_not_found"));
+        assert!(!error.to_string().contains("private"));
+    }
+
+    #[tokio::test]
+    async fn coral_9408_on_other_endpoints_remains_generic() {
+        let error = coral_error_response(
+            "/v4/Friend/List",
+            200,
+            json!({"status":9408, "errorMessage":"private"}),
+        )
+        .await;
+        assert!(matches!(error, CoreError::Provider(_)));
+        assert!(error.to_string().contains("nintendo_request_failed"));
+        assert!(!error.to_string().contains("nintendo_friend_code_not_found"));
+        assert!(!error.to_string().contains("private"));
     }
 
     #[tokio::test]

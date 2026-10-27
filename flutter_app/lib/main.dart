@@ -23,6 +23,7 @@ import 'src/l10n/app_localizations.dart';
 import 'src/platform/windows_ime_context.dart';
 import 'src/platform/application_restart.dart';
 import 'src/platform/gallery_notification_navigation.dart';
+import 'src/platform/android_storage_access.dart';
 import 'src/rust/settings.dart';
 import 'src/state/automatic_sync_coordinator.dart';
 import 'src/state/android_update_controller.dart';
@@ -42,6 +43,7 @@ import 'src/release_update.dart';
 import 'src/ui/font_families.dart';
 import 'src/ui/video_runtime.dart';
 import 'src/ui/video_thumbnail.dart';
+import 'src/ui/fade_page_transitions.dart';
 
 Future<void> main(List<String> arguments) async {
   late final StartupOptions startupOptions;
@@ -391,8 +393,12 @@ class _DesktopTitleBarState extends State<DesktopTitleBar> with WindowListener {
                       widget.title,
                       key: const Key('desktop-titlebar-title'),
                       style: TextStyle(
-                        fontFamily: appFontFamily,
-                        fontFamilyFallback: appFontFallback,
+                        fontFamily: widget.title == appChineseName
+                            ? appBrandFontFamily
+                            : appFontFamily,
+                        fontFamilyFallback: widget.title == appChineseName
+                            ? appBrandFontFallback
+                            : appFontFallback,
                         color: scheme.onSurface,
                         fontSize: 14,
                         fontWeight: FontWeight.w700,
@@ -446,6 +452,8 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
   UpdateStatusKind? updateStatus;
   Object? updateStatusError;
   AndroidUpdateController? androidUpdates;
+  AndroidStorageAccess? androidStorageAccess;
+  bool startupStorageAccessPending = false;
   late final GalleryNotificationNavigation notificationNavigation;
 
   bool get supportsDesktopLifecycle =>
@@ -488,7 +496,17 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
           applicationRoot: widget.diagnostics?.applicationRoot,
         );
       }
+      if (androidStorageStartupEnabled(
+        isAndroid: Platform.isAndroid,
+        isTest: Platform.environment.containsKey('FLUTTER_TEST'),
+        ciSmoke: widget.startupOptions.ciSmoke,
+        safeMode: widget.startupOptions.safeMode,
+      )) {
+        androidStorageAccess = AndroidStorageAccess();
+        startupStorageAccessPending = true;
+      }
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_requestStartupStorageAccess());
         if (supportsDesktopLifecycle) {
           unawaited(
             widget.diagnostics?.runGuarded(
@@ -563,6 +581,7 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
 
   @override
   void dispose() {
+    startupStorageAccessPending = false;
     WidgetsBinding.instance.removeObserver(this);
     androidUpdates?.dispose();
     notificationNavigation.dispose();
@@ -594,6 +613,26 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     androidUpdates?.setForeground(state == AppLifecycleState.resumed);
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_requestStartupStorageAccess());
+    }
+  }
+
+  Future<void> _requestStartupStorageAccess() async {
+    if (!mounted ||
+        !startupStorageAccessPending ||
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
+    }
+    final access = androidStorageAccess;
+    if (access == null) return;
+    startupStorageAccessPending = false;
+    final state = await access.request(automatic: true);
+    if (mounted && state == AndroidStorageAccessState.busy) {
+      // A different system prompt owns this foreground turn. Retry only on a
+      // later resume, never in a polling loop or before recovery has finished.
+      startupStorageAccessPending = true;
+    }
   }
 
   Future<void> _initializeDesktopLifecycle() async {
@@ -1149,6 +1188,7 @@ ThemeData _themeFor(String name) {
       mainAxisMargin: 8,
     ),
     useMaterial3: true,
+    pageTransitionsTheme: appFadePageTransitionsTheme,
   );
 }
 

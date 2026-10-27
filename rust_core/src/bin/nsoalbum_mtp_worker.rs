@@ -39,7 +39,12 @@ fn main() {
         let value = runtime.block_on(worker.execute(request));
         let payload = worker.take_response_payload();
         let failed = value.as_ref().is_err_and(|error| {
-            *error != NativeError::WindowFull && !(discovery && *error == NativeError::Unavailable)
+            *error != NativeError::WindowFull
+                && !(discovery
+                    && matches!(
+                        error,
+                        NativeError::Unavailable | NativeError::NoMtpCandidate
+                    ))
         });
         #[cfg(debug_assertions)]
         if phase == "Write" || phase == "Close" || failed {

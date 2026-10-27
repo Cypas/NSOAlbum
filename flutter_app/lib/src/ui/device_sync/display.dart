@@ -124,6 +124,22 @@ String deviceSyncStage(BuildContext context, driver.State stage) {
   return context.l10n.select(zh: zh, en: en);
 }
 
+bool deviceSyncStageShowsProgress(driver.State stage) => switch (stage) {
+  driver.State.scanning ||
+  driver.State.comparing ||
+  driver.State.verifying ||
+  driver.State.applying => true,
+  _ => false,
+};
+
+String deviceSyncStageProgressLabel(BuildContext context, driver.State stage) {
+  final stageLabel = deviceSyncStage(context, stage);
+  return context.l10n.select(
+    zh: '$stageLabel，正在处理',
+    en: '$stageLabel, in progress',
+  );
+}
+
 /// The indicator is decorative; the full localized status is announced once.
 class DeviceSyncStatusLabel extends StatelessWidget {
   const DeviceSyncStatusLabel({

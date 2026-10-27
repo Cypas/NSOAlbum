@@ -80,7 +80,7 @@ void main() {
   );
 
   test(
-    'final Release APK includes INTERNET without broad storage or foreground service privileges',
+    'final Release APK requires storage capability without foreground service privileges',
     () async {
       final wrapper = p.absolute(
         'android',

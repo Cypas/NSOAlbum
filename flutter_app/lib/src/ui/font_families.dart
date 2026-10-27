@@ -19,6 +19,17 @@ List<String> get appFontFallback => _customFamilies.isEmpty
     ? builtInFontFallbackForLanguage(_language)
     : List<String>.unmodifiable(_customFamilies.skip(1));
 
+// The bundled primary Chinese UI font does not contain every glyph in the
+// product name, so fallback would mix font metrics within “鱿型相册”. Keep
+// the brand title on one complete bundled CJK family for a stable cap height.
+String get appBrandFontFamily =>
+    _customFamilies.isEmpty && _language == 'zh' ? 'DFP_GBZY9' : appFontFamily;
+
+List<String> get appBrandFontFallback =>
+    _customFamilies.isEmpty && _language == 'zh'
+    ? const ['DFPT_ZY9', 'BlitzMain']
+    : appFontFallback;
+
 List<String> builtInFontFallbackForLanguage(String language) => language == 'zh'
     ? const ['DFP_GBZY9', 'BlitzMain']
     : const ['DFPT_ZY9', 'DFP_GBZY9'];

@@ -1024,6 +1024,15 @@ async fn controlled_source_pin_cancel_after_real_hash_bytes_leaves_no_retained_p
         .await
         .unwrap();
     let asset = api.list_media(GalleryQuery::default()).unwrap().remove(0);
+    // The indexed fast path skips unchanged originals; extend this managed
+    // file so retention must enter the deep checksum path before cancellation.
+    let mut stored = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&asset.storage_path)
+        .unwrap();
+    stored.write_all(&[0x43]).unwrap();
+    stored.sync_all().unwrap();
+    drop(stored);
     let database = api.database();
     let generation = database.device_sync_header().unwrap().generation;
     let control = WorkControl::default();

@@ -409,6 +409,9 @@ pub struct Driver {
     source_ack_until: Option<u64>,
     detached: bool,
     session_cleanup_pending: bool,
+    benchmark_binding: Option<String>,
+    benchmark_transport_pending: bool,
+    benchmark_measurement: Option<String>,
     #[cfg(test)]
     fail_local_spawn: bool,
 }
@@ -546,6 +549,9 @@ impl Driver {
             source_ack_until: None,
             detached: false,
             session_cleanup_pending: false,
+            benchmark_binding: None,
+            benchmark_transport_pending: false,
+            benchmark_measurement: None,
             #[cfg(test)]
             fail_local_spawn: false,
         })
@@ -666,6 +672,113 @@ impl Driver {
     }
     pub fn preview_binding(&self) -> Option<&str> {
         self.binding.as_deref()
+    }
+    /// Debug-only, local preview guard. It never approves the preview.
+    pub(crate) fn benchmark_require_noop(&mut self, binding: &str) -> Result<bool> {
+        if !cfg!(debug_assertions) {
+            return Err(DriverError::AccountsUnsupported);
+        }
+        if self.state != State::AwaitingApproval
+            || self.session.state() != SessionState::Confirmed
+            || !matches!(self.step, Step::Approval | Step::Approved)
+            || self.preview_approved
+            || self.binding.as_deref() != Some(binding)
+        {
+            return Err(DriverError::Protocol);
+        }
+        let config = self.config.ok_or(DriverError::Protocol)?;
+        if config.mode != SyncMode::Merge
+            || config.accounts
+            || self.accounts_included()
+            || self.external_reference.is_some()
+            || self.export_accounts.is_some()
+            || self.import_accounts.is_some()
+            || !self.strict_noop_plan()?
+        {
+            return Ok(false);
+        }
+        self.check_benchmark_generation()?;
+        if let Some(receive) = self.receive.as_mut() {
+            receive
+                .benchmark_require_noop()
+                .map_err(receiver_work_error)?;
+        }
+        self.benchmark_binding = Some(binding.to_owned());
+        Ok(true)
+    }
+    fn strict_noop_plan(&self) -> Result<bool> {
+        let source = self.source.as_ref().ok_or(DriverError::Protocol)?;
+        let target = self.target.as_ref().ok_or(DriverError::Protocol)?;
+        let plan = self.plan.as_ref().ok_or(DriverError::Protocol)?;
+        Ok(plan.mode == SyncMode::Merge
+            && plan.is_strict_noop(
+                &source.manifest,
+                &target.manifest,
+                &source.sources,
+                &target.sources,
+            )
+            && super::benchmark::business_equivalent(source, target))
+    }
+    fn check_benchmark_generation(&self) -> Result<()> {
+        let expected = if self.source_side() {
+            self.source.as_ref()
+        } else {
+            self.target.as_ref()
+        };
+        let expected = expected.ok_or(DriverError::Protocol)?;
+        self.work.check().map_err(work_error)?;
+        let _lease = self.database.device_sync_exclusive().map_err(work_error)?;
+        let current = self.database.device_sync_header().map_err(work_error)?;
+        // Normal writes advance the generation. The full source/target snapshot
+        // is still reread under the production final lease before any apply.
+        if current.library_uuid != expected.manifest.header.library_uuid
+            || current.generation != expected.manifest.header.generation
+        {
+            return Err(DriverError::Library);
+        }
+        Ok(())
+    }
+    fn check_benchmark_guard(&self) -> Result<()> {
+        if let Some(binding) = &self.benchmark_binding {
+            if self.binding.as_ref() != Some(binding)
+                || self.accounts_included()
+                || self.external_reference.is_some()
+                || !self.strict_noop_plan()?
+            {
+                return Err(DriverError::Library);
+            }
+            self.check_benchmark_generation()?;
+        }
+        Ok(())
+    }
+    pub(crate) fn require_transport_cleanup(&mut self) {
+        self.benchmark_transport_pending = true;
+    }
+    pub(crate) fn benchmark_transport_finished(&mut self, success: bool) {
+        if success {
+            self.benchmark_transport_pending = false;
+            if self.benchmark_binding.is_some() && self.state == State::Completed {
+                self.finish_success();
+            }
+        }
+    }
+    fn benchmark_finished(&self) -> bool {
+        self.state == State::Completed
+            && self.session.state() == SessionState::Terminal
+            && !self.benchmark_transport_pending
+            && !self.cleanup_pending()
+            && self.worker.is_none()
+            && self.preparation.is_none()
+            && self.verification.is_none()
+            && !self.database.device_sync_recovery_pending()
+    }
+    /// Immutable result: unfinished, failed and cancelled runs have no final record.
+    pub(crate) fn benchmark_metrics(&self) -> Option<String> {
+        if !cfg!(debug_assertions) || self.benchmark_binding.is_none() || !self.benchmark_finished()
+        {
+            return None;
+        }
+        self.benchmark_measurement.clone()
     }
     pub fn receipt(&self) -> Option<&ApplyReceipt> {
         self.receipt.as_ref()
@@ -1212,6 +1325,7 @@ impl Driver {
             .map_err(work_error)
     }
     pub fn approve_preview(&mut self) -> Result<()> {
+        self.check_benchmark_guard()?;
         if (self.session.phone_controlled() && !self.preview_approved)
             || self.step != Step::Approval
             || self.state != State::AwaitingApproval
@@ -1261,6 +1375,7 @@ impl Driver {
         }
     }
     pub fn approve_controlled_preview(&mut self, binding: &str) -> Result<()> {
+        self.check_benchmark_guard()?;
         if !self.session.phone_controlled()
             || !self.session.controller()
             || self.session.state() != SessionState::Confirmed
@@ -1379,6 +1494,7 @@ impl Driver {
         })
     }
     fn request_apply(&mut self) -> Result<()> {
+        self.check_benchmark_guard()?;
         if !self.session.phone_controlled() {
             return self.request_lease(ApplyWork::default());
         }
@@ -1413,6 +1529,7 @@ impl Driver {
         })
     }
     fn issue_apply_grant(&mut self, identity: ApplyIdentity) -> Result<()> {
+        self.check_benchmark_guard()?;
         if self.file.is_some()
             || self.binding.as_ref() != Some(&identity.binding)
             || self.session.state() != SessionState::Confirmed
@@ -2016,6 +2133,7 @@ impl Driver {
                         || !self.session.controller()
                         || self.preview_approved) =>
             {
+                self.check_benchmark_guard()?;
                 self.step = Step::Sending;
                 self.throughput.reset();
                 self.state = State::Transferring;
@@ -2365,6 +2483,9 @@ impl Driver {
             self.stop(matches!(error, DriverError::Cancelled));
         }
         self.observe_measurements();
+        if self.benchmark_binding.is_some() && self.benchmark_finished() {
+            self.publish_measurements();
+        }
         result
     }
     fn observe_measurements(&mut self) {
@@ -2403,6 +2524,9 @@ impl Driver {
         self.metrics.usb_published(drains);
     }
     fn publish_measurements(&mut self) {
+        if self.benchmark_binding.is_some() && !self.benchmark_finished() {
+            return;
+        }
         if !self.metrics_reported {
             self.observe_measurements();
             let record = format!(
@@ -2411,6 +2535,9 @@ impl Driver {
                 self.work.validation_metrics()
             );
             self.metrics_reported = true;
+            if self.benchmark_binding.is_some() {
+                self.benchmark_measurement = Some(format!("{record} benchmark_noop_armed=1"));
+            }
             diagnostics::measurement(&record);
         }
     }
@@ -2848,9 +2975,9 @@ impl Driver {
             && !self.flush_required
             && self.outbox.is_empty()
         {
-            self.publish_measurements();
             self.stop(false);
             let _ = self.retire_session_record();
+            self.publish_measurements();
             return true;
         }
         false

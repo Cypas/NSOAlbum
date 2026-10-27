@@ -15,7 +15,12 @@ use std::time::{Duration, Instant};
 type Reply = Result<NativeResponse, NativeError>;
 type ReceivedReply = (Reply, Instant);
 fn terminal_error(error: NativeError, discovery: bool) -> bool {
-    error != NativeError::WindowFull && !(discovery && error == NativeError::Unavailable)
+    error != NativeError::WindowFull
+        && !(discovery
+            && matches!(
+                error,
+                NativeError::Unavailable | NativeError::NoMtpCandidate
+            ))
 }
 type CommandPacket = (IpcPacket, mpsc::SyncSender<ReceivedReply>, bool);
 struct PendingRequest {
@@ -689,5 +694,13 @@ mod tests {
             process.request(NativeRequest::Enumerate, Duration::from_secs(2)),
             Err(NativeError::Closed)
         );
+    }
+
+    #[test]
+    fn empty_raw_mtp_discovery_is_retryable_but_non_discovery_errors_remain_terminal() {
+        assert!(!terminal_error(NativeError::NoMtpCandidate, true));
+        assert!(!terminal_error(NativeError::Unavailable, true));
+        assert!(terminal_error(NativeError::NoMtpCandidate, false));
+        assert!(terminal_error(NativeError::InvalidScope, true));
     }
 }

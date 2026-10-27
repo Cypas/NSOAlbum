@@ -17,7 +17,8 @@ application names, and launcher icon. The default name is `NSOAlbum`; Chinese,
 including Taiwan and Hong Kong locales, uses `鱿型相册` unchanged.
 It also assembles the Release APK and reads its packaged manifest to require
 `INTERNET`, `POST_NOTIFICATIONS` and `REQUEST_INSTALL_PACKAGES` for updates, while
-rejecting all-files storage and foreground-service permissions. The update policy
+requiring the optional all-files access capability while rejecting unrelated
+foreground-service permissions. The update policy
 JVM harness validates official URLs, package identity, signatures and bounded
 copy/hash behavior. It also runs the actual update JobService in an isolated JVM
 lifecycle harness, covering stale stops, worker-to-main completion dispatch,
@@ -31,10 +32,16 @@ Prerequisites:
 - A complete JDK 17 or later selected in `JAVA_HOME`, plus an installed Android
   SDK. These tests invoke Gradle directly: Flutter's `jdk-dir` setting does not
   choose Java for that subprocess when the shell still resolves an older JDK.
-- Flutter has prepared the local Gradle wrapper and Android dependencies.
-  On a fresh checkout, first run
-  `flutter build apk --debug --target-platform android-arm64`.
-- No other Android Gradle build is running against this checkout.
+- Flutter has prepared the Gradle wrapper and Android dependencies. On a fresh
+  checkout, prepare them with the Debug Android build command in the project
+  testing guide, using the output layout appropriate to that development
+  environment.
+- No other Android Gradle build is running against the same build directory.
+
+On the project maintainer's workstation, the ignored root `AGENTS.md` adds a
+source-copy and fixed-output-root requirement before running these commands.
+Public clones do not contain that machine-specific file; contributors should
+use their own workspace configuration and the shared rules in `docs/TESTING.md`.
 
 The opt-in suite also executes the production notification permission
 coordinator's JUnit regressions with `:app:testDebugUnitTest`, rather than only
@@ -43,7 +50,7 @@ denial without repeated prompts, mismatched or late callbacks, bounded pending
 state, and failed prompt launch. These JVM boundaries do not change a device's
 permission settings or replace system-dialog acceptance.
 
-Run from `flutter_app` in PowerShell:
+Run from `flutter_app` in the configured build checkout in PowerShell:
 
 ```powershell
 $env:NSO_VERIFY_ANDROID_BUILD = '1'

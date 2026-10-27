@@ -24,13 +24,43 @@ Flutter 负责跨平台界面与系统集成，Rust Core 负责 SQLite、媒体�
 - `rust_builder/`：Cargokit 平台构建脚手架。
 - `../rust_core/`：Rust 核心 crate。
 
-## 本机工具链
+## 维护者已验证的工具链参考
 
 - Flutter 3.47.6 / Dart 3.13.5
 - Rust 1.99.0 stable，含 Cargo、rustfmt、Clippy
 - flutter_rust_bridge 2.13.0
 - Visual Studio 2022 C++ Build Tools 与 Windows SDK
 - Windows 原生 WebView 构建需要 NuGet CLI 在 `PATH`；运行鱿鱼圈需要 Microsoft Edge WebView2 Runtime。运行时缺失会显示官方安装入口，不自动安装。
+
+以上是维护者工作站的已验证工具链参考，不是所有贡献环境的强制精确版本。
+Flutter/Dart 兼容范围以 `pubspec.yaml` 为准；Rust 依赖及锁定版本以
+`rust_core/Cargo.toml` 和 `Cargo.lock` 为准。平台构建还需要对应操作系统 SDK。
+
+## 维护者工作站流程
+
+本节只适用于该项目维护者配置的工作站，不是外部贡献者的项目路径要求。
+维护者的源码副本、构建副本及输出根由 Git 忽略的根目录 `AGENTS.md` 指定；
+公开克隆不包含该机器专用文件。维护者在构建、打包、热重载或热重启前，
+须将本次修改的源码、资源、Bridge 生成文件和原生配置按相对路径非删除式
+覆盖到指定副本，核对关键文件后再从该副本操作。不镜像删除，也不复制 `.git`、
+构建输出、凭据、账号资料、个人图库或本地日志。固定副本不可用时暂停维护者
+工作站上的运行/构建，不改用其他目录。
+
+维护者工作站上的 Flutter、Cargo、Gradle 中间产物、缓存和验证包使用固定构建
+根内可复用的位置。构建前核对 Flutter build、Cargo target、Gradle 项目输出及
+Gradle 用户缓存的实际位置；除非明确要求，不清理或替换已有缓存和产物。
+外部贡献者请按自己的工作区配置操作。通用测试和验收参数见
+[测试与构建指南](../docs/TESTING.md)。
+
+日常使用 Debug。纯 Dart/Flutter 改动优先热重载；初始化状态改动先尝试热重启。
+Rust、Bridge/生成绑定、Windows C++、Android Kotlin/Java、Gradle 配置或原生依赖
+变化必须重编译对应 Debug 原生组件并重启；只有新原生二进制需要部署时才重新
+安装 Debug 包。不以 Profile/Release 代替日常调试。
+
+核验 GitHub Actions 时，等待整个 run 结束并审阅固定提交、最终结论、所有 job、
+step 和失败日志；不得仅凭单个 job 或 artifact 判断通过。**本机核验结果时不下载、
+解压、复制或安装 workflow artifacts/打包产物。**CI job 在工作流内部为自动验证
+传递 artifacts 不受此限制。
 
 ## 常用命令
 
@@ -54,7 +84,8 @@ flutter test
 
 当前生成器在此目录结构下无法自动推断动态库 stem，脚本会在生成后把 `UNKNOWN` 修正为 `squid_album_core`。
 
-当前 Windows 开发机已启用系统“开发者模式”，因此可以直接运行 `flutter build windows --release` 创建插件符号链接。若在未启用开发者模式的机器上构建，请使用 `tool/package_windows.ps1` 中的 CMake/目录联接回退流程。Android 构建还需配置 Android SDK/NDK 和兼容 JDK。
+Windows 构建需要 Visual Studio C++ Build Tools 与 Windows SDK；插件符号链接
+按打包脚本提供的兼容流程处理。Android 构建还需配置 Android SDK/NDK 和兼容 JDK。
 
 若本机全局 Git/Cargo 代理指向未运行的本地地址，只在当前终端清除代理后执行下载命令；不要把临时网络配置提交到项目。
 
@@ -78,7 +109,7 @@ PASS 之后还须核对测试窗口实际进程的正常关闭退出码，不使
 回归测试通过实际 Gradle 项目验证 Debug/Release 配置，运行方法见
 `test/fixtures/android/README.md`。
 
-## 跨设备原生字节探针
+## 跨设备调试与原生字节探针
 
 ### Debug 配对输入接口
 
@@ -104,6 +135,94 @@ PASS 之后还须核对测试窗口实际进程的正常关闭退出码，不使
 `test/device_sync/debug_pairing_test.dart` 和 `debug_pairing_page_test.dart`。
 手机由 Rust 校验邀请及软件版本后选择邀请中的连接方式；内部注入与相机扫码
 使用相同路径，不接收独立的通道覆盖参数。
+
+#### 免扫码传递连接码
+
+Debug 联调时，可以通过“PC 读取当前邀请 → 手机注入邀请”跳过相机扫码、
+二维码截图及人工转发，避免转发期间超过五分钟有效期。该方式不延长有效期，
+不跳过 TLS 握手、两端确认码核对、同步范围选择、账号授权或接收预览确认；
+也不修改正式产品的配对入口。
+
+1. 按前述本机源码/构建副本规则，在两端使用普通 `lib/main.dart` Debug 入口。
+   分别启动并保留 machine 会话，不并行争用原生构建输出：
+
+   ```powershell
+   flutter run -d windows --debug --no-pub --machine -t lib/main.dart
+   flutter run -d <Android设备ID> --debug --no-pub --machine -t lib/main.dart
+   ```
+
+   上述两条命令分别由独立的受控调试进程执行，并保持各自 stdin/stdout。
+   真实图库读写仍须获得明确授权，默认不包含账号同步；接口不是测试写入授权。
+2. 从每个会话的 `app.start` 事件取得本端 `appId`，从 `app.debugPort` 事件
+   取得本端完整 `wsUri`。优先通过同一 machine 会话的
+   `app.callServiceExtension` 调用扩展；直接连接 WebSocket 时必须保留
+   `wsUri` 的认证路径，不能只按端口重拼地址。
+3. 两端打开“多设备同步”，手机保持前台。PC 选择 USB 或局域网方式并生成
+   一次性二维码；USB 仍要求文件传输模式及专用交换目录授权。
+4. 两端分别调用 `action=status`。PC 应为 `mobile=false, canRead=true`；
+   手机应为 `mobile=true, canInject=true`。分别保存本端 `generation`，
+   不能把 PC 的值作为手机的值。首次进入设备同步页前扩展可能尚未注册。
+5. PC 调用 `action=read,generation=<PC当前代次>`，在调试进程内存取得
+   `invitation`，立即作为手机
+   `action=inject,generation=<手机当前代次>,invitation=<刚读取的邀请>` 的参数。
+   `generation` 按字符串数字传递。PC 重新生成二维码后必须重新读取邀请；
+   `generation` 标识页面绑定代次，不是二维码版本，同一页面刷新码时可能不变。
+6. `accepted=true` 只说明手机页面接受邀请并附加了同步会话，**不代表 USB
+   发现、握手或连接已经完成**。手机在注入前的 `transport=wifi` 可能只是默认值；
+   实际连接方式由 Rust 校验后的邀请决定。继续通过正式页面核对确认码、
+   确认预览，观察是否进入配置、扫描或传输阶段。
+
+machine 请求按 Flutter daemon 协议使用一行 JSON 数组。例如以下占位请求
+只查询状态；PC 与手机分别发送到各自会话：
+
+```json
+[{"id":"pairing-status-1","method":"app.callServiceExtension","params":{"appId":"<本端appId>","methodName":"ext.squid_album.deviceSyncPairing","params":{"action":"status"}}}]
+```
+
+后续 `read`/`inject` 使用相同请求结构并更换唯一请求 ID 和内层参数。
+machine 调用自动使用应用 UI isolate；直接调用 VM Service WebSocket 时，
+先发现当前应用 UI isolate，再在扩展请求中加入其 `isolateId`，不要硬编码旧 ID。
+调试客户端只输出状态、固定错误码及不含身份信息的耗时/计数；不得将完整
+machine 输入/输出、`read` 响应、`inject` 参数或认证地址转存到终端记录、
+普通日志、命令行参数、剪贴板、文件、仓库或外部服务。
+
+排障边界：
+
+- `Unknown method`：先确认是普通 Debug 包、两端设备同步页已打开；
+  原始 WebSocket 调用还须检查 `isolateId`，不能据此判定接口不存在。
+- `unavailable`、`stale_page` 或 `busy`：检查当前路由、手机前台状态、
+  是否已有会话/进行中的操作以及邀请剩余时间；重新查询状态，不重复并发注入。
+- 邀请过期或 PC 已离开邀请阶段：在正式页面重新生成邀请再读取，不复用旧码。
+- VM Service/转发端口失效、连接拒绝或认证失败：先核对本次保留的认证连接；
+  仅看到监听端口不等于有可用认证地址。不要关闭认证、外放调试服务或无限等待
+  无参数 `flutter attach` 来恢复丢失的地址。无法恢复时先请使用者安全结束会话、
+  正常关闭应用，再从普通 Debug machine 入口重新启动；不强杀、不清数据。
+
+### 真实图库无变化测速入口
+
+已获得使用者针对真实图库的明确授权时，可使用独立
+`tool/device_sync_real_noop.dart` Debug 入口及
+`tool/device_sync_real_noop_client.dart` 客户端。它不替代普通应用的扫码输入扩展。
+从核对过的构建副本运行，沿用项目既有缓存环境：
+
+```powershell
+$env:NSOALBUM_REAL_NOOP_SOURCE = (Get-Location).Path
+dart tool/device_sync_real_noop_client.dart --device <Android设备ID> --output <新的数字报告.json>
+```
+
+客户端顺序启动两端 `flutter run --debug --machine`，显式启用
+`DEVICE_SYNC_REAL_NOOP=true`；等两端准备完成才创建并立即传递邀请，邀请及认证地址
+仅存内存。Wi-Fi/USB 分别执行电脑到手机、手机到电脑各三轮；USB 仍走正式目录授权。
+既有 Windows 应用须正常退出，不能绕过单实例或强制中断其安全收尾。
+存在多个私有地址接口时，宿主可在只读核实物理网卡后设置临时环境变量
+`NSOALBUM_REAL_NOOP_INTERFACE`；只接受正式候选中精确且唯一的接口名，不接受任意
+IP，也不对缺失或歧义自动回退。
+
+入口使用真实默认图库及正式恢复流程，限定无账号的严格无变化融合。双方 Rust 预检
+以及接收端最终检查都必须通过；双库的同步业务数据有差异立即停止，不传媒体补齐，
+不删除、不覆盖、不改账号。报告只有固定状态与白名单数字，原生嵌套计时和观察计时
+分别保留。实测结束必须恢复普通 `lib/main.dart` Debug 包，覆盖安装保留手机数据。
+完整边界见 [测试说明](../docs/TESTING.md#真实图库严格无变化测速)。
 
 ### 连接提示与应用版本匹配
 

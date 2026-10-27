@@ -40,6 +40,76 @@ fn confirm_phone(pair: &mut Pair) {
     panic!("phone confirmation did not reach desktop");
 }
 
+#[test]
+fn benchmark_phone_controlled_both_directions_preserve_noop_and_authorization() {
+    for direction in [Direction::DesktopToPhone, Direction::PhoneToDesktop] {
+        let mut pair = controlled_pair();
+        // A prior synthetic sync also makes the forwarded provenance catalog equal.
+        let (source, target, source_name, target_name) = if direction == Direction::DesktopToPhone {
+            (&pair.a, &pair.b, "Desktop", "Phone")
+        } else {
+            (&pair.b, &pair.a, "Phone", "Desktop")
+        };
+        source
+            .create_album("Synthetic shared".into(), String::new(), false)
+            .unwrap();
+        let mut first = ReceiveOperation::prepare(
+            target.database(),
+            Snapshot::read(&source.database(), source_name).unwrap(),
+            target_name,
+            SyncMode::Merge,
+        )
+        .unwrap();
+        let mut authorization = first.authorize().unwrap();
+        first
+            .apply(
+                Some(&mut authorization),
+                None,
+                &CancellationToken::default(),
+                &mut |_| {},
+            )
+            .unwrap();
+        configured_preview(&mut pair, direction, false);
+        for driver in [&mut pair.host, &mut pair.phone] {
+            let binding = driver.preview_binding().unwrap().to_owned();
+            assert!(driver.benchmark_require_noop(&binding).unwrap());
+            assert_eq!(driver.state(), State::AwaitingApproval);
+        }
+        let generations = [
+            pair.a.database().device_sync_header().unwrap().generation,
+            pair.b.database().device_sync_header().unwrap().generation,
+        ];
+        let binding = pair.phone.preview_binding().unwrap().to_owned();
+        pair.phone.approve_controlled_preview(&binding).unwrap();
+        pump_until(&mut pair, State::Completed);
+        for _ in 0..100 {
+            cycle(&mut pair.host, &mut pair.phone);
+            pair.host.finish_success();
+            pair.phone.finish_success();
+            if pair.host.benchmark_metrics().is_some() && pair.phone.benchmark_metrics().is_some() {
+                break;
+            }
+        }
+        let receiver = if direction == Direction::DesktopToPhone {
+            &pair.phone
+        } else {
+            &pair.host
+        };
+        assert!(receiver
+            .benchmark_metrics()
+            .unwrap()
+            .contains("strict_noop_applied=1"));
+        assert_eq!(
+            pair.a.database().device_sync_header().unwrap().generation,
+            generations[0]
+        );
+        assert_eq!(
+            pair.b.database().device_sync_header().unwrap().generation,
+            generations[1]
+        );
+    }
+}
+
 fn configured_preview(pair: &mut Pair, direction: Direction, accounts: bool) {
     confirm_phone(pair);
     pair.phone

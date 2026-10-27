@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 100330738;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 123636003;
 
 // Section: executor
 
@@ -822,6 +822,81 @@ fn wire__crate__bridge__device_sync_backup_journal_impl(
                         crate::bridge::device_sync_backup_journal(api_library, api_backup)?;
                     std::result::Result::Ok(output_ok)
                 })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__device_sync_benchmark_metrics_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "device_sync_benchmark_metrics",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_endpoint = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::device_sync::read_model::ReadError>((move || {
+                    let output_ok = crate::bridge::device_sync_benchmark_metrics(api_endpoint)?;
+                    std::result::Result::Ok(output_ok)
+                })(
+                ))
+            }
+        },
+    )
+}
+fn wire__crate__bridge__device_sync_benchmark_require_noop_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "device_sync_benchmark_require_noop",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_endpoint = <String>::sse_decode(&mut deserializer);
+            let api_binding = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::device_sync::runtime::DeviceCommandError>(
+                    (move || async move {
+                        let output_ok = crate::bridge::device_sync_benchmark_require_noop(
+                            api_endpoint,
+                            api_binding,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
             }
         },
     )
@@ -7178,229 +7253,243 @@ fn pde_ffi_dispatcher_primary_impl(
         22 => {
             wire__crate__bridge__device_sync_backup_journal_impl(port, ptr, rust_vec_len, data_len)
         }
-        23 => {
+        23 => wire__crate__bridge__device_sync_benchmark_metrics_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        24 => wire__crate__bridge__device_sync_benchmark_require_noop_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        25 => {
             wire__crate__bridge__device_sync_cancel_restore_impl(port, ptr, rust_vec_len, data_len)
         }
-        24 => {
+        26 => {
             wire__crate__bridge__device_sync_cancel_signal_impl(port, ptr, rust_vec_len, data_len)
         }
-        25 => wire__crate__bridge__device_sync_client_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__bridge__device_sync_client_tcp_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__bridge__device_sync_client_usb_impl(port, ptr, rust_vec_len, data_len),
-        28 => {
+        27 => wire__crate__bridge__device_sync_client_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__crate__bridge__device_sync_client_tcp_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__bridge__device_sync_client_usb_impl(port, ptr, rust_vec_len, data_len),
+        30 => {
             wire__crate__bridge__device_sync_close_endpoint_impl(port, ptr, rust_vec_len, data_len)
         }
-        29 => {
+        31 => {
             wire__crate__bridge__device_sync_close_library_impl(port, ptr, rust_vec_len, data_len)
         }
-        30 => {
+        32 => {
             wire__crate__bridge__device_sync_close_restore_impl(port, ptr, rust_vec_len, data_len)
         }
-        31 => wire__crate__bridge__device_sync_compensate_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__bridge__device_sync_configure_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__bridge__device_sync_confirm_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__bridge__device_sync_confirmation_code_impl(
+        33 => wire__crate__bridge__device_sync_compensate_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__bridge__device_sync_configure_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__bridge__device_sync_confirm_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__bridge__device_sync_confirmation_code_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        35 => wire__crate__bridge__device_sync_consent_controlled_impl(
+        37 => wire__crate__bridge__device_sync_consent_controlled_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        36 => wire__crate__bridge__device_sync_decline_accounts_impl(
+        38 => wire__crate__bridge__device_sync_decline_accounts_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        37 => wire__crate__bridge__device_sync_detach_transport_impl(
+        39 => wire__crate__bridge__device_sync_detach_transport_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        38 => wire__crate__bridge__device_sync_drain_impl(port, ptr, rust_vec_len, data_len),
-        39 => {
+        40 => wire__crate__bridge__device_sync_drain_impl(port, ptr, rust_vec_len, data_len),
+        41 => {
             wire__crate__bridge__device_sync_export_accounts_impl(port, ptr, rust_vec_len, data_len)
         }
-        40 => {
+        42 => {
             wire__crate__bridge__device_sync_external_check_impl(port, ptr, rust_vec_len, data_len)
         }
-        41 => {
+        43 => {
             wire__crate__bridge__device_sync_external_step_impl(port, ptr, rust_vec_len, data_len)
         }
-        42 => wire__crate__bridge__device_sync_finalize_accounts_impl(
+        44 => wire__crate__bridge__device_sync_finalize_accounts_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        43 => wire__crate__bridge__device_sync_finalize_restore_impl(
+        45 => wire__crate__bridge__device_sync_finalize_restore_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        44 => {
+        46 => {
             wire__crate__bridge__device_sync_finish_success_impl(port, ptr, rust_vec_len, data_len)
         }
-        45 => wire__crate__bridge__device_sync_host_impl(port, ptr, rust_vec_len, data_len),
-        46 => wire__crate__bridge__device_sync_host_tcp_impl(port, ptr, rust_vec_len, data_len),
-        47 => wire__crate__bridge__device_sync_host_usb_impl(port, ptr, rust_vec_len, data_len),
-        48 => wire__crate__bridge__device_sync_ingest_impl(port, ptr, rust_vec_len, data_len),
-        49 => wire__crate__bridge__device_sync_inspect_invitation_impl(
+        47 => wire__crate__bridge__device_sync_host_impl(port, ptr, rust_vec_len, data_len),
+        48 => wire__crate__bridge__device_sync_host_tcp_impl(port, ptr, rust_vec_len, data_len),
+        49 => wire__crate__bridge__device_sync_host_usb_impl(port, ptr, rust_vec_len, data_len),
+        50 => wire__crate__bridge__device_sync_ingest_impl(port, ptr, rust_vec_len, data_len),
+        51 => wire__crate__bridge__device_sync_inspect_invitation_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        50 => wire__crate__bridge__device_sync_journal_impl(port, ptr, rust_vec_len, data_len),
-        51 => wire__crate__bridge__device_sync_library_info_impl(port, ptr, rust_vec_len, data_len),
-        52 => wire__crate__bridge__device_sync_open_library_impl(port, ptr, rust_vec_len, data_len),
-        53 => wire__crate__bridge__device_sync_poll_impl(port, ptr, rust_vec_len, data_len),
-        54 => {
+        52 => wire__crate__bridge__device_sync_journal_impl(port, ptr, rust_vec_len, data_len),
+        53 => wire__crate__bridge__device_sync_library_info_impl(port, ptr, rust_vec_len, data_len),
+        54 => wire__crate__bridge__device_sync_open_library_impl(port, ptr, rust_vec_len, data_len),
+        55 => wire__crate__bridge__device_sync_poll_impl(port, ptr, rust_vec_len, data_len),
+        56 => {
             wire__crate__bridge__device_sync_preview_restore_impl(port, ptr, rust_vec_len, data_len)
         }
-        55 => wire__crate__bridge__device_sync_publish_account_preview_impl(
+        57 => wire__crate__bridge__device_sync_publish_account_preview_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        56 => wire__crate__bridge__device_sync_read_backups_impl(port, ptr, rust_vec_len, data_len),
-        57 => {
+        58 => wire__crate__bridge__device_sync_read_backups_impl(port, ptr, rust_vec_len, data_len),
+        59 => {
             wire__crate__bridge__device_sync_read_conflicts_impl(port, ptr, rust_vec_len, data_len)
         }
-        58 => {
+        60 => {
             wire__crate__bridge__device_sync_read_endpoint_impl(port, ptr, rust_vec_len, data_len)
         }
-        59 => wire__crate__bridge__device_sync_read_preview_impl(port, ptr, rust_vec_len, data_len),
-        60 => wire__crate__bridge__device_sync_read_restore_summary_impl(
+        61 => wire__crate__bridge__device_sync_read_preview_impl(port, ptr, rust_vec_len, data_len),
+        62 => wire__crate__bridge__device_sync_read_restore_summary_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        61 => wire__crate__bridge__device_sync_receive_accounts_impl(
+        63 => wire__crate__bridge__device_sync_receive_accounts_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        62 => wire__crate__bridge__device_sync_recover_interrupted_sessions_impl(
+        64 => wire__crate__bridge__device_sync_recover_interrupted_sessions_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        63 => wire__crate__bridge__device_sync_shutdown_impl(port, ptr, rust_vec_len, data_len),
-        64 => wire__crate__bridge__device_sync_source_final_impl(port, ptr, rust_vec_len, data_len),
-        65 => wire__crate__bridge__device_sync_status_impl(port, ptr, rust_vec_len, data_len),
-        66 => wire__crate__bridge__device_sync_target_final_impl(port, ptr, rust_vec_len, data_len),
-        67 => wire__crate__bridge__device_sync_usb_complete_impl(port, ptr, rust_vec_len, data_len),
-        68 => wire__crate__bridge__device_sync_usb_next_impl(port, ptr, rust_vec_len, data_len),
-        69 => wire__crate__bridge__device_sync_usb_select_impl(port, ptr, rust_vec_len, data_len),
-        70 => wire__crate__bridge__device_sync_usb_view_impl(port, ptr, rust_vec_len, data_len),
-        71 => {
+        65 => wire__crate__bridge__device_sync_shutdown_impl(port, ptr, rust_vec_len, data_len),
+        66 => wire__crate__bridge__device_sync_source_final_impl(port, ptr, rust_vec_len, data_len),
+        67 => wire__crate__bridge__device_sync_status_impl(port, ptr, rust_vec_len, data_len),
+        68 => wire__crate__bridge__device_sync_target_final_impl(port, ptr, rust_vec_len, data_len),
+        69 => wire__crate__bridge__device_sync_usb_complete_impl(port, ptr, rust_vec_len, data_len),
+        70 => wire__crate__bridge__device_sync_usb_next_impl(port, ptr, rust_vec_len, data_len),
+        71 => wire__crate__bridge__device_sync_usb_select_impl(port, ptr, rust_vec_len, data_len),
+        72 => wire__crate__bridge__device_sync_usb_view_impl(port, ptr, rust_vec_len, data_len),
+        73 => {
             wire__crate__bridge__device_sync_usb_wait_closed_impl(port, ptr, rust_vec_len, data_len)
         }
-        72 => wire__crate__bridge__device_sync_validate_restore_impl(
+        74 => wire__crate__bridge__device_sync_validate_restore_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        73 => wire__crate__bridge__device_sync_written_impl(port, ptr, rust_vec_len, data_len),
-        74 => wire__crate__bridge__establish_coral_session_impl(port, ptr, rust_vec_len, data_len),
-        75 => wire__crate__bridge__establish_coral_session_for_account_impl(
+        75 => wire__crate__bridge__device_sync_written_impl(port, ptr, rust_vec_len, data_len),
+        76 => wire__crate__bridge__establish_coral_session_impl(port, ptr, rust_vec_len, data_len),
+        77 => wire__crate__bridge__establish_coral_session_for_account_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        76 => {
+        78 => {
             wire__crate__bridge__exchange_nintendo_callback_impl(port, ptr, rust_vec_len, data_len)
         }
-        77 => wire__crate__bridge__export_media_impl(port, ptr, rust_vec_len, data_len),
-        78 => wire__crate__bridge__import_custom_files_impl(port, ptr, rust_vec_len, data_len),
-        79 => wire__crate__bridge__import_custom_files_with_progress_impl(
+        79 => wire__crate__bridge__export_media_impl(port, ptr, rust_vec_len, data_len),
+        80 => wire__crate__bridge__import_custom_files_impl(port, ptr, rust_vec_len, data_len),
+        81 => wire__crate__bridge__import_custom_files_with_progress_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        80 => wire__crate__bridge__import_local_files_impl(port, ptr, rust_vec_len, data_len),
-        81 => wire__crate__bridge__import_mtp_files_impl(port, ptr, rust_vec_len, data_len),
-        82 => wire__crate__bridge__init_core_impl(port, ptr, rust_vec_len, data_len),
-        83 => wire__crate__bridge__list_album_rules_impl(port, ptr, rust_vec_len, data_len),
-        84 => wire__crate__bridge__list_albums_impl(port, ptr, rust_vec_len, data_len),
-        85 => wire__crate__bridge__list_game_media_counts_impl(port, ptr, rust_vec_len, data_len),
-        86 => wire__crate__bridge__list_game_tag_aliases_impl(port, ptr, rust_vec_len, data_len),
-        87 => wire__crate__bridge__list_game_tags_impl(port, ptr, rust_vec_len, data_len),
-        88 => wire__crate__bridge__list_media_impl(port, ptr, rust_vec_len, data_len),
-        89 => wire__crate__bridge__list_media_page_impl(port, ptr, rust_vec_len, data_len),
-        90 => wire__crate__bridge__list_tag_usage_impl(port, ptr, rust_vec_len, data_len),
-        91 => wire__crate__bridge__list_tags_impl(port, ptr, rust_vec_len, data_len),
-        92 => wire__crate__bridge__load_settings_impl(port, ptr, rust_vec_len, data_len),
-        93 => wire__crate__bridge__media_details_impl(port, ptr, rust_vec_len, data_len),
-        94 => wire__crate__bridge__merge_game_tags_impl(port, ptr, rust_vec_len, data_len),
-        95 => wire__crate__bridge__merge_tags_impl(port, ptr, rust_vec_len, data_len),
-        96 => wire__crate__bridge__nintendo_friend_avatar_impl(port, ptr, rust_vec_len, data_len),
-        97 => wire__crate__bridge__nintendo_friend_code_impl(port, ptr, rust_vec_len, data_len),
-        98 => wire__crate__bridge__nintendo_friend_lookup_impl(port, ptr, rust_vec_len, data_len),
-        99 => wire__crate__bridge__nintendo_friend_play_log_impl(port, ptr, rust_vec_len, data_len),
-        100 => wire__crate__bridge__nintendo_friends_impl(port, ptr, rust_vec_len, data_len),
-        101 => wire__crate__bridge__nintendo_game_image_impl(port, ptr, rust_vec_len, data_len),
-        102 => wire__crate__bridge__nintendo_send_friend_request_impl(
+        82 => wire__crate__bridge__import_local_files_impl(port, ptr, rust_vec_len, data_len),
+        83 => wire__crate__bridge__import_mtp_files_impl(port, ptr, rust_vec_len, data_len),
+        84 => wire__crate__bridge__init_core_impl(port, ptr, rust_vec_len, data_len),
+        85 => wire__crate__bridge__list_album_rules_impl(port, ptr, rust_vec_len, data_len),
+        86 => wire__crate__bridge__list_albums_impl(port, ptr, rust_vec_len, data_len),
+        87 => wire__crate__bridge__list_game_media_counts_impl(port, ptr, rust_vec_len, data_len),
+        88 => wire__crate__bridge__list_game_tag_aliases_impl(port, ptr, rust_vec_len, data_len),
+        89 => wire__crate__bridge__list_game_tags_impl(port, ptr, rust_vec_len, data_len),
+        90 => wire__crate__bridge__list_media_impl(port, ptr, rust_vec_len, data_len),
+        91 => wire__crate__bridge__list_media_page_impl(port, ptr, rust_vec_len, data_len),
+        92 => wire__crate__bridge__list_tag_usage_impl(port, ptr, rust_vec_len, data_len),
+        93 => wire__crate__bridge__list_tags_impl(port, ptr, rust_vec_len, data_len),
+        94 => wire__crate__bridge__load_settings_impl(port, ptr, rust_vec_len, data_len),
+        95 => wire__crate__bridge__media_details_impl(port, ptr, rust_vec_len, data_len),
+        96 => wire__crate__bridge__merge_game_tags_impl(port, ptr, rust_vec_len, data_len),
+        97 => wire__crate__bridge__merge_tags_impl(port, ptr, rust_vec_len, data_len),
+        98 => wire__crate__bridge__nintendo_friend_avatar_impl(port, ptr, rust_vec_len, data_len),
+        99 => wire__crate__bridge__nintendo_friend_code_impl(port, ptr, rust_vec_len, data_len),
+        100 => wire__crate__bridge__nintendo_friend_lookup_impl(port, ptr, rust_vec_len, data_len),
+        101 => {
+            wire__crate__bridge__nintendo_friend_play_log_impl(port, ptr, rust_vec_len, data_len)
+        }
+        102 => wire__crate__bridge__nintendo_friends_impl(port, ptr, rust_vec_len, data_len),
+        103 => wire__crate__bridge__nintendo_game_image_impl(port, ptr, rust_vec_len, data_len),
+        104 => wire__crate__bridge__nintendo_send_friend_request_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        103 => {
+        105 => {
             wire__crate__bridge__nintendo_update_friend_note_impl(port, ptr, rust_vec_len, data_len)
         }
-        104 => wire__crate__bridge__prepare_seed_export_impl(port, ptr, rust_vec_len, data_len),
-        105 => {
+        106 => wire__crate__bridge__prepare_seed_export_impl(port, ptr, rust_vec_len, data_len),
+        107 => {
             wire__crate__bridge__prepare_splatnet_session_impl(port, ptr, rust_vec_len, data_len)
         }
-        106 => wire__crate__bridge__probe_library_root_impl(port, ptr, rust_vec_len, data_len),
-        107 => {
+        108 => wire__crate__bridge__probe_library_root_impl(port, ptr, rust_vec_len, data_len),
+        109 => {
             wire__crate__bridge__record_game_tag_selection_impl(port, ptr, rust_vec_len, data_len)
         }
-        108 => wire__crate__bridge__record_sync_attempt_impl(port, ptr, rust_vec_len, data_len),
-        109 => wire__crate__bridge__record_sync_outcome_impl(port, ptr, rust_vec_len, data_len),
-        110 => wire__crate__bridge__relocate_media_library_impl(port, ptr, rust_vec_len, data_len),
-        111 => wire__crate__bridge__remove_media_from_album_impl(port, ptr, rust_vec_len, data_len),
-        112 => wire__crate__bridge__rename_game_tag_impl(port, ptr, rust_vec_len, data_len),
-        113 => wire__crate__bridge__rename_tag_impl(port, ptr, rust_vec_len, data_len),
-        114 => wire__crate__bridge__replace_album_rules_impl(port, ptr, rust_vec_len, data_len),
-        115 => wire__crate__bridge__replace_tags_impl(port, ptr, rust_vec_len, data_len),
-        116 => wire__crate__bridge__save_settings_impl(port, ptr, rust_vec_len, data_len),
-        117 => wire__crate__bridge__save_sync_policy_impl(port, ptr, rust_vec_len, data_len),
-        118 => wire__crate__bridge__save_video_frame_impl(port, ptr, rust_vec_len, data_len),
-        119 => wire__crate__bridge__set_favorite_impl(port, ptr, rust_vec_len, data_len),
-        120 => wire__crate__bridge__set_note_impl(port, ptr, rust_vec_len, data_len),
-        121 => {
+        110 => wire__crate__bridge__record_sync_attempt_impl(port, ptr, rust_vec_len, data_len),
+        111 => wire__crate__bridge__record_sync_outcome_impl(port, ptr, rust_vec_len, data_len),
+        112 => wire__crate__bridge__relocate_media_library_impl(port, ptr, rust_vec_len, data_len),
+        113 => wire__crate__bridge__remove_media_from_album_impl(port, ptr, rust_vec_len, data_len),
+        114 => wire__crate__bridge__rename_game_tag_impl(port, ptr, rust_vec_len, data_len),
+        115 => wire__crate__bridge__rename_tag_impl(port, ptr, rust_vec_len, data_len),
+        116 => wire__crate__bridge__replace_album_rules_impl(port, ptr, rust_vec_len, data_len),
+        117 => wire__crate__bridge__replace_tags_impl(port, ptr, rust_vec_len, data_len),
+        118 => wire__crate__bridge__save_settings_impl(port, ptr, rust_vec_len, data_len),
+        119 => wire__crate__bridge__save_sync_policy_impl(port, ptr, rust_vec_len, data_len),
+        120 => wire__crate__bridge__save_video_frame_impl(port, ptr, rust_vec_len, data_len),
+        121 => wire__crate__bridge__set_favorite_impl(port, ptr, rust_vec_len, data_len),
+        122 => wire__crate__bridge__set_note_impl(port, ptr, rust_vec_len, data_len),
+        123 => {
             wire__crate__bridge__set_runtime_proxy_policy_impl(port, ptr, rust_vec_len, data_len)
         }
-        122 => wire__crate__bridge__sync_account_history_impl(port, ptr, rust_vec_len, data_len),
-        123 => wire__crate__bridge__sync_nso_impl(port, ptr, rust_vec_len, data_len),
-        124 => {
+        124 => wire__crate__bridge__sync_account_history_impl(port, ptr, rust_vec_len, data_len),
+        125 => wire__crate__bridge__sync_nso_impl(port, ptr, rust_vec_len, data_len),
+        126 => {
             wire__crate__bridge__sync_nso_from_session_token_impl(port, ptr, rust_vec_len, data_len)
         }
-        125 => wire__crate__bridge__sync_nso_from_session_token_for_account_impl(
+        127 => wire__crate__bridge__sync_nso_from_session_token_for_account_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        126 => wire__crate__bridge__sync_schedule_status_impl(port, ptr, rust_vec_len, data_len),
-        127 => wire__crate__bridge__update_album_impl(port, ptr, rust_vec_len, data_len),
+        128 => wire__crate__bridge__sync_schedule_status_impl(port, ptr, rust_vec_len, data_len),
+        129 => wire__crate__bridge__update_album_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }

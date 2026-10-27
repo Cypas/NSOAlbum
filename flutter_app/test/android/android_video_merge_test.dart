@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/main.dart';
 import 'package:squid_album/src/rust/models.dart';
+import 'package:squid_album/src/ui/android/android_library_page.dart';
 import 'package:squid_album/src/ui/android/android_media_card.dart';
 import 'package:squid_album/src/ui/android/android_video_merge_page.dart';
 import 'package:squid_album/src/ui/platform_ui.dart';
@@ -23,9 +24,7 @@ void main() {
         SquidAlbumApp(backend: backend, uiPlatform: AppUiPlatform.android),
       );
       await tester.pumpAndSettle();
-      final context = tester.element(
-        find.byKey(const Key('android-library-search')),
-      );
+      final context = tester.element(find.byType(AndroidLibraryPage));
       Navigator.of(context).push<void>(
         MaterialPageRoute(
           builder: (_) =>

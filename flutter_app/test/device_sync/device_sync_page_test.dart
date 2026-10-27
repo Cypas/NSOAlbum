@@ -135,6 +135,25 @@ void main() {
     await endPage(tester);
   });
   testWidgets(
+    'synchronous observation Busy still retires and closes the actual page',
+    (tester) async {
+      final session = _SynchronousBusyObservationSession();
+      final access = PageAccess()..sessionFactory = () => session;
+      await openPage(tester, access);
+      await createHost(tester);
+      expect(session.refreshes, greaterThanOrEqualTo(1));
+      expect(find.byKey(const Key('device-page-error')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      await endPage(tester);
+      expect(session.closed, isTrue);
+      expect(session.settled, isTrue);
+      expect(find.byType(DeviceSyncPage), findsNothing);
+      expect(find.byKey(const Key('open-page')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+  testWidgets(
     'USB host waits for the scanned phone without a storage selection action',
     (tester) async {
       final access = PageAccess();
@@ -694,6 +713,19 @@ class _PinningObservationSession extends PanelSession {
   }
   @override
   Future<read.EndpointRead> refresh() async => throw const DeviceSyncBusy();
+}
+
+class _SynchronousBusyObservationSession extends PanelSession {
+  _SynchronousBusyObservationSession() {
+    state = endpoint(driver.State.configuring, host: true, controller: false);
+  }
+  int refreshes = 0;
+
+  @override
+  Future<read.EndpointRead> refresh() {
+    refreshes++;
+    throw const DeviceSyncBusy();
+  }
 }
 
 class _UnsettledSession extends PanelSession {
