@@ -1342,6 +1342,9 @@ class ToolsBackend extends FakeBackend
   Future<NintendoFriendsSnapshot> loadNintendoFriends(
     String accountId,
     String operationId,
+    {
+    bool includeSplatoonActivity = false,
+    }
   ) async {
     friendAccounts.add(accountId);
     if (failRefresh) throw StateError('network unavailable');

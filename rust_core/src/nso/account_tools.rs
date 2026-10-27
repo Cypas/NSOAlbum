@@ -424,7 +424,9 @@ impl Drop for Operation<'_> {
     }
 }
 pub(crate) enum ToolRequest {
-    Friends,
+    Friends {
+        include_splatoon_activity: bool,
+    },
     Avatar(String),
     GameImage(String),
     FriendPlayLog(String),
@@ -1029,7 +1031,9 @@ async fn execute_tool(
     request: &ToolRequest,
 ) -> CoreResult<ToolResponse> {
     match request {
-        ToolRequest::Friends => {
+        ToolRequest::Friends {
+            include_splatoon_activity,
+        } => {
             let raw = coral_call(
                 transport,
                 client,
@@ -1049,6 +1053,13 @@ async fn execute_tool(
                 .avatar_bytes
                 .retain(|id, (url, _)| avatars.get(id) == Some(url));
             cache.avatars = avatars;
+            if !include_splatoon_activity {
+                return Ok(ToolResponse::Friends(NintendoFriendsSnapshot {
+                    friends,
+                    updated_at: Utc::now(),
+                    activity_error: None,
+                }));
+            }
             let activity = async {
                 let session =
                     splatnet::session(transport, client, auth, &mut cache.splatnet).await?;
@@ -1665,7 +1676,9 @@ mod tests {
                 json!({"parameter": {"friendNsaId": "synthetic-friend", "note": "synthetic note"}}),
             ),
             (
-                ToolRequest::Friends,
+                ToolRequest::Friends {
+                    include_splatoon_activity: false,
+                },
                 "/v4/Friend/List",
                 json!({"parameter": {}}),
             ),
@@ -2862,7 +2875,9 @@ mod tests {
                     "friends",
                     None,
                     HttpTransport::new(Default::default()).unwrap(),
-                    ToolRequest::Friends,
+                    ToolRequest::Friends {
+                        include_splatoon_activity: true,
+                    },
                 )
                 .await
                 .unwrap();
@@ -3156,7 +3171,9 @@ mod tests {
                 "mismatch",
                 None,
                 HttpTransport::new(Default::default()).unwrap(),
-                ToolRequest::Friends,
+                ToolRequest::Friends {
+                    include_splatoon_activity: true,
+                },
             )
             .await;
         assert!(matches!(result, Err(CoreError::Authentication(_))));

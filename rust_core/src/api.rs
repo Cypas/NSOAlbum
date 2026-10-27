@@ -72,7 +72,9 @@ mod device_sync_account_guard_tests {
                 "synthetic-token".into(),
                 "synthetic-operation".into(),
                 Some("not a proxy".into()),
-                crate::nso::account_tools::ToolRequest::Friends,
+                crate::nso::account_tools::ToolRequest::Friends {
+                    include_splatoon_activity: false,
+                },
             )
             .await;
         assert!(matches!(result, Err(CoreError::LibraryBusy)));
@@ -1807,6 +1809,7 @@ mod tests {
             auto_sync_on_launch: false,
             notify_on_auto_sync: true,
             show_splatoon_schedule: true,
+            show_splatoon_friend_activity: false,
             close_behavior: "ask".into(),
             custom_font_paths: Vec::new(),
             sync_policy: SyncPolicy {
@@ -1864,6 +1867,7 @@ mod tests {
             auto_sync_on_launch: false,
             notify_on_auto_sync: true,
             show_splatoon_schedule: true,
+            show_splatoon_friend_activity: false,
             close_behavior: "ask".into(),
             custom_font_paths: Vec::new(),
             sync_policy: SyncPolicy {
@@ -1898,6 +1902,7 @@ mod tests {
             auto_sync_on_launch: false,
             notify_on_auto_sync: true,
             show_splatoon_schedule: true,
+            show_splatoon_friend_activity: false,
             close_behavior: "ask".into(),
             custom_font_paths: Vec::new(),
             sync_policy: SyncPolicy::default(),
@@ -2044,6 +2049,7 @@ mod tests {
             auto_sync_on_launch: false,
             notify_on_auto_sync: true,
             show_splatoon_schedule: true,
+            show_splatoon_friend_activity: false,
             close_behavior: "ask".into(),
             custom_font_paths: Vec::new(),
             sync_policy: SyncPolicy::default(),
@@ -2416,6 +2422,7 @@ mod tests {
             auto_sync_on_launch: false,
             notify_on_auto_sync: true,
             show_splatoon_schedule: true,
+            show_splatoon_friend_activity: false,
             close_behavior: "ask".into(),
             custom_font_paths: Vec::new(),
             sync_policy: SyncPolicy::default(),
@@ -2654,6 +2661,7 @@ mod tests {
             auto_sync_on_launch: false,
             notify_on_auto_sync: true,
             show_splatoon_schedule: true,
+            show_splatoon_friend_activity: false,
             close_behavior: "ask".into(),
             custom_font_paths: Vec::new(),
             sync_policy: SyncPolicy::default(),
@@ -2727,6 +2735,7 @@ mod tests {
             auto_sync_on_launch: false,
             notify_on_auto_sync: true,
             show_splatoon_schedule: true,
+            show_splatoon_friend_activity: false,
             close_behavior: "ask".into(),
             custom_font_paths: Vec::new(),
             sync_policy: SyncPolicy {

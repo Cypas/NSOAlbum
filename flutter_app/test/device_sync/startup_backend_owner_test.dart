@@ -110,6 +110,7 @@ class _Native with NoPendingStartupBoundary implements RustLibApi {
     autoSyncOnLaunch: false,
     notifyOnAutoSync: true,
     showSplatoonSchedule: true,
+    showSplatoonFriendActivity: false,
     closeBehavior: 'ask',
     customFontPaths: [],
     syncPolicy: SyncPolicy(

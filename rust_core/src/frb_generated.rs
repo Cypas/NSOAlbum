@@ -3782,6 +3782,7 @@ fn wire__crate__bridge__nintendo_friends_impl(
             let api_session_token = <String>::sse_decode(&mut deserializer);
             let api_operation_id = <String>::sse_decode(&mut deserializer);
             let api_proxy_url = <Option<String>>::sse_decode(&mut deserializer);
+            let api_include_splatoon_friend_activity = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, String>(
@@ -3791,6 +3792,7 @@ fn wire__crate__bridge__nintendo_friends_impl(
                             api_session_token,
                             api_operation_id,
                             api_proxy_url,
+                            api_include_splatoon_friend_activity,
                         )
                         .await?;
                         std::result::Result::Ok(output_ok)
@@ -4920,6 +4922,7 @@ impl SseDecode for crate::settings::AppSettings {
         let mut var_autoSyncOnLaunch = <bool>::sse_decode(deserializer);
         let mut var_notifyOnAutoSync = <bool>::sse_decode(deserializer);
         let mut var_showSplatoonSchedule = <bool>::sse_decode(deserializer);
+        let mut var_showSplatoonFriendActivity = <bool>::sse_decode(deserializer);
         let mut var_closeBehavior = <String>::sse_decode(deserializer);
         let mut var_customFontPaths = <Vec<String>>::sse_decode(deserializer);
         let mut var_syncPolicy = <crate::settings::SyncPolicy>::sse_decode(deserializer);
@@ -4937,6 +4940,7 @@ impl SseDecode for crate::settings::AppSettings {
             auto_sync_on_launch: var_autoSyncOnLaunch,
             notify_on_auto_sync: var_notifyOnAutoSync,
             show_splatoon_schedule: var_showSplatoonSchedule,
+            show_splatoon_friend_activity: var_showSplatoonFriendActivity,
             close_behavior: var_closeBehavior,
             custom_font_paths: var_customFontPaths,
             sync_policy: var_syncPolicy,
@@ -7589,6 +7593,9 @@ impl flutter_rust_bridge::IntoDart for crate::settings::AppSettings {
             self.auto_sync_on_launch.into_into_dart().into_dart(),
             self.notify_on_auto_sync.into_into_dart().into_dart(),
             self.show_splatoon_schedule.into_into_dart().into_dart(),
+            self.show_splatoon_friend_activity
+                .into_into_dart()
+                .into_dart(),
             self.close_behavior.into_into_dart().into_dart(),
             self.custom_font_paths.into_into_dart().into_dart(),
             self.sync_policy.into_into_dart().into_dart(),
@@ -9679,6 +9686,7 @@ impl SseEncode for crate::settings::AppSettings {
         <bool>::sse_encode(self.auto_sync_on_launch, serializer);
         <bool>::sse_encode(self.notify_on_auto_sync, serializer);
         <bool>::sse_encode(self.show_splatoon_schedule, serializer);
+        <bool>::sse_encode(self.show_splatoon_friend_activity, serializer);
         <String>::sse_encode(self.close_behavior, serializer);
         <Vec<String>>::sse_encode(self.custom_font_paths, serializer);
         <crate::settings::SyncPolicy>::sse_encode(self.sync_policy, serializer);

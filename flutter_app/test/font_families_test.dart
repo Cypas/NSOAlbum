@@ -293,6 +293,7 @@ AppSettings _withFonts(FakeBackend backend, List<String> paths) {
     autoSyncOnLaunch: value.autoSyncOnLaunch,
     notifyOnAutoSync: value.notifyOnAutoSync,
     showSplatoonSchedule: value.showSplatoonSchedule,
+    showSplatoonFriendActivity: value.showSplatoonFriendActivity,
     closeBehavior: value.closeBehavior,
     customFontPaths: paths,
     syncPolicy: value.syncPolicy,

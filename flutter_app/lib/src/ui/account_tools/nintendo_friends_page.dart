@@ -70,10 +70,12 @@ class NintendoFriendsPage extends StatefulWidget {
     required this.backend,
     required this.profile,
     required this.mobile,
+    this.includeSplatoonActivity = false,
   });
   final NintendoAccountToolsBackend backend;
   final NintendoAccountProfile profile;
   final bool mobile;
+  final bool includeSplatoonActivity;
   @override
   State<NintendoFriendsPage> createState() => _NintendoFriendsPageState();
 }
@@ -103,6 +105,7 @@ class _NintendoFriendsPageState extends State<NintendoFriendsPage> {
       final result = await widget.backend.loadNintendoFriends(
         widget.profile.accountId,
         id,
+        includeSplatoonActivity: widget.includeSplatoonActivity,
       );
       if (mounted && operationId == id) setState(() => snapshot = result);
     } catch (failure) {

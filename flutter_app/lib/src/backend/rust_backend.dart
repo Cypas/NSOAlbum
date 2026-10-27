@@ -445,6 +445,7 @@ class RustBackend
     autoSyncOnLaunch: true,
     notifyOnAutoSync: true,
     showSplatoonSchedule: true,
+    showSplatoonFriendActivity: false,
     closeBehavior: 'ask',
     customFontPaths: const [],
     syncPolicy: const SyncPolicy(
@@ -1242,6 +1243,9 @@ class RustBackend
   Future<NintendoFriendsSnapshot> loadNintendoFriends(
     String accountId,
     String operationId,
+    {
+    bool includeSplatoonActivity = false,
+    }
   ) => _withAccountTool(
     accountId,
     operationId,
@@ -1250,6 +1254,7 @@ class RustBackend
       sessionToken: token,
       operationId: operationId,
       proxyUrl: _networkProxy,
+      includeSplatoonFriendActivity: includeSplatoonActivity,
     ),
   );
 

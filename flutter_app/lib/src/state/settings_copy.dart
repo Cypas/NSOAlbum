@@ -12,6 +12,7 @@ AppSettings copyAppSettings(
   bool? autoSyncOnLaunch,
   bool? notifyOnAutoSync,
   bool? showSplatoonSchedule,
+  bool? showSplatoonFriendActivity,
   String? proxyUrl,
   String? libraryPath,
   SyncPolicy? syncPolicy,
@@ -31,6 +32,8 @@ AppSettings copyAppSettings(
   autoSyncOnLaunch: autoSyncOnLaunch ?? value.autoSyncOnLaunch,
   notifyOnAutoSync: notifyOnAutoSync ?? value.notifyOnAutoSync,
   showSplatoonSchedule: showSplatoonSchedule ?? value.showSplatoonSchedule,
+  showSplatoonFriendActivity:
+      showSplatoonFriendActivity ?? value.showSplatoonFriendActivity,
   closeBehavior: value.closeBehavior,
   customFontPaths: value.customFontPaths,
   syncPolicy: syncPolicy ?? value.syncPolicy,

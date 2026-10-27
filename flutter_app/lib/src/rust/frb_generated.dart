@@ -530,6 +530,7 @@ abstract class RustLibApi extends BaseApi {
     required String sessionToken,
     required String operationId,
     String? proxyUrl,
+    required bool includeSplatoonFriendActivity,
   });
 
   Future<Uint8List> crateBridgeNintendoGameImage({
@@ -4098,6 +4099,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String sessionToken,
     required String operationId,
     String? proxyUrl,
+    required bool includeSplatoonFriendActivity,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -4107,6 +4109,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(sessionToken, serializer);
           sse_encode_String(operationId, serializer);
           sse_encode_opt_String(proxyUrl, serializer);
+          sse_encode_bool(includeSplatoonFriendActivity, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -4119,7 +4122,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateBridgeNintendoFriendsConstMeta,
-        argValues: [accountId, sessionToken, operationId, proxyUrl],
+        argValues: [
+          accountId,
+          sessionToken,
+          operationId,
+          proxyUrl,
+          includeSplatoonFriendActivity,
+        ],
         apiImpl: this,
       ),
     );
@@ -4127,7 +4136,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateBridgeNintendoFriendsConstMeta => const TaskConstMeta(
     debugName: "nintendo_friends",
-    argNames: ["accountId", "sessionToken", "operationId", "proxyUrl"],
+    argNames: [
+      "accountId",
+      "sessionToken",
+      "operationId",
+      "proxyUrl",
+      "includeSplatoonFriendActivity",
+    ],
   );
 
   @override
@@ -5200,8 +5215,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   AppSettings dco_decode_app_settings(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 16)
-      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
+    if (arr.length != 17)
+      throw Exception('unexpected arr length: expect 17 but see ${arr.length}');
     return AppSettings(
       proxyUrl: dco_decode_opt_String(arr[0]),
       libraryPath: dco_decode_String(arr[1]),
@@ -5216,9 +5231,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       autoSyncOnLaunch: dco_decode_bool(arr[10]),
       notifyOnAutoSync: dco_decode_bool(arr[11]),
       showSplatoonSchedule: dco_decode_bool(arr[12]),
-      closeBehavior: dco_decode_String(arr[13]),
-      customFontPaths: dco_decode_list_String(arr[14]),
-      syncPolicy: dco_decode_sync_policy(arr[15]),
+      showSplatoonFriendActivity: dco_decode_bool(arr[13]),
+      closeBehavior: dco_decode_String(arr[14]),
+      customFontPaths: dco_decode_list_String(arr[15]),
+      syncPolicy: dco_decode_sync_policy(arr[16]),
     );
   }
 
@@ -7054,6 +7070,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_autoSyncOnLaunch = sse_decode_bool(deserializer);
     var var_notifyOnAutoSync = sse_decode_bool(deserializer);
     var var_showSplatoonSchedule = sse_decode_bool(deserializer);
+    var var_showSplatoonFriendActivity = sse_decode_bool(deserializer);
     var var_closeBehavior = sse_decode_String(deserializer);
     var var_customFontPaths = sse_decode_list_String(deserializer);
     var var_syncPolicy = sse_decode_sync_policy(deserializer);
@@ -7071,6 +7088,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       autoSyncOnLaunch: var_autoSyncOnLaunch,
       notifyOnAutoSync: var_notifyOnAutoSync,
       showSplatoonSchedule: var_showSplatoonSchedule,
+      showSplatoonFriendActivity: var_showSplatoonFriendActivity,
       closeBehavior: var_closeBehavior,
       customFontPaths: var_customFontPaths,
       syncPolicy: var_syncPolicy,
@@ -9434,6 +9452,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.autoSyncOnLaunch, serializer);
     sse_encode_bool(self.notifyOnAutoSync, serializer);
     sse_encode_bool(self.showSplatoonSchedule, serializer);
+    sse_encode_bool(self.showSplatoonFriendActivity, serializer);
     sse_encode_String(self.closeBehavior, serializer);
     sse_encode_list_String(self.customFontPaths, serializer);
     sse_encode_sync_policy(self.syncPolicy, serializer);

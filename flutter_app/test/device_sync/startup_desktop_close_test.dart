@@ -541,6 +541,7 @@ class _Backend implements AppBackend, DeviceSyncStartupBackend {
     autoSyncOnLaunch: false,
     notifyOnAutoSync: true,
     showSplatoonSchedule: true,
+    showSplatoonFriendActivity: false,
     closeBehavior: 'ask',
     customFontPaths: [],
     syncPolicy: SyncPolicy(

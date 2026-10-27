@@ -41,6 +41,8 @@ class AccountToolsActions extends StatelessWidget {
                       backend: tools,
                       profile: profile,
                       mobile: mobile,
+                      includeSplatoonActivity:
+                          backend.settings.showSplatoonFriendActivity,
                     ),
                   ),
             icon: const Icon(Icons.people_outline),

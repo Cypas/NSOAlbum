@@ -56,6 +56,7 @@ void main() {
             autoSyncOnLaunch: false,
             notifyOnAutoSync: true,
             showSplatoonSchedule: true,
+            showSplatoonFriendActivity: false,
             closeBehavior: 'ask',
             customFontPaths: const [],
             syncPolicy: const SyncPolicy(

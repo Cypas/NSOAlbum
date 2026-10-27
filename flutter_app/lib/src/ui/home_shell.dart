@@ -7503,6 +7503,31 @@ class _SettingsPageState extends State<SettingsPage> {
                               _copySettings(value, autoPlayVideo: enabled),
                             ),
                     ),
+                    SwitchListTile(
+                      key: const Key('splatoon-friend-activity'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        context.l10n.select(
+                          zh: '好友列表展示 Splatoon 3 好友具体状态',
+                          en: 'Show detailed Splatoon 3 friend activity',
+                        ),
+                      ),
+                      subtitle: Text(
+                        context.l10n.select(
+                          zh: '开启后会增加一些好友列表查询时间',
+                          en: 'This may make friend-list queries take longer.',
+                        ),
+                      ),
+                      value: value.showSplatoonFriendActivity,
+                      onChanged: widget.controller.saving
+                          ? null
+                          : (enabled) => _save(
+                              _copySettings(
+                                value,
+                                showSplatoonFriendActivity: enabled,
+                              ),
+                            ),
+                    ),
                   ],
                 ),
               ),
@@ -9215,6 +9240,7 @@ AppSettings _copySettings(
   bool? autoSyncOnLaunch,
   bool? notifyOnAutoSync,
   bool? showSplatoonSchedule,
+  bool? showSplatoonFriendActivity,
   String? closeBehavior,
   String? theme,
   String? language,
@@ -9240,6 +9266,8 @@ AppSettings _copySettings(
   autoSyncOnLaunch: autoSyncOnLaunch ?? value.autoSyncOnLaunch,
   notifyOnAutoSync: notifyOnAutoSync ?? value.notifyOnAutoSync,
   showSplatoonSchedule: showSplatoonSchedule ?? value.showSplatoonSchedule,
+  showSplatoonFriendActivity:
+      showSplatoonFriendActivity ?? value.showSplatoonFriendActivity,
   closeBehavior: closeBehavior ?? value.closeBehavior,
   customFontPaths: customFontPaths ?? value.customFontPaths,
   syncPolicy: syncPolicy ?? value.syncPolicy,

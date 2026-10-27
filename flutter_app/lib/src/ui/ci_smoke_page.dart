@@ -330,6 +330,7 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
           autoSyncOnLaunch: false,
           notifyOnAutoSync: previous.notifyOnAutoSync,
           showSplatoonSchedule: previous.showSplatoonSchedule,
+          showSplatoonFriendActivity: previous.showSplatoonFriendActivity,
           closeBehavior: previous.closeBehavior,
           customFontPaths: const [],
           syncPolicy: previous.syncPolicy,

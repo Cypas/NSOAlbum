@@ -168,6 +168,8 @@ pub struct AppSettings {
     pub notify_on_auto_sync: bool,
     #[serde(default = "default_true")]
     pub show_splatoon_schedule: bool,
+    #[serde(default)]
+    pub show_splatoon_friend_activity: bool,
     #[serde(default = "default_close_behavior")]
     pub close_behavior: String,
     #[serde(default)]
@@ -239,6 +241,7 @@ mod tests {
         .unwrap();
         assert!(settings.notify_on_auto_sync);
         assert!(settings.show_splatoon_schedule);
+        assert!(!settings.show_splatoon_friend_activity);
     }
 
     #[test]

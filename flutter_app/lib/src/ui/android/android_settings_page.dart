@@ -299,6 +299,33 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage>
                             ? null
                             : (next) => save(controller.save(item.$3(next))),
                       ),
+                    SwitchListTile(
+                      key: const Key('android-splatoon-friend-activity'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        context.l10n.select(
+                          zh: '好友列表展示 Splatoon 3 好友具体状态',
+                          en: 'Show detailed Splatoon 3 friend activity',
+                        ),
+                      ),
+                      subtitle: Text(
+                        context.l10n.select(
+                          zh: '开启后会增加一些好友列表查询时间',
+                          en: 'This may make friend-list queries take longer.',
+                        ),
+                      ),
+                      value: value.showSplatoonFriendActivity,
+                      onChanged: controller.saving
+                          ? null
+                          : (next) => save(
+                              controller.save(
+                                copyAppSettings(
+                                  value,
+                                  showSplatoonFriendActivity: next,
+                                ),
+                              ),
+                            ),
+                    ),
                   ],
                 ),
               ),

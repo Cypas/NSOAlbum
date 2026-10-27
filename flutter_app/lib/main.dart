@@ -1082,6 +1082,7 @@ AppSettings _settingsWithCloseBehavior(
   autoSyncOnLaunch: value.autoSyncOnLaunch,
   notifyOnAutoSync: value.notifyOnAutoSync,
   showSplatoonSchedule: value.showSplatoonSchedule,
+  showSplatoonFriendActivity: value.showSplatoonFriendActivity,
   closeBehavior: closeBehavior,
   customFontPaths: value.customFontPaths,
   syncPolicy: value.syncPolicy,

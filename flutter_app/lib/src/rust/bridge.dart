@@ -519,11 +519,13 @@ Future<NintendoFriendsSnapshot> nintendoFriends({
   required String sessionToken,
   required String operationId,
   String? proxyUrl,
+  required bool includeSplatoonFriendActivity,
 }) => RustLib.instance.api.crateBridgeNintendoFriends(
   accountId: accountId,
   sessionToken: sessionToken,
   operationId: operationId,
   proxyUrl: proxyUrl,
+  includeSplatoonFriendActivity: includeSplatoonFriendActivity,
 );
 
 Future<Uint8List> nintendoFriendAvatar({

@@ -15,7 +15,9 @@ abstract interface class NintendoAccountToolsBackend {
   Future<NintendoFriendsSnapshot> loadNintendoFriends(
     String accountId,
     String operationId,
-  );
+  {
+    bool includeSplatoonActivity = false,
+  });
   Future<Uint8List> loadNintendoFriendAvatar(
     String accountId,
     String friendId,

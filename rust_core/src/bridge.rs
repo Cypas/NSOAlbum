@@ -527,6 +527,7 @@ pub async fn nintendo_friends(
     session_token: String,
     operation_id: String,
     proxy_url: Option<String>,
+    include_splatoon_friend_activity: bool,
 ) -> Result<NintendoFriendsSnapshot, String> {
     match core()?
         .account_tool(
@@ -534,7 +535,9 @@ pub async fn nintendo_friends(
             session_token,
             operation_id,
             proxy_url,
-            crate::nso::account_tools::ToolRequest::Friends,
+            crate::nso::account_tools::ToolRequest::Friends {
+                include_splatoon_activity: include_splatoon_friend_activity,
+            },
         )
         .await
         .map_err(error_text)?

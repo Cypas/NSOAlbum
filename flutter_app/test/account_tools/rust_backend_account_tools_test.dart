@@ -576,6 +576,7 @@ class _RustBoundary with NoPendingStartupBoundary implements RustLibApi {
     autoSyncOnLaunch: false,
     notifyOnAutoSync: true,
     showSplatoonSchedule: true,
+    showSplatoonFriendActivity: false,
     closeBehavior: 'ask',
     customFontPaths: [],
     syncPolicy: SyncPolicy(
@@ -627,6 +628,7 @@ class _RustBoundary with NoPendingStartupBoundary implements RustLibApi {
     required String sessionToken,
     required String operationId,
     String? proxyUrl,
+    required bool includeSplatoonFriendActivity,
   }) async {
     expect(accountId, _account);
     expect(proxyUrl, isNull);

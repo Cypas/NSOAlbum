@@ -21,6 +21,7 @@ class AppSettings {
   final bool autoSyncOnLaunch;
   final bool notifyOnAutoSync;
   final bool showSplatoonSchedule;
+  final bool showSplatoonFriendActivity;
   final String closeBehavior;
   final List<String> customFontPaths;
   final SyncPolicy syncPolicy;
@@ -39,6 +40,7 @@ class AppSettings {
     required this.autoSyncOnLaunch,
     required this.notifyOnAutoSync,
     required this.showSplatoonSchedule,
+    required this.showSplatoonFriendActivity,
     required this.closeBehavior,
     required this.customFontPaths,
     required this.syncPolicy,
@@ -59,6 +61,7 @@ class AppSettings {
       autoSyncOnLaunch.hashCode ^
       notifyOnAutoSync.hashCode ^
       showSplatoonSchedule.hashCode ^
+      showSplatoonFriendActivity.hashCode ^
       closeBehavior.hashCode ^
       customFontPaths.hashCode ^
       syncPolicy.hashCode;
@@ -81,6 +84,7 @@ class AppSettings {
           autoSyncOnLaunch == other.autoSyncOnLaunch &&
           notifyOnAutoSync == other.notifyOnAutoSync &&
           showSplatoonSchedule == other.showSplatoonSchedule &&
+          showSplatoonFriendActivity == other.showSplatoonFriendActivity &&
           closeBehavior == other.closeBehavior &&
           customFontPaths == other.customFontPaths &&
           syncPolicy == other.syncPolicy;

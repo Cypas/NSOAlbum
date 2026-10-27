@@ -118,6 +118,8 @@ void main() {
           autoSyncOnLaunch: backend.settings.autoSyncOnLaunch,
           notifyOnAutoSync: backend.settings.notifyOnAutoSync,
           showSplatoonSchedule: backend.settings.showSplatoonSchedule,
+          showSplatoonFriendActivity:
+              backend.settings.showSplatoonFriendActivity,
           closeBehavior: backend.settings.closeBehavior,
           customFontPaths: [firstFont, secondFont],
           syncPolicy: backend.settings.syncPolicy,
@@ -1117,6 +1119,7 @@ void main() {
       autoSyncOnLaunch: false,
       notifyOnAutoSync: true,
       showSplatoonSchedule: true,
+      showSplatoonFriendActivity: false,
       closeBehavior: 'ask',
       customFontPaths: [],
       syncPolicy: SyncPolicy(
@@ -2474,6 +2477,8 @@ void main() {
         autoSyncOnLaunch: true,
         notifyOnAutoSync: backend.settings.notifyOnAutoSync,
         showSplatoonSchedule: backend.settings.showSplatoonSchedule,
+        showSplatoonFriendActivity:
+            backend.settings.showSplatoonFriendActivity,
         closeBehavior: backend.settings.closeBehavior,
         customFontPaths: backend.settings.customFontPaths,
         syncPolicy: backend.settings.syncPolicy,
@@ -2506,6 +2511,8 @@ void main() {
       autoSyncOnLaunch: true,
       notifyOnAutoSync: backend.settings.notifyOnAutoSync,
       showSplatoonSchedule: backend.settings.showSplatoonSchedule,
+      showSplatoonFriendActivity:
+          backend.settings.showSplatoonFriendActivity,
       closeBehavior: backend.settings.closeBehavior,
       customFontPaths: backend.settings.customFontPaths,
       syncPolicy: backend.settings.syncPolicy,
@@ -2717,6 +2724,7 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
     autoSyncOnLaunch: false,
     notifyOnAutoSync: true,
     showSplatoonSchedule: true,
+    showSplatoonFriendActivity: false,
     closeBehavior: 'ask',
     customFontPaths: [],
     syncPolicy: SyncPolicy(

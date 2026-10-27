@@ -1321,6 +1321,7 @@ mod receiver_sql_tests {
             auto_sync_on_launch: false,
             notify_on_auto_sync: true,
             show_splatoon_schedule: true,
+            show_splatoon_friend_activity: false,
             close_behavior: "ask".into(),
             custom_font_paths: Vec::new(),
             sync_policy: crate::settings::SyncPolicy {
@@ -10530,6 +10531,7 @@ mod unknown_import_time_tests {
                 auto_sync_on_launch: false,
                 notify_on_auto_sync: true,
                 show_splatoon_schedule: true,
+                show_splatoon_friend_activity: false,
                 close_behavior: "ask".into(),
                 custom_font_paths: vec![],
                 sync_policy: crate::settings::SyncPolicy::default(),
