@@ -1,7 +1,6 @@
 @Tags(['platform-android'])
 library;
 
-import 'package:flutter/widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/src/l10n/app_localizations.dart';

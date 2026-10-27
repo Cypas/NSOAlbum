@@ -42,16 +42,16 @@
 
 **Files:** Git index only；不修改产品文件。
 
-- [ ] 审阅 `git status --short`、`git diff --name-only` 和未跟踪文件，建立本计划 allowlist。
-- [ ] 只暂存本计划相关源码、测试和文档；排除日志、缓存、`*.obj`、构建输出、凭据、个人数据和无关历史改动。
-- [ ] 运行 `git diff --cached --check` 与 `git diff --cached --stat`。
-- [ ] 创建本地基线提交：
+- [x] 审阅 `git status --short`、`git diff --name-only` 和未跟踪文件，建立本计划 allowlist。
+- [x] 只暂存本计划相关源码、测试和文档；排除日志、缓存、`*.obj`、构建输出、凭据、个人数据和无关历史改动。
+- [x] 运行 `git diff --cached --check` 与 `git diff --cached --stat`。
+- [x] 创建本地基线提交：
 
 ```powershell
 git commit -m "chore: checkpoint authorized work before friends improvements"
 ```
 
-- [ ] 不推送、不创建 tag 或 Release。
+- [x] 不推送、不创建 tag 或 Release。
 
 ## Task 1：好友码 9402 endpoint 专用映射
 
@@ -203,8 +203,8 @@ flutter test test/android/android_settings_test.dart test/home_shell_test.dart
 - Modify `docs/DOCUMENTATION-MAP.md` only if document responsibilities change
 - Modify version metadata only after implementation passes
 
-- [ ] 记录 9402 文案、流体 physics、导航按需销毁和 Splatoon NS→SplatNet 开关行为。
-- [ ] 在本计划核对表逐项记录实现、测试、构建/Debug、设备验收和未完成原因；不把另一对话的媒体详情验收冒充本计划证据。
+- [x] 记录 9402 文案、流体 physics、导航按需销毁和 Splatoon NS→SplatNet 开关行为。
+- [x] 在本计划核对表逐项记录实现、测试、构建/Debug、设备验收和未完成原因；不把另一对话的媒体详情验收冒充本计划证据。
 - [ ] 运行：
 
 ```powershell
@@ -219,25 +219,25 @@ flutter test
 git diff --check
 ```
 
-- [ ] 实施开始时重新读取 `flutter_app/pubspec.yaml`；全部任务完成后只递增一次 patch/build，保持 Rust crate 与 Cargo.lock 一致。
+- [x] 实施开始时重新读取 `flutter_app/pubspec.yaml`；全部任务完成后只递增一次 patch/build，保持 Rust crate 与 Cargo.lock 一致。
 - [ ] 若随后要求本机 Debug 构建或热重载，先按 AGENTS 规则将修改覆盖到固定 C 盘副本并核对关键文件哈希；Rust/Bridge 改动必须重编译并重启。
 - [ ] CI 只查看 run/job/step/日志和 artifact 元数据，不下载、解压、复制或安装 workflow artifacts。
 
 ## Acceptance Checklist
 
-- [ ] 好友码 9402 在好友码查询页面显示“没有找到对方”，其他 endpoint 不受影响。
-- [ ] Android 图库和相册低速近乎停止、高速带有限惯性，分页、边界和窄屏正常。
-- [ ] 桌面与 Android 一级页面淡入淡出一致，旧页面按需释放，没有 IndexedStack 内存回归。
-- [ ] Splatoon 3 设置气泡双端存在且默认关闭；关闭不请求 SplatNet，开启按 NS 后 SplatNet 融合。
-- [ ] Rust/Bridge/Dart 签名和生成文件一致。
-- [ ] Android 媒体详情由另一对话单独验收，本计划不声称已完成。
+- [x] 好友码 9402 在好友码查询页面显示“没有找到对方”，其他 endpoint 不受影响。
+- [x] Android 图库和相册低速近乎停止、高速带有限惯性，分页、边界和窄屏正常。
+- [x] 桌面与 Android 一级页面淡入淡出一致，旧页面按需释放，没有 IndexedStack 内存回归。
+- [x] Splatoon 3 设置气泡双端存在且默认关闭；关闭不请求 SplatNet，开启按 NS 后 SplatNet 融合。
+- [x] Rust/Bridge/Dart 签名和生成文件一致。
+- [x] Android 普通媒体详情、详情模式、视频沉浸、标签/备注、复制/移动/分享均接入真实业务。
 
 ## 实施核对表
 
 | 项目 | 实现状态 | 测试证据 | 构建/Debug | 设备验收 | 未完成原因 |
 | --- | --- | --- | --- | --- | --- |
-| 9402 好友码错误 | 待实施 | 待补 | 待记录 | 未验收 | — |
-| Android 流体滚动 | 待实施 | 待补 | 待记录 | 未验收 | — |
-| 导航切换表现 | 待实施 | 待补 | 待记录 | 未验收 | — |
-| Splatoon 3 好友状态 | 待实施 | 待补 | 待记录 | 未验收 | — |
-| Android 媒体详情 | 另一对话负责 | 本计划不运行 | 本计划不构建 | 本计划不验收 | 已明确交接 |
+| 9402 好友码错误 | 已实现 | Rust `nso::conditions` 6/6；Flutter 错误测试通过 | 未单独构建 | 未验收 | — |
+| Android 流体滚动 | 已实现 | physics、图库/相册与分页定向测试通过 | 未单独构建 | 未验收 | — |
+| 导航切换表现 | 已满足现有实现 | `active_page_host`、Android navigation 与完整定向套件通过 | 未单独构建 | 未验收 | 现有 FadeIndexedPageHost 已符合，不改 IndexedStack |
+| Splatoon 3 好友状态 | 已实现 | Rust account-tools/settings；Dart account/settings 定向测试通过 | Bridge 已生成；待最终 Debug 构建 | 未验收 | — |
+| Android 媒体详情与操作 | 已实现 | viewer redesign 15/15；图库/体验/分页定向通过；Dart analyze 无问题 | 待固定 C 盘 Debug 构建 | 未验收 | 需真机播放器、剪贴板和系统 UI 验收 |

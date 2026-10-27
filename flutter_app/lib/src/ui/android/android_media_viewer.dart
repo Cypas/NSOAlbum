@@ -514,6 +514,13 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
               ),
               onTap: () => Navigator.pop(sheetContext, 'details'),
             ),
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: Text(
+                context.l10n.select(zh: '编辑标签与备注', en: 'Edit tags and note'),
+              ),
+              onTap: () => Navigator.pop(sheetContext, 'edit'),
+            ),
             if (item.kind == MediaKind.image)
               ListTile(
                 leading: const Icon(Icons.content_copy),
@@ -544,13 +551,6 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
                 ),
                 onTap: () => Navigator.pop(sheetContext, 'capture'),
               ),
-            ListTile(
-              leading: const Icon(Icons.edit_outlined),
-              title: Text(
-                context.l10n.select(zh: '编辑标签与备注', en: 'Edit tags and note'),
-              ),
-              onTap: () => Navigator.pop(sheetContext, 'edit'),
-            ),
             if (item.kind == MediaKind.video)
               ListTile(
                 leading: const Icon(Icons.content_cut),

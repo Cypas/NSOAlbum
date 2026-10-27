@@ -424,9 +424,7 @@ impl Drop for Operation<'_> {
     }
 }
 pub(crate) enum ToolRequest {
-    Friends {
-        include_splatoon_activity: bool,
-    },
+    Friends { include_splatoon_activity: bool },
     Avatar(String),
     GameImage(String),
     FriendPlayLog(String),
