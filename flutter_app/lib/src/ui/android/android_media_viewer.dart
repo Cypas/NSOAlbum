@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 
 import '../../backend/app_backend.dart';
@@ -11,6 +12,8 @@ import '../../rust/settings.dart';
 import '../../state/media_edit_controller.dart';
 import '../../state/media_window_controller.dart';
 import '../../platform/android_media_share.dart';
+import '../../platform/android_media_clipboard.dart';
+import 'android_media_album_actions.dart';
 import '../video_preview_prefetch.dart';
 import '../video_thumbnail.dart';
 import '../video_preview.dart';
@@ -33,6 +36,7 @@ class AndroidMediaViewer extends StatefulWidget {
     this.galleryQuery,
     this.initialPage,
     this.mediaFilter,
+    this.sourceAlbum,
   });
   final AppBackend backend;
   final List<MediaAsset> items;
@@ -42,8 +46,57 @@ class AndroidMediaViewer extends StatefulWidget {
   final GalleryQuery? galleryQuery;
   final GalleryPage? initialPage;
   final bool Function(MediaAsset)? mediaFilter;
+  final AlbumSummary? sourceAlbum;
   @override
   State<AndroidMediaViewer> createState() => _AndroidMediaViewerState();
+}
+
+class _AndroidViewerActionBar extends StatelessWidget {
+  const _AndroidViewerActionBar({
+    required this.item,
+    required this.busy,
+    required this.onTrim,
+    required this.onShare,
+    required this.onImmersive,
+  });
+  final MediaAsset item;
+  final bool busy;
+  final VoidCallback? onTrim;
+  final VoidCallback onShare;
+  final VoidCallback? onImmersive;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Theme.of(context).colorScheme.surface,
+    child: SafeArea(
+      top: false,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          if (item.kind == MediaKind.video)
+            TextButton.icon(
+              onPressed: busy ? null : onTrim,
+              icon: const Icon(Icons.content_cut),
+              label: Text(context.l10n.select(zh: '剪辑', en: 'Trim')),
+            ),
+          TextButton.icon(
+            onPressed: busy ? null : onShare,
+            icon: const Icon(Icons.share_outlined),
+            label: Text(context.l10n.select(zh: '分享', en: 'Share')),
+          ),
+          if (onImmersive != null)
+            IconButton(
+              tooltip: context.l10n.select(
+                zh: '应用内全屏',
+                en: 'In-app fullscreen',
+              ),
+              onPressed: busy ? null : onImmersive,
+              icon: const Icon(Icons.fit_screen_outlined),
+            ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _AndroidMediaViewerState extends State<AndroidMediaViewer>
@@ -69,6 +122,8 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
   final tagInput = TextEditingController();
   final noteInput = TextEditingController();
   bool addingTag = false, editingNote = false;
+  bool detailsOpen = false, immersiveVideo = false;
+  MediaDetails? currentDetails;
   bool get dirty =>
       editingNote || (addingTag && tagInput.text.trim().isNotEmpty);
 
@@ -137,6 +192,9 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
 
   @override
   void dispose() {
+    if (immersiveVideo) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    }
     prefetch.dispose();
     window?.dispose();
     pages.dispose();
@@ -273,6 +331,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
           await pageFade.forward();
         }
         if (mounted) setState(() => switching = false);
+        if (mounted && detailsOpen) unawaited(openDetails());
       }
     }
   }
@@ -362,7 +421,74 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
         items = items
             .map((old) => old.id == item.id ? fresh.media : old)
             .toList();
+        currentDetails = fresh;
       });
+    }
+  }
+
+  Future<void> openDetails() async {
+    if (busy || switching) return;
+    final id = items[index].id;
+    try {
+      final details = await widget.backend.loadMediaDetails(id);
+      if (!mounted || items[index].id != id) return;
+      setState(() {
+        currentDetails = details;
+        detailsOpen = true;
+        controlsVisible = true;
+      });
+    } catch (error) {
+      if (mounted) androidMessage(context, error);
+    }
+  }
+
+  void closeDetails() {
+    if (mounted) setState(() => detailsOpen = false);
+  }
+
+  Future<void> toggleImmersive() async {
+    if (items[index].kind != MediaKind.video) return;
+    final next = !immersiveVideo;
+    setState(() => immersiveVideo = next);
+    await SystemChrome.setEnabledSystemUIMode(
+      next ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+    );
+  }
+
+  Future<void> copyToClipboard() async {
+    if (items[index].kind != MediaKind.image || busy) return;
+    setState(() => busy = true);
+    try {
+      await const AndroidMediaClipboard().copyFile(items[index].storagePath);
+      if (mounted) {
+        androidMessage(
+          context,
+          context.l10n.select(zh: '已复制到剪贴板', en: 'Copied to clipboard'),
+          isError: false,
+        );
+      }
+    } catch (error) {
+      if (mounted) androidMessage(context, error);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> albumAction({required bool move}) async {
+    if (busy || switching) return;
+    setState(() => busy = true);
+    try {
+      await showAndroidMediaAlbumAction(
+        context,
+        backend: widget.backend,
+        item: items[index],
+        sourceAlbum: widget.sourceAlbum,
+        move: move,
+      );
+    } catch (error) {
+      if (mounted) androidMessage(context, error);
+    } finally {
+      if (mounted) setState(() => busy = false);
     }
   }
 
@@ -437,6 +563,10 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
   Widget _picture(MediaAsset item) => AndroidMediaSwipeRegion(
     enabled: !busy && !switching && transform.value.getMaxScaleOnAxis() <= 1.01,
     onSwipe: (delta) => unawaited(navigate(delta)),
+    onVerticalSwipe: (delta) {
+      if (delta > 0 && !detailsOpen) unawaited(openDetails());
+      if (delta < 0 && detailsOpen) closeDetails();
+    },
     child: Semantics(
       button: true,
       label: controlsVisible
@@ -489,12 +619,17 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
                 active: item.id == items[index].id,
                 prewarm: item.id != items[index].id,
                 autoPlay: widget.autoPlay ?? settings.autoPlayVideo,
+                immersive: immersiveVideo,
                 onReady: (value) {
                   if (mounted && item.id == items[index].id) {
                     setState(() => player = value);
                   }
                 },
                 onSwipe: (delta) => unawaited(navigate(delta)),
+                onVerticalSwipe: (delta) {
+                  if (delta > 0 && !detailsOpen) unawaited(openDetails());
+                  if (delta < 0 && detailsOpen) closeDetails();
+                },
               ),
             ),
     );
@@ -517,6 +652,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
       onEditNote: beginNote,
       onSaveNote: saveNote,
       onCancelNote: () => setState(() => editingNote = false),
+      sizeBytes: currentDetails?.sizeBytes,
     );
     return AndroidBackGuard(
       busy: blocked,
@@ -525,9 +661,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
         body: SafeArea(
           child: LayoutBuilder(
             builder: (context, constraints) {
-              final showInfo = controlsVisible || dirty;
-              final landscape =
-                  constraints.maxWidth > constraints.maxHeight * 1.2;
+              final showInfo = !detailsOpen && (controlsVisible || dirty);
               final media = Stack(
                 fit: StackFit.expand,
                 children: [
@@ -550,7 +684,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
                       },
                     ),
                   ),
-                  if (controlsVisible)
+                  if (!immersiveVideo && (controlsVisible || detailsOpen))
                     Positioned(
                       top: 0,
                       left: 0,
@@ -573,92 +707,179 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
                               ),
                             ),
                             const Spacer(),
-                            if (window?.error != null)
-                              IconButton(
-                                tooltip: context.l10n.select(
-                                  zh: '相邻媒体加载失败，重试',
-                                  en: 'Could not load adjacent media. Retry',
-                                ),
-                                onPressed: _extendWindow,
-                                icon: const Icon(Icons.refresh),
-                              ),
-                            if (item.kind == MediaKind.video)
-                              IconButton(
-                                key: const Key('android-capture-frame'),
-                                tooltip: context.l10n.select(
-                                  zh: '截取帧图',
-                                  en: 'Capture frame',
-                                ),
-                                onPressed: blocked || player == null
-                                    ? null
-                                    : frame,
-                                icon: const Icon(Icons.screenshot, size: 20),
-                              ),
                             IconButton(
-                              key: const Key('android-share-media'),
+                              key: const Key('android-detail-toggle'),
                               tooltip: context.l10n.select(
-                                zh: '分享',
-                                en: 'Share',
+                                zh: detailsOpen ? '返回媒体预览' : '查看媒体详情',
+                                en: detailsOpen
+                                    ? 'Back to media preview'
+                                    : 'View media details',
                               ),
-                              onPressed: blocked || dirty
-                                  ? null
-                                  : () => showAndroidMediaShareSheet(context, [
-                                      item,
-                                    ]),
-                              icon: const Icon(Icons.share_outlined, size: 20),
+                              onPressed: detailsOpen
+                                  ? closeDetails
+                                  : openDetails,
+                              icon: Icon(
+                                detailsOpen
+                                    ? Icons.expand_more
+                                    : Icons.subject_outlined,
+                              ),
                             ),
-                            PopupMenuButton<String>(
-                              tooltip: context.l10n.select(
-                                zh: '更多',
-                                en: 'More',
-                              ),
-                              enabled: !blocked && !dirty,
-                              itemBuilder: (_) => [
-                                PopupMenuItem(
-                                  value: 'edit',
-                                  child: Text(
-                                    context.l10n.select(
-                                      zh: '编辑标签与备注',
-                                      en: 'Edit tags and note',
-                                    ),
-                                  ),
+                            if (!detailsOpen)
+                              PopupMenuButton<String>(
+                                tooltip: context.l10n.select(
+                                  zh: '更多',
+                                  en: 'More',
                                 ),
-                                if (item.kind == MediaKind.video)
+                                enabled: !blocked && !dirty,
+                                itemBuilder: (_) => [
                                   PopupMenuItem(
-                                    value: 'trim',
+                                    value: 'details',
                                     child: Text(
                                       context.l10n.select(
-                                        zh: '剪辑视频',
-                                        en: 'Trim video',
+                                        zh: '查看媒体详情',
+                                        en: 'View media details',
                                       ),
                                     ),
                                   ),
-                              ],
-                              onSelected: (value) =>
-                                  value == 'edit' ? edit() : trim(),
-                            ),
+                                  if (item.kind == MediaKind.image)
+                                    PopupMenuItem(
+                                      value: 'clipboard',
+                                      child: Text(
+                                        context.l10n.select(
+                                          zh: '复制到剪贴板',
+                                          en: 'Copy to clipboard',
+                                        ),
+                                      ),
+                                    ),
+                                  PopupMenuItem(
+                                    value: 'copy-album',
+                                    child: Text(
+                                      context.l10n.select(
+                                        zh: '复制到相册',
+                                        en: 'Copy to album',
+                                      ),
+                                    ),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'move-album',
+                                    child: Text(
+                                      context.l10n.select(
+                                        zh: '移动到相册',
+                                        en: 'Move to album',
+                                      ),
+                                    ),
+                                  ),
+                                  if (item.kind == MediaKind.video)
+                                    PopupMenuItem(
+                                      value: 'capture',
+                                      child: Text(
+                                        context.l10n.select(
+                                          zh: '截取当前帧',
+                                          en: 'Capture current frame',
+                                        ),
+                                      ),
+                                    ),
+                                  if (window?.error != null)
+                                    PopupMenuItem(
+                                      value: 'retry-window',
+                                      child: Text(
+                                        context.l10n.select(
+                                          zh: '重试加载相邻媒体',
+                                          en: 'Retry adjacent media',
+                                        ),
+                                      ),
+                                    ),
+                                  PopupMenuItem(
+                                    value: 'edit',
+                                    child: Text(
+                                      context.l10n.select(
+                                        zh: '编辑标签与备注',
+                                        en: 'Edit tags and note',
+                                      ),
+                                    ),
+                                  ),
+                                  if (item.kind == MediaKind.video)
+                                    PopupMenuItem(
+                                      value: 'trim',
+                                      child: Text(
+                                        context.l10n.select(
+                                          zh: '剪辑视频',
+                                          en: 'Trim video',
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                                onSelected: (value) {
+                                  switch (value) {
+                                    case 'details':
+                                      openDetails();
+                                    case 'clipboard':
+                                      copyToClipboard();
+                                    case 'copy-album':
+                                      albumAction(move: false);
+                                    case 'move-album':
+                                      albumAction(move: true);
+                                    case 'capture':
+                                      frame();
+                                    case 'retry-window':
+                                      _extendWindow();
+                                    case 'edit':
+                                      edit();
+                                    default:
+                                      trim();
+                                  }
+                                },
+                              ),
                           ],
                         ),
                       ),
                     ),
                 ],
               );
-              if (!showInfo) return media;
-              if (landscape) {
-                return Row(
+              if (immersiveVideo) {
+                return ColoredBox(color: Colors.black, child: media);
+              }
+              if (detailsOpen) {
+                return Column(
                   children: [
-                    Expanded(flex: 3, child: media),
-                    Expanded(flex: 2, child: info),
+                    Expanded(flex: 39, child: media),
+                    Expanded(
+                      flex: 61,
+                      child: NotificationListener<ScrollNotification>(
+                        onNotification: (notification) {
+                          if (notification is OverscrollNotification &&
+                              notification.metrics.pixels <=
+                                  notification.metrics.minScrollExtent &&
+                              notification.overscroll < 0) {
+                            closeDetails();
+                          }
+                          return false;
+                        },
+                        child: info,
+                      ),
+                    ),
                   ],
                 );
               }
               return Column(
                 children: [
                   Expanded(child: media),
-                  SizedBox(
-                    height: constraints.maxHeight * (editingNote ? .52 : .38),
-                    child: info,
-                  ),
+                  if (showInfo)
+                    SizedBox(
+                      height: constraints.maxHeight * (editingNote ? .52 : .38),
+                      child: info,
+                    ),
+                  if (controlsVisible)
+                    _AndroidViewerActionBar(
+                      item: item,
+                      busy: blocked,
+                      onTrim: item.kind == MediaKind.video ? trim : null,
+                      onShare: () =>
+                          showAndroidMediaShareSheet(context, [item]),
+                      onImmersive: item.kind == MediaKind.video
+                          ? toggleImmersive
+                          : null,
+                    ),
                 ],
               );
             },

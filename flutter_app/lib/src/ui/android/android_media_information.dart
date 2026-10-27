@@ -22,12 +22,14 @@ class AndroidMediaInformation extends StatelessWidget {
     required this.onEditNote,
     required this.onSaveNote,
     required this.onCancelNote,
+    this.sizeBytes,
   });
   final MediaAsset item;
   final bool busy, addingTag, editingNote;
   final TextEditingController tagInput, noteInput;
   final Future<void> Function() onAddTag, onSaveNote;
   final VoidCallback onBeginTag, onEditNote, onCancelNote;
+  final BigInt? sizeBytes;
 
   @override
   Widget build(BuildContext context) {
@@ -49,6 +51,15 @@ class AndroidMediaInformation extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.bodyMedium,
             ),
+            if (sizeBytes != null) ...[
+              const SizedBox(height: 8),
+              _TimeRow(
+                key: const Key('android-detail-size'),
+                icon: Icons.data_usage_outlined,
+                label: context.l10n.select(zh: '媒体大小', en: 'Media size'),
+                value: _formatBytes(sizeBytes!),
+              ),
+            ],
             const SizedBox(height: 8),
             Semantics(
               label: context.l10n.select(zh: '游戏标签', en: 'Game tag'),
@@ -173,6 +184,18 @@ class AndroidMediaInformation extends StatelessWidget {
       ),
     );
   }
+}
+
+String _formatBytes(BigInt value) {
+  final bytes = value.toDouble();
+  if (bytes < 1024) return '$value B';
+  if (bytes < 1024 * 1024) {
+    return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  }
+  if (bytes < 1024 * 1024 * 1024) {
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+  return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
 }
 
 class _TimeRow extends StatelessWidget {

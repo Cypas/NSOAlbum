@@ -7,10 +7,12 @@ class AndroidMediaSwipeRegion extends StatefulWidget {
     super.key,
     required this.child,
     required this.onSwipe,
+    this.onVerticalSwipe,
     this.enabled = true,
   });
   final Widget child;
   final ValueChanged<int> onSwipe;
+  final ValueChanged<int>? onVerticalSwipe;
   final bool enabled;
 
   @override
@@ -45,6 +47,10 @@ class _AndroidMediaSwipeRegionState extends State<AndroidMediaSwipeRegion> {
         final delta = event.position - origin;
         if (delta.dx.abs() > 60 && delta.dx.abs() > delta.dy.abs() * 1.5) {
           widget.onSwipe(delta.dx < 0 ? 1 : -1);
+        } else if (widget.onVerticalSwipe != null &&
+            delta.dy.abs() > 42 &&
+            delta.dy.abs() > delta.dx.abs() * 1.2) {
+          widget.onVerticalSwipe!(delta.dy < 0 ? 1 : -1);
         }
         start = null;
       }

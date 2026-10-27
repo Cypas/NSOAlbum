@@ -22,16 +22,20 @@ class AndroidVideoSurface extends StatefulWidget {
     this.autoPlay = false,
     this.active = true,
     this.prewarm = false,
+    this.immersive = false,
     this.onReady,
     this.onSwipe,
+    this.onVerticalSwipe,
   });
   final String path;
   final MediaAsset cover;
   final bool autoPlay;
   final bool active;
   final bool prewarm;
+  final bool immersive;
   final ValueChanged<Player>? onReady;
   final ValueChanged<int>? onSwipe;
+  final ValueChanged<int>? onVerticalSwipe;
   @override
   State<AndroidVideoSurface> createState() => AndroidVideoSurfaceState();
 }
@@ -179,7 +183,8 @@ class AndroidVideoSurfaceState extends State<AndroidVideoSurface> {
               child: AndroidMediaSwipeRegion(
                 enabled: !released && widget.active,
                 onSwipe: (delta) => widget.onSwipe?.call(delta),
-                child: playing.data != true
+                onVerticalSwipe: (delta) => widget.onVerticalSwipe?.call(delta),
+                child: !widget.immersive && playing.data != true
                     ? Center(
                         child: IconButton.filledTonal(
                           key: const Key('android-video-center-play'),
@@ -195,44 +200,46 @@ class AndroidVideoSurfaceState extends State<AndroidVideoSurface> {
                     : const SizedBox.expand(),
               ),
             ),
-            Positioned(
-              key: const Key('android-video-control-overlay'),
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: StreamBuilder(
-                stream: player.stream.duration,
-                initialData: player.state.duration,
-                builder: (context, duration) => StreamBuilder(
-                  stream: player.stream.position,
-                  initialData: player.state.position,
-                  builder: (context, position) => StreamBuilder(
-                    stream: player.stream.volume,
-                    initialData: player.state.volume,
-                    builder: (context, volume) => AndroidVideoControls(
-                      enabled: ready && !released && widget.active,
-                      playing: playing.data == true,
-                      position: position.data ?? Duration.zero,
-                      duration: duration.data ?? Duration.zero,
-                      muted: (volume.data ?? 100) == 0,
-                      onToggle: () => unawaited(
-                        _command(
-                          playbackLifecycle.runCommand(player.playOrPause),
+            if (!widget.immersive)
+              Positioned(
+                key: const Key('android-video-control-overlay'),
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: StreamBuilder(
+                  stream: player.stream.duration,
+                  initialData: player.state.duration,
+                  builder: (context, duration) => StreamBuilder(
+                    stream: player.stream.position,
+                    initialData: player.state.position,
+                    builder: (context, position) => StreamBuilder(
+                      stream: player.stream.volume,
+                      initialData: player.state.volume,
+                      builder: (context, volume) => AndroidVideoControls(
+                        enabled: ready && !released && widget.active,
+                        playing: playing.data == true,
+                        position: position.data ?? Duration.zero,
+                        duration: duration.data ?? Duration.zero,
+                        muted: (volume.data ?? 100) == 0,
+                        onToggle: () => unawaited(
+                          _command(
+                            playbackLifecycle.runCommand(player.playOrPause),
+                          ),
                         ),
-                      ),
-                      onMute: () => unawaited(
-                        _command(
-                          playbackLifecycle.runCommand(
-                            () => player.setVolume(
-                              (volume.data ?? 100) == 0 ? 100 : 0,
+                        onMute: () => unawaited(
+                          _command(
+                            playbackLifecycle.runCommand(
+                              () => player.setVolume(
+                                (volume.data ?? 100) == 0 ? 100 : 0,
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      onSeek: (value) => unawaited(
-                        _command(
-                          playbackLifecycle.runCommand(
-                            () => player.seek(value),
+                        onSeek: (value) => unawaited(
+                          _command(
+                            playbackLifecycle.runCommand(
+                              () => player.seek(value),
+                            ),
                           ),
                         ),
                       ),
@@ -240,7 +247,6 @@ class AndroidVideoSurfaceState extends State<AndroidVideoSurface> {
                   ),
                 ),
               ),
-            ),
           ],
         ),
       ),

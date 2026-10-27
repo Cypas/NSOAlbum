@@ -28,6 +28,7 @@ class MainActivity : FlutterActivity() {
         private const val SHARE_AUTHORITY_SUFFIX = ".update_files"
         private const val SHARE_REQUEST_CODE = 7302
         private const val SHARE_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000L
+        private const val CLIPBOARD_CACHE_DIR = "nsoalbum-clipboard"
     }
 
     private var notificationPermissionResult: MethodChannel.Result? = null
@@ -35,6 +36,7 @@ class MainActivity : FlutterActivity() {
     private var deviceSyncSaf: DeviceSyncSafChannel? = null
     private var pendingOpenGallery = false
     private var pendingShare: PendingShare? = null
+    private var clipboardFile: File? = null
 
     private data class PendingShare(
         val result: MethodChannel.Result,
@@ -269,6 +271,17 @@ class MainActivity : FlutterActivity() {
                 result.error("SHARE_FAILED", "The media could not be shared.", null)
             }
         }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
+            "io.github.cypas.nsoalbum/media_clipboard").setMethodCallHandler { call, result ->
+            try {
+                when (call.method) {
+                    "copyFile" -> copyMediaToClipboard(call.argument<String>("path"), result)
+                    else -> result.notImplemented()
+                }
+            } catch (_: Exception) {
+                result.error("CLIPBOARD_FAILED", "The media could not be copied.", null)
+            }
+        }
     }
 
     private fun postSyncNotification(
@@ -406,6 +419,8 @@ class MainActivity : FlutterActivity() {
             }
             share.directory.deleteRecursively()
         }
+        clipboardFile?.delete()
+        clipboardFile = null
         syncNotificationPermissions.close()
         notificationPermissionResult?.success(false)
         notificationPermissionResult = null
@@ -501,6 +516,30 @@ class MainActivity : FlutterActivity() {
     private fun mimeTypeFor(path: String): String {
         val extension = path.substringAfterLast('.', "").lowercase(Locale.ROOT)
         return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "*/*"
+    }
+
+    private fun copyMediaToClipboard(path: String?, result: MethodChannel.Result) {
+        val source = path?.trim()?.takeIf { it.isNotEmpty() }?.let(::File)
+            ?: throw IllegalArgumentException("INVALID_MEDIA")
+        if (!source.isFile) throw IllegalArgumentException("MEDIA_UNAVAILABLE")
+        val root = File(cacheDir, CLIPBOARD_CACHE_DIR)
+        if (!root.exists() && !root.mkdirs()) {
+            throw IllegalStateException("CLIPBOARD_CACHE_UNAVAILABLE")
+        }
+        root.listFiles()?.forEach { it.delete() }
+        val target = File(root, "clipboard-${System.currentTimeMillis()}-${source.name}")
+        source.copyTo(target, overwrite = false)
+        val uri = FileProvider.getUriForFile(
+            this,
+            "${applicationContext.packageName}$SHARE_AUTHORITY_SUFFIX",
+            target,
+        )
+        clipboardFile?.delete()
+        grantUriPermission(packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        getSystemService(android.content.ClipboardManager::class.java)
+            .setPrimaryClip(ClipData.newUri(contentResolver, source.name, uri))
+        clipboardFile = target
+        result.success(null)
     }
 
     private fun notifyGalleryIntent() {
