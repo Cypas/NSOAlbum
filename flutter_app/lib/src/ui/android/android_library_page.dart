@@ -63,6 +63,7 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
   bool searchExpanded = false;
   bool busy = false;
   bool groupByImportedDate = false;
+  bool _nearEndLoadArmed = true;
   AppBackend get backend => widget.controller.backend;
 
   @override
@@ -74,17 +75,30 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
   }
 
   void _loadWhenNearEnd() {
-    if (!scroll.hasClients ||
-        scroll.position.extentAfter > 640 ||
+    if (!scroll.hasClients) return;
+    if (scroll.position.extentAfter > 640) {
+      _nearEndLoadArmed = true;
+      return;
+    }
+    if (!_nearEndLoadArmed ||
         widget.controller.loadingMore ||
         widget.controller.error != null) {
       return;
     }
-    unawaited(widget.controller.loadNextPage());
+    _nearEndLoadArmed = false;
+    unawaited(
+      widget.controller.loadNextPage().whenComplete(() {
+        if (!mounted || !scroll.hasClients) return;
+        if (scroll.position.extentAfter > 640) {
+          _nearEndLoadArmed = true;
+        }
+      }),
+    );
   }
 
   void applySearch() {
     FocusManager.instance.primaryFocus?.unfocus();
+    _nearEndLoadArmed = true;
     widget.controller.searchFor(search.text);
   }
 
@@ -1109,6 +1123,7 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                                                           state.pages.snapshot,
                                                       mediaFilter:
                                                           state.pages.accept,
+                                                      sourceAlbum: widget.album,
                                                     ),
                                                   ),
                                                 );

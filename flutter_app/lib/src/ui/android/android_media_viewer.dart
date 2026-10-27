@@ -58,12 +58,14 @@ class _AndroidViewerActionBar extends StatelessWidget {
     required this.onTrim,
     required this.onShare,
     required this.onImmersive,
+    required this.onMore,
   });
   final MediaAsset item;
   final bool busy;
   final VoidCallback? onTrim;
   final VoidCallback onShare;
   final VoidCallback? onImmersive;
+  final VoidCallback onMore;
 
   @override
   Widget build(BuildContext context) => Material(
@@ -93,6 +95,11 @@ class _AndroidViewerActionBar extends StatelessWidget {
               onPressed: busy ? null : onImmersive,
               icon: const Icon(Icons.fit_screen_outlined),
             ),
+          IconButton(
+            tooltip: context.l10n.select(zh: '更多', en: 'More'),
+            onPressed: busy ? null : onMore,
+            icon: const Icon(Icons.more_horiz),
+          ),
         ],
       ),
     ),
@@ -492,6 +499,100 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
     }
   }
 
+  Future<void> showMoreActions() async {
+    if (busy || switching || detailsOpen) return;
+    final item = items[index];
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.subject_outlined),
+              title: Text(
+                context.l10n.select(zh: '查看媒体详情', en: 'View media details'),
+              ),
+              onTap: () => Navigator.pop(sheetContext, 'details'),
+            ),
+            if (item.kind == MediaKind.image)
+              ListTile(
+                leading: const Icon(Icons.content_copy),
+                title: Text(
+                  context.l10n.select(zh: '复制到剪贴板', en: 'Copy to clipboard'),
+                ),
+                onTap: () => Navigator.pop(sheetContext, 'clipboard'),
+              ),
+            ListTile(
+              leading: const Icon(Icons.control_point_duplicate_outlined),
+              title: Text(
+                context.l10n.select(zh: '复制到相册', en: 'Copy to album'),
+              ),
+              onTap: () => Navigator.pop(sheetContext, 'copy-album'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.drive_file_move_outlined),
+              title: Text(
+                context.l10n.select(zh: '移动到相册', en: 'Move to album'),
+              ),
+              onTap: () => Navigator.pop(sheetContext, 'move-album'),
+            ),
+            if (item.kind == MediaKind.video)
+              ListTile(
+                leading: const Icon(Icons.screenshot),
+                title: Text(
+                  context.l10n.select(zh: '截取当前帧', en: 'Capture current frame'),
+                ),
+                onTap: () => Navigator.pop(sheetContext, 'capture'),
+              ),
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: Text(
+                context.l10n.select(zh: '编辑标签与备注', en: 'Edit tags and note'),
+              ),
+              onTap: () => Navigator.pop(sheetContext, 'edit'),
+            ),
+            if (item.kind == MediaKind.video)
+              ListTile(
+                leading: const Icon(Icons.content_cut),
+                title: Text(context.l10n.select(zh: '剪辑视频', en: 'Trim video')),
+                onTap: () => Navigator.pop(sheetContext, 'trim'),
+              ),
+            if (window?.error != null)
+              ListTile(
+                leading: const Icon(Icons.refresh),
+                title: Text(
+                  context.l10n.select(
+                    zh: '重试加载相邻媒体',
+                    en: 'Retry adjacent media',
+                  ),
+                ),
+                onTap: () => Navigator.pop(sheetContext, 'retry-window'),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'details':
+        openDetails();
+      case 'clipboard':
+        copyToClipboard();
+      case 'copy-album':
+        albumAction(move: false);
+      case 'move-album':
+        albumAction(move: true);
+      case 'capture':
+        frame();
+      case 'edit':
+        edit();
+      case 'trim':
+        trim();
+      case 'retry-window':
+        _extendWindow();
+    }
+  }
+
   Future<void> frame() async {
     final current = player;
     if (current == null || busy || switching) return;
@@ -724,112 +825,6 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
                                     : Icons.subject_outlined,
                               ),
                             ),
-                            if (!detailsOpen)
-                              PopupMenuButton<String>(
-                                tooltip: context.l10n.select(
-                                  zh: '更多',
-                                  en: 'More',
-                                ),
-                                enabled: !blocked && !dirty,
-                                itemBuilder: (_) => [
-                                  PopupMenuItem(
-                                    value: 'details',
-                                    child: Text(
-                                      context.l10n.select(
-                                        zh: '查看媒体详情',
-                                        en: 'View media details',
-                                      ),
-                                    ),
-                                  ),
-                                  if (item.kind == MediaKind.image)
-                                    PopupMenuItem(
-                                      value: 'clipboard',
-                                      child: Text(
-                                        context.l10n.select(
-                                          zh: '复制到剪贴板',
-                                          en: 'Copy to clipboard',
-                                        ),
-                                      ),
-                                    ),
-                                  PopupMenuItem(
-                                    value: 'copy-album',
-                                    child: Text(
-                                      context.l10n.select(
-                                        zh: '复制到相册',
-                                        en: 'Copy to album',
-                                      ),
-                                    ),
-                                  ),
-                                  PopupMenuItem(
-                                    value: 'move-album',
-                                    child: Text(
-                                      context.l10n.select(
-                                        zh: '移动到相册',
-                                        en: 'Move to album',
-                                      ),
-                                    ),
-                                  ),
-                                  if (item.kind == MediaKind.video)
-                                    PopupMenuItem(
-                                      value: 'capture',
-                                      child: Text(
-                                        context.l10n.select(
-                                          zh: '截取当前帧',
-                                          en: 'Capture current frame',
-                                        ),
-                                      ),
-                                    ),
-                                  if (window?.error != null)
-                                    PopupMenuItem(
-                                      value: 'retry-window',
-                                      child: Text(
-                                        context.l10n.select(
-                                          zh: '重试加载相邻媒体',
-                                          en: 'Retry adjacent media',
-                                        ),
-                                      ),
-                                    ),
-                                  PopupMenuItem(
-                                    value: 'edit',
-                                    child: Text(
-                                      context.l10n.select(
-                                        zh: '编辑标签与备注',
-                                        en: 'Edit tags and note',
-                                      ),
-                                    ),
-                                  ),
-                                  if (item.kind == MediaKind.video)
-                                    PopupMenuItem(
-                                      value: 'trim',
-                                      child: Text(
-                                        context.l10n.select(
-                                          zh: '剪辑视频',
-                                          en: 'Trim video',
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                                onSelected: (value) {
-                                  switch (value) {
-                                    case 'details':
-                                      openDetails();
-                                    case 'clipboard':
-                                      copyToClipboard();
-                                    case 'copy-album':
-                                      albumAction(move: false);
-                                    case 'move-album':
-                                      albumAction(move: true);
-                                    case 'capture':
-                                      frame();
-                                    case 'retry-window':
-                                      _extendWindow();
-                                    case 'edit':
-                                      edit();
-                                    default:
-                                      trim();
-                                  }
-                                },
-                              ),
                           ],
                         ),
                       ),
@@ -879,6 +874,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
                       onImmersive: item.kind == MediaKind.video
                           ? toggleImmersive
                           : null,
+                      onMore: showMoreActions,
                     ),
                 ],
               );
