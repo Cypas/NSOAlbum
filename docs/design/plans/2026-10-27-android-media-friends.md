@@ -240,4 +240,4 @@ git diff --check
 | Android 流体滚动 | 已实现 | physics、图库/相册与分页定向测试通过 | 未单独构建 | 未验收 | — |
 | 导航切换表现 | 已满足现有实现 | `active_page_host`、Android navigation 与完整定向套件通过 | 未单独构建 | 未验收 | 现有 FadeIndexedPageHost 已符合，不改 IndexedStack |
 | Splatoon 3 好友状态 | 已实现 | Rust account-tools/settings；Dart account/settings 定向测试通过 | Bridge 已生成；待最终 Debug 构建 | 未验收 | — |
-| Android 媒体详情与操作 | 已实现 | viewer redesign 15/15；图库/体验/分页定向通过；Dart analyze 无问题 | 待固定 C 盘 Debug 构建 | 未验收 | 需真机播放器、剪贴板和系统 UI 验收 |
+| Android 媒体详情与操作 | 已实现 | viewer redesign 15/15；图库/体验/分页定向通过；相册移动回退 2/2；Dart analyze 无问题 | Kotlin `compileDebugKotlin` 通过；待固定 C 盘完整 Debug 构建 | 未验收 | 需真机播放器、剪贴板和系统 UI 验收 |
