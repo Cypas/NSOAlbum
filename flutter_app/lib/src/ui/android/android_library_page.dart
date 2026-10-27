@@ -13,6 +13,7 @@ import 'android_action_bar.dart';
 import 'android_layout.dart';
 import 'android_media_card.dart';
 import 'android_media_viewer.dart';
+import 'android_fluid_scroll_physics.dart';
 import 'android_metadata_editor.dart';
 import 'android_page_frame.dart';
 import 'android_video_merge_page.dart';
@@ -950,6 +951,7 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
               );
               return CustomScrollView(
                 controller: scroll,
+                physics: const AndroidFluidScrollPhysics(),
                 key: PageStorageKey(
                   'android-library-${widget.album?.id ?? 'all'}',
                 ),

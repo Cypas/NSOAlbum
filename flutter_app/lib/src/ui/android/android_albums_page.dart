@@ -10,6 +10,7 @@ import 'android_library_page.dart';
 import 'android_layout.dart';
 import 'android_media_card.dart';
 import 'android_page_frame.dart';
+import 'android_fluid_scroll_physics.dart';
 import '../device_sync/album_source_label.dart';
 
 class AndroidAlbumsPage extends StatefulWidget {
@@ -116,6 +117,7 @@ class _AndroidAlbumsPageState extends State<AndroidAlbumsPage> {
                   columns;
               return GridView.builder(
                 padding: EdgeInsets.all(padding),
+                physics: const AndroidFluidScrollPhysics(),
                 gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: columns,
                   crossAxisSpacing: spacing,

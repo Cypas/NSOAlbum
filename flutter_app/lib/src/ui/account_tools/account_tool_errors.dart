@@ -145,7 +145,7 @@ String? nintendoConditionText(AppLocalizations l10n, Object error) {
       '当前无法向此用户发送好友申请，请检查主机上的屏蔽设置。',
       'A friend request cannot be sent to this user. Check the blocking settings on your console.',
     ),
-    'nintendo_friend_code_not_found' => ('未找到好友。', 'Friend not found.'),
+    'nintendo_friend_code_not_found' => ('没有找到对方', 'No user found.'),
     'nintendo_request_forbidden' => (
       '此账号无权执行该操作，请检查官方账号及隐私设置。',
       'This account is not permitted to perform this action. Check the official account and privacy settings.',

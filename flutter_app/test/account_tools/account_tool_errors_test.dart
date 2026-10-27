@@ -85,14 +85,14 @@ void main() {
         const AppLocalizations(Locale('zh')),
         'provider failed: nintendo_friend_code_not_found (status 9408)',
       ),
-      '未找到好友。',
+      '没有找到对方',
     );
     expect(
       nintendoConditionText(
         const AppLocalizations(Locale('en')),
         'provider failed: nintendo_friend_code_not_found (status 9408)',
       ),
-      'Friend not found.',
+      'No user found.',
     );
     final generic = nintendoConditionText(
       const AppLocalizations(Locale('zh')),
@@ -104,6 +104,29 @@ void main() {
       isNot(contains('未找到好友')),
       reason: 'A bare 9408 must not be treated as endpoint-specific evidence.',
     );
+  });
+
+  test('friend-code 9402 uses the same dedicated localized message', () {
+    expect(
+      nintendoConditionText(
+        const AppLocalizations(Locale('zh')),
+        'provider failed: nintendo_friend_code_not_found (status 9402)',
+      ),
+      '没有找到对方',
+    );
+    expect(
+      nintendoConditionText(
+        const AppLocalizations(Locale('en')),
+        'provider failed: nintendo_friend_code_not_found (status 9402)',
+      ),
+      'No user found.',
+    );
+    final generic = nintendoConditionText(
+      const AppLocalizations(Locale('zh')),
+      'provider failed: nintendo_request_failed (status 9402)',
+    );
+    expect(generic, isNotNull);
+    expect(generic, isNot(contains('没有找到对方')));
   });
 
   test(

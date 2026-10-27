@@ -26,6 +26,9 @@ pub(crate) fn ensure_coral_success_for_endpoint(
             )));
         }
         9400 => "nintendo_request_invalid",
+        9402 if endpoint == Some("/v3/Friend/GetUserByFriendCode") => {
+            "nintendo_friend_code_not_found"
+        }
         9408 if endpoint == Some("/v3/Friend/GetUserByFriendCode") => {
             "nintendo_friend_code_not_found"
         }
@@ -146,6 +149,24 @@ mod tests {
     #[test]
     fn friend_code_not_found_is_endpoint_specific() {
         let response = json!({"status":9408, "errorMessage":"PRIVATE"});
+        let lookup =
+            ensure_coral_success_for_endpoint(&response, Some("/v3/Friend/GetUserByFriendCode"))
+                .unwrap_err();
+        assert!(lookup
+            .to_string()
+            .contains("nintendo_friend_code_not_found"));
+        assert!(!lookup.to_string().contains("PRIVATE"));
+
+        for endpoint in [None, Some("/v4/Friend/List")] {
+            let other = ensure_coral_success_for_endpoint(&response, endpoint).unwrap_err();
+            assert!(other.to_string().contains("nintendo_request_failed"));
+            assert!(!other.to_string().contains("nintendo_friend_code_not_found"));
+        }
+    }
+
+    #[test]
+    fn friend_code_9402_is_endpoint_specific_and_redacted() {
+        let response = json!({"status":9402, "errorMessage":"PRIVATE"});
         let lookup =
             ensure_coral_success_for_endpoint(&response, Some("/v3/Friend/GetUserByFriendCode"))
                 .unwrap_err();
