@@ -5,6 +5,23 @@ import '../../l10n/app_localizations.dart';
 import '../../rust/models.dart';
 import '../device_sync/album_source_label.dart';
 
+String androidMediaAlbumActionMessage({
+  required bool move,
+  required bool removedSource,
+  required bool zh,
+  String? targetName,
+}) {
+  if (move && !removedSource) {
+    return zh
+        ? '已复制到相册；当前列表没有可移出的普通相册。'
+        : 'Copied to the album; this view has no regular source album.';
+  }
+  final target = targetName == null ? null : '“$targetName”';
+  return zh
+      ? '${move ? '已移动到' : '已复制到'}${target ?? '相册'}。'
+      : '${move ? 'Moved to' : 'Copied to'} ${target ?? 'the album'}.';
+}
+
 Future<void> showAndroidMediaAlbumAction(
   BuildContext context, {
   required AppBackend backend,
@@ -63,14 +80,15 @@ Future<void> showAndroidMediaAlbumAction(
     await backend.removeMediaFromAlbum(sourceAlbum!.id, item.id);
   }
   if (context.mounted) {
+    final zh = context.l10n.locale.languageCode == 'zh';
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          context.l10n.select(
-            zh: move ? '已移动到“${target.name}”。' : '已复制到“${target.name}”。',
-            en: move
-                ? 'Moved to “${target.name}”.'
-                : 'Copied to “${target.name}”.',
+          androidMediaAlbumActionMessage(
+            move: move,
+            removedSource: move && sourceAlbum?.albumType == 'manual',
+            zh: zh,
+            targetName: target.name,
           ),
         ),
       ),
