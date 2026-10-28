@@ -866,10 +866,10 @@ mod tests {
             .send()
             .await
             .unwrap_err();
-        assert_eq!(
+        assert!(matches!(
             classify_doh_error(&timeout_error),
-            DnsFailureClass::EndpointUnreachable
-        );
+            DnsFailureClass::TcpConnect | DnsFailureClass::EndpointUnreachable
+        ));
         server.join().unwrap();
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

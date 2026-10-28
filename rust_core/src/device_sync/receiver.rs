@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use super::diagnostics::{self, Boundary};
 use super::manifest::{Manifest, ManifestCollector, ManifestHeader};
-use super::planner::{SyncMode, SyncPlan};
+use super::planner::{Action, SyncMode, SyncPlan};
 use super::source_names::{SourceDescription, SourceDescriptions};
 use super::staging::{Progress, StagingError, StagingOperation};
 use super::validation::ApplyTimingPhase as Timing;
@@ -581,6 +581,23 @@ impl ReceiveOperation {
         diagnostics::checkpoint(Boundary::ApplyReceiverPrepareEnd);
         self.finished = true;
         observer(ApplyBoundary::Prepared);
+        let catalog_noop = self.plan.conflicts.is_empty()
+            && self
+                .plan
+                .media
+                .iter()
+                .all(|decision| decision.action == Action::Keep)
+            && self
+                .plan
+                .albums
+                .iter()
+                .all(|decision| decision.action == Action::Keep)
+            && match (self.source.manifest.validate(), current.manifest.validate()) {
+                (Ok(source), Ok(current)) => {
+                    source.tags == current.tags && source.mappings == current.mappings
+                }
+                _ => false,
+            };
         let mut publications = Vec::new();
         let result = (|| -> ReceiverResult<()> {
             cancel.check()?;
@@ -589,7 +606,7 @@ impl ReceiveOperation {
                     continue;
                 };
                 if decision.reuse_original {
-                    if verify_reused_originals && !strict_noop {
+                    if verify_reused_originals && !catalog_noop {
                         self.staging.verify_reused_original(
                             operation,
                             &decision.sha256,
