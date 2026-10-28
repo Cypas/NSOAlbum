@@ -299,6 +299,31 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage>
                             ? null
                             : (next) => save(controller.save(item.$3(next))),
                       ),
+                  ],
+                ),
+              ),
+            ),
+            Card(
+              key: const Key('android-splatoon-settings-card'),
+              shape: _androidSettingsCardShape,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.sports_esports_outlined),
+                      title: Text(
+                        context.l10n.select(zh: 'Splatoon 3', en: 'Splatoon 3'),
+                      ),
+                      subtitle: Text(
+                        context.l10n.select(
+                          zh: '好友状态查询设置',
+                          en: 'Friend activity settings',
+                        ),
+                      ),
+                    ),
                     SwitchListTile(
                       key: const Key('android-splatoon-friend-activity'),
                       contentPadding: EdgeInsets.zero,

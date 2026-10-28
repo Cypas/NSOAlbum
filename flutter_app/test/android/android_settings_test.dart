@@ -67,8 +67,26 @@ void main() {
         final displayCard = find.byKey(
           const Key('android-display-settings-card'),
         );
+        final splatoonCard = find.byKey(
+          const Key('android-splatoon-settings-card'),
+        );
         expect(appearanceCard, findsOneWidget);
         expect(displayCard, findsOneWidget);
+        expect(splatoonCard, findsOneWidget);
+        expect(
+          find.descendant(
+            of: displayCard,
+            matching: find.byKey(const Key('android-splatoon-friend-activity')),
+          ),
+          findsNothing,
+        );
+        expect(
+          find.descendant(
+            of: splatoonCard,
+            matching: find.byKey(const Key('android-splatoon-friend-activity')),
+          ),
+          findsOneWidget,
+        );
         expect(
           tester.widget<Card>(appearanceCard).shape,
           isA<RoundedRectangleBorder>(),
