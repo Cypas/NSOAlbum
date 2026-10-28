@@ -189,6 +189,8 @@ void registerAndroidExperienceTests({bool layoutOnly = false}) {
           ),
         );
         await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('android-detail-toggle')));
+        await tester.pumpAndSettle();
         final imported = find.byKey(const Key('android-detail-imported'));
         await tester.ensureVisible(imported);
         expect(imported, findsOneWidget);
@@ -434,6 +436,8 @@ void registerAndroidExperienceTests({bool layoutOnly = false}) {
       );
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('android-media-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('android-detail-toggle')));
       await tester.pumpAndSettle();
       expect(find.text('private-file-1.png'), findsWidgets);
       await tester.ensureVisible(

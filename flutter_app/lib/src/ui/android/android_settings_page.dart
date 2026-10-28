@@ -304,6 +304,49 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage>
               ),
             ),
             Card(
+              key: const Key('android-network-settings-card'),
+              shape: _androidSettingsCardShape,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.public_outlined),
+                      title: Text(
+                        context.l10n.select(zh: '网络请求', en: 'Network requests'),
+                      ),
+                    ),
+                    SwitchListTile(
+                      key: const Key('android-doh-enabled'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        context.l10n.select(
+                          zh: '网络请求使用DOH',
+                          en: 'Use DoH for network requests',
+                        ),
+                      ),
+                      subtitle: Text(
+                        context.l10n.select(
+                          zh: '同步一直请求失败时可以尝试开启此选项',
+                          en: 'If synchronization keeps failing, try enabling this option.',
+                        ),
+                      ),
+                      value: value.dohEnabled,
+                      onChanged: controller.saving
+                          ? null
+                          : (next) => save(
+                              controller.save(
+                                copyAppSettings(value, dohEnabled: next),
+                              ),
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Card(
               key: const Key('android-splatoon-settings-card'),
               shape: _androidSettingsCardShape,
               child: Padding(

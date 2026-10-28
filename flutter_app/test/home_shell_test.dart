@@ -24,6 +24,15 @@ import 'package:squid_album/src/ui/video_runtime.dart';
 import 'package:squid_album/src/release_update.dart';
 import 'package:squid_album/src/platform/windows_system_fonts.dart';
 
+Future<Finder> _openDesktopSearch(WidgetTester tester) async {
+  return find.byKey(const Key('library-search'));
+}
+
+Future<void> _openDesktopFilters(WidgetTester tester) async {
+  await tester.tap(find.byKey(const Key('library-filter')));
+  await tester.pumpAndSettle();
+}
+
 void main() {
   setUp(() async {
     await loadCustomFontFamilies(const []);
@@ -106,6 +115,7 @@ void main() {
             .path;
         backend.settings = AppSettings(
           proxyUrl: backend.settings.proxyUrl,
+          dohEnabled: backend.settings.dohEnabled,
           libraryPath: backend.settings.libraryPath,
           theme: backend.settings.theme,
           language: backend.settings.language,
@@ -329,11 +339,22 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('视频'));
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('desktop-gallery-kind-filter')),
+        matching: find.text('视频'),
+      ),
+    );
     await tester.pumpAndSettle();
     expect(backend.lastKind, GalleryKindFilter.video);
 
-    await tester.tap(find.widgetWithText(FilterChip, '收藏'));
+    await _openDesktopFilters(tester);
+    await tester.ensureVisible(
+      find.byKey(const Key('desktop-filter-favorites')),
+    );
+    await tester.tap(find.byKey(const Key('desktop-filter-favorites')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('desktop-filter-apply')));
     await tester.pumpAndSettle();
     expect(backend.lastKind, GalleryKindFilter.video);
     expect(backend.lastFavoriteOnly, isTrue);
@@ -454,7 +475,7 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
     await tester.pumpAndSettle();
 
-    final search = find.byKey(const Key('library-search'));
+    final search = await _openDesktopSearch(tester);
     await tester.enterText(search, '庆典');
     expect(find.byKey(const Key('library-search-submit')), findsNothing);
     await tester.testTextInput.receiveAction(TextInputAction.search);
@@ -470,7 +491,7 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
     await tester.pumpAndSettle();
 
-    final search = find.byKey(const Key('library-search'));
+    final search = await _openDesktopSearch(tester);
     await tester.tap(search);
     const composingText = '不存在';
     tester.testTextInput.updateEditingValue(
@@ -561,7 +582,12 @@ void main() {
 
     final gate = Completer<void>();
     backend.nextMediaGate = gate;
-    await tester.tap(find.text('视频'));
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('desktop-gallery-kind-filter')),
+        matching: find.text('视频'),
+      ),
+    );
     await tester.pump();
 
     expect(find.text('sample.jpg'), findsOneWidget);
@@ -580,10 +606,58 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(backend.lastNewestFirst, isTrue);
-    await tester.tap(find.byKey(const Key('media-sort-menu')));
+    await _openDesktopFilters(tester);
+    await tester.ensureVisible(find.byKey(const Key('desktop-filter-newest')));
+    await tester.tap(find.byKey(const Key('desktop-filter-newest')));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('创建时间正序'));
+    await tester.tap(find.byKey(const Key('desktop-filter-apply')));
     await tester.pumpAndSettle();
+
+    expect(backend.lastNewestFirst, isFalse);
+  });
+
+  testWidgets('desktop filter draft can be cancelled without applying', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    await tester.pumpWidget(SquidAlbumApp(backend: backend));
+    await tester.pumpAndSettle();
+
+    await _openDesktopFilters(tester);
+    await tester.ensureVisible(find.byKey(const Key('desktop-filter-newest')));
+    await tester.tap(find.byKey(const Key('desktop-filter-newest')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('desktop-filter-cancel')));
+    await tester.pumpAndSettle();
+    expect(backend.lastNewestFirst, isTrue);
+    expect(
+      find.byKey(const Key('desktop-library-filter-dialog')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('desktop filter clear resets kind but keeps sort choice', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    await tester.pumpWidget(SquidAlbumApp(backend: backend));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('desktop-gallery-kind-filter')),
+        matching: find.text('视频'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await _openDesktopFilters(tester);
+    await tester.ensureVisible(find.byKey(const Key('desktop-filter-newest')));
+    await tester.tap(find.byKey(const Key('desktop-filter-newest')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('desktop-filter-clear')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('desktop-filter-apply')));
+    await tester.pumpAndSettle();
+    expect(backend.lastKind, GalleryKindFilter.all);
     expect(backend.lastNewestFirst, isFalse);
   });
 
@@ -594,7 +668,9 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const Key('capture-date-filter')));
+    await _openDesktopFilters(tester);
+    await tester.ensureVisible(find.byKey(const Key('desktop-filter-date')));
+    await tester.tap(find.byKey(const Key('desktop-filter-date')));
     await tester.pumpAndSettle();
 
     final dialog = find.byKey(const Key('creation-date-range-dialog'));
@@ -623,6 +699,8 @@ void main() {
         )
         .onDateChanged(DateTime(2026, 10, 3));
     await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('desktop-filter-apply')));
+    await tester.pumpAndSettle();
 
     expect(dialog, findsNothing);
     expect(
@@ -642,12 +720,16 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const Key('capture-date-filter')));
+    await _openDesktopFilters(tester);
+    await tester.ensureVisible(find.byKey(const Key('desktop-filter-date')));
+    await tester.tap(find.byKey(const Key('desktop-filter-date')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('creation-date-quick-anniversary')));
     await tester.pumpAndSettle();
 
     final now = DateTime.now();
+    await tester.tap(find.byKey(const Key('desktop-filter-apply')));
+    await tester.pumpAndSettle();
     expect(backend.lastCapturedOnThisDay?.month, now.month);
     expect(backend.lastCapturedOnThisDay?.day, now.day);
     expect(backend.lastImportedFrom, isNull);
@@ -664,12 +746,15 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
     await tester.pumpAndSettle();
 
+    await _openDesktopFilters(tester);
     expect(
-      find.byKey(const ValueKey('game-filter-Splatoon 3')),
+      find.byKey(const Key('desktop-filter-game-Splatoon 3')),
       findsOneWidget,
     );
-    expect(find.byKey(const ValueKey('game-filter-Zelda')), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey('game-filter-Zelda')));
+    expect(find.byKey(const Key('desktop-filter-game-Zelda')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('desktop-filter-game-Zelda')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('desktop-filter-apply')));
     await tester.pumpAndSettle();
 
     expect(find.text('zelda.jpg'), findsOneWidget);
@@ -680,7 +765,7 @@ void main() {
   testWidgets('expands game tags and shows total media counts', (tester) async {
     final backend = FakeBackend(
       mediaItems: List.generate(
-        8,
+        12,
         (index) => _media(
           id: index + 1,
           name: 'game-$index.jpg',
@@ -691,17 +776,18 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const ValueKey('game-filter-Game 7')), findsNothing);
-    expect(find.byKey(const Key('toggle-all-game-tags')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('toggle-all-game-tags')));
+    await _openDesktopFilters(tester);
+    expect(find.byKey(const Key('desktop-filter-game-Game 7')), findsNothing);
+    expect(find.byKey(const Key('desktop-filter-game-expand')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('desktop-filter-game-expand')));
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const ValueKey('game-filter-Game 7')), findsOneWidget);
     expect(
-      find.byKey(const ValueKey('game-filter-count-Game 7')),
-      findsOneWidget,
+      tester.getSize(find.byKey(const Key('desktop-filter-game-list'))).height,
+      lessThanOrEqualTo(220),
     );
-    expect(find.text('共 1 项'), findsNWidgets(8));
+    expect(find.text('共 1 项'), findsWidgets);
+    await tester.tap(find.byKey(const Key('desktop-filter-cancel')));
   });
 
   testWidgets('album game filters only show games present in that album', (
@@ -734,11 +820,13 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('album-card-2')));
     await tester.pumpAndSettle();
 
+    await _openDesktopFilters(tester);
     expect(
-      find.byKey(const ValueKey('game-filter-Splatoon 3')),
+      find.byKey(const Key('desktop-filter-game-Splatoon 3')),
       findsOneWidget,
     );
-    expect(find.byKey(const ValueKey('game-filter-Zelda')), findsNothing);
+    expect(find.byKey(const Key('desktop-filter-game-Zelda')), findsNothing);
+    await tester.tap(find.byKey(const Key('desktop-filter-cancel')));
   });
 
   testWidgets('opens media preview and navigates with buttons and keyboard', (
@@ -1107,6 +1195,7 @@ void main() {
       ),
     );
     backend.settings = const AppSettings(
+      dohEnabled: false,
       libraryPath: 'C:/library',
       theme: 'ocean',
       language: 'zh',
@@ -1679,16 +1768,14 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
     await tester.pumpAndSettle();
 
-    final chip = tester.widget<FilterChip>(
-      find.byKey(const ValueKey('game-filter-Splatoon 3')),
+    await _openDesktopFilters(tester);
+    final game = tester.widget<CheckboxListTile>(
+      find.byKey(const Key('desktop-filter-game-Splatoon 3')),
     );
-    expect(chip.labelStyle?.color, isNotNull);
-    expect(chip.labelStyle?.color, isNot(equals(Colors.white)));
-
-    final creationDateChip = tester.widget<InputChip>(
-      find.byKey(const Key('capture-date-filter')),
-    );
-    expect(creationDateChip.labelStyle?.color, isNot(Colors.white));
+    expect(game.title, isA<Text>());
+    expect((game.title! as Text).style?.color, isNot(equals(Colors.white)));
+    expect(find.byKey(const Key('desktop-filter-date')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('desktop-filter-cancel')));
   });
 
   testWidgets('keeps the desktop sidebar while viewing an album', (
@@ -1818,6 +1905,30 @@ void main() {
     await tester.tap(openLog);
     await tester.pumpAndSettle();
     expect(backend.logOpened, isTrue);
+  });
+
+  testWidgets('desktop network settings expose DoH toggle with exact copy', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    await tester.pumpWidget(SquidAlbumApp(backend: backend));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('设置').last);
+    await tester.pumpAndSettle();
+
+    final settingsScroll = find.byType(CustomScrollView).first;
+    await tester.drag(settingsScroll, const Offset(0, -1200));
+    await tester.pumpAndSettle();
+    final toggle = find.byKey(const Key('desktop-doh-enabled'));
+    await tester.ensureVisible(toggle);
+    expect(toggle, findsOneWidget);
+    expect(backend.settings.dohEnabled, isFalse);
+    expect(find.text('网络请求使用DOH'), findsOneWidget);
+    expect(find.text('同步一直请求失败时可以尝试开启此选项'), findsOneWidget);
+
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(backend.settings.dohEnabled, isTrue);
   });
 
   testWidgets('about section combines profile and community links', (
@@ -2204,6 +2315,25 @@ void main() {
     },
   );
 
+  testWidgets(
+    'Nintendo account retry performs a fresh read after the initial snapshot fails',
+    (tester) async {
+      final backend = _RetryingAccountBackend();
+      await tester.pumpWidget(SquidAlbumApp(backend: backend));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('导入与同步').last);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Nintendo Account 状态读取失败。'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, '重试'));
+      await tester.pumpAndSettle();
+
+      expect(backend.accountListCalls, greaterThanOrEqualTo(2));
+      expect(find.textContaining('已连接 1 个账号'), findsOneWidget);
+      expect(find.text('Nintendo Account 状态读取失败。'), findsNothing);
+    },
+  );
+
   testWidgets('shows NXAPI disclosure before signing in or adding an account', (
     tester,
   ) async {
@@ -2465,6 +2595,7 @@ void main() {
       );
       backend.settings = AppSettings(
         proxyUrl: backend.settings.proxyUrl,
+        dohEnabled: backend.settings.dohEnabled,
         libraryPath: backend.settings.libraryPath,
         theme: backend.settings.theme,
         language: backend.settings.language,
@@ -2477,8 +2608,7 @@ void main() {
         autoSyncOnLaunch: true,
         notifyOnAutoSync: backend.settings.notifyOnAutoSync,
         showSplatoonSchedule: backend.settings.showSplatoonSchedule,
-        showSplatoonFriendActivity:
-            backend.settings.showSplatoonFriendActivity,
+        showSplatoonFriendActivity: backend.settings.showSplatoonFriendActivity,
         closeBehavior: backend.settings.closeBehavior,
         customFontPaths: backend.settings.customFontPaths,
         syncPolicy: backend.settings.syncPolicy,
@@ -2499,6 +2629,7 @@ void main() {
     final backend = FakeBackend();
     backend.settings = AppSettings(
       proxyUrl: backend.settings.proxyUrl,
+      dohEnabled: backend.settings.dohEnabled,
       libraryPath: backend.settings.libraryPath,
       theme: backend.settings.theme,
       language: backend.settings.language,
@@ -2511,8 +2642,7 @@ void main() {
       autoSyncOnLaunch: true,
       notifyOnAutoSync: backend.settings.notifyOnAutoSync,
       showSplatoonSchedule: backend.settings.showSplatoonSchedule,
-      showSplatoonFriendActivity:
-          backend.settings.showSplatoonFriendActivity,
+      showSplatoonFriendActivity: backend.settings.showSplatoonFriendActivity,
       closeBehavior: backend.settings.closeBehavior,
       customFontPaths: backend.settings.customFontPaths,
       syncPolicy: backend.settings.syncPolicy,
@@ -2608,6 +2738,10 @@ void main() {
   testWidgets(
     'persists the desktop window close behavior',
     (tester) async {
+      tester.view.physicalSize = const Size(1200, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       final backend = FakeBackend();
       await tester.pumpWidget(SquidAlbumApp(backend: backend));
       await tester.pumpAndSettle();
@@ -2621,9 +2755,15 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(tester.getCenter(selector).dy, lessThan(600));
-      await tester.tap(selector);
+      final rect = tester.getRect(selector);
+      await tester.tapAt(Offset(rect.right - 32, rect.center.dy));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('最小化到托盘').last);
+      final minimize = find.byWidgetPredicate(
+        (widget) =>
+            widget is Text &&
+            (widget.data == '最小化到托盘' || widget.data == 'Minimize to tray'),
+      );
+      await tester.tap(minimize.last);
       await tester.pumpAndSettle();
 
       expect(backend.settings.closeBehavior, 'minimize_to_tray');
@@ -2712,6 +2852,7 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
 
   @override
   AppSettings settings = const AppSettings(
+    dohEnabled: false,
     libraryPath: 'C:/library',
     theme: 'ocean',
     language: 'zh',
@@ -3328,6 +3469,27 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
   Future<SyncSummary> syncNintendoAlbum() {
     syncCalls += 1;
     return syncFuture ?? Future.error(StateError('not signed in'));
+  }
+}
+
+class _RetryingAccountBackend extends FakeBackend {
+  _RetryingAccountBackend()
+    : super(
+        signedIn: true,
+        accountProfiles: const [
+          NintendoAccountProfile(accountId: 'account-1', nickname: 'Inkling'),
+        ],
+      );
+
+  int accountListCalls = 0;
+
+  @override
+  Future<List<NintendoAccountProfile>> listNintendoAccounts() async {
+    accountListCalls += 1;
+    if (accountListCalls == 1) {
+      throw StateError('synthetic account read failure');
+    }
+    return super.listNintendoAccounts();
   }
 }
 

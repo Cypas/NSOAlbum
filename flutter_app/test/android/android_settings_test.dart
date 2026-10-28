@@ -67,6 +67,10 @@ void main() {
         final displayCard = find.byKey(
           const Key('android-display-settings-card'),
         );
+        final networkCard = find.byKey(
+          const Key('android-network-settings-card'),
+          skipOffstage: false,
+        );
         final splatoonCard = find.byKey(
           const Key('android-splatoon-settings-card'),
           skipOffstage: false,
@@ -100,6 +104,32 @@ void main() {
               matching: find.byType(Scrollable),
             )
             .first;
+        await tester.scrollUntilVisible(
+          networkCard,
+          240,
+          scrollable: settingsScroll,
+        );
+        await tester.pumpAndSettle();
+        expect(networkCard, findsOneWidget);
+        expect(
+          find.descendant(
+            of: networkCard,
+            matching: find.byKey(const Key('android-doh-enabled')),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: networkCard,
+            matching: find.text(
+              language == 'zh'
+                  ? '同步一直请求失败时可以尝试开启此选项'
+                  : 'If synchronization keeps failing, try enabling this option.',
+              skipOffstage: false,
+            ),
+          ),
+          findsOneWidget,
+        );
         await tester.scrollUntilVisible(
           splatoonCard,
           320,

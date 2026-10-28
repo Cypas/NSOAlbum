@@ -529,6 +529,7 @@ class _Backend implements AppBackend, DeviceSyncStartupBackend {
   Future<void> close() => deviceSyncStartup.close();
   @override
   final AppSettings settings = const AppSettings(
+    dohEnabled: false,
     libraryPath: 'synthetic-window-close-root',
     theme: 'ocean',
     language: 'en',

@@ -571,6 +571,7 @@ class _ConsumerState extends State<_Consumer> {
 class _Backend implements AppBackend, DeviceSyncStartupBackend {
   _Backend({MemoryAccountStorage? storage, String language = 'en'})
     : settings = AppSettings(
+        dohEnabled: false,
         libraryPath: 'synthetic-existing-media-root',
         theme: 'ocean',
         language: language,

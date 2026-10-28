@@ -4,13 +4,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::{Client, Method, Proxy, Response};
+use reqwest::{Client, ClientBuilder, Method, Proxy, Response};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use url::Url;
 
+use crate::doh;
 use crate::error::{CoreError, CoreResult};
 use crate::sync::CancellationToken;
 
@@ -78,6 +79,7 @@ pub struct TransportConfig {
     pub proxy_url: Option<String>,
     pub timeout: Duration,
     pub max_download_bytes: u64,
+    pub doh_enabled: bool,
 }
 
 impl Default for TransportConfig {
@@ -86,6 +88,7 @@ impl Default for TransportConfig {
             proxy_url: None,
             timeout: Duration::from_secs(30),
             max_download_bytes: DEFAULT_MAX_DOWNLOAD_BYTES,
+            doh_enabled: false,
         }
     }
 }
@@ -97,6 +100,9 @@ pub struct HttpTransport {
     download_user_agent: Option<String>,
     follow_redirects: bool,
 }
+
+#[derive(Clone, Copy)]
+struct DohRequestContext;
 
 #[derive(Debug)]
 /// A temporary file created by this transport, never an arbitrary caller-owned path.
@@ -344,29 +350,34 @@ impl HttpTransport {
     }
 
     fn configured(config: TransportConfig, follow_redirects: bool) -> CoreResult<Self> {
-        let mut builder = Client::builder()
-            .timeout(config.timeout)
-            .redirect(if follow_redirects {
-                reqwest::redirect::Policy::limited(10)
-            } else {
-                reqwest::redirect::Policy::none()
-            })
-            .user_agent(DEFAULT_USER_AGENT);
-        if let Some(proxy_url) = config.proxy_url.as_deref().filter(|v| !v.trim().is_empty()) {
-            let parsed = Url::parse(proxy_url)?;
-            if !matches!(parsed.scheme(), "http" | "https") {
-                return Err(CoreError::InvalidConfig(
-                    "proxy URL must use http or https".into(),
-                ));
-            }
-            builder = builder.proxy(Proxy::all(proxy_url)?);
-        }
+        let builder = client_builder(&config, follow_redirects)?;
         Ok(Self {
             client: Arc::new(builder.build()?),
             config,
             download_user_agent: None,
             follow_redirects,
         })
+    }
+
+    fn client_with_resolved_addresses(
+        &self,
+        host: &str,
+        addresses: &[std::net::SocketAddr],
+    ) -> CoreResult<Client> {
+        if addresses.is_empty() {
+            return Err(CoreError::InvalidConfig(
+                "resolved host has no addresses".into(),
+            ));
+        }
+        Ok(client_builder(&self.config, self.follow_redirects)?
+            .resolve_to_addrs(host, addresses)
+            .build()?)
+    }
+
+    fn client_with_doh_bootstrap(&self) -> CoreResult<Client> {
+        Ok(client_builder(&self.config, self.follow_redirects)?
+            .resolve_to_addrs(doh::doh_host(), doh::bootstrap_addresses())
+            .build()?)
     }
 
     /// Applies only to public media/avatar downloads on this transport clone.
@@ -596,7 +607,41 @@ impl HttpTransport {
             "default"
         };
         let started = std::time::Instant::now();
-        match self.client.execute(request).await {
+        let request_host = request.url().host_str();
+        let target_host = request_host.filter(|host| doh::is_allowed_nxapi_host(host));
+        let mut doh_context = None;
+        let client = if let Some(host) = target_host.filter(|_| self.config.doh_enabled) {
+            let (client, used_doh) = self
+                .resolve_nxapi_client(
+                    host,
+                    request.url().port_or_known_default().unwrap_or(443),
+                    stage,
+                    &url,
+                    proxy,
+                    started,
+                )
+                .await?
+                .unwrap_or_else(|| (self.client.as_ref().clone(), None));
+            doh_context = used_doh;
+            client
+        } else {
+            crate::diagnostics::doh_resolution(
+                self.config.doh_enabled,
+                doh_log_host_class(request_host),
+                "system",
+                0,
+                0,
+                "system",
+                "skipped",
+                if target_host.is_some() {
+                    "not_attempted"
+                } else {
+                    "not_applicable"
+                },
+            );
+            self.client.as_ref().clone()
+        };
+        match client.execute(request).await {
             Ok(response) => {
                 if !response.status().is_success() {
                     crate::diagnostics::network_failure(&CoreError::NetworkRequest {
@@ -612,17 +657,7 @@ impl HttpTransport {
                 Ok(response)
             }
             Err(error) => {
-                let reason = if error.is_timeout() {
-                    "timeout"
-                } else if error.is_connect() {
-                    "connect_failed"
-                } else if error.is_body() {
-                    "body_failed"
-                } else if error.is_request() {
-                    "request_failed"
-                } else {
-                    "transport_failed"
-                };
+                let reason = network_failure_reason(&error, doh_context.is_some());
                 let elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
                 // Never serialize reqwest's remote URL, nested connector text,
                 // headers or payload. Both the log and Bridge retain only
@@ -642,6 +677,185 @@ impl HttpTransport {
             }
         }
     }
+
+    async fn resolve_nxapi_client(
+        &self,
+        host: &str,
+        port: u16,
+        stage: &'static str,
+        url: &str,
+        proxy: &'static str,
+        started: std::time::Instant,
+    ) -> CoreResult<Option<(Client, Option<DohRequestContext>)>> {
+        let Some(_) = doh::nxapi_host_class(host) else {
+            return Ok(None);
+        };
+        let system_started = std::time::Instant::now();
+        let system = doh::system_lookup(host, port).await;
+        let system_duration = system_started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        match system {
+            Ok(addresses) => {
+                crate::diagnostics::doh_resolution(
+                    self.config.doh_enabled,
+                    "nxapi",
+                    "system",
+                    1,
+                    system_duration,
+                    "system",
+                    "success",
+                    "none",
+                );
+                Ok(Some((
+                    self.client_with_resolved_addresses(host, &addresses)?,
+                    None,
+                )))
+            }
+            Err(system_error) if !system_error.allows_doh_fallback() => {
+                crate::diagnostics::doh_resolution(
+                    self.config.doh_enabled,
+                    "nxapi",
+                    "system",
+                    1,
+                    system_duration,
+                    "system",
+                    "failure",
+                    system_error.as_str(),
+                );
+                let failure = doh::combined_dns_error(
+                    stage,
+                    url,
+                    proxy,
+                    started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                    system_error,
+                    doh::DnsFailureClass::NotAttempted,
+                );
+                crate::diagnostics::network_failure(&failure);
+                Err(failure)
+            }
+            Err(system_error) => {
+                crate::diagnostics::doh_resolution(
+                    self.config.doh_enabled,
+                    "nxapi",
+                    "system",
+                    1,
+                    system_duration,
+                    "system",
+                    "failure",
+                    system_error.as_str(),
+                );
+                let doh_started = std::time::Instant::now();
+                let (doh_client, bootstrap) = self.doh_client().await?;
+                let doh_result =
+                    doh::resolve_via_doh(&doh_client, doh::DOH_ENDPOINT, host, port).await;
+                let doh_duration = doh_started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                match doh_result {
+                    Ok(addresses) => {
+                        crate::diagnostics::doh_resolution(
+                            self.config.doh_enabled,
+                            "nxapi",
+                            "cloudflare_doh",
+                            2,
+                            doh_duration,
+                            if bootstrap { "bootstrap_ip" } else { "system" },
+                            "success",
+                            "none",
+                        );
+                        Ok(Some((
+                            self.client_with_resolved_addresses(host, &addresses)?,
+                            Some(DohRequestContext),
+                        )))
+                    }
+                    Err(doh_error) => {
+                        crate::diagnostics::doh_resolution(
+                            self.config.doh_enabled,
+                            "nxapi",
+                            "cloudflare_doh",
+                            2,
+                            doh_duration,
+                            if bootstrap { "bootstrap_ip" } else { "system" },
+                            "failure",
+                            doh_error.as_str(),
+                        );
+                        let failure = doh::combined_dns_error(
+                            stage,
+                            url,
+                            proxy,
+                            started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                            system_error,
+                            doh_error,
+                        );
+                        crate::diagnostics::network_failure(&failure);
+                        Err(failure)
+                    }
+                }
+            }
+        }
+    }
+
+    async fn doh_client(&self) -> CoreResult<(Client, bool)> {
+        if self
+            .config
+            .proxy_url
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Ok((self.client.as_ref().clone(), false));
+        }
+        match doh::system_lookup(doh::doh_host(), 443).await {
+            Ok(addresses) => Ok((
+                client_builder(&self.config, self.follow_redirects)?
+                    .resolve_to_addrs(doh::doh_host(), &addresses)
+                    .build()?,
+                false,
+            )),
+            Err(_) => Ok((self.client_with_doh_bootstrap()?, true)),
+        }
+    }
+}
+
+fn doh_log_host_class(host: Option<&str>) -> &'static str {
+    if host.is_some_and(doh::is_allowed_nxapi_host) {
+        "nxapi"
+    } else {
+        "other"
+    }
+}
+
+fn network_failure_reason(error: &reqwest::Error, doh_used: bool) -> &'static str {
+    if doh_used {
+        "doh_request_failed"
+    } else if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect_failed"
+    } else if error.is_body() {
+        "body_failed"
+    } else if error.is_request() {
+        "request_failed"
+    } else {
+        "transport_failed"
+    }
+}
+
+fn client_builder(config: &TransportConfig, follow_redirects: bool) -> CoreResult<ClientBuilder> {
+    let mut builder = Client::builder()
+        .timeout(config.timeout)
+        .redirect(if follow_redirects {
+            reqwest::redirect::Policy::limited(10)
+        } else {
+            reqwest::redirect::Policy::none()
+        })
+        .user_agent(DEFAULT_USER_AGENT);
+    if let Some(proxy_url) = config.proxy_url.as_deref().filter(|v| !v.trim().is_empty()) {
+        let parsed = Url::parse(proxy_url)?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(CoreError::InvalidConfig(
+                "proxy URL must use http or https".into(),
+            ));
+        }
+        builder = builder.proxy(Proxy::all(proxy_url)?);
+    }
+    Ok(builder)
 }
 
 fn network_failure_code(error: &reqwest::Error) -> (&'static str, String) {
@@ -813,6 +1027,40 @@ pub(crate) mod tests {
         let transport = HttpTransport::new(Default::default()).unwrap();
         let clone = transport.clone();
         assert!(Arc::ptr_eq(&transport.client, &clone.client));
+    }
+
+    #[test]
+    fn doh_is_default_off_and_preserved_by_transport_clones() {
+        let config = TransportConfig::default();
+        assert!(!config.doh_enabled);
+        let transport = HttpTransport::new(TransportConfig {
+            doh_enabled: true,
+            ..config
+        })
+        .unwrap();
+        assert!(transport.config.doh_enabled);
+        assert!(
+            transport
+                .with_timeout(Duration::from_secs(1))
+                .unwrap()
+                .config
+                .doh_enabled
+        );
+        assert!(transport.without_redirects().unwrap().config.doh_enabled);
+    }
+
+    #[test]
+    fn failures_after_doh_resolution_are_marked_to_stop_the_nxapi_retry_wrapper() {
+        let error = Client::new().get("not a URL").build().unwrap_err();
+        assert_eq!(network_failure_reason(&error, false), "transport_failed");
+        assert_eq!(network_failure_reason(&error, true), "doh_request_failed");
+    }
+
+    #[test]
+    fn doh_log_host_class_is_other_for_non_nxapi_hosts() {
+        assert_eq!(doh_log_host_class(None), "other");
+        assert_eq!(doh_log_host_class(Some("example.com")), "other");
+        assert_eq!(doh_log_host_class(Some("nxapi-auth.fancy.org.uk")), "nxapi");
     }
 
     pub(crate) fn capture_request(body: &'static str) -> (String, std::thread::JoinHandle<String>) {

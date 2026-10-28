@@ -1309,6 +1309,7 @@ mod receiver_sql_tests {
         database.create_tag("old library").unwrap();
         let settings = crate::settings::AppSettings {
             proxy_url: None,
+            doh_enabled: false,
             library_path: root.to_string_lossy().into_owned(),
             theme: "ocean".into(),
             language: "en".into(),
@@ -10519,6 +10520,7 @@ mod unknown_import_time_tests {
         for (language, expected) in [("zh", "未知日期.mp4"), ("en", "Unknown date.mp4")] {
             let settings = AppSettings {
                 proxy_url: None,
+                doh_enabled: false,
                 library_path: directory.path().to_string_lossy().into_owned(),
                 theme: "ocean".into(),
                 language: language.into(),

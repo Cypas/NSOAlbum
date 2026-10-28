@@ -32,6 +32,33 @@ pub(crate) fn network_failure(error: &crate::error::CoreError) {
     ));
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn doh_resolution(
+    doh_enabled: bool,
+    host_class: &'static str,
+    resolver: &'static str,
+    attempt: u8,
+    dns_duration_ms: u64,
+    doh_bootstrap: &'static str,
+    result: &'static str,
+    error_class: &'static str,
+) {
+    let level = if result == "success" { "INFO" } else { "ERROR" };
+    let record = format!(
+        "{} [{level}] [network] doh_enabled={} host_class={} resolver={} attempt={} dns_duration_ms={} doh_bootstrap={} result={} error_class={}\n",
+        chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
+        doh_enabled,
+        host_class,
+        resolver,
+        attempt,
+        dns_duration_ms,
+        doh_bootstrap,
+        result,
+        error_class,
+    );
+    write_record(&record);
+}
+
 pub(crate) fn device(record: &str) {
     // The caller supplies only records constructed from data-free enums and
     // static allowlists; never pass an arbitrary formatted application error.
@@ -78,9 +105,16 @@ fn write_record(record: &str) {
 mod tests {
     use super::*;
     use chrono::Timelike;
+    use std::sync::{Mutex, OnceLock};
+
+    fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     #[test]
     fn all_runtime_log_headers_use_system_local_seconds_with_an_explicit_offset() {
+        let _lock = test_lock();
         let root = tempfile::tempdir().unwrap();
         configure(root.path());
         let before = chrono::Local::now();
@@ -116,5 +150,29 @@ mod tests {
             assert!(parsed.timestamp() >= before.timestamp());
             assert!(parsed.timestamp() <= after.timestamp());
         }
+    }
+
+    #[test]
+    fn doh_records_use_fixed_fields_without_hostnames_or_remote_text() {
+        let _lock = test_lock();
+        let root = tempfile::tempdir().unwrap();
+        configure(root.path());
+        doh_resolution(
+            true,
+            "nxapi",
+            "cloudflare_doh",
+            2,
+            17,
+            "bootstrap_ip",
+            "failure",
+            "dns_payload_invalid",
+        );
+        let contents = std::fs::read_to_string(root.path().join("logs/rust_core.log")).unwrap();
+        *OUTPUT.get().unwrap().lock().unwrap() = None;
+        assert!(contents.contains(
+            "doh_enabled=true host_class=nxapi resolver=cloudflare_doh attempt=2 dns_duration_ms=17 doh_bootstrap=bootstrap_ip result=failure error_class=dns_payload_invalid"
+        ));
+        assert!(!contents.contains("cloudflare-dns.com"));
+        assert!(!contents.contains("private"));
     }
 }

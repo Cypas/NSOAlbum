@@ -310,12 +310,14 @@ class VideoPreview extends StatefulWidget {
     this.controls = AdaptiveVideoControls,
     this.error,
     this.showLoadingIndicator = true,
+    this.fill = const Color(0xFF000000),
   });
   final VideoController controller;
   final MediaAsset cover;
   final VideoControlsBuilder? controls;
   final Object? error;
   final bool showLoadingIndicator;
+  final Color fill;
 
   @override
   State<VideoPreview> createState() => _VideoPreviewState();
@@ -373,6 +375,7 @@ class _VideoPreviewState extends State<VideoPreview> {
   Widget build(BuildContext context) => Video(
     key: ObjectKey(widget.controller),
     controller: widget.controller,
+    fill: widget.fill,
     fit: BoxFit.contain,
     controls: (state) => VideoFirstFrameCover(
       identity: (widget.controller, widget.cover.sha256),

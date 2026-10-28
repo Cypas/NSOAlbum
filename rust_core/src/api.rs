@@ -33,7 +33,14 @@ pub struct CoreApi {
     disable_app_proxy: AtomicBool,
     import_progress: Mutex<ImportProgressStore>,
     account_tools: crate::nso::account_tools::AccountTools,
-    transport_pool: Mutex<Option<(Option<String>, HttpTransport, HttpTransport)>>,
+    transport_pool: Mutex<Option<TransportPoolEntry>>,
+}
+
+struct TransportPoolEntry {
+    proxy_url: Option<String>,
+    doh_enabled: bool,
+    normal: HttpTransport,
+    strict: HttpTransport,
 }
 
 #[derive(Default)]
@@ -118,10 +125,14 @@ impl CoreApi {
         let previous_proxy = self
             .database
             .get_setting::<AppSettings>("app.settings")?
-            .and_then(|previous| previous.proxy_url);
+            .map(|previous| (previous.proxy_url, previous.doh_enabled));
         self.database.set_setting("app.settings", settings)?;
-        if previous_proxy != settings.proxy_url {
+        if previous_proxy != Some((settings.proxy_url.clone(), settings.doh_enabled)) {
             self.account_tools.invalidate_network_context()?;
+            self.transport_pool
+                .lock()
+                .map_err(|_| CoreError::LibraryLockUnavailable)?
+                .take();
         }
         Ok(())
     }
@@ -505,7 +516,10 @@ impl CoreApi {
     ) -> CoreResult<crate::nso::account_tools::ToolResponse> {
         let _writing = self.database.write_lease()?;
         let proxy = self.resolve_proxy_url(proxy_url)?;
-        let transport = self.transport_pair(proxy.clone())?.1;
+        let doh_enabled = self
+            .load_settings()?
+            .is_some_and(|settings| settings.doh_enabled);
+        let transport = self.transport_pair(proxy.clone(), doh_enabled)?.1;
         self.account_tools
             .execute(
                 &account_id,
@@ -1320,37 +1334,55 @@ impl CoreApi {
     }
 
     fn transport(&self, explicit_proxy: Option<String>) -> CoreResult<HttpTransport> {
-        let proxy_url = self.resolve_proxy_url(explicit_proxy)?;
-        self.transport_with_resolved_proxy(proxy_url)
+        let (proxy_url, doh_enabled) = self.resolve_transport_policy(explicit_proxy)?;
+        self.transport_with_resolved_policy(proxy_url, doh_enabled)
     }
 
     fn transport_with_resolved_proxy(
         &self,
         proxy_url: Option<String>,
     ) -> CoreResult<HttpTransport> {
-        Ok(self.transport_pair(proxy_url)?.0)
+        let doh_enabled = self
+            .load_settings()?
+            .is_some_and(|settings| settings.doh_enabled);
+        Ok(self.transport_pair(proxy_url, doh_enabled)?.0)
     }
 
     fn transport_pair(
         &self,
         proxy_url: Option<String>,
+        doh_enabled: bool,
     ) -> CoreResult<(HttpTransport, HttpTransport)> {
         let mut pool = self
             .transport_pool
             .lock()
             .map_err(|_| CoreError::LibraryLockUnavailable)?;
-        if let Some((policy, normal, strict)) = pool.as_ref() {
-            if policy == &proxy_url {
-                return Ok((normal.clone(), strict.clone()));
+        if let Some(entry) = pool.as_ref() {
+            if entry.proxy_url == proxy_url && entry.doh_enabled == doh_enabled {
+                return Ok((entry.normal.clone(), entry.strict.clone()));
             }
         }
         let normal = HttpTransport::new(TransportConfig {
             proxy_url: proxy_url.clone(),
+            doh_enabled,
             ..TransportConfig::default()
         })?;
         let strict = normal.without_redirects()?;
-        *pool = Some((proxy_url, normal.clone(), strict.clone()));
+        *pool = Some(TransportPoolEntry {
+            proxy_url,
+            doh_enabled,
+            normal: normal.clone(),
+            strict: strict.clone(),
+        });
         Ok((normal, strict))
+    }
+
+    fn transport_with_resolved_policy(
+        &self,
+        proxy_url: Option<String>,
+        doh_enabled: bool,
+    ) -> CoreResult<HttpTransport> {
+        Ok(self.transport_pair(proxy_url, doh_enabled)?.0)
     }
 
     fn resolve_proxy_url(&self, explicit_proxy: Option<String>) -> CoreResult<Option<String>> {
@@ -1361,6 +1393,19 @@ impl CoreApi {
             .load_settings()?
             .and_then(|settings| settings.proxy_url);
         Ok(explicit_proxy.or(settings_proxy))
+    }
+
+    fn resolve_transport_policy(
+        &self,
+        explicit_proxy: Option<String>,
+    ) -> CoreResult<(Option<String>, bool)> {
+        let settings = self.load_settings()?;
+        let proxy_url = if self.disable_app_proxy.load(Ordering::SeqCst) {
+            None
+        } else {
+            explicit_proxy.or_else(|| settings.as_ref().and_then(|value| value.proxy_url.clone()))
+        };
+        Ok((proxy_url, settings.is_some_and(|value| value.doh_enabled)))
     }
 
     fn media_root(&self) -> CoreResult<PathBuf> {
@@ -1797,6 +1842,7 @@ mod tests {
         let api = CoreApi::open(library.path()).unwrap();
         let settings = AppSettings {
             proxy_url: None,
+            doh_enabled: false,
             library_path: library.path().to_string_lossy().into_owned(),
             theme: "ocean".into(),
             language: "en".into(),
@@ -1855,6 +1901,7 @@ mod tests {
         let api = CoreApi::open(library.path()).unwrap();
         let mut settings = AppSettings {
             proxy_url: None,
+            doh_enabled: false,
             library_path: library.path().to_string_lossy().into_owned(),
             theme: "ocean".into(),
             language: "zh".into(),
@@ -1890,6 +1937,7 @@ mod tests {
         let api = CoreApi::open(library.path()).unwrap();
         let settings = AppSettings {
             proxy_url: Some("http://127.0.0.1:8080".into()),
+            doh_enabled: false,
             library_path: library.path().to_string_lossy().into_owned(),
             theme: "ocean".into(),
             language: "zh".into(),
@@ -2037,6 +2085,7 @@ mod tests {
         let changed_proxy = RouteProbe::new(503);
         let settings_after_auth = AppSettings {
             proxy_url: Some(changed_proxy.url.clone()),
+            doh_enabled: false,
             library_path: library.path().to_string_lossy().into_owned(),
             theme: "ocean".into(),
             language: "en".into(),
@@ -2410,6 +2459,7 @@ mod tests {
         let api = CoreApi::open(library.path()).unwrap();
         api.save_settings(&AppSettings {
             proxy_url: None,
+            doh_enabled: false,
             library_path: library.path().to_string_lossy().into_owned(),
             theme: "ocean".into(),
             language: "en".into(),
@@ -2649,6 +2699,7 @@ mod tests {
         let before = api.list_media(GalleryQuery::default()).unwrap()[0].clone();
         let settings = AppSettings {
             proxy_url: None,
+            doh_enabled: false,
             library_path: destination.path().to_string_lossy().into_owned(),
             theme: "ocean".into(),
             language: "zh".into(),
@@ -2723,6 +2774,7 @@ mod tests {
         let api = CoreApi::open(library.path()).unwrap();
         api.save_settings(&AppSettings {
             proxy_url: None,
+            doh_enabled: false,
             library_path: library.path().to_string_lossy().into_owned(),
             theme: "ocean".into(),
             language: "zh".into(),

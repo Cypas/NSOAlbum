@@ -5,6 +5,7 @@ import 'dart:io';
 import 'src/ui/platform_ui.dart';
 import 'src/ui/android/android_shell.dart';
 import 'src/ui/android/android_theme.dart';
+import 'src/ui/app_brand_title.dart';
 
 import 'dart:ui';
 
@@ -389,20 +390,13 @@ class _DesktopTitleBarState extends State<DesktopTitleBar> with WindowListener {
                       ),
                     ),
                     const SizedBox(width: 9),
-                    Text(
-                      widget.title,
-                      key: const Key('desktop-titlebar-title'),
-                      style: TextStyle(
-                        fontFamily: widget.title == appChineseName
-                            ? appBrandFontFamily
-                            : appFontFamily,
-                        fontFamilyFallback: widget.title == appChineseName
-                            ? appBrandFontFallback
-                            : appFontFallback,
-                        color: scheme.onSurface,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
+                    AppBrandTitle(
+                      text: widget.title,
+                      textKey: const Key('desktop-titlebar-title'),
+                      underlineKey: const Key(
+                        'desktop-titlebar-brand-underline',
                       ),
+                      color: scheme.onSurface,
                     ),
                     const Spacer(),
                   ],
@@ -1070,6 +1064,7 @@ AppSettings _settingsWithCloseBehavior(
   String closeBehavior,
 ) => AppSettings(
   proxyUrl: value.proxyUrl,
+  dohEnabled: value.dohEnabled,
   libraryPath: value.libraryPath,
   theme: value.theme,
   language: value.language,

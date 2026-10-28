@@ -564,6 +564,7 @@ class _RustBoundary with NoPendingStartupBoundary implements RustLibApi {
 
   @override
   Future<AppSettings?> crateBridgeLoadSettings() async => const AppSettings(
+    dohEnabled: false,
     libraryPath: 'synthetic-library',
     theme: 'ocean',
     language: 'en',

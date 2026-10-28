@@ -318,6 +318,7 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
       await widget.backend.saveSettings(
         AppSettings(
           proxyUrl: previous.proxyUrl,
+          dohEnabled: previous.dohEnabled,
           libraryPath: previous.libraryPath,
           theme: previous.theme,
           language: 'en',

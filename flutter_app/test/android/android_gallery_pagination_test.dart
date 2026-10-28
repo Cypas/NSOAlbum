@@ -147,6 +147,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('android-detail-toggle')));
+    await tester.pumpAndSettle();
     expect(
       tester
           .widget<Text>(find.byKey(const Key('android-detail-filename')))

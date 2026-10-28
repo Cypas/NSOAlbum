@@ -1876,6 +1876,7 @@ mod tests {
         link_directory(target, &alias);
         let settings = crate::settings::AppSettings {
             proxy_url: None,
+            doh_enabled: false,
             library_path: alias.to_string_lossy().into_owned(),
             theme: "ocean".into(),
             language: "en".into(),
@@ -2330,6 +2331,7 @@ mod tests {
         let (root, database, source, target, plan) = fixture();
         let settings = crate::settings::AppSettings {
             proxy_url: None,
+            doh_enabled: false,
             library_path: other.path().to_string_lossy().into_owned(),
             theme: "ocean".into(),
             language: "en".into(),

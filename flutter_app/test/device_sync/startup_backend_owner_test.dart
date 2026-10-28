@@ -98,6 +98,7 @@ class _Native with NoPendingStartupBoundary implements RustLibApi {
   }) async {}
   @override
   Future<AppSettings?> crateBridgeLoadSettings() async => const AppSettings(
+    dohEnabled: false,
     libraryPath: 'synthetic-existing-media-root',
     theme: 'ocean',
     language: 'en',

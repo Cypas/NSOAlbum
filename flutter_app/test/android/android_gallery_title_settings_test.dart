@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/main.dart';
 import 'package:squid_album/src/app_branding.dart';
+import 'package:squid_album/src/ui/app_brand_title.dart';
+import 'package:squid_album/src/ui/font_families.dart';
 import 'package:squid_album/src/ui/platform_ui.dart';
 
 import '../home_shell_test.dart' show FakeBackend;
@@ -21,7 +23,7 @@ void main() {
   }
 
   testWidgets(
-    'Android root gallery brand title has inset and desktop-style yellow underline',
+    'Android root gallery brand title uses the shared desktop title style',
     (tester) async {
       await pumpApp(tester);
 
@@ -31,15 +33,31 @@ void main() {
       final appBarRect = tester.getRect(find.byType(AppBar).first);
       expect(titleRect.left, greaterThan(appBarRect.left + 8));
 
+      expect(find.byType(AppBrandTitle), findsOneWidget);
       final underline = find.byKey(
         const Key('android-library-brand-underline'),
       );
       expect(underline, findsOneWidget);
-      final decoration = tester.widget<DecoratedBox>(underline).decoration;
-      expect(decoration, isA<BoxDecoration>());
-      final box = decoration as BoxDecoration;
-      expect(box.color, const Color(0xffffc107));
-      expect(tester.getRect(underline).width, greaterThan(0));
+      expect(tester.getSize(underline), const Size(40, 3));
+      expect(
+        tester.widget<DecoratedBox>(underline).decoration,
+        isA<BoxDecoration>()
+            .having(
+              (decoration) => decoration.color,
+              'color',
+              const Color(0xffffc107),
+            )
+            .having(
+              (decoration) => decoration.borderRadius,
+              'borderRadius',
+              BorderRadius.circular(2),
+            ),
+      );
+      final style = tester.widget<Text>(title).style;
+      expect(style?.fontSize, 14);
+      expect(style?.fontWeight, FontWeight.w700);
+      expect(style?.fontFamily, appBrandFontFamily);
+      expect(style?.fontFamilyFallback, appBrandFontFallback);
       expect(find.text(appChineseName), findsOneWidget);
     },
     variant: TargetPlatformVariant({TargetPlatform.android}),

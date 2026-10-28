@@ -70,11 +70,7 @@ void main() {
         await tester.tapAt(tester.getTopLeft(card) + const Offset(24, 24));
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
-        await tester.tap(find.byTooltip(language == 'zh' ? '更多' : 'More'));
-        await tester.pumpAndSettle();
-        await tester.tap(
-          find.text(language == 'zh' ? '编辑标签与备注' : 'Edit tags and note'),
-        );
+        await tester.tap(find.byKey(const Key('android-detail-edit')));
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());

@@ -5215,26 +5215,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   AppSettings dco_decode_app_settings(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 17)
-      throw Exception('unexpected arr length: expect 17 but see ${arr.length}');
+    if (arr.length != 18)
+      throw Exception('unexpected arr length: expect 18 but see ${arr.length}');
     return AppSettings(
       proxyUrl: dco_decode_opt_String(arr[0]),
-      libraryPath: dco_decode_String(arr[1]),
-      theme: dco_decode_String(arr[2]),
-      language: dco_decode_String(arr[3]),
-      galleryColumns: dco_decode_u_8(arr[4]),
-      galleryRows: dco_decode_u_8(arr[5]),
-      showNotePreview: dco_decode_bool(arr[6]),
-      showGameTag: dco_decode_bool(arr[7]),
-      compactTagDisplay: dco_decode_bool(arr[8]),
-      autoPlayVideo: dco_decode_bool(arr[9]),
-      autoSyncOnLaunch: dco_decode_bool(arr[10]),
-      notifyOnAutoSync: dco_decode_bool(arr[11]),
-      showSplatoonSchedule: dco_decode_bool(arr[12]),
-      showSplatoonFriendActivity: dco_decode_bool(arr[13]),
-      closeBehavior: dco_decode_String(arr[14]),
-      customFontPaths: dco_decode_list_String(arr[15]),
-      syncPolicy: dco_decode_sync_policy(arr[16]),
+      dohEnabled: dco_decode_bool(arr[1]),
+      libraryPath: dco_decode_String(arr[2]),
+      theme: dco_decode_String(arr[3]),
+      language: dco_decode_String(arr[4]),
+      galleryColumns: dco_decode_u_8(arr[5]),
+      galleryRows: dco_decode_u_8(arr[6]),
+      showNotePreview: dco_decode_bool(arr[7]),
+      showGameTag: dco_decode_bool(arr[8]),
+      compactTagDisplay: dco_decode_bool(arr[9]),
+      autoPlayVideo: dco_decode_bool(arr[10]),
+      autoSyncOnLaunch: dco_decode_bool(arr[11]),
+      notifyOnAutoSync: dco_decode_bool(arr[12]),
+      showSplatoonSchedule: dco_decode_bool(arr[13]),
+      showSplatoonFriendActivity: dco_decode_bool(arr[14]),
+      closeBehavior: dco_decode_String(arr[15]),
+      customFontPaths: dco_decode_list_String(arr[16]),
+      syncPolicy: dco_decode_sync_policy(arr[17]),
     );
   }
 
@@ -7058,6 +7059,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   AppSettings sse_decode_app_settings(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_proxyUrl = sse_decode_opt_String(deserializer);
+    var var_dohEnabled = sse_decode_bool(deserializer);
     var var_libraryPath = sse_decode_String(deserializer);
     var var_theme = sse_decode_String(deserializer);
     var var_language = sse_decode_String(deserializer);
@@ -7076,6 +7078,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_syncPolicy = sse_decode_sync_policy(deserializer);
     return AppSettings(
       proxyUrl: var_proxyUrl,
+      dohEnabled: var_dohEnabled,
       libraryPath: var_libraryPath,
       theme: var_theme,
       language: var_language,
@@ -9440,6 +9443,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_app_settings(AppSettings self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_opt_String(self.proxyUrl, serializer);
+    sse_encode_bool(self.dohEnabled, serializer);
     sse_encode_String(self.libraryPath, serializer);
     sse_encode_String(self.theme, serializer);
     sse_encode_String(self.language, serializer);

@@ -48,7 +48,9 @@ void main() {
     );
   });
 
-  testWidgets('Chinese brand title uses one complete CJK family', (tester) async {
+  testWidgets('Chinese brand title uses one complete CJK family', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       MaterialApp(
         theme: ThemeData(
@@ -67,5 +69,9 @@ void main() {
     );
     expect(title.style?.fontFamily, 'DFP_GBZY9');
     expect(title.style?.fontFamilyFallback, ['DFPT_ZY9', 'BlitzMain']);
+    expect(
+      tester.getSize(find.byKey(const Key('desktop-titlebar-brand-underline'))),
+      const Size(40, 3),
+    );
   });
 }

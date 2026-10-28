@@ -44,6 +44,7 @@ void main() {
         await native.initCore(libraryRoot: root.path);
         await native.saveSettings(
           settings: AppSettings(
+            dohEnabled: false,
             libraryPath: '${root.path}/media',
             theme: 'ocean',
             language: 'en',

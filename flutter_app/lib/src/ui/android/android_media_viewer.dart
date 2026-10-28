@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -14,6 +15,7 @@ import '../../state/media_window_controller.dart';
 import '../../platform/android_media_share.dart';
 import '../../platform/android_media_clipboard.dart';
 import 'android_media_album_actions.dart';
+import 'android_media_card.dart';
 import '../video_preview_prefetch.dart';
 import '../video_thumbnail.dart';
 import '../video_preview.dart';
@@ -24,6 +26,14 @@ import 'android_metadata_editor.dart';
 import 'android_page_frame.dart';
 import 'android_video_editor.dart';
 import 'android_video_surface.dart';
+
+enum AndroidViewerMoreAction { copyToAlbum, moveToAlbum, captureFrame }
+
+List<AndroidViewerMoreAction> androidViewerMoreActionsFor(MediaKind kind) => [
+  AndroidViewerMoreAction.copyToAlbum,
+  AndroidViewerMoreAction.moveToAlbum,
+  if (kind == MediaKind.video) AndroidViewerMoreAction.captureFrame,
+];
 
 class AndroidMediaViewer extends StatefulWidget {
   const AndroidMediaViewer({
@@ -53,18 +63,21 @@ class AndroidMediaViewer extends StatefulWidget {
 
 class _AndroidViewerActionBar extends StatelessWidget {
   const _AndroidViewerActionBar({
+    super.key,
     required this.item,
     required this.busy,
+    required this.onFavorite,
+    required this.onEdit,
     required this.onTrim,
     required this.onShare,
-    required this.onImmersive,
     required this.onMore,
   });
   final MediaAsset item;
   final bool busy;
+  final VoidCallback onFavorite;
+  final VoidCallback onEdit;
   final VoidCallback? onTrim;
   final VoidCallback onShare;
-  final VoidCallback? onImmersive;
   final VoidCallback onMore;
 
   @override
@@ -72,38 +85,259 @@ class _AndroidViewerActionBar extends StatelessWidget {
     color: Theme.of(context).colorScheme.surface,
     child: SafeArea(
       top: false,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          if (item.kind == MediaKind.video)
-            TextButton.icon(
-              onPressed: busy ? null : onTrim,
-              icon: const Icon(Icons.content_cut),
-              label: Text(context.l10n.select(zh: '剪辑', en: 'Trim')),
+      child: Container(
+        height: 64,
+        margin: const EdgeInsets.fromLTRB(8, 0, 8, 3),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: Theme.of(context).colorScheme.shadow
+                  .withValues(alpha: .12),
+              blurRadius: 12,
+              offset: const Offset(0, 3),
             ),
-          TextButton.icon(
-            onPressed: busy ? null : onShare,
-            icon: const Icon(Icons.share_outlined),
-            label: Text(context.l10n.select(zh: '分享', en: 'Share')),
-          ),
-          if (onImmersive != null)
-            IconButton(
-              tooltip: context.l10n.select(
-                zh: '应用内全屏',
-                en: 'In-app fullscreen',
+          ],
+        ),
+        child: Row(
+          children: [
+            _AndroidDockAction(
+              key: const Key('android-detail-favorite'),
+              label: context.l10n.select(zh: '收藏', en: 'Favorite'),
+              icon: item.favorite ? Icons.favorite : Icons.favorite_border,
+              color: item.favorite ? Colors.redAccent : null,
+              enabled: !busy,
+              onPressed: onFavorite,
+            ),
+            _AndroidDockAction(
+              key: const Key('android-detail-edit'),
+              label: context.l10n.select(zh: '编辑', en: 'Edit'),
+              icon: Icons.edit_outlined,
+              enabled: !busy,
+              onPressed: onEdit,
+            ),
+            if (item.kind == MediaKind.video)
+              _AndroidDockAction(
+                key: const Key('android-detail-trim'),
+                label: context.l10n.select(zh: '剪辑', en: 'Trim'),
+                icon: Icons.content_cut,
+                enabled: !busy,
+                onPressed: onTrim,
               ),
-              onPressed: busy ? null : onImmersive,
-              icon: const Icon(Icons.fit_screen_outlined),
+            _AndroidDockAction(
+              key: const Key('android-detail-share'),
+              label: context.l10n.select(zh: '分享', en: 'Share'),
+              icon: Icons.share_outlined,
+              enabled: !busy,
+              onPressed: onShare,
             ),
-          IconButton(
-            tooltip: context.l10n.select(zh: '更多', en: 'More'),
-            onPressed: busy ? null : onMore,
-            icon: const Icon(Icons.more_horiz),
-          ),
-        ],
+            _AndroidDockAction(
+              key: const Key('android-detail-more'),
+              label: context.l10n.select(zh: '更多', en: 'More'),
+              icon: Icons.more_horiz,
+              enabled: !busy,
+              onPressed: onMore,
+            ),
+          ],
+        ),
       ),
     ),
   );
+}
+
+class _AndroidDockAction extends StatelessWidget {
+  const _AndroidDockAction({
+    super.key,
+    required this.label,
+    required this.icon,
+    required this.enabled,
+    required this.onPressed,
+    this.color,
+  });
+  final String label;
+  final IconData icon;
+  final bool enabled;
+  final VoidCallback? onPressed;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) => Expanded(
+    child: Semantics(
+      button: true,
+      label: label,
+      enabled: enabled,
+      child: InkWell(
+        onTap: enabled ? onPressed : null,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 5),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 19, color: color),
+              const SizedBox(height: 2),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  fontSize: 9,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+class _AndroidMediaFilmstrip extends StatelessWidget {
+  const _AndroidMediaFilmstrip({
+    required this.items,
+    required this.currentIndex,
+    required this.onSelected,
+  });
+  final List<MediaAsset> items;
+  final int currentIndex;
+  final ValueChanged<int> onSelected;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    key: const Key('android-detail-filmstrip'),
+    height: 56,
+    child: ListView.separated(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      scrollDirection: Axis.horizontal,
+      itemCount: items.length,
+      separatorBuilder: (_, _) => const SizedBox(width: 8),
+      itemBuilder: (context, index) {
+        final item = items[index];
+        return InkWell(
+          onTap: () => onSelected(index),
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            width: 64,
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: index == currentIndex
+                    ? Theme.of(context).colorScheme.primary
+                    : Colors.transparent,
+                width: 2,
+              ),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: AndroidMediaThumbnail(asset: item),
+            ),
+          ),
+        );
+      },
+    ),
+  );
+}
+
+class _AndroidViewerMoreMenu extends StatelessWidget {
+  const _AndroidViewerMoreMenu({
+    required this.item,
+    required this.busy,
+    required this.onAction,
+  });
+
+  final MediaAsset item;
+  final bool busy;
+  final ValueChanged<AndroidViewerMoreAction> onAction;
+
+  String _label(BuildContext context, AndroidViewerMoreAction action) =>
+      switch (action) {
+        AndroidViewerMoreAction.copyToAlbum => context.l10n.select(
+          zh: '复制到相册',
+          en: 'Copy to album',
+        ),
+        AndroidViewerMoreAction.moveToAlbum => context.l10n.select(
+          zh: '移动到相册',
+          en: 'Move to album',
+        ),
+        AndroidViewerMoreAction.captureFrame => context.l10n.select(
+          zh: '截取当前帧',
+          en: 'Capture current frame',
+        ),
+      };
+
+  IconData _icon(AndroidViewerMoreAction action) => switch (action) {
+    AndroidViewerMoreAction.copyToAlbum =>
+      Icons.control_point_duplicate_outlined,
+    AndroidViewerMoreAction.moveToAlbum => Icons.drive_file_move_outlined,
+    AndroidViewerMoreAction.captureFrame => Icons.screenshot,
+  };
+
+  double _width(BuildContext context, List<AndroidViewerMoreAction> actions) {
+    final style = Theme.of(context).textTheme.bodyMedium;
+    final scaler = MediaQuery.textScalerOf(context);
+    var widest = 0.0;
+    for (final action in actions) {
+      final painter = TextPainter(
+        text: TextSpan(text: _label(context, action), style: style),
+        maxLines: 2,
+        textDirection: Directionality.of(context),
+        textScaler: scaler,
+      )..layout(maxWidth: 160);
+      widest = math.max(widest, painter.width);
+    }
+    return (widest + 68).clamp(184.0, 232.0);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final actions = androidViewerMoreActionsFor(item.kind);
+    return SizedBox(
+      key: const Key('android-detail-more-menu'),
+      width: _width(context, actions),
+      child: Material(
+        elevation: 8,
+        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(20),
+        clipBehavior: Clip.antiAlias,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final action in actions)
+                ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: 48),
+                  child: InkWell(
+                    key: ValueKey('android-detail-more-${action.name}'),
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: busy ? null : () => onAction(action),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Row(
+                        children: [
+                          Icon(_icon(action), size: 22),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              _label(context, action),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _AndroidMediaViewerState extends State<AndroidMediaViewer>
@@ -129,7 +363,12 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
   final tagInput = TextEditingController();
   final noteInput = TextEditingController();
   bool addingTag = false, editingNote = false;
-  bool detailsOpen = false, immersiveVideo = false;
+  bool detailsOpen = false, immersiveMedia = false, moreOpen = false;
+  bool captureFeedback = false;
+  bool preserveImmersivePadding = false;
+  int systemUiRequest = 0;
+  EdgeInsets immersiveSystemPadding = EdgeInsets.zero;
+  Uint8List? capturedFrame;
   MediaDetails? currentDetails;
   bool get dirty =>
       editingNote || (addingTag && tagInput.text.trim().isNotEmpty);
@@ -199,7 +438,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
 
   @override
   void dispose() {
-    if (immersiveVideo) {
+    if (immersiveMedia) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
     prefetch.dispose();
@@ -218,6 +457,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
     MediaAsset item, {
     List<String>? tags,
     String? note,
+    bool? favorite,
   }) => MediaAsset(
     id: item.id,
     sha256: item.sha256,
@@ -228,7 +468,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
     importedAt: item.importedAt,
     gameTitleId: item.gameTitleId,
     gameName: item.gameName,
-    favorite: item.favorite,
+    favorite: favorite ?? item.favorite,
     note: note ?? item.note,
     tags: tags ?? item.tags,
   );
@@ -281,6 +521,23 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
     }
   }
 
+  Future<void> toggleFavorite() async {
+    if (busy || switching) return;
+    final item = items[index];
+    final next = !item.favorite;
+    setState(() => busy = true);
+    try {
+      await widget.backend.setFavorite(item.id, next);
+      if (mounted) {
+        setState(() => items[index] = withMetadata(item, favorite: next));
+      }
+    } catch (error) {
+      if (mounted) androidMessage(context, error);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
   Future<void> navigate(int delta) async {
     var next = index + delta;
     if (next < 0 || next >= items.length) {
@@ -308,6 +565,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
         player = null;
         index = next;
         controlsVisible = true;
+        moreOpen = false;
         addingTag = false;
         editingNote = false;
         tagInput.clear();
@@ -435,7 +693,10 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
 
   Future<void> openDetails() async {
     if (busy || switching) return;
+    if (immersiveMedia) await _setImmersive(false);
+    if (!mounted || detailsOpen) return;
     final id = items[index].id;
+    setState(() => moreOpen = false);
     try {
       final details = await widget.backend.loadMediaDetails(id);
       if (!mounted || items[index].id != id) return;
@@ -445,7 +706,16 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
         controlsVisible = true;
       });
     } catch (error) {
-      if (mounted) androidMessage(context, error);
+      if (mounted && items[index].id == id) {
+        // The local media record still contains the user-facing metadata.
+        // Keep the details surface usable when the optional detail lookup
+        // cannot read a path or native media property.
+        setState(() {
+          currentDetails = null;
+          detailsOpen = true;
+          controlsVisible = true;
+        });
+      }
     }
   }
 
@@ -453,14 +723,37 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
     if (mounted) setState(() => detailsOpen = false);
   }
 
-  Future<void> toggleImmersive() async {
-    if (items[index].kind != MediaKind.video) return;
-    final next = !immersiveVideo;
-    setState(() => immersiveVideo = next);
-    await SystemChrome.setEnabledSystemUIMode(
-      next ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
-    );
+  Future<void> _setImmersive(bool value) async {
+    if (!mounted || detailsOpen || immersiveMedia == value) {
+      return;
+    }
+    final request = ++systemUiRequest;
+    if (value) {
+      final padding = preserveImmersivePadding
+          ? immersiveSystemPadding
+          : MediaQuery.paddingOf(context);
+      setState(() {
+        immersiveSystemPadding = padding;
+        preserveImmersivePadding = true;
+        immersiveMedia = true;
+        moreOpen = false;
+        controlsVisible = true;
+      });
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+      return;
+    }
+    setState(() {
+      immersiveMedia = false;
+      controlsVisible = true;
+    });
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    await WidgetsBinding.instance.endOfFrame;
+    if (mounted && request == systemUiRequest) {
+      setState(() => preserveImmersivePadding = false);
+    }
   }
+
+  Future<void> toggleImmersive() => _setImmersive(!immersiveMedia);
 
   Future<void> copyToClipboard() async {
     if (items[index].kind != MediaKind.image || busy) return;
@@ -499,97 +792,24 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
     }
   }
 
-  Future<void> showMoreActions() async {
-    if (busy || switching || detailsOpen) return;
-    final item = items[index];
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      builder: (sheetContext) => SafeArea(
-        child: Wrap(
-          children: [
-            ListTile(
-              leading: const Icon(Icons.subject_outlined),
-              title: Text(
-                context.l10n.select(zh: '查看媒体详情', en: 'View media details'),
-              ),
-              onTap: () => Navigator.pop(sheetContext, 'details'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.edit_outlined),
-              title: Text(
-                context.l10n.select(zh: '编辑标签与备注', en: 'Edit tags and note'),
-              ),
-              onTap: () => Navigator.pop(sheetContext, 'edit'),
-            ),
-            if (item.kind == MediaKind.image)
-              ListTile(
-                leading: const Icon(Icons.content_copy),
-                title: Text(
-                  context.l10n.select(zh: '复制到剪贴板', en: 'Copy to clipboard'),
-                ),
-                onTap: () => Navigator.pop(sheetContext, 'clipboard'),
-              ),
-            ListTile(
-              leading: const Icon(Icons.control_point_duplicate_outlined),
-              title: Text(
-                context.l10n.select(zh: '复制到相册', en: 'Copy to album'),
-              ),
-              onTap: () => Navigator.pop(sheetContext, 'copy-album'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.drive_file_move_outlined),
-              title: Text(
-                context.l10n.select(zh: '移动到相册', en: 'Move to album'),
-              ),
-              onTap: () => Navigator.pop(sheetContext, 'move-album'),
-            ),
-            if (item.kind == MediaKind.video)
-              ListTile(
-                leading: const Icon(Icons.screenshot),
-                title: Text(
-                  context.l10n.select(zh: '截取当前帧', en: 'Capture current frame'),
-                ),
-                onTap: () => Navigator.pop(sheetContext, 'capture'),
-              ),
-            if (item.kind == MediaKind.video)
-              ListTile(
-                leading: const Icon(Icons.content_cut),
-                title: Text(context.l10n.select(zh: '剪辑视频', en: 'Trim video')),
-                onTap: () => Navigator.pop(sheetContext, 'trim'),
-              ),
-            if (window?.error != null)
-              ListTile(
-                leading: const Icon(Icons.refresh),
-                title: Text(
-                  context.l10n.select(
-                    zh: '重试加载相邻媒体',
-                    en: 'Retry adjacent media',
-                  ),
-                ),
-                onTap: () => Navigator.pop(sheetContext, 'retry-window'),
-              ),
-          ],
-        ),
-      ),
-    );
-    if (!mounted || action == null) return;
+  void toggleMoreActions() {
+    if (busy || switching || detailsOpen || immersiveMedia) return;
+    setState(() => moreOpen = !moreOpen);
+  }
+
+  void closeMoreActions() {
+    if (moreOpen && mounted) setState(() => moreOpen = false);
+  }
+
+  Future<void> runMoreAction(AndroidViewerMoreAction action) async {
+    closeMoreActions();
     switch (action) {
-      case 'details':
-        openDetails();
-      case 'clipboard':
-        copyToClipboard();
-      case 'copy-album':
-        albumAction(move: false);
-      case 'move-album':
-        albumAction(move: true);
-      case 'capture':
-        frame();
-      case 'edit':
-        edit();
-      case 'trim':
-        trim();
-      case 'retry-window':
-        _extendWindow();
+      case AndroidViewerMoreAction.copyToAlbum:
+        await albumAction(move: false);
+      case AndroidViewerMoreAction.moveToAlbum:
+        await albumAction(move: true);
+      case AndroidViewerMoreAction.captureFrame:
+        await frame();
     }
   }
 
@@ -609,10 +829,19 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
         await editor.dispose();
       }
       if (mounted) {
+        setState(() {
+          capturedFrame = bytes;
+          captureFeedback = true;
+        });
         androidMessage(
           context,
           context.l10n.select(zh: '帧图已保存', en: 'Frame saved'),
           isError: false,
+        );
+        unawaited(
+          Future<void>.delayed(const Duration(milliseconds: 900), () {
+            if (mounted) setState(() => captureFeedback = false);
+          }),
         );
       }
     } catch (error) {
@@ -670,14 +899,16 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
     },
     child: Semantics(
       button: true,
-      label: controlsVisible
-          ? context.l10n.select(zh: '隐藏操作栏', en: 'Hide controls')
-          : context.l10n.select(zh: '显示操作栏', en: 'Show controls'),
+      label: immersiveMedia
+          ? context.l10n.select(zh: '显示操作栏', en: 'Show controls')
+          : context.l10n.select(zh: '隐藏操作栏', en: 'Hide controls'),
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: dirty
+        onTap: dirty || detailsOpen
             ? null
-            : () => setState(() => controlsVisible = !controlsVisible),
+            : moreOpen
+            ? closeMoreActions
+            : toggleImmersive,
         child: InteractiveViewer(
           key: ValueKey(item.sha256),
           transformationController: item.id == items[index].id
@@ -706,9 +937,12 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
 
   Widget _media(MediaAsset item) {
     final settings = widget.settings ?? widget.backend.settings;
+    final canvasColor = immersiveMedia
+        ? Colors.black
+        : Theme.of(context).colorScheme.surface;
     return ColoredBox(
       key: ValueKey(('android-media-page', item.id, item.sha256)),
-      color: Theme.of(context).colorScheme.surfaceContainerLow,
+      color: canvasColor,
       child: item.kind == MediaKind.image
           ? _picture(item)
           : KeyedSubtree(
@@ -720,7 +954,12 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
                 active: item.id == items[index].id,
                 prewarm: item.id != items[index].id,
                 autoPlay: widget.autoPlay ?? settings.autoPlayVideo,
-                immersive: immersiveVideo,
+                immersive: immersiveMedia,
+                hideControls: detailsOpen,
+                fillColor: canvasColor,
+                onMediaTap: item.id == items[index].id && !detailsOpen
+                    ? (moreOpen ? closeMoreActions : toggleImmersive)
+                    : null,
                 onReady: (value) {
                   if (mounted && item.id == items[index].id) {
                     setState(() => player = value);
@@ -740,6 +979,10 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
   Widget build(BuildContext context) {
     final item = items[index];
     final blocked = busy || switching;
+    final mediaQuery = MediaQuery.of(context);
+    final canvasColor = immersiveMedia
+        ? Colors.black
+        : Theme.of(context).colorScheme.surface;
     final info = AndroidMediaInformation(
       key: ValueKey('information-${item.id}'),
       item: item,
@@ -759,126 +1002,245 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
       busy: blocked,
       dirty: dirty,
       child: Scaffold(
-        body: SafeArea(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final showInfo = !detailsOpen && (controlsVisible || dirty);
-              final media = Stack(
-                fit: StackFit.expand,
-                children: [
-                  FadeTransition(
-                    key: const Key('android-detail-page-fade'),
-                    opacity: pageOpacity,
-                    child: PageView.builder(
-                      key: const Key('android-detail-media'),
-                      controller: pages,
-                      physics: const NeverScrollableScrollPhysics(),
-                      allowImplicitScrolling: true,
-                      itemCount: items.length,
-                      itemBuilder: (context, page) {
-                        final asset = items[page];
-                        if ((page - index).abs() > 1 &&
-                            asset.kind == MediaKind.video) {
-                          return VideoPoster(asset: asset);
-                        }
-                        return _media(asset);
-                      },
-                    ),
-                  ),
-                  if (!immersiveVideo && (controlsVisible || detailsOpen))
-                    Positioned(
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      child: Material(
-                        key: const Key('android-detail-overlay'),
-                        color: Theme.of(context).colorScheme.surface
-                            .withValues(alpha: .85),
-                        child: Row(
-                          children: [
-                            Builder(
-                              builder: (context) => IconButton(
-                                key: const Key('android-page-back'),
-                                tooltip: context.l10n.select(
-                                  zh: '返回',
-                                  en: 'Back',
-                                ),
-                                onPressed: () => AndroidBackGuard.back(context),
-                                icon: const Icon(Icons.arrow_back),
-                              ),
-                            ),
-                            const Spacer(),
-                            IconButton(
-                              key: const Key('android-detail-toggle'),
-                              tooltip: context.l10n.select(
-                                zh: detailsOpen ? '返回媒体预览' : '查看媒体详情',
-                                en: detailsOpen
-                                    ? 'Back to media preview'
-                                    : 'View media details',
-                              ),
-                              onPressed: detailsOpen
-                                  ? closeDetails
-                                  : openDetails,
-                              icon: Icon(
-                                detailsOpen
-                                    ? Icons.expand_more
-                                    : Icons.subject_outlined,
-                              ),
-                            ),
-                          ],
-                        ),
+        backgroundColor: canvasColor,
+        body: MediaQuery(
+          data: mediaQuery.copyWith(
+            padding: immersiveMedia || preserveImmersivePadding
+                ? immersiveSystemPadding
+                : mediaQuery.padding,
+          ),
+          child: SafeArea(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final media = Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    FadeTransition(
+                      key: const Key('android-detail-page-fade'),
+                      opacity: pageOpacity,
+                      child: PageView.builder(
+                        key: const Key('android-detail-media'),
+                        controller: pages,
+                        physics: const NeverScrollableScrollPhysics(),
+                        allowImplicitScrolling: true,
+                        itemCount: items.length,
+                        itemBuilder: (context, page) {
+                          final asset = items[page];
+                          if ((page - index).abs() > 1 &&
+                              asset.kind == MediaKind.video) {
+                            return VideoPoster(asset: asset);
+                          }
+                          return _media(asset);
+                        },
                       ),
                     ),
-                ],
-              );
-              if (immersiveVideo) {
-                return ColoredBox(color: Colors.black, child: media);
-              }
-              if (detailsOpen) {
-                return Column(
+                    if (!immersiveMedia && (controlsVisible || detailsOpen))
+                      Positioned(
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        child: Material(
+                          key: const Key('android-detail-overlay'),
+                          color: Theme.of(context).colorScheme.surface
+                              .withValues(alpha: .85),
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: moreOpen ? closeMoreActions : null,
+                            child: Row(
+                              children: [
+                                Builder(
+                                  builder: (context) => IconButton(
+                                    key: const Key('android-page-back'),
+                                    tooltip: context.l10n.select(
+                                      zh: '返回',
+                                      en: 'Back',
+                                    ),
+                                    onPressed: moreOpen
+                                        ? closeMoreActions
+                                        : () => AndroidBackGuard.back(context),
+                                    icon: const Icon(Icons.arrow_back),
+                                  ),
+                                ),
+                                const Spacer(),
+                                IconButton(
+                                  key: const Key('android-detail-toggle'),
+                                  tooltip: context.l10n.select(
+                                    zh: detailsOpen ? '返回媒体预览' : '查看媒体详情',
+                                    en: detailsOpen
+                                        ? 'Back to media preview'
+                                        : 'View media details',
+                                  ),
+                                  onPressed: moreOpen
+                                      ? closeMoreActions
+                                      : detailsOpen
+                                      ? closeDetails
+                                      : openDetails,
+                                  icon: Icon(
+                                    detailsOpen
+                                        ? Icons.expand_more
+                                        : Icons.subject_outlined,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+                if (detailsOpen) {
+                  return AnimatedSize(
+                    duration: const Duration(milliseconds: 260),
+                    curve: Curves.easeOutCubic,
+                    child: Column(
+                      children: [
+                        Expanded(flex: 39, child: media),
+                        Expanded(
+                          flex: 61,
+                          child: NotificationListener<ScrollNotification>(
+                            onNotification: (notification) {
+                              if (notification is OverscrollNotification &&
+                                  notification.dragDetails != null &&
+                                  notification.metrics.pixels <=
+                                      notification.metrics.minScrollExtent &&
+                                  notification.overscroll < 0) {
+                                closeDetails();
+                              }
+                              return false;
+                            },
+                            child: info,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+                final normalContent = AnimatedSize(
+                  duration: const Duration(milliseconds: 260),
+                  curve: Curves.easeOutCubic,
+                  alignment: Alignment.topCenter,
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: Transform.translate(
+                          offset: const Offset(0, -12),
+                          child: media,
+                        ),
+                      ),
+                      if (controlsVisible)
+                        Visibility(
+                          key: const Key('android-detail-filmstrip-visibility'),
+                          visible: !immersiveMedia,
+                          maintainState: true,
+                          maintainAnimation: true,
+                          maintainSize: true,
+                          child: _AndroidMediaFilmstrip(
+                            items: items,
+                            currentIndex: index,
+                            onSelected: (next) {
+                              if (immersiveMedia) return;
+                              if (moreOpen) {
+                                closeMoreActions();
+                                return;
+                              }
+                              if (next != index) {
+                                unawaited(navigate(next - index));
+                              }
+                            },
+                          ),
+                        ),
+                      if (controlsVisible)
+                        Visibility(
+                          key: const Key(
+                            'android-detail-action-dock-visibility',
+                          ),
+                          visible: !immersiveMedia,
+                          maintainState: true,
+                          maintainAnimation: true,
+                          maintainSize: true,
+                          child: _AndroidViewerActionBar(
+                            key: const Key('android-detail-action-dock'),
+                            item: item,
+                            busy: blocked,
+                            onFavorite: moreOpen
+                                ? closeMoreActions
+                                : toggleFavorite,
+                            onEdit: moreOpen ? closeMoreActions : edit,
+                            onTrim: item.kind == MediaKind.video
+                                ? (moreOpen ? closeMoreActions : trim)
+                                : null,
+                            onShare: moreOpen
+                                ? closeMoreActions
+                                : () => showAndroidMediaShareSheet(context, [
+                                    item,
+                                  ]),
+                            onMore: toggleMoreActions,
+                          ),
+                        ),
+                      if (captureFeedback && capturedFrame != null)
+                        Visibility(
+                          visible: !immersiveMedia,
+                          maintainState: true,
+                          maintainAnimation: true,
+                          maintainSize: true,
+                          child: SizedBox(
+                            key: const Key('android-detail-capture-feedback'),
+                            height: 56,
+                            child: Align(
+                              alignment: Alignment.centerRight,
+                              child: Padding(
+                                padding: const EdgeInsets.only(right: 14),
+                                child: Material(
+                                  elevation: 6,
+                                  borderRadius: BorderRadius.circular(8),
+                                  clipBehavior: Clip.antiAlias,
+                                  child: Image.memory(
+                                    capturedFrame!,
+                                    width: 80,
+                                    height: 56,
+                                    fit: BoxFit.cover,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                );
+                final preview = immersiveMedia
+                    ? ColoredBox(
+                        key: const Key('android-detail-immersive'),
+                        color: Colors.black,
+                        child: normalContent,
+                      )
+                    : normalContent;
+                if (!moreOpen) return preview;
+                final actionBarReserve =
+                    67.0 + MediaQuery.paddingOf(context).bottom;
+                const filmstripReserve = 64.0;
+                return Stack(
                   children: [
-                    Expanded(flex: 39, child: media),
-                    Expanded(
-                      flex: 61,
-                      child: NotificationListener<ScrollNotification>(
-                        onNotification: (notification) {
-                          if (notification is OverscrollNotification &&
-                              notification.metrics.pixels <=
-                                  notification.metrics.minScrollExtent &&
-                              notification.overscroll < 0) {
-                            closeDetails();
-                          }
-                          return false;
-                        },
-                        child: info,
+                    Positioned.fill(child: preview),
+                    Positioned(
+                      right: 12,
+                      bottom: actionBarReserve + filmstripReserve,
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxHeight: constraints.maxHeight * .42,
+                        ),
+                        child: _AndroidViewerMoreMenu(
+                          item: item,
+                          busy: blocked,
+                          onAction: (action) =>
+                              unawaited(runMoreAction(action)),
+                        ),
                       ),
                     ),
                   ],
                 );
-              }
-              return Column(
-                children: [
-                  Expanded(child: media),
-                  if (showInfo)
-                    SizedBox(
-                      height: constraints.maxHeight * (editingNote ? .52 : .38),
-                      child: info,
-                    ),
-                  if (controlsVisible)
-                    _AndroidViewerActionBar(
-                      item: item,
-                      busy: blocked,
-                      onTrim: item.kind == MediaKind.video ? trim : null,
-                      onShare: () =>
-                          showAndroidMediaShareSheet(context, [item]),
-                      onImmersive: item.kind == MediaKind.video
-                          ? toggleImmersive
-                          : null,
-                      onMore: showMoreActions,
-                    ),
-                ],
-              );
-            },
+              },
+            ),
           ),
         ),
       ),

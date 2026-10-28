@@ -113,16 +113,134 @@ void main() {
     },
     variant: TargetPlatformVariant({TargetPlatform.android}),
   );
+
+  testWidgets(
+    'Android game filter searches large catalogs and keeps selected tags visible',
+    (tester) async {
+      final backend = FakeBackend(
+        mediaItems: [
+          for (var index = 0; index < 12; index++)
+            _media(
+              index + 1,
+              gameName: 'Game $index',
+              importedAt: DateTime(2026, 10, 18),
+            ),
+        ],
+      );
+      final settings = SettingsController(backend);
+      final library = LibraryController(backend);
+      addTearDown(settings.dispose);
+      addTearDown(library.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          locale: const Locale('en'),
+          localizationsDelegates: const [
+            AppLocalizations.delegate,
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          supportedLocales: AppLocalizations.supportedLocales,
+          theme: androidTheme('ocean'),
+          home: AndroidLibraryPage(controller: library, settings: settings),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('android-library-filter')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('android-filter-game-search')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('android-filter-game-count')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('android-filter-game-Game 0')),
+        findsOneWidget,
+      );
+      expect(find.byType(FilterChip), findsNWidgets(8));
+      expect(
+        find.byKey(const ValueKey('android-filter-game-Game 8')),
+        findsNothing,
+      );
+
+      await tester.tap(find.byKey(const Key('android-filter-expand-games')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('android-filter-game-Game 11')),
+        findsOneWidget,
+      );
+
+      await tester.enterText(
+        find.byKey(const Key('android-filter-game-search')),
+        'Game 11',
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('android-filter-game-Game 11')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('android-filter-game-Game 0')),
+        findsNothing,
+      );
+
+      await tester.tap(
+        find.byKey(const ValueKey('android-filter-game-Game 11')),
+      );
+      await tester.pumpAndSettle();
+      expect(library.gameNames, contains('Game 11'));
+      await tester.enterText(
+        find.byKey(const Key('android-filter-game-search')),
+        '',
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('android-filter-game-Game 11')),
+        findsOneWidget,
+      );
+      expect(
+        tester
+            .getRect(
+              find.byKey(const Key('android-filter-group-by-date-switch')),
+            )
+            .right,
+        closeTo(
+          tester
+              .getRect(find.byKey(const Key('android-filter-favorites-switch')))
+              .right,
+          0.1,
+        ),
+      );
+      expect(
+        tester
+            .getRect(find.byKey(const Key('android-filter-newest-switch')))
+            .right,
+        closeTo(
+          tester
+              .getRect(find.byKey(const Key('android-filter-favorites-switch')))
+              .right,
+          0.1,
+        ),
+      );
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant({TargetPlatform.android}),
+  );
 }
 
-MediaAsset _media(int id, {DateTime? importedAt}) => MediaAsset(
-  id: id,
-  sha256: 'group-$id',
-  originalName: 'group-$id.png',
-  storagePath: 'missing-$id.png',
-  kind: MediaKind.image,
-  importedAt: importedAt,
-  gameName: 'Game',
-  favorite: false,
-  tags: const [],
-);
+MediaAsset _media(int id, {DateTime? importedAt, String gameName = 'Game'}) =>
+    MediaAsset(
+      id: id,
+      sha256: 'group-$id',
+      originalName: 'group-$id.png',
+      storagePath: 'missing-$id.png',
+      kind: MediaKind.image,
+      importedAt: importedAt,
+      gameName: gameName,
+      favorite: false,
+      tags: const [],
+    );

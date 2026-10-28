@@ -281,6 +281,7 @@ AppSettings _withFonts(FakeBackend backend, List<String> paths) {
   final value = backend.settings;
   return AppSettings(
     proxyUrl: value.proxyUrl,
+    dohEnabled: value.dohEnabled,
     libraryPath: value.libraryPath,
     theme: value.theme,
     language: value.language,

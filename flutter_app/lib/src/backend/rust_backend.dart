@@ -431,6 +431,7 @@ class RustBackend
       _defaults ??= _buildDefaultSettings();
 
   Future<AppSettings> _buildDefaultSettings() async => AppSettings(
+    dohEnabled: false,
     libraryPath: _isolated
         ? '$_libraryRoot${Platform.pathSeparator}media'
         : await resolveDefaultLibraryPath(_libraryRoot),
@@ -1242,11 +1243,9 @@ class RustBackend
   @override
   Future<NintendoFriendsSnapshot> loadNintendoFriends(
     String accountId,
-    String operationId,
-    {
+    String operationId, {
     bool includeSplatoonActivity = false,
-    }
-  ) => _withAccountTool(
+  }) => _withAccountTool(
     accountId,
     operationId,
     (token) => rust_api.nintendoFriends(

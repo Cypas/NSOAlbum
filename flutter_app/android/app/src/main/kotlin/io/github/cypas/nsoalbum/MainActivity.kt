@@ -10,11 +10,15 @@ import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.graphics.Point
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.view.Display
+import android.view.WindowManager
 import android.widget.Toast
 import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
@@ -71,7 +75,14 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         pendingOpenGallery = isGalleryIntent(intent)
         super.onCreate(savedInstanceState)
+        configureDisplayCutoutMode()
+        applyPreferredDisplayMode()
         handleUpdateNotification(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        applyPreferredDisplayMode()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -333,6 +344,54 @@ class MainActivity : FlutterActivity() {
     private fun isGalleryIntent(intent: Intent?): Boolean =
         intent?.action == ACTION_OPEN_GALLERY &&
             intent.getBooleanExtra(EXTRA_OPEN_GALLERY, false)
+
+    private fun applyPreferredDisplayMode() {
+        val currentDisplay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            display
+        } else {
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay
+        } ?: return
+        val effectiveSize = Point()
+        currentDisplay.getRealSize(effectiveSize)
+        val availableModes = currentDisplay.supportedModes
+        val selected = AndroidDisplayModePolicy.select(
+            currentWidth = effectiveSize.x,
+            currentHeight = effectiveSize.y,
+            modes = availableModes.map { mode ->
+                AndroidDisplayModePreference(
+                    id = mode.modeId,
+                    width = mode.physicalWidth,
+                    height = mode.physicalHeight,
+                    refreshRate = mode.refreshRate,
+                )
+            },
+        ) ?: return
+        if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            android.util.Log.d(
+                "NSOAlbum",
+                "[display] size=${effectiveSize.x}x${effectiveSize.y} " +
+                    "mode=${selected.id} refresh=${selected.refreshRate} " +
+                    "available=" + availableModes.joinToString(prefix = "[", postfix = "]") {
+                        "${it.modeId}:${it.physicalWidth}x${it.physicalHeight}@" +
+                            it.refreshRate
+                    },
+            )
+        }
+        if (window.attributes.preferredDisplayModeId == selected.id) return
+        val attributes = WindowManager.LayoutParams()
+        attributes.copyFrom(window.attributes)
+        attributes.preferredDisplayModeId = selected.id
+        window.attributes = attributes
+    }
+
+    private fun configureDisplayCutoutMode() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
+        val attributes = window.attributes
+        attributes.layoutInDisplayCutoutMode =
+            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        window.attributes = attributes
+    }
 
     override fun onRequestPermissionsResult(
         requestCode: Int,

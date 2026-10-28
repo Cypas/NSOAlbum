@@ -150,6 +150,8 @@ impl SyncPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub proxy_url: Option<String>,
+    #[serde(default)]
+    pub doh_enabled: bool,
     pub library_path: String,
     pub theme: String,
     #[serde(default = "default_language")]
@@ -242,6 +244,7 @@ mod tests {
         assert!(settings.notify_on_auto_sync);
         assert!(settings.show_splatoon_schedule);
         assert!(!settings.show_splatoon_friend_activity);
+        assert!(!settings.doh_enabled);
     }
 
     #[test]
@@ -458,6 +461,7 @@ mod tests {
         assert!(settings.auto_sync_on_launch);
         assert_eq!(settings.close_behavior, "ask");
         assert!(settings.custom_font_paths.is_empty());
+        assert!(!settings.doh_enabled);
     }
 
     #[test]

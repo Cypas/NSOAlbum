@@ -4910,6 +4910,7 @@ impl SseDecode for crate::settings::AppSettings {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_proxyUrl = <Option<String>>::sse_decode(deserializer);
+        let mut var_dohEnabled = <bool>::sse_decode(deserializer);
         let mut var_libraryPath = <String>::sse_decode(deserializer);
         let mut var_theme = <String>::sse_decode(deserializer);
         let mut var_language = <String>::sse_decode(deserializer);
@@ -4928,6 +4929,7 @@ impl SseDecode for crate::settings::AppSettings {
         let mut var_syncPolicy = <crate::settings::SyncPolicy>::sse_decode(deserializer);
         return crate::settings::AppSettings {
             proxy_url: var_proxyUrl,
+            doh_enabled: var_dohEnabled,
             library_path: var_libraryPath,
             theme: var_theme,
             language: var_language,
@@ -7581,6 +7583,7 @@ impl flutter_rust_bridge::IntoDart for crate::settings::AppSettings {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.proxy_url.into_into_dart().into_dart(),
+            self.doh_enabled.into_into_dart().into_dart(),
             self.library_path.into_into_dart().into_dart(),
             self.theme.into_into_dart().into_dart(),
             self.language.into_into_dart().into_dart(),
@@ -9674,6 +9677,7 @@ impl SseEncode for crate::settings::AppSettings {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <Option<String>>::sse_encode(self.proxy_url, serializer);
+        <bool>::sse_encode(self.doh_enabled, serializer);
         <String>::sse_encode(self.library_path, serializer);
         <String>::sse_encode(self.theme, serializer);
         <String>::sse_encode(self.language, serializer);

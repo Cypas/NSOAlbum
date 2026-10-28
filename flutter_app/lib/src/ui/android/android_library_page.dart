@@ -10,6 +10,7 @@ import '../../rust/models.dart';
 import '../../state/library_controller.dart';
 import '../../state/settings_controller.dart';
 import 'android_action_bar.dart';
+import '../app_brand_title.dart';
 import 'android_layout.dart';
 import 'android_media_card.dart';
 import 'android_media_viewer.dart';
@@ -19,7 +20,6 @@ import 'android_page_frame.dart';
 import 'android_video_merge_page.dart';
 import 'android_text_prompt.dart';
 import '../device_sync/album_source_label.dart';
-import '../font_families.dart';
 import '../../platform/android_media_share.dart';
 
 PageRoute<void> _androidMediaViewerRoute(WidgetBuilder builder) =>
@@ -508,23 +508,17 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                         ],
                       ),
                       const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          for (final game in games)
-                            FilterChip(
-                              label: Text(game.name),
-                              selected: state.gameNames.contains(game.name),
-                              onSelected: (value) => update(() {
-                                state.gameNames = value
-                                    ? {...state.gameNames, game.name}.toList()
-                                    : state.gameNames
-                                          .where((name) => name != game.name)
-                                          .toList();
-                              }),
-                            ),
-                        ],
+                      _AndroidGameTagFilterSelector(
+                        games: games,
+                        selected: state.gameNames.toSet(),
+                        onChanged: (game, selected) => update(() {
+                          state.gameNames = selected
+                              ? {...state.gameNames, game}.toList()
+                              : state.gameNames
+                                    .where((name) => name != game)
+                                    .toList();
+                        }),
+                        onClear: () => update(() => state.gameNames = []),
                       ),
                     ],
                   ),
@@ -582,9 +576,11 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                           });
                         },
                       ),
-                      SwitchListTile(
+                      _AndroidFilterSwitchRow(
                         key: const Key('android-filter-group-by-date'),
-                        contentPadding: EdgeInsets.zero,
+                        switchKey: const Key(
+                          'android-filter-group-by-date-switch',
+                        ),
                         title: Text(
                           context.l10n.select(zh: '按日期归类', en: 'Group by date'),
                         ),
@@ -599,25 +595,33 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
               const SizedBox(height: 12),
               Card(
                 key: const Key('android-filter-other-section'),
-                child: Column(
-                  children: [
-                    SwitchListTile(
-                      title: Text(
-                        context.l10n.select(zh: '仅收藏', en: 'Favorites only'),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 4,
+                  ),
+                  child: Column(
+                    children: [
+                      _AndroidFilterSwitchRow(
+                        switchKey: const Key('android-filter-favorites-switch'),
+                        title: Text(
+                          context.l10n.select(zh: '仅收藏', en: 'Favorites only'),
+                        ),
+                        value: state.favoriteOnly,
+                        onChanged: (value) =>
+                            update(() => state.favoriteOnly = value),
                       ),
-                      value: state.favoriteOnly,
-                      onChanged: (value) =>
-                          update(() => state.favoriteOnly = value),
-                    ),
-                    SwitchListTile(
-                      title: Text(
-                        context.l10n.select(zh: '最新优先', en: 'Newest first'),
+                      _AndroidFilterSwitchRow(
+                        switchKey: const Key('android-filter-newest-switch'),
+                        title: Text(
+                          context.l10n.select(zh: '最新优先', en: 'Newest first'),
+                        ),
+                        value: state.newestFirst,
+                        onChanged: (value) =>
+                            update(() => state.newestFirst = value),
                       ),
-                      value: state.newestFirst,
-                      onChanged: (value) =>
-                          update(() => state.newestFirst = value),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
               TextButton(
@@ -826,26 +830,12 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        pageTitle,
-                        key: const Key('android-library-title'),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontFamily: appBrandFontFamily,
-                          fontFamilyFallback: appBrandFontFallback,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
+                      AppBrandTitle(
+                        text: pageTitle,
+                        textKey: const Key('android-library-title'),
+                        underlineKey: const Key(
+                          'android-library-brand-underline',
                         ),
-                      ),
-                      const SizedBox(height: 2),
-                      DecoratedBox(
-                        key: const Key('android-library-brand-underline'),
-                        decoration: const BoxDecoration(
-                          color: Color(0xffffc107),
-                          borderRadius: BorderRadius.all(Radius.circular(2)),
-                        ),
-                        child: const SizedBox(width: 40, height: 3),
                       ),
                     ],
                   ),
@@ -1172,6 +1162,195 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
         ),
       );
     },
+  );
+}
+
+class _AndroidGameTagFilterSelector extends StatefulWidget {
+  const _AndroidGameTagFilterSelector({
+    required this.games,
+    required this.selected,
+    required this.onChanged,
+    required this.onClear,
+  });
+
+  final List<GameTagSummary> games;
+  final Set<String> selected;
+  final void Function(String game, bool selected) onChanged;
+  final VoidCallback onClear;
+
+  @override
+  State<_AndroidGameTagFilterSelector> createState() =>
+      _AndroidGameTagFilterSelectorState();
+}
+
+class _AndroidGameTagFilterSelectorState
+    extends State<_AndroidGameTagFilterSelector> {
+  static const _collapsedLimit = 8;
+  final search = TextEditingController();
+  bool expanded = false;
+
+  @override
+  void dispose() {
+    search.dispose();
+    super.dispose();
+  }
+
+  List<GameTagSummary> get _filtered {
+    final query = search.text.trim().toLowerCase();
+    final filtered = query.isEmpty
+        ? List<GameTagSummary>.of(widget.games)
+        : widget.games
+              .where((game) => game.name.toLowerCase().contains(query))
+              .toList(growable: false);
+    final selected = widget.games.where(
+      (game) =>
+          widget.selected.contains(game.name) &&
+          !filtered.any((item) => item.name == game.name),
+    );
+    return [...filtered, ...selected];
+  }
+
+  List<GameTagSummary> get _visible {
+    final values = _filtered;
+    if (expanded || values.length <= _collapsedLimit) return values;
+    final result = values.take(_collapsedLimit).toList();
+    for (final game in values) {
+      if (widget.selected.contains(game.name) &&
+          !result.any((item) => item.name == game.name)) {
+        result.add(game);
+      }
+    }
+    return result;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = _filtered;
+    final values = _visible;
+    final selectedCount = widget.selected.length;
+    final canExpand = filtered.length > _collapsedLimit;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          key: const Key('android-filter-game-search'),
+          controller: search,
+          onChanged: (_) => setState(() {}),
+          decoration: InputDecoration(
+            isDense: true,
+            prefixIcon: const Icon(Icons.search),
+            hintText: context.l10n.select(zh: '搜索游戏标签', en: 'Search game tags'),
+            suffixIcon: search.text.isEmpty
+                ? null
+                : IconButton(
+                    tooltip: context.l10n.select(
+                      zh: '清除搜索',
+                      en: 'Clear search',
+                    ),
+                    onPressed: () {
+                      search.clear();
+                      setState(() {});
+                    },
+                    icon: const Icon(Icons.clear),
+                  ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Text(
+              context.l10n.select(
+                zh: '已选 $selectedCount 项',
+                en: '$selectedCount selected',
+              ),
+              key: const Key('android-filter-game-count'),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const Spacer(),
+            if (selectedCount > 0)
+              TextButton(
+                onPressed: widget.onClear,
+                child: Text(context.l10n.select(zh: '清除', en: 'Clear')),
+              ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: expanded ? 220 : double.infinity,
+          ),
+          child: expanded
+              ? SingleChildScrollView(child: _chips(values))
+              : _chips(values),
+        ),
+        if (canExpand)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              key: const Key('android-filter-expand-games'),
+              onPressed: () => setState(() => expanded = !expanded),
+              icon: AnimatedRotation(
+                turns: expanded ? .5 : 0,
+                duration: const Duration(milliseconds: 180),
+                child: const Icon(Icons.expand_more),
+              ),
+              label: Text(
+                expanded
+                    ? context.l10n.select(zh: '收起', en: 'Show less')
+                    : context.l10n.select(
+                        zh: '展开全部（${filtered.length}）',
+                        en: 'Show all (${filtered.length})',
+                      ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _chips(List<GameTagSummary> games) => Wrap(
+    spacing: 8,
+    runSpacing: 8,
+    children: [
+      for (final game in games)
+        FilterChip(
+          key: ValueKey('android-filter-game-${game.name}'),
+          label: Text(game.name),
+          selected: widget.selected.contains(game.name),
+          onSelected: (value) => widget.onChanged(game.name, value),
+        ),
+    ],
+  );
+}
+
+class _AndroidFilterSwitchRow extends StatelessWidget {
+  const _AndroidFilterSwitchRow({
+    super.key,
+    required this.switchKey,
+    required this.title,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final Key switchKey;
+  final Widget title;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+    onTap: () => onChanged(!value),
+    borderRadius: BorderRadius.circular(12),
+    child: SizedBox(
+      height: 56,
+      child: Row(
+        children: [
+          Expanded(child: title),
+          const SizedBox(width: 12),
+          Switch(key: switchKey, value: value, onChanged: onChanged),
+        ],
+      ),
+    ),
   );
 }
 

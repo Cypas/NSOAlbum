@@ -23,7 +23,10 @@ class AndroidVideoSurface extends StatefulWidget {
     this.active = true,
     this.prewarm = false,
     this.immersive = false,
+    this.hideControls = false,
+    this.fillColor = Colors.black,
     this.onReady,
+    this.onMediaTap,
     this.onSwipe,
     this.onVerticalSwipe,
   });
@@ -33,7 +36,10 @@ class AndroidVideoSurface extends StatefulWidget {
   final bool active;
   final bool prewarm;
   final bool immersive;
+  final bool hideControls;
+  final Color fillColor;
   final ValueChanged<Player>? onReady;
+  final VoidCallback? onMediaTap;
   final ValueChanged<int>? onSwipe;
   final ValueChanged<int>? onVerticalSwipe;
   @override
@@ -171,74 +177,86 @@ class AndroidVideoSurfaceState extends State<AndroidVideoSurface> {
     return StreamBuilder(
       stream: player.stream.playing,
       initialData: player.state.playing,
-      builder: (context, playing) => VideoPreview(
-        controller: controller,
-        cover: widget.cover,
-        showLoadingIndicator: false,
-        controls: (_) => Stack(
-          children: [
-            // Siblings, not ancestors of the control bar: its raw pointer
-            // listener must not observe scrubbing as a media-page swipe.
-            Positioned.fill(
-              child: AndroidMediaSwipeRegion(
-                enabled: !released && widget.active,
-                onSwipe: (delta) => widget.onSwipe?.call(delta),
-                onVerticalSwipe: (delta) => widget.onVerticalSwipe?.call(delta),
-                child: !widget.immersive && playing.data != true
-                    ? Center(
-                        child: IconButton.filledTonal(
-                          key: const Key('android-video-center-play'),
-                          tooltip: context.l10n.select(zh: '播放', en: 'Play'),
-                          onPressed: !ready || released || !widget.active
-                              ? null
-                              : () => unawaited(
-                                  _command(playbackLifecycle.play()),
-                                ),
-                          icon: const Icon(Icons.play_arrow, size: 42),
-                        ),
-                      )
-                    : const SizedBox.expand(),
+      builder: (context, playing) {
+        final showControls = !widget.immersive && !widget.hideControls;
+        return VideoPreview(
+          controller: controller,
+          cover: widget.cover,
+          fill: widget.fillColor,
+          showLoadingIndicator: false,
+          controls: (_) => Stack(
+            children: [
+              // Siblings, not ancestors of the control bar: its raw pointer
+              // listener must not observe scrubbing as a media-page swipe.
+              Positioned.fill(
+                child: AndroidMediaSwipeRegion(
+                  enabled: !released && widget.active,
+                  onSwipe: (delta) => widget.onSwipe?.call(delta),
+                  onVerticalSwipe: (delta) =>
+                      widget.onVerticalSwipe?.call(delta),
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onTap: widget.active ? widget.onMediaTap : null,
+                    child: showControls && playing.data != true
+                        ? Center(
+                            child: IconButton.filledTonal(
+                              key: const Key('android-video-center-play'),
+                              tooltip: context.l10n.select(
+                                zh: '播放',
+                                en: 'Play',
+                              ),
+                              onPressed: !ready || released || !widget.active
+                                  ? null
+                                  : () => unawaited(
+                                      _command(playbackLifecycle.play()),
+                                    ),
+                              icon: const Icon(Icons.play_arrow, size: 42),
+                            ),
+                          )
+                        : const SizedBox.expand(),
+                  ),
+                ),
               ),
-            ),
-            if (!widget.immersive)
-              Positioned(
-                key: const Key('android-video-control-overlay'),
-                left: 0,
-                right: 0,
-                bottom: 0,
-                child: StreamBuilder(
-                  stream: player.stream.duration,
-                  initialData: player.state.duration,
-                  builder: (context, duration) => StreamBuilder(
-                    stream: player.stream.position,
-                    initialData: player.state.position,
-                    builder: (context, position) => StreamBuilder(
-                      stream: player.stream.volume,
-                      initialData: player.state.volume,
-                      builder: (context, volume) => AndroidVideoControls(
-                        enabled: ready && !released && widget.active,
-                        playing: playing.data == true,
-                        position: position.data ?? Duration.zero,
-                        duration: duration.data ?? Duration.zero,
-                        muted: (volume.data ?? 100) == 0,
-                        onToggle: () => unawaited(
-                          _command(
-                            playbackLifecycle.runCommand(player.playOrPause),
+              if (showControls)
+                Positioned(
+                  key: const Key('android-video-control-overlay'),
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: StreamBuilder(
+                    stream: player.stream.duration,
+                    initialData: player.state.duration,
+                    builder: (context, duration) => StreamBuilder(
+                      stream: player.stream.position,
+                      initialData: player.state.position,
+                      builder: (context, position) => StreamBuilder(
+                        stream: player.stream.volume,
+                        initialData: player.state.volume,
+                        builder: (context, volume) => AndroidVideoControls(
+                          enabled: ready && !released && widget.active,
+                          playing: playing.data == true,
+                          position: position.data ?? Duration.zero,
+                          duration: duration.data ?? Duration.zero,
+                          muted: (volume.data ?? 100) == 0,
+                          onToggle: () => unawaited(
+                            _command(
+                              playbackLifecycle.runCommand(player.playOrPause),
+                            ),
                           ),
-                        ),
-                        onMute: () => unawaited(
-                          _command(
-                            playbackLifecycle.runCommand(
-                              () => player.setVolume(
-                                (volume.data ?? 100) == 0 ? 100 : 0,
+                          onMute: () => unawaited(
+                            _command(
+                              playbackLifecycle.runCommand(
+                                () => player.setVolume(
+                                  (volume.data ?? 100) == 0 ? 100 : 0,
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                        onSeek: (value) => unawaited(
-                          _command(
-                            playbackLifecycle.runCommand(
-                              () => player.seek(value),
+                          onSeek: (value) => unawaited(
+                            _command(
+                              playbackLifecycle.runCommand(
+                                () => player.seek(value),
+                              ),
                             ),
                           ),
                         ),
@@ -246,10 +264,10 @@ class AndroidVideoSurfaceState extends State<AndroidVideoSurface> {
                     ),
                   ),
                 ),
-              ),
-          ],
-        ),
-      ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

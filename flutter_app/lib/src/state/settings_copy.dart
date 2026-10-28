@@ -4,6 +4,7 @@ AppSettings copyAppSettings(
   AppSettings value, {
   String? theme,
   String? language,
+  bool? dohEnabled,
   int? galleryColumns,
   bool? showNotePreview,
   bool? showGameTag,
@@ -20,6 +21,7 @@ AppSettings copyAppSettings(
   proxyUrl: proxyUrl == null
       ? value.proxyUrl
       : (proxyUrl.isEmpty ? null : proxyUrl),
+  dohEnabled: dohEnabled ?? value.dohEnabled,
   libraryPath: libraryPath ?? value.libraryPath,
   theme: theme ?? value.theme,
   language: language ?? value.language,

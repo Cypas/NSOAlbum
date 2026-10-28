@@ -812,6 +812,7 @@ mod tests {
         drop(exclusive);
         let settings = crate::settings::AppSettings {
             proxy_url: None,
+            doh_enabled: false,
             library_path: destination.path().to_string_lossy().into_owned(),
             theme: "ocean".into(),
             language: "en".into(),
@@ -1121,6 +1122,7 @@ mod tests {
             .unwrap();
         let settings = crate::settings::AppSettings {
             proxy_url: None,
+            doh_enabled: false,
             library_path: first_root.path().to_string_lossy().into_owned(),
             theme: "ocean".into(),
             language: "en".into(),
@@ -1257,6 +1259,7 @@ mod tests {
     fn settings_for(root: &Path) -> crate::settings::AppSettings {
         crate::settings::AppSettings {
             proxy_url: None,
+            doh_enabled: false,
             library_path: root.to_string_lossy().into_owned(),
             theme: "ocean".into(),
             language: "en".into(),

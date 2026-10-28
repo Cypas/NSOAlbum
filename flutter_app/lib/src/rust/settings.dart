@@ -9,6 +9,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 class AppSettings {
   final String? proxyUrl;
+  final bool dohEnabled;
   final String libraryPath;
   final String theme;
   final String language;
@@ -28,6 +29,7 @@ class AppSettings {
 
   const AppSettings({
     this.proxyUrl,
+    required this.dohEnabled,
     required this.libraryPath,
     required this.theme,
     required this.language,
@@ -49,6 +51,7 @@ class AppSettings {
   @override
   int get hashCode =>
       proxyUrl.hashCode ^
+      dohEnabled.hashCode ^
       libraryPath.hashCode ^
       theme.hashCode ^
       language.hashCode ^
@@ -72,6 +75,7 @@ class AppSettings {
       other is AppSettings &&
           runtimeType == other.runtimeType &&
           proxyUrl == other.proxyUrl &&
+          dohEnabled == other.dohEnabled &&
           libraryPath == other.libraryPath &&
           theme == other.theme &&
           language == other.language &&

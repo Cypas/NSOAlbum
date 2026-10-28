@@ -535,6 +535,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_request_after_doh_fallback_is_not_replayed_by_nxapi_retry() {
+        let mut calls = 0;
+        let result = nxapi_transport_request(|| {
+            calls += 1;
+            std::future::ready(Err(CoreError::NetworkRequest {
+                stage: "nxapi_encrypt",
+                reason: "doh_request_failed",
+                proxy: "default",
+                elapsed_ms: 12,
+                url: "https://nxapi-znca-api.fancy.org.uk/api/znca/encrypt-request".into(),
+                code_kind: "none",
+                code: "none".into(),
+            }))
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[tokio::test]
     async fn transport_recovery_does_not_retry_http_rate_limits_or_business_errors() {
         for status in [400, 429, 503] {
             let (base, server) = crate::transport::tests::capture_response(

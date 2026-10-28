@@ -294,9 +294,15 @@ Future<void> main() async {
                 await active.player.play();
               });
               await started.future;
-              await tester.tap(find.byTooltip('More'));
-              await tester.pumpAndSettle();
-              await tester.tap(find.text(label));
+              await tester.tap(
+                find.byKey(
+                  Key(
+                    label == 'Trim video'
+                        ? 'android-detail-trim'
+                        : 'android-detail-edit',
+                  ),
+                ),
+              );
               await tester.pump(const Duration(milliseconds: 100));
               editorOpenedBeforePause = find
                   .byType(editorType)
@@ -366,9 +372,7 @@ Future<void> main() async {
               await surface.player.play();
             });
             await started.future;
-            await tester.tap(find.byTooltip('More'));
-            await tester.pumpAndSettle();
-            await tester.tap(find.text('Edit tags and note'));
+            await tester.tap(find.byKey(const Key('android-detail-edit')));
             await tester.pump(const Duration(milliseconds: 100));
             expect(find.byType(AndroidMetadataEditor), findsNothing);
             await tester.drag(
