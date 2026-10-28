@@ -69,9 +69,43 @@ void main() {
         );
         final splatoonCard = find.byKey(
           const Key('android-splatoon-settings-card'),
+          skipOffstage: false,
         );
         expect(appearanceCard, findsOneWidget);
         expect(displayCard, findsOneWidget);
+        expect(
+          tester.widget<Card>(appearanceCard).shape,
+          isA<RoundedRectangleBorder>(),
+        );
+        final appearanceShape =
+            tester.widget<Card>(appearanceCard).shape as RoundedRectangleBorder;
+        final appearanceRadius = appearanceShape.borderRadius as BorderRadius;
+        expect(appearanceRadius.topLeft.x, 16);
+        expect(
+          tester.widget<Card>(displayCard).shape,
+          isA<RoundedRectangleBorder>(),
+        );
+        final languageField = find.byType(DropdownButtonFormField<String>);
+        await tester.ensureVisible(languageField);
+        await tester.tap(languageField);
+        await tester.pumpAndSettle();
+        final englishOption = find.text('English').last;
+        expect(englishOption, findsOneWidget);
+        expect(tester.widget<Text>(englishOption).style?.fontSize, 14);
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+        final settingsScroll = find
+            .descendant(
+              of: find.byType(AndroidSettingsPage),
+              matching: find.byType(Scrollable),
+            )
+            .first;
+        await tester.scrollUntilVisible(
+          splatoonCard,
+          320,
+          scrollable: settingsScroll,
+        );
+        await tester.pumpAndSettle();
         expect(splatoonCard, findsOneWidget);
         expect(
           find.descendant(
@@ -88,32 +122,11 @@ void main() {
           findsOneWidget,
         );
         expect(
-          tester.widget<Card>(appearanceCard).shape,
-          isA<RoundedRectangleBorder>(),
-        );
-        final appearanceShape =
-            tester.widget<Card>(appearanceCard).shape as RoundedRectangleBorder;
-        final appearanceRadius = appearanceShape.borderRadius as BorderRadius;
-        expect(appearanceRadius.topLeft.x, 16);
-        expect(
-          tester.widget<Card>(displayCard).shape,
-          isA<RoundedRectangleBorder>(),
-        );
-        expect(
           find.byKey(const Key('android-storage-permission-card')),
           findsNothing,
         );
         expect(find.byKey(const Key('android-storage-card')), findsNothing);
 
-        final languageField = find.byType(DropdownButtonFormField<String>);
-        await tester.ensureVisible(languageField);
-        await tester.tap(languageField);
-        await tester.pumpAndSettle();
-        final englishOption = find.text('English').last;
-        expect(englishOption, findsOneWidget);
-        expect(tester.widget<Text>(englishOption).style?.fontSize, 14);
-        await tester.binding.handlePopRoute();
-        await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
       },
       variant: TargetPlatformVariant({TargetPlatform.android}),
