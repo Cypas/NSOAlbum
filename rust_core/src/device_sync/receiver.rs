@@ -457,6 +457,7 @@ impl ReceiveOperation {
             observer,
             file_observer,
             None,
+            false,
         )
     }
 
@@ -469,6 +470,7 @@ impl ReceiveOperation {
         observer: &mut impl FnMut(ApplyBoundary),
         file_observer: &mut impl FnMut(Progress),
         guard: Option<Arc<dyn CommitGuard>>,
+        verify_reused_originals: bool,
     ) -> ReceiverResult<ApplyReceipt> {
         let authorization = authorization.ok_or(ReceiverError::AuthorizationRequired)?;
         let binding_timing = self.work.validation.time_apply(Timing::Binding);
@@ -583,27 +585,36 @@ impl ReceiveOperation {
         let result = (|| -> ReceiverResult<()> {
             cancel.check()?;
             for decision in &self.plan.media {
-                if !decision.reuse_original {
-                    let Some(record) = &decision.final_record else {
-                        continue;
-                    };
-                    if let Some(guard) = &guard {
-                        guard.publication_started(&decision.sha256, record.length)?;
+                let Some(record) = &decision.final_record else {
+                    continue;
+                };
+                if decision.reuse_original {
+                    if verify_reused_originals && !strict_noop {
+                        self.staging.verify_reused_original(
+                            operation,
+                            &decision.sha256,
+                            cancel,
+                            &mut |_| {},
+                        )?;
                     }
-                    let mut guarded_observer = |progress: Progress| {
-                        if let Some(guard) = &guard {
-                            guard.publication_progress(&progress);
-                        }
-                        file_observer(progress);
-                    };
-                    publications.push(self.staging.publish(
-                        &lease,
-                        operation,
-                        &decision.sha256,
-                        cancel,
-                        &mut guarded_observer,
-                    )?);
+                    continue;
                 }
+                if let Some(guard) = &guard {
+                    guard.publication_started(&decision.sha256, record.length)?;
+                }
+                let mut guarded_observer = |progress: Progress| {
+                    if let Some(guard) = &guard {
+                        guard.publication_progress(&progress);
+                    }
+                    file_observer(progress);
+                };
+                publications.push(self.staging.publish(
+                    &lease,
+                    operation,
+                    &decision.sha256,
+                    cancel,
+                    &mut guarded_observer,
+                )?);
             }
             cancel.check()?;
             database.receiver_apply(

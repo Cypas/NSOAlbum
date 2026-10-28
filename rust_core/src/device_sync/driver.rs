@@ -1634,6 +1634,7 @@ impl Driver {
         let observer = self.apply_observer.clone();
         let external = self.external_reference;
         let guard = self.apply_guard();
+        let verify_reused_originals = self.local_apply_installed();
         self.worker = Some(
             std::thread::Builder::new()
                 .name("device-sync-apply".into())
@@ -1671,6 +1672,7 @@ impl Driver {
                                 previous = Some(progress);
                             },
                             Some(guard),
+                            verify_reused_originals,
                         )
                         .inspect_err(|error| {
                             diagnostics::receiver(DiagnosticBoundary::ApplyWorkerResult, error)

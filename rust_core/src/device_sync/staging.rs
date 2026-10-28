@@ -838,6 +838,30 @@ impl StagingOperation {
         result
     }
 
+    pub fn verify_reused_original(
+        &mut self,
+        operation: uuid::Uuid,
+        sha: &str,
+        cancel: &CancellationToken,
+        observer: &mut impl FnMut(Progress),
+    ) -> StagingResult<()> {
+        self.check(operation, sha)?;
+        let entry = self.entries.get(sha).ok_or(StagingError::InvalidState)?;
+        if entry.needs_transfer {
+            return Err(StagingError::InvalidState);
+        }
+        let record = &entry.record;
+        let (path, length) = self
+            .database
+            .device_sync_original_path(sha)
+            .map_err(core_error)?
+            .ok_or(StagingError::CorruptOriginal)?;
+        if length != record.length {
+            return Err(StagingError::CorruptOriginal);
+        }
+        verify_original(&path, record, cancel, observer, &self.validation)
+    }
+
     pub fn cancel(&mut self) -> StagingResult<()> {
         if self.state != OperationState::Active {
             return Err(if self.state == OperationState::Cancelled {

@@ -150,8 +150,11 @@ pub(super) fn classify_doh_error(error: &reqwest::Error) -> DnsFailureClass {
         })
     {
         DnsFailureClass::TcpConnect
-    } else if error.is_body() || error.is_decode() {
-        DnsFailureClass::Payload
+    } else if error.is_request() || error.is_body() || error.is_decode() || error.is_redirect() {
+        // A failed DoH HTTP exchange is an endpoint/transport failure. Only a
+        // successfully received 200 response can be classified as bad DNS
+        // payload by the response parser.
+        DnsFailureClass::EndpointUnreachable
     } else {
         DnsFailureClass::Other
     }
