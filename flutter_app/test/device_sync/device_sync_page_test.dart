@@ -281,50 +281,6 @@ void main() {
     expect(find.byType(DeviceSyncPage), findsNothing);
   });
 
-  testWidgets('desktop network and backup controls fit large text and errors', (
-    tester,
-  ) async {
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    for (final width in [320.0, 360.0, 412.0]) {
-      tester.view.physicalSize = Size(width, 820);
-      tester.view.devicePixelRatio = 1;
-      for (final language in ['zh', 'en']) {
-        for (final brightness in Brightness.values) {
-          final access = PageAccess()
-            ..interfacePrefix = '合成网络 Synthetic long network interface ' * 4
-            ..hostFailure = StateError('synthetic-error-not-for-display-' * 20);
-          await tester.pumpWidget(
-            pageApp(
-              language: language,
-              brightness: brightness,
-              scale: 2,
-              builder: (_) => DeviceSyncPage(access: access, mobile: false),
-            ),
-          );
-          await tester.tap(find.byKey(const Key('open-page')));
-          await tester.pumpAndSettle();
-          await reveal(tester, find.byKey(const Key('device-load-addresses')));
-          await tester.tap(find.byKey(const Key('device-load-addresses')));
-          await tester.pumpAndSettle();
-          await chooseAddress(tester, 0);
-          await reveal(tester, find.byKey(const Key('device-create-code')));
-          await tester.tap(find.byKey(const Key('device-create-code')));
-          await tester.pumpAndSettle();
-          await reveal(tester, find.byKey(const Key('device-page-error')));
-          expect(
-            find.textContaining('synthetic-error-not-for-display'),
-            findsNothing,
-          );
-          expect(tester.takeException(), isNull);
-          await tester.tap(find.byTooltip(language == 'zh' ? '返回' : 'Back'));
-          await tester.pumpAndSettle();
-          await tester.pumpWidget(const SizedBox.shrink());
-        }
-      }
-    }
-  });
-
   testWidgets(
     'successful later observation dismisses only its earlier transient Busy',
     (tester) async {

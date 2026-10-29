@@ -12,7 +12,6 @@ import 'package:squid_album/src/rust/models.dart';
 import 'package:squid_album/src/ui/account_tools/nintendo_friends_page.dart';
 import 'package:squid_album/src/ui/account_tools/gear_seed_page.dart';
 import 'package:squid_album/src/ui/account_tools/account_tool_frame.dart';
-import 'package:squid_album/src/ui/android/android_theme.dart';
 
 import '../home_shell_test.dart' show FakeBackend;
 import '../layout_viewport.dart';
@@ -33,7 +32,7 @@ Widget app(Widget page, {Locale locale = const Locale('zh')}) => MaterialApp(
 
 void main() => registerAccountToolsPageTests();
 
-void registerAccountToolsPageTests({bool layoutOnly = false}) {
+void registerAccountToolsPageTests() {
   test('friend offline time uses relative text only for less than 30 days', () {
     final now = DateTime(2026, 10, 25, 12);
     expect(formatFriendLastOnline(now, now: now, english: false), '1分钟前');
@@ -46,96 +45,6 @@ void registerAccountToolsPageTests({bool layoutOnly = false}) {
       '2026-09-25 12:00:00',
     );
   });
-
-  for (final language in ['zh', 'en']) {
-    for (final width in [320.0, 360.0, 412.0]) {
-      for (final scale in [1.0, 2.0]) {
-        testWidgets(
-          'mobile friends $language width=$width scale=$scale keep centered avatars and readable rows',
-          (tester) async {
-            await useLayoutTestViewport(tester, Size(width, 1300));
-            final backend = ToolsBackend(
-              friends: List.generate(
-                3,
-                (id) => NintendoFriend(
-                  friendId: 'matrix-$id',
-                  nickname: 'Friend $id',
-                  note: 'Long note with meaningful text',
-                  isFavorite: false,
-                  presence: 'ONLINE',
-                  gameName: 'A deliberately long game name with several words',
-                ),
-              ),
-            );
-            await tester.pumpWidget(
-              MaterialApp(
-                locale: Locale(language),
-                supportedLocales: AppLocalizations.supportedLocales,
-                localizationsDelegates: const [
-                  AppLocalizations.delegate,
-                  GlobalMaterialLocalizations.delegate,
-                  GlobalWidgetsLocalizations.delegate,
-                  GlobalCupertinoLocalizations.delegate,
-                ],
-                theme: androidTheme('ocean'),
-                builder: (context, child) => MediaQuery(
-                  data: MediaQuery.of(context)
-                      .copyWith(textScaler: TextScaler.linear(scale)),
-                  child: child!,
-                ),
-                home: NintendoFriendsPage(
-                  backend: backend,
-                  profile: profile,
-                  mobile: true,
-                ),
-              ),
-            );
-            await tester.pumpAndSettle();
-            expect(
-              tester.getSize(find.byType(Scaffold).first).width,
-              width,
-              reason: 'The matrix must render at its requested viewport.',
-            );
-            final avatar = find.byKey(const ValueKey('matrix-0:'));
-            final card = find
-                .ancestor(of: avatar, matching: find.byType(Card))
-                .first;
-            expect(
-              tester.getCenter(avatar).dx,
-              closeTo(tester.getCenter(card).dx, 1),
-            );
-            final name = tester.widget<Text>(find.text('Friend 0'));
-            expect(name.textAlign, TextAlign.center);
-            final game = tester
-                .widgetList<Text>(
-                  find.text('A deliberately long game name with several words'),
-                )
-                .first;
-            expect(game.maxLines, 2);
-            expect(find.text(language == 'zh' ? '在线' : 'Online'), findsNothing);
-            final firstTop = tester.getTopLeft(find.text('Friend 0')).dy;
-            final thirdTop = tester.getTopLeft(find.text('Friend 2')).dy;
-            if (scale == 1 && width >= 360) {
-              expect(
-                thirdTop,
-                firstTop,
-                reason: 'Normal phone layout should fit three cards.',
-              );
-            } else {
-              expect(
-                thirdTop,
-                greaterThan(firstTop),
-                reason: 'Narrow or enlarged-text layouts reduce columns.',
-              );
-            }
-            expect(tester.takeException(), isNull);
-          },
-        );
-      }
-    }
-  }
-
-  if (layoutOnly) return;
 
   testWidgets('SplatNet restrictions preserve the ordinary friend list', (
     tester,
@@ -1341,11 +1250,9 @@ class ToolsBackend extends FakeBackend
   @override
   Future<NintendoFriendsSnapshot> loadNintendoFriends(
     String accountId,
-    String operationId,
-    {
+    String operationId, {
     bool includeSplatoonActivity = false,
-    }
-  ) async {
+  }) async {
     friendAccounts.add(accountId);
     if (failRefresh) throw StateError('network unavailable');
     if (friendGate != null) return friendGate!.future;

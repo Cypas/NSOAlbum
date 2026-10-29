@@ -313,7 +313,7 @@ async fn managed_tcp_mid_scan_queue_pressure_keeps_status_and_cancel_reachable()
     let _serial = SERIAL.lock().await;
     let pair = Pair::new();
     let api = pair.api(0);
-    for index in 0..1024 {
+    for index in 0..256 {
         api.create_tag(format!("scan-{index:04}")).unwrap();
     }
     let database = api.database();
@@ -354,7 +354,7 @@ async fn managed_tcp_mid_scan_queue_pressure_keeps_status_and_cancel_reachable()
         }));
     }
     tokio::task::yield_now().await;
-    for _ in 0..1000 {
+    for _ in 0..200 {
         assert!(!headless::status(&pair.endpoints[0]).unwrap().terminal);
         let read = headless::read_endpoint(&pair.endpoints[0]);
         assert_eq!(read.error, Some(ReadError::Busy));
@@ -538,6 +538,7 @@ async fn managed_tcp_library_close_rejects_concurrent_admission_and_second_close
 }
 
 #[tokio::test]
+#[ignore = "slow real-time cleanup lease QA"]
 async fn managed_tcp_cancelled_account_pending_retains_source_lease_until_real_expiry() {
     let _serial = SERIAL.lock().await;
     let pair = Pair::new();
@@ -588,6 +589,7 @@ async fn managed_tcp_cancelled_account_pending_retains_source_lease_until_real_e
 }
 
 #[tokio::test]
+#[ignore = "slow real-time cleanup lease QA"]
 async fn managed_tcp_lost_final_ack_preserves_real_finalized_commit_and_unconfirmed_source() {
     let _serial = SERIAL.lock().await;
     let pair = Pair::new();

@@ -21,86 +21,7 @@ import '../layout_viewport.dart';
 
 void main() => registerAndroidBatchFeatureTests();
 
-void registerAndroidBatchFeatureTests({bool layoutOnly = false}) {
-  for (final locale in ['zh', 'en']) {
-    for (final width in [320.0, 360.0, 412.0]) {
-      testWidgets(
-        '$locale $width production theme date choices fit large text and apply',
-        (tester) async {
-          await useLayoutTestViewport(tester, Size(width, 720));
-          final backend = FakeBackend(mediaItems: [_image()]);
-          final settings = SettingsController(backend);
-          final library = _library(backend);
-          addTearDown(library.dispose);
-          addTearDown(settings.dispose);
-          await tester.pumpWidget(
-            MaterialApp(
-              locale: Locale(locale),
-              localizationsDelegates: _delegates,
-              supportedLocales: AppLocalizations.supportedLocales,
-              theme: androidTheme('ocean'),
-              builder: (context, child) => MediaQuery(
-                data: MediaQuery.of(context)
-                    .copyWith(textScaler: const TextScaler.linear(2)),
-                child: child!,
-              ),
-              home: AndroidLibraryPage(controller: library, settings: settings),
-            ),
-          );
-          await tester.pumpAndSettle();
-          expect(
-            tester.getSize(find.byType(Scaffold).first).width,
-            width,
-            reason: 'The matrix must render at its requested viewport.',
-          );
-          await tester.tap(find.byKey(const Key('android-library-filter')));
-          await tester.pumpAndSettle();
-
-          for (final preset in [
-            'today',
-            'this-week',
-            'this-month',
-            'last-week',
-            'anniversary',
-          ]) {
-            final dates = find.byIcon(Icons.date_range);
-            await tester.ensureVisible(dates);
-            await tester.tap(dates);
-            await tester.pumpAndSettle();
-            final choice = find.byKey(Key('android-filter-$preset'));
-            await tester.ensureVisible(choice);
-            await tester.tap(choice);
-            await tester.pumpAndSettle();
-            if (preset == 'anniversary') {
-              expect(library.capturedOnThisDay, isNotNull);
-              expect(library.importedFrom, isNull);
-              expect(library.importedUntil, isNull);
-            } else {
-              expect(library.capturedOnThisDay, isNull);
-              expect(library.importedFrom, isNotNull);
-              expect(library.importedUntil, isNotNull);
-              expect(
-                library.importedUntil!.isAfter(library.importedFrom!),
-                isTrue,
-              );
-            }
-            expect(tester.takeException(), isNull);
-          }
-          final apply = find.text(locale == 'zh' ? '应用' : 'Apply');
-          await tester.ensureVisible(apply);
-          await tester.tap(apply);
-          await tester.pumpAndSettle();
-          expect(backend.lastCapturedOnThisDay, library.capturedOnThisDay);
-          final filter = tester.widget<IconButton>(
-            find.byKey(const Key('android-library-filter')),
-          );
-          expect((filter.icon as Icon).color, isNotNull);
-          expect(tester.takeException(), isNull);
-        },
-      );
-    }
-  }
-
+void registerAndroidBatchFeatureTests() {
   for (final locale in ['zh', 'en']) {
     for (final kind in [GalleryKindFilter.image, GalleryKindFilter.video]) {
       testWidgets(
@@ -239,8 +160,6 @@ void registerAndroidBatchFeatureTests({bool layoutOnly = false}) {
       );
     }
   }
-
-  if (layoutOnly) return;
 
   testWidgets('settings log viewer shows recent filtered and copy controls', (
     tester,

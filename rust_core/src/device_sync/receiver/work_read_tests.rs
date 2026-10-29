@@ -856,6 +856,7 @@ fn pending_account_finalize_access_scan_cancel_stops_before_remaining_sql() {
 }
 
 #[test]
+#[ignore = "high-resource real 16M-step SQLite VM QA"]
 fn metadata_read_vm_budget_prevents_large_scan_and_removes_handler() {
     let root = tempfile::tempdir().unwrap();
     let api = CoreApi::open(root.path()).unwrap();
@@ -940,6 +941,60 @@ fn metadata_read_vm_budget_prevents_large_scan_and_removes_handler() {
         generation
     );
     api.create_tag("ordinary-write-after-read-budget".into())
+        .unwrap();
+    let total: i64 = database.connection.lock().unwrap().query_row(
+        "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10000) SELECT sum(x) FROM n",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(total, 50_005_000);
+}
+
+#[test]
+fn metadata_read_injected_budget_stops_a_small_real_scan_and_removes_handler() {
+    let root = tempfile::tempdir().unwrap();
+    let api = CoreApi::open(root.path()).unwrap();
+    let database = api.database();
+    let generation = database.device_sync_header().unwrap().generation;
+    let library = database.device_sync_header().unwrap().library_uuid;
+    {
+        let mut connection = database.connection.lock().unwrap();
+        let transaction = connection.transaction().unwrap();
+        let mut owner = transaction
+            .prepare("INSERT INTO device_sync_original_owner VALUES(?1,?2)")
+            .unwrap();
+        let mut backup = transaction.prepare(
+            "INSERT INTO device_sync_backup(backup_uuid,version,library_uuid,payload,digest) VALUES(?1,1,?2,x'7b7d',?3)",
+        ).unwrap();
+        let mut journal = transaction
+            .prepare("INSERT INTO device_sync_apply_journal VALUES(?1,1,?2,'finalized',?3,?4,NULL)")
+            .unwrap();
+        for index in 1..=512 {
+            let b = format!("40000000-0000-4000-8000-{index:012}");
+            let j = format!("50000000-0000-4000-8000-{index:012}");
+            owner
+                .execute(params![b, root.path().to_string_lossy()])
+                .unwrap();
+            backup.execute(params![b, library, "0".repeat(64)]).unwrap();
+            journal
+                .execute(params![j, library, b, "0".repeat(64)])
+                .unwrap();
+        }
+        drop(owner);
+        drop(backup);
+        drop(journal);
+        transaction.commit().unwrap();
+    }
+    let result = database.device_sync_backup_metadata_page_with_test_budget(None, 129, 1_024);
+    assert_eq!(
+        result.as_ref().err().map(ReadError::core),
+        Some(ReadError::Unavailable),
+        "an injected VM budget must stop a real metadata query before it completes"
+    );
+    assert_eq!(
+        database.device_sync_header().unwrap().generation,
+        generation
+    );
+    api.create_tag("ordinary-write-after-injected-read-budget".into())
         .unwrap();
     let total: i64 = database.connection.lock().unwrap().query_row(
         "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10000) SELECT sum(x) FROM n",

@@ -132,33 +132,6 @@ toybox's `NAME` column can repeat the process name for every thread and is not
 valid evidence of mpv thread counts. Report trends, not a universal no-leak
 claim, and restore the ordinary package after the test.
 
-`test/android/android_ordinary_layout_device_test.dart` runs the existing
-production-page layout matrices on the Android renderer:
-
-```powershell
-flutter run --debug --target test/android/android_ordinary_layout_device_test.dart `
-  --dart-define=NSOALBUM_ORDINARY_LAYOUT_DEVICE_QA=true -d <android-device>
-```
-
-It checks friend cards, compact account headers, full album cards, media-detail
-metadata and date choices with Chinese/English text and enlarged text. It also
-checks image/video-only filter indication, the filter button's selected semantics,
-and clearing all filter conditions without losing search text or sorting. Controlled
-Flutter viewport and text-scaler overrides do not change device settings.
-Backends contain only synthetic data; this entry point does not initialize Rust,
-read secure credentials or change a personal library. Host suites explicitly skip
-the device entry point and keep running the original matrices individually.
-Restore the ordinary `lib/main.dart` ARM64 Debug package after this run as above.
-This is rendered layout/interaction evidence, not a replacement for visual
-inspection, system font-setting coverage or native video-decoder acceptance.
-
-`test/android/android_branding_test.dart` runs without the Android toolchain and compares
-all five density-specific launcher PNGs with the shared desktop artwork.
-The linked-resource test also verifies that Android resolves the launcher to
-these five PNGs with transparent corners, without an adaptive background layer.
-Regenerate the checked-in transparent PNG assets on Windows with
-`.\tool\generate_android_icons.ps1` after changing `assets/tray/app_icon.png`.
-
 Android UI, updater, branding, APK-contract and build-configuration tests are in
 `test/android/` and carry the `platform-android` tag. This classifies the tested
 feature, not the execution host: portable tests still run on all hosts.

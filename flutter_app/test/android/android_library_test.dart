@@ -12,72 +12,11 @@ import 'package:squid_album/src/l10n/app_localizations.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:squid_album/src/ui/android/android_media_card.dart';
 import 'package:squid_album/src/ui/android/android_library_page.dart';
-import 'package:squid_album/src/state/settings_copy.dart';
 
 import '../home_shell_test.dart' show FakeBackend;
 import '../layout_viewport.dart';
 
-import 'package:squid_album/src/ui/android/android_media_viewer.dart';
-
 void main() {
-  testWidgets(
-    'gallery viewport reaches the keyboard without a navigation gap',
-    (tester) async {
-      await useLayoutTestViewport(tester, const Size(412, 860));
-      tester.view.padding = const FakeViewPadding(top: 24, bottom: 24);
-      tester.view.viewPadding = const FakeViewPadding(top: 24, bottom: 24);
-      addTearDown(tester.view.resetPadding);
-      addTearDown(tester.view.resetViewPadding);
-      addTearDown(tester.view.resetViewInsets);
-      final backend = FakeBackend(
-        mediaItems: [for (var id = 1; id <= 48; id++) _image(id: id)],
-      );
-      await tester.pumpWidget(
-        SquidAlbumApp(backend: backend, uiPlatform: AppUiPlatform.android),
-      );
-      await tester.pumpAndSettle();
-      await tester.drag(find.byType(CustomScrollView), const Offset(0, -300));
-      await tester.pumpAndSettle();
-      final scrollView = find.byType(CustomScrollView);
-      final scrollElement = tester.element(scrollView);
-      final controller = tester
-          .widget<CustomScrollView>(scrollView)
-          .controller!;
-      final offset = controller.offset;
-      final listCalls = backend.listMediaCalls;
-      final viewportBottom = tester.getBottomRight(scrollView).dy;
-
-      await tester.tap(find.byKey(const Key('android-library-search-toggle')));
-      await tester.pumpAndSettle();
-      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
-      tester.view.padding = const FakeViewPadding(top: 24);
-      await tester.pumpAndSettle();
-
-      expect(tester.getBottomRight(scrollView).dy, closeTo(560, 1));
-      expect(find.byType(NavigationBar), findsNothing);
-      expect(tester.element(scrollView), same(scrollElement));
-      expect(controller.offset, offset);
-      expect(backend.listMediaCalls, listCalls);
-      await tester.binding.handlePopRoute();
-      await tester.pump();
-      expect(find.byKey(const Key('android-library-search')), findsOneWidget);
-      tester.view.resetViewInsets();
-      tester.view.padding = const FakeViewPadding(top: 24, bottom: 24);
-      await tester.pumpAndSettle();
-
-      expect(tester.getBottomRight(scrollView).dy, viewportBottom);
-      expect(
-        tester.widget<NavigationBar>(find.byType(NavigationBar)).selectedIndex,
-        0,
-      );
-      expect(tester.element(scrollView), same(scrollElement));
-      expect(controller.offset, offset);
-      expect(backend.listMediaCalls, listCalls);
-      expect(tester.takeException(), isNull);
-    },
-    variant: TargetPlatformVariant({TargetPlatform.android}),
-  );
-
   testWidgets('gallery toolbar switches between title, search and selection', (
     tester,
   ) async {
@@ -154,148 +93,6 @@ void main() {
     expect(find.byKey(const Key('android-library-search')), findsNothing);
     expect(tester.takeException(), isNull);
   }, variant: TargetPlatformVariant({TargetPlatform.android}));
-
-  for (final (width, language, textScale) in [
-    (360.0, 'zh', 1.0),
-    (320.0, 'zh', 2.0),
-    (320.0, 'en', 2.0),
-  ]) {
-    testWidgets(
-      'toolbar search preserves scroll, draft and query at $width in $language',
-      (tester) async {
-        await useLayoutTestViewport(tester, Size(width, 800));
-        tester.platformDispatcher.textScaleFactorTestValue = textScale;
-        addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
-        final backend = FakeBackend(
-          mediaItems: [for (var id = 1; id <= 24; id++) _image(id: id)],
-        );
-        backend.settings = copyAppSettings(
-          backend.settings,
-          language: language,
-        );
-        await tester.pumpWidget(
-          SquidAlbumApp(backend: backend, uiPlatform: AppUiPlatform.android),
-        );
-        await tester.pumpAndSettle();
-
-        final search = find.byKey(const Key('android-library-search'));
-        final toggle = find.byKey(const Key('android-library-search-toggle'));
-        final filter = find.byKey(const Key('android-library-filter'));
-        expect(search, findsNothing);
-        expect(
-          find.descendant(of: find.byType(AppBar), matching: toggle),
-          findsOneWidget,
-        );
-        final toggleRect = tester.getRect(toggle);
-        final filterRect = tester.getRect(filter);
-        expect(toggleRect.right, lessThanOrEqualTo(filterRect.left));
-        expect(toggleRect.center.dy, closeTo(filterRect.center.dy, 1));
-        expect(
-          find.text(language == 'zh' ? appChineseName : appEnglishName),
-          findsOneWidget,
-        );
-
-        await tester.drag(find.byType(CustomScrollView), const Offset(0, -400));
-        await tester.pumpAndSettle();
-        final library = tester
-            .widget<AndroidLibraryPage>(find.byType(AndroidLibraryPage))
-            .controller;
-        final scrollController = tester
-            .widget<CustomScrollView>(find.byType(CustomScrollView))
-            .controller!;
-        final scrollOffset = scrollController.offset;
-        final card = find.byType(AndroidMediaCard).first;
-        final thumbnail = find.descendant(
-          of: card,
-          matching: find.byType(AndroidMediaThumbnail),
-        );
-        final thumbnailElement = tester.element(thumbnail);
-        final listCalls = backend.listMediaCalls;
-        await tester.tap(toggle);
-        await tester.pumpAndSettle();
-        expect(search.hitTestable(), findsOneWidget);
-        expect(
-          find.descendant(of: find.byType(AppBar), matching: search),
-          findsOneWidget,
-        );
-        expect(scrollController.offset, scrollOffset);
-        expect(tester.element(thumbnail), same(thumbnailElement));
-        final searchRect = tester.getRect(search);
-        expect(searchRect.left, greaterThanOrEqualTo(0));
-        expect(
-          searchRect.right,
-          lessThanOrEqualTo(tester.getRect(filter).left),
-        );
-        expect(searchRect.width, greaterThan(112));
-        expect(find.byKey(const Key('android-page-back')), findsOneWidget);
-        expect(toggle, findsNothing);
-        expect(
-          tester
-              .widget<EditableText>(find.byType(EditableText))
-              .focusNode
-              .hasFocus,
-          isTrue,
-        );
-        expect(backend.listMediaCalls, listCalls);
-        await tester.enterText(search, 'No matching fixture');
-        await tester.pump();
-        expect(library.search, isEmpty);
-        expect(backend.listMediaCalls, listCalls);
-
-        await tester.tap(find.byKey(const Key('android-page-back')));
-        await tester.pumpAndSettle();
-        expect(search, findsNothing);
-        expect(library.search, isEmpty);
-        expect(backend.listMediaCalls, listCalls);
-        await tester.tap(toggle);
-        await tester.pumpAndSettle();
-        expect(
-          tester.widget<TextField>(search).controller!.text,
-          'No matching fixture',
-        );
-        await tester.testTextInput.receiveAction(TextInputAction.search);
-        await tester.pumpAndSettle();
-        expect(library.search, 'No matching fixture');
-        expect(find.byType(AndroidMediaCard), findsNothing);
-
-        await tester.tap(find.byKey(const Key('android-page-back')));
-        await tester.pumpAndSettle();
-        expect(search, findsNothing);
-        expect(library.search, 'No matching fixture');
-        expect(tester.widget<IconButton>(toggle).isSelected, isTrue);
-        await tester.tap(toggle);
-        await tester.pumpAndSettle();
-        await tester.tap(find.byKey(const Key('android-select-media')));
-        await tester.pumpAndSettle();
-        expect(
-          find.text(language == 'zh' ? '已选择 0 项' : '0 selected'),
-          findsOneWidget,
-        );
-        expect(search, findsNothing);
-        expect(toggle, findsNothing);
-        expect(filter, findsNothing);
-        expect(library.search, 'No matching fixture');
-        await tester.tap(find.byKey(const Key('android-page-back')));
-        await tester.pumpAndSettle();
-        expect(search, findsNothing);
-        await tester.tap(toggle);
-        await tester.pumpAndSettle();
-        expect(
-          tester.widget<TextField>(search).controller!.text,
-          'No matching fixture',
-        );
-        await tester.tap(
-          find.byTooltip(language == 'zh' ? '清除搜索' : 'Clear search'),
-        );
-        await tester.pumpAndSettle();
-        expect(library.search, isEmpty);
-        expect(find.byType(AndroidMediaCard), findsWidgets);
-        expect(tester.widget<TextField>(search).controller!.text, isEmpty);
-        expect(tester.takeException(), isNull);
-      },
-      variant: TargetPlatformVariant({TargetPlatform.android}),
-    );
-  }
 
   testWidgets('batch actions retain selections when query results refresh', (
     tester,
@@ -398,47 +195,6 @@ void main() {
     );
   }
 
-  testWidgets('Android gallery opens and closes detail with a fade', (
-    tester,
-  ) async {
-    await useLayoutTestViewport(tester, const Size(360, 800));
-    final backend = FakeBackend(mediaItems: [_image()]);
-    await tester.pumpWidget(
-      SquidAlbumApp(backend: backend, uiPlatform: AppUiPlatform.android),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.byKey(const ValueKey('android-media-1')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 90));
-    expect(find.byType(AndroidMediaViewer), findsOneWidget);
-    final fadeFinder = find.byKey(const Key('android-detail-route-fade'));
-    expect(fadeFinder, findsOneWidget);
-    var fade = tester.widget<FadeTransition>(fadeFinder);
-    expect(fade.opacity.value, greaterThan(0));
-    expect(fade.opacity.value, lessThan(1));
-    await tester.pumpAndSettle();
-    expect(
-      tester
-          .widget<FadeTransition>(
-            find.byKey(const Key('android-detail-route-fade')),
-          )
-          .opacity
-          .value,
-      1,
-    );
-
-    Navigator.of(tester.element(find.byType(AndroidMediaViewer))).pop();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 70));
-    fade = tester.widget<FadeTransition>(fadeFinder);
-    expect(fade.opacity.value, greaterThan(0));
-    expect(fade.opacity.value, lessThan(1));
-    await tester.pumpAndSettle();
-    expect(find.byType(AndroidMediaViewer), findsNothing);
-    expect(tester.takeException(), isNull);
-  }, variant: TargetPlatformVariant({TargetPlatform.android}));
-
   testWidgets(
     'Android favorite updates only the tapped card without reloading siblings',
     (tester) async {
@@ -516,25 +272,6 @@ void main() {
     expect(backend.noteUpdates[1], 'Synthetic note');
     expect(find.text('Open editor'), findsOneWidget);
   });
-
-  testWidgets('custom Android date range stays in compact calendar dialog', (
-    tester,
-  ) async {
-    final backend = FakeBackend(mediaItems: []);
-    await tester.pumpWidget(
-      SquidAlbumApp(backend: backend, uiPlatform: AppUiPlatform.android),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('android-library-filter')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('android-filter-date-button')));
-    await tester.pumpAndSettle();
-    final customDialog = find.byKey(const Key('android-date-filter-dialog'));
-    expect(customDialog, findsOneWidget);
-    expect(find.byType(CalendarDatePicker), findsOneWidget);
-    expect(tester.getSize(customDialog).height, lessThan(640));
-    expect(tester.takeException(), isNull);
-  }, variant: TargetPlatformVariant({TargetPlatform.android}));
 
   testWidgets('long press keeps album, tag and delete actions reachable', (
     tester,

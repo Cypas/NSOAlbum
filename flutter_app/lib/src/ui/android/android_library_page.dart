@@ -1097,6 +1097,18 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                                                   });
                                                   return;
                                                 }
+                                                if (item.kind ==
+                                                    MediaKind.image) {
+                                                  await precacheImage(
+                                                    androidDetailImageProvider(
+                                                      context,
+                                                      item.storagePath,
+                                                    ),
+                                                    context,
+                                                    onError: (_, _) {},
+                                                  );
+                                                }
+                                                if (!context.mounted) return;
                                                 await Navigator.of(
                                                   context,
                                                 ).push(

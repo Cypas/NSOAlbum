@@ -35,6 +35,21 @@ List<AndroidViewerMoreAction> androidViewerMoreActionsFor(MediaKind kind) => [
   if (kind == MediaKind.video) AndroidViewerMoreAction.captureFrame,
 ];
 
+ImageProvider<Object> androidDetailImageProvider(
+  BuildContext context,
+  String path,
+) {
+  const decodeAllowance = 1.5;
+  final viewport = MediaQuery.sizeOf(context);
+  final pixelRatio = MediaQuery.devicePixelRatioOf(context);
+  return ResizeImage(
+    FileImage(File(path)),
+    width: (viewport.width * pixelRatio * decodeAllowance).round(),
+    height: (viewport.height * pixelRatio * decodeAllowance).round(),
+    policy: ResizeImagePolicy.fit,
+  );
+}
+
 class AndroidMediaViewer extends StatefulWidget {
   const AndroidMediaViewer({
     super.key,
@@ -342,7 +357,6 @@ class _AndroidViewerMoreMenu extends StatelessWidget {
 
 class _AndroidMediaViewerState extends State<AndroidMediaViewer>
     with SingleTickerProviderStateMixin {
-  static const _imageZoomDecodeAllowance = 1.5;
   late List<MediaAsset> items = List.of(widget.items);
   late int index = widget.initialIndex;
   late PageController pages;
@@ -417,23 +431,11 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
       await VideoThumbnailCache.warmCached(item);
     } else if (mounted) {
       await precacheImage(
-        _imageProvider(item.storagePath),
+        androidDetailImageProvider(context, item.storagePath),
         context,
         onError: (_, _) {},
       );
     }
-  }
-
-  ImageProvider<Object> _imageProvider(String path) {
-    final viewport = MediaQuery.sizeOf(context);
-    final pixelRatio = MediaQuery.devicePixelRatioOf(context);
-    return ResizeImage(
-      FileImage(File(path)),
-      width: (viewport.width * pixelRatio * _imageZoomDecodeAllowance).round(),
-      height: (viewport.height * pixelRatio * _imageZoomDecodeAllowance)
-          .round(),
-      policy: ResizeImagePolicy.fit,
-    );
   }
 
   @override
@@ -919,8 +921,9 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
           child: Center(
             child: Image(
               key: ValueKey(('android-detail-image', item.sha256)),
-              image: _imageProvider(item.storagePath),
+              image: androidDetailImageProvider(context, item.storagePath),
               fit: BoxFit.contain,
+              gaplessPlayback: true,
               errorBuilder: (_, _, _) => Semantics(
                 label: context.l10n.select(
                   zh: '无法读取这张图片',
@@ -1215,28 +1218,30 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
                         child: normalContent,
                       )
                     : normalContent;
-                if (!moreOpen) return preview;
                 final actionBarReserve =
                     67.0 + MediaQuery.paddingOf(context).bottom;
                 const filmstripReserve = 64.0;
                 return Stack(
+                  key: const Key('android-detail-preview-slot'),
+                  fit: StackFit.expand,
                   children: [
                     Positioned.fill(child: preview),
-                    Positioned(
-                      right: 12,
-                      bottom: actionBarReserve + filmstripReserve,
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(
-                          maxHeight: constraints.maxHeight * .42,
-                        ),
-                        child: _AndroidViewerMoreMenu(
-                          item: item,
-                          busy: blocked,
-                          onAction: (action) =>
-                              unawaited(runMoreAction(action)),
+                    if (moreOpen)
+                      Positioned(
+                        right: 12,
+                        bottom: actionBarReserve + filmstripReserve,
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxHeight: constraints.maxHeight * .42,
+                          ),
+                          child: _AndroidViewerMoreMenu(
+                            item: item,
+                            busy: blocked,
+                            onAction: (action) =>
+                                unawaited(runMoreAction(action)),
+                          ),
                         ),
                       ),
-                    ),
                   ],
                 );
               },

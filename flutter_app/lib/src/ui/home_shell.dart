@@ -3848,7 +3848,7 @@ class _LibraryPageState extends State<LibraryPage> {
         slivers: [
           SliverToBoxAdapter(
             child: SizedBox(
-              height: 4,
+              height: _isDesktop ? 10 : 4,
               child: AnimatedSwitcher(
                 duration: const Duration(milliseconds: 180),
                 child: snapshot.connectionState == ConnectionState.done

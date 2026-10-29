@@ -10,34 +10,6 @@ fn empty_pair() -> (tempfile::TempDir, tempfile::TempDir, CoreApi, CoreApi) {
     (source, target, a, b)
 }
 
-// Omitting metadata/allocation/margin admission accepts a 98%-of-free raw peak.
-// Only the declaration is large: no large file is allocated or received.
-#[tokio::test]
-#[ignore = "requires >1 GiB real-volume headroom; explicit opt-in without allocating media"]
-async fn receiver_prepare_rejects_raw_peak_that_leaves_no_safety_margin() {
-    let (_source, target, a, b) = empty_pair();
-    import(&a, b"tiny", "tiny.jpg").await;
-    let free = fs2::available_space(target.path()).unwrap();
-    assert!(free > 1024 * 1024 * 1024, "test volume needs >1 GiB free");
-    let length = (free / 100) * 49;
-    assert!(length <= i64::MAX as u64, "test declaration must be legal");
-    let mut snapshot = Snapshot::read(&a.database(), "Source").unwrap();
-    for entry in &mut snapshot.manifest.records {
-        if let super::super::manifest::ManifestRecord::Media(record) = entry {
-            record.length = length;
-        }
-    }
-    snapshot.sources =
-        SourceDescriptions::new(&snapshot.manifest, snapshot.sources.entries).unwrap();
-    assert!(
-        matches!(
-            ReceiveOperation::prepare(b.database(), snapshot, "Target", SyncMode::Merge),
-            Err(ReceiverError::Staging(StagingError::InsufficientSpace))
-        ),
-        "raw bytes fit, but the complete receiving peak must be refused"
-    );
-}
-
 #[test]
 fn receiver_prepare_deterministically_rejects_metadata_peak_without_writing_library() {
     use super::super::space_budget::tests_support::Override;

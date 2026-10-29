@@ -267,6 +267,24 @@ flutter test
 `.\tool\generate_bridge.ps1`，再检查 Rust 和 Dart 两侧；不得手工修改生成桥接。
 CI 使用完整测试套件，不通过排除平台测试隐藏不支持的平台行为。
 
+### Rust 高资源与真实时限用例
+
+普通 `cargo test --lib` 使用缩小后的真实 fixture 覆盖 SQLite VM 预算、备份取消和
+媒体流式传输。以下高资源或真实 30 秒 lease 用例通过 `#[ignore]` 单独保留，
+不得使用笼统的 `cargo test --lib -- --ignored`，因为另有需要专用环境变量或
+子进程父级编排的 ignored entry point：
+
+```powershell
+cargo test --lib metadata_read_vm_budget_prevents_large_scan_and_removes_handler -- --ignored --exact
+cargo test --lib driver_257_mib_real_file_streams_with_bounded_buffers_and_final_sha -- --ignored --exact
+cargo test --lib managed_tcp_cancelled_account_pending_retains_source_lease_until_real_expiry -- --ignored --exact
+cargo test --lib managed_tcp_lost_final_ack_preserves_real_finalized_commit_and_unconfirmed_source -- --ignored --exact
+```
+
+这些用例用于高资源或真实时限验收，不在每次开发测试中重复执行。默认套件仍使用
+真实 SQLite progress handler、真实文件哈希、真实备份加载和真实 TCP 连接，
+只缩短数据规模、注入测试专用 VM 预算或使用手动时钟已覆盖的 lease 语义。
+
 ### 设备同步 Debug 免扫码连接
 
 正常 `lib/main.dart` Debug 包提供已认证 VM Service 扩展
@@ -420,7 +438,7 @@ COM 激活是系统回调路径验收，不等同于人工点击通知横幅；�
 | `native-android` | 安装 Android SDK/JDK 后显式启用的真实 Gradle ABI、应用身份、品牌资源和 Release 权限检查 | 设备启动、播放、导入、编辑或后台调度已验收 |
 
 Android 功能测试集中在 `flutter_app/test/android/`。原先位于 `test/` 根目录的
-`android_apk_contract_test.dart`、`android_branding_test.dart`、
+`android_apk_contract_test.dart`、
 `android_build_configuration_test.dart`、`android_release_update_test.dart`
 和 `android_update_controller_test.dart` 现位于该目录；测试间相对导入与
 运行命令同步使用新路径，夹具仍位于 `test/fixtures/android/`。
@@ -568,18 +586,9 @@ macOS 最终 helper 摘要由 producer 在签名后生成，随同一 sealed art
 目录固定在 helper 目录，Windows 搜索路径限包内和系统目录，macOS 不继承
 开发用 DYLD 注入变量。macOS 另外验证 lipo、执行位、链接、依赖与签名。
 
-`mtp_worker_packaging_test.dart` 执行真实 PowerShell、CMake/MSBuild、
-Cargo JSON 消费、PE 校验和受控进程；Cargo/编译工具边界使用合成产物。
-该文件每次在 `flutter_app/build/test-fixtures/mtp-worker-packaging/run-*`
-新建独立证据目录并输出位置，编译夹具和每个用例均使用新路径；不自动删除、
-覆盖或复用既有运行。内容仅为小型合成文件/工具，不含账号或用户媒体，
-不进入 Runner Release 包。删除证据不是功能断言；子进程退出/drain 和
-精确异常回收仍必须完成。此保留策略不表示已定位 Windows 瞬时删除拒绝的原因。
 `mtp_worker_binary_test.dart` 检查实际二进制头解析，POSIX 执行位在 Windows
-明确 skip。`mtp_worker_macos_packaging_test.dart` 使用合成 macOS 工具链运行
-真实包装脚本，覆盖签名顺序、普通配置/双架构、reuse 不改写与具名失败；
-它不是原生 macOS、真实签名、系统快捷方式或 DMG 验收。
-无设备 Close 也不代表 MTP 授权、媒体读写、拔线或重连通过。
+明确 skip。helper 的启动、格式、架构、真实打包和签名仍由上述 Release
+验收门禁覆盖；无设备 Close 不代表 MTP 授权、媒体读写、拔线或重连通过。
 
 ## 真实 Release 冒烟
 

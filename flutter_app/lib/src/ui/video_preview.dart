@@ -58,6 +58,7 @@ class VideoFirstFrameCover extends StatefulWidget {
     required this.firstFrame,
     required this.thumbnail,
     required this.child,
+    this.initialThumbnail,
     this.playbackErrors,
     this.decoderReady,
     this.decoderInitiallyReady = true,
@@ -68,6 +69,7 @@ class VideoFirstFrameCover extends StatefulWidget {
   final Future<void> firstFrame;
   final Future<VideoThumbnailData> thumbnail;
   final Widget child;
+  final VideoThumbnailData? initialThumbnail;
   final Stream<String>? playbackErrors;
   final Stream<bool>? decoderReady;
   final bool decoderInitiallyReady;
@@ -79,10 +81,14 @@ class VideoFirstFrameCover extends StatefulWidget {
 }
 
 class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
+  static const _coverFadeDuration = Duration(milliseconds: 120);
+
   int generation = 0;
   bool rendered = false;
   bool decoded = false;
   bool failed = false;
+  bool coverVisible = true;
+  bool fading = false;
   String? playbackError;
   StreamSubscription<String>? errors;
   StreamSubscription<bool>? decoder;
@@ -97,7 +103,11 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
   @override
   void didUpdateWidget(covariant VideoFirstFrameCover oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.identity != widget.identity) _watch();
+    if (oldWidget.identity != widget.identity) {
+      _watch();
+    } else if (oldWidget.initialThumbnail != widget.initialThumbnail) {
+      poster = widget.initialThumbnail;
+    }
   }
 
   void _watch() {
@@ -105,8 +115,10 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
     rendered = false;
     decoded = widget.decoderInitiallyReady;
     failed = false;
+    coverVisible = true;
+    fading = false;
     playbackError = null;
-    poster = null;
+    poster = widget.initialThumbnail;
     unawaited(errors?.cancel());
     unawaited(decoder?.cancel());
     decoder = widget.decoderReady?.listen((ready) {
@@ -115,6 +127,7 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
           decoded = true;
           playbackError = null;
         });
+        _maybeFadeCover(ticket);
       }
     });
     errors = widget.playbackErrors?.listen((value) {
@@ -129,7 +142,11 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
             value.trim() == 'Could not open codec.') {
           return;
         }
-        setState(() => playbackError = value);
+        setState(() {
+          fading = false;
+          coverVisible = true;
+          playbackError = value;
+        });
       }
     });
     // No timeout here: a paused video can legitimately have no rendered frame.
@@ -144,10 +161,17 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
               // failure (for example a hardware-to-software fallback).
               if (decoded) playbackError = null;
             });
+            _maybeFadeCover(ticket);
           }
         },
         onError: (Object _, StackTrace _) {
-          if (mounted && ticket == generation) setState(() => failed = true);
+          if (mounted && ticket == generation) {
+            setState(() {
+              fading = false;
+              coverVisible = true;
+              failed = true;
+            });
+          }
         },
       ),
     );
@@ -163,6 +187,21 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
     );
   }
 
+  void _maybeFadeCover(int ticket) {
+    if (!mounted ||
+        ticket != generation ||
+        fading ||
+        !coverVisible ||
+        !rendered ||
+        !decoded ||
+        failed ||
+        playbackError != null ||
+        widget.error != null) {
+      return;
+    }
+    setState(() => fading = true);
+  }
+
   @override
   void dispose() {
     unawaited(errors?.cancel());
@@ -176,73 +215,84 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        if (!rendered || !decoded || error)
+        if (coverVisible || error)
           Positioned.fill(
             child: IgnorePointer(
-              child: ColoredBox(
-                key: const Key('video-first-frame-cover'),
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    if (poster?.bytes case final bytes? when bytes.isNotEmpty)
-                      Image.memory(
-                        bytes,
-                        fit: BoxFit.contain,
-                        gaplessPlayback: false,
-                        cacheWidth: 1280,
-                        errorBuilder: (_, _, _) => Center(
-                          child: widget.showLoadingIndicator
-                              ? const SizedBox.square(
-                                  dimension: 28,
-                                  child: CircularProgressIndicator(
-                                    key: Key('video-preview-loading'),
-                                    strokeWidth: 2,
+              child: AnimatedOpacity(
+                opacity: fading && !error ? 0 : 1,
+                duration: _coverFadeDuration,
+                onEnd: () {
+                  if (!mounted || !fading) return;
+                  setState(() {
+                    fading = false;
+                    coverVisible = false;
+                  });
+                },
+                child: ColoredBox(
+                  key: const Key('video-first-frame-cover'),
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      if (poster?.bytes case final bytes? when bytes.isNotEmpty)
+                        Image.memory(
+                          bytes,
+                          fit: BoxFit.contain,
+                          gaplessPlayback: false,
+                          cacheWidth: 1280,
+                          errorBuilder: (_, _, _) => Center(
+                            child: widget.showLoadingIndicator
+                                ? const SizedBox.square(
+                                    dimension: 28,
+                                    child: CircularProgressIndicator(
+                                      key: Key('video-preview-loading'),
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(
+                                    Icons.movie_outlined,
+                                    key: Key('video-preview-placeholder'),
                                   ),
-                                )
-                              : const Icon(
-                                  Icons.movie_outlined,
-                                  key: Key('video-preview-placeholder'),
-                                ),
+                          ),
                         ),
-                      ),
-                    if (error)
-                      Center(
-                        child: Card(
-                          child: Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Text(
-                              context.l10n.select(
-                                zh: '无法播放这个视频',
-                                en: 'Unable to play this video',
+                      if (error)
+                        Center(
+                          child: Card(
+                            child: Padding(
+                              padding: const EdgeInsets.all(12),
+                              child: Text(
+                                context.l10n.select(
+                                  zh: '无法播放这个视频',
+                                  en: 'Unable to play this video',
+                                ),
+                                textAlign: TextAlign.center,
                               ),
-                              textAlign: TextAlign.center,
                             ),
                           ),
-                        ),
-                      )
-                    else if (poster?.bytes?.isNotEmpty != true)
-                      Center(
-                        child: Semantics(
-                          label: context.l10n.select(
-                            zh: '正在准备视频',
-                            en: 'Preparing video',
-                          ),
-                          child: widget.showLoadingIndicator
-                              ? const SizedBox.square(
-                                  dimension: 28,
-                                  child: CircularProgressIndicator(
-                                    key: Key('video-preview-loading'),
-                                    strokeWidth: 2,
+                        )
+                      else if (poster?.bytes?.isNotEmpty != true)
+                        Center(
+                          child: Semantics(
+                            label: context.l10n.select(
+                              zh: '正在准备视频',
+                              en: 'Preparing video',
+                            ),
+                            child: widget.showLoadingIndicator
+                                ? const SizedBox.square(
+                                    dimension: 28,
+                                    child: CircularProgressIndicator(
+                                      key: Key('video-preview-loading'),
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(
+                                    Icons.movie_outlined,
+                                    key: Key('video-preview-placeholder'),
                                   ),
-                                )
-                              : const Icon(
-                                  Icons.movie_outlined,
-                                  key: Key('video-preview-placeholder'),
-                                ),
+                          ),
                         ),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -308,6 +358,7 @@ class VideoPreview extends StatefulWidget {
     required this.controller,
     required this.cover,
     this.controls = AdaptiveVideoControls,
+    this.initialThumbnail,
     this.error,
     this.showLoadingIndicator = true,
     this.fill = const Color(0xFF000000),
@@ -315,6 +366,7 @@ class VideoPreview extends StatefulWidget {
   final VideoController controller;
   final MediaAsset cover;
   final VideoControlsBuilder? controls;
+  final VideoThumbnailData? initialThumbnail;
   final Object? error;
   final bool showLoadingIndicator;
   final Color fill;
@@ -328,6 +380,7 @@ class _VideoPreviewState extends State<VideoPreview> {
   late Future<VideoThumbnailData> thumbnail;
   late Future<void> firstFrame;
   late Stream<bool>? decoderReady;
+  VideoThumbnailData? initialThumbnail;
 
   Future<VideoThumbnailData> _load() {
     request = VideoThumbnailCache.request(
@@ -341,10 +394,14 @@ class _VideoPreviewState extends State<VideoPreview> {
   @override
   void initState() {
     super.initState();
+    initialThumbnail = _initialThumbnail();
     thumbnail = _load();
     firstFrame = widget.controller.waitUntilFirstFrameRendered;
     _watchDecoder();
   }
+
+  VideoThumbnailData? _initialThumbnail() =>
+      widget.initialThumbnail ?? VideoThumbnailCache.peek(widget.cover);
 
   void _watchDecoder() {
     decoderReady = Platform.isAndroid
@@ -355,6 +412,10 @@ class _VideoPreviewState extends State<VideoPreview> {
   @override
   void didUpdateWidget(covariant VideoPreview oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.cover.sha256 != widget.cover.sha256 ||
+        oldWidget.initialThumbnail != widget.initialThumbnail) {
+      initialThumbnail = _initialThumbnail();
+    }
     if (oldWidget.cover.sha256 != widget.cover.sha256) {
       request.cancel();
       thumbnail = _load();
@@ -381,6 +442,7 @@ class _VideoPreviewState extends State<VideoPreview> {
       identity: (widget.controller, widget.cover.sha256),
       firstFrame: firstFrame,
       thumbnail: thumbnail,
+      initialThumbnail: initialThumbnail,
       error: widget.error,
       playbackErrors: widget.controller.player.stream.error,
       decoderReady: decoderReady,

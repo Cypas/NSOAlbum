@@ -18,10 +18,20 @@ struct PendingBackup {
     manifest_records: u64,
     generation: u64,
     original: std::path::PathBuf,
+    tag_count: usize,
 }
 
 impl PendingBackup {
     async fn new() -> Self {
+        Self::with_size(256, 512, 3, 1024 * 1024).await
+    }
+
+    async fn with_size(
+        tag_count: usize,
+        source_rows: usize,
+        padded_rows: usize,
+        minimum_payload_bytes: usize,
+    ) -> Self {
         let roots = [
             tempfile::tempdir().unwrap(),
             tempfile::tempdir().unwrap(),
@@ -43,7 +53,7 @@ impl PendingBackup {
         {
             let mut connection = database.connection.lock().unwrap();
             let transaction = connection.transaction().unwrap();
-            for index in 0..4096 {
+            for index in 0..tag_count {
                 transaction
                     .execute(
                         "INSERT INTO tag(name,normalized_name,created_at) VALUES(?1,?1,'2026-01-01T00:00:00Z')",
@@ -58,8 +68,8 @@ impl PendingBackup {
                 )
                 .unwrap();
             let padding = "x".repeat(512 * 1024);
-            for index in 0..30_000 {
-                let path = if index < 64 {
+            for index in 0..source_rows {
+                let path = if index < padded_rows {
                     format!("{index:03}-{padding}")
                 } else {
                     format!("synthetic-{index:05}")
@@ -109,7 +119,7 @@ impl PendingBackup {
         eprintln!(
             "actual fixture: {payload_bytes} payload bytes, {manifest_records} manifest records, {backup_rows} total backup rows"
         );
-        assert!(payload_bytes > 32 * 1024 * 1024);
+        assert!(payload_bytes > minimum_payload_bytes as u64);
         let generation = database.device_sync_header().unwrap().generation;
         Self {
             _roots: roots,
@@ -121,6 +131,7 @@ impl PendingBackup {
             manifest_records,
             generation,
             original: original.into(),
+            tag_count,
         }
     }
 
@@ -160,7 +171,7 @@ impl PendingBackup {
             .restore(Some(&mut authorization), &CancellationToken::default())
             .unwrap();
         assert!(!self.api.database().device_sync_recovery_pending());
-        assert_eq!(self.api.list_tags().unwrap().len(), 4096);
+        assert_eq!(self.api.list_tags().unwrap().len(), self.tag_count);
         self.api
             .create_tag("ordinary write after independent compensation".into())
             .unwrap();

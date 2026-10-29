@@ -6,6 +6,7 @@ import 'package:squid_album/main.dart';
 import 'package:squid_album/src/backend/app_backend.dart';
 import 'package:squid_album/src/rust/models.dart';
 import 'package:squid_album/src/state/settings_copy.dart';
+import 'package:squid_album/src/ui/font_families.dart';
 
 import 'home_shell_test.dart' show FakeBackend;
 
@@ -28,6 +29,37 @@ class _DelayedAccountsBackend extends FakeBackend {
 }
 
 void main() {
+  setUp(() async {
+    await loadCustomFontFamilies(const []);
+  });
+
+  testWidgets('desktop title bar uses plain brand text without underline', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: const DesktopTitleBar(
+          title: '鱿型相册',
+          iconAsset: 'assets/tray/app_icon.png',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final title = tester.widget<Text>(
+      find.byKey(const Key('desktop-titlebar-title')),
+    );
+    expect(title.style?.fontFamily, appBrandFontFamily);
+    expect(title.style?.fontFamilyFallback, appBrandFontFallback);
+    expect(title.style?.fontSize, 14);
+    expect(title.style?.fontWeight, FontWeight.w700);
+    expect(title.style?.decoration, isNull);
+    expect(
+      find.byKey(const Key('desktop-titlebar-brand-underline')),
+      findsNothing,
+    );
+  });
+
   testWidgets('desktop transfer page shows neutral account loading state', (
     tester,
   ) async {
@@ -47,55 +79,86 @@ void main() {
     expect(find.byKey(const Key('nintendo-account-loading')), findsNothing);
   });
 
-  testWidgets(
-    'desktop library keeps search expanded and centers search and kind filters',
-    (tester) async {
-      tester.view.physicalSize = const Size(1280, 900);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
-      await tester.pumpAndSettle();
+  testWidgets('desktop galleries leave a 10dp gap after the kind filter', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final asset = _asset(1);
+    final backend = FakeBackend(
+      mediaItems: [asset],
+      albumItems: [
+        AlbumSummary(
+          id: 9,
+          name: 'Trip',
+          description: '',
+          albumType: 'manual',
+          pinned: false,
+          mediaCount: BigInt.one,
+        ),
+      ],
+      albumMediaIds: const {
+        9: {1},
+      },
+    );
+    await tester.pumpWidget(SquidAlbumApp(backend: backend));
+    await tester.pumpAndSettle();
 
-      expect(find.byKey(const Key('library-search')), findsOneWidget);
-      expect(find.byKey(const Key('library-search-toggle')), findsNothing);
-      expect(find.byKey(const Key('library-search-back')), findsNothing);
-      expect(find.byKey(const Key('library-filter')), findsOneWidget);
-      expect(
-        find.byKey(const Key('desktop-search-filter-group')),
-        findsOneWidget,
-      );
+    expect(find.byKey(const Key('library-search')), findsOneWidget);
+    expect(find.byKey(const Key('library-search-toggle')), findsNothing);
+    expect(find.byKey(const Key('library-search-back')), findsNothing);
+    expect(find.byKey(const Key('library-filter')), findsOneWidget);
+    expect(
+      find.byKey(const Key('desktop-search-filter-group')),
+      findsOneWidget,
+    );
 
-      final header = tester.getRect(find.byKey(const Key('page-header')));
-      expect(
-        tester.getSize(find.byKey(const Key('page-header-extent'))).height,
-        64,
-      );
-      expect(header.top, closeTo(2, 0.01));
-      final search = tester.getRect(find.byKey(const Key('library-search')));
-      final filter = tester.getRect(find.byKey(const Key('library-filter')));
-      final searchGroupCenter = (search.left + filter.right) / 2;
-      expect(searchGroupCenter, closeTo(header.center.dx, 1));
+    final header = tester.getRect(find.byKey(const Key('page-header')));
+    expect(
+      tester.getSize(find.byKey(const Key('page-header-extent'))).height,
+      64,
+    );
+    expect(header.top, closeTo(2, 0.01));
+    final search = tester.getRect(find.byKey(const Key('library-search')));
+    final filter = tester.getRect(find.byKey(const Key('library-filter')));
+    final searchGroupCenter = (search.left + filter.right) / 2;
+    expect(searchGroupCenter, closeTo(header.center.dx, 1));
 
-      final kindFilter = tester.getRect(
-        find.byKey(const Key('desktop-gallery-kind-filter')),
-      );
-      expect(kindFilter.height, lessThanOrEqualTo(36));
-      expect(kindFilter.center.dx, closeTo(header.center.dx, 1));
-      final firstCard = tester.getRect(
-        find.byKey(const ValueKey('media-card-1')),
-      );
-      expect(firstCard.top - kindFilter.bottom, lessThanOrEqualTo(8));
+    final kindFilter = tester.getRect(
+      find.byKey(const Key('desktop-gallery-kind-filter')),
+    );
+    expect(kindFilter.height, lessThanOrEqualTo(36));
+    expect(kindFilter.center.dx, closeTo(header.center.dx, 1));
+    final firstCard = tester.getRect(
+      find.byKey(const ValueKey('media-card-1')),
+    );
+    expect(firstCard.top - kindFilter.bottom, closeTo(10, 0.01));
 
-      await tester.tap(find.byKey(const Key('library-filter')));
-      await tester.pumpAndSettle();
-      expect(
-        find.byKey(const Key('desktop-library-filter-dialog')),
-        findsOneWidget,
-      );
-      expect(find.byKey(const Key('desktop-filter-cancel')), findsOneWidget);
-    },
-  );
+    await tester.tap(find.byKey(const Key('library-filter')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('desktop-library-filter-dialog')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('desktop-filter-cancel')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('desktop-filter-cancel')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('sidebar-destination-1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Trip'));
+    await tester.pumpAndSettle();
+
+    final albumKindFilter = tester.getRect(
+      find.byKey(const Key('desktop-gallery-kind-filter')),
+    );
+    final albumFirstCard = tester.getRect(
+      find.byKey(const ValueKey('media-card-1')),
+    );
+    expect(albumFirstCard.top - albumKindFilter.bottom, closeTo(10, 0.01));
+  });
 
   testWidgets(
     'desktop library uses the compact stacked header on narrow windows',

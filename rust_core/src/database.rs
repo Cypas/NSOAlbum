@@ -8319,6 +8319,15 @@ impl Database {
         after: Option<&str>,
         limit: usize,
     ) -> CoreResult<Vec<crate::device_sync::read_model::BackupMetadata>> {
+        self.device_sync_backup_metadata_page_with_vm_budget(after, limit, 16_000_000)
+    }
+
+    fn device_sync_backup_metadata_page_with_vm_budget(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+        maximum_work: u64,
+    ) -> CoreResult<Vec<crate::device_sync::read_model::BackupMetadata>> {
         let after = after
             .map(|value| {
                 value
@@ -8327,10 +8336,20 @@ impl Database {
             })
             .transpose()?;
         Ok(self
-            .device_sync_backup_metadata_scan(after, limit)?
+            .device_sync_backup_metadata_scan_with_vm_budget(after, limit, maximum_work)?
             .into_iter()
             .map(|(_, item)| item)
             .collect())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn device_sync_backup_metadata_page_with_test_budget(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+        maximum_work: u64,
+    ) -> CoreResult<Vec<crate::device_sync::read_model::BackupMetadata>> {
+        self.device_sync_backup_metadata_page_with_vm_budget(after, limit, maximum_work)
     }
 
     pub(crate) fn device_sync_backup_metadata_scan(
@@ -8338,17 +8357,26 @@ impl Database {
         after: Option<i64>,
         limit: usize,
     ) -> CoreResult<Vec<(i64, crate::device_sync::read_model::BackupMetadata)>> {
+        self.device_sync_backup_metadata_scan_with_vm_budget(after, limit, 16_000_000)
+    }
+
+    fn device_sync_backup_metadata_scan_with_vm_budget(
+        &self,
+        after: Option<i64>,
+        limit: usize,
+        maximum_work: u64,
+    ) -> CoreResult<Vec<(i64, crate::device_sync::read_model::BackupMetadata)>> {
         if !(1..=129).contains(&limit) {
             return Err(ds::invalid("invalid backup metadata limit"));
         }
-        self.backup_metadata_query(after, None, limit)
+        self.backup_metadata_query(after, None, limit, maximum_work)
     }
 
     pub fn device_sync_backup_metadata(
         &self,
         backup: uuid::Uuid,
     ) -> CoreResult<crate::device_sync::read_model::BackupMetadata> {
-        self.backup_metadata_query(None, Some(&backup.to_string()), 1)?
+        self.backup_metadata_query(None, Some(&backup.to_string()), 1, 16_000_000)?
             .pop()
             .map(|(_, item)| item)
             .ok_or(CoreError::DeviceSyncRecoveryRequired)
@@ -8359,6 +8387,7 @@ impl Database {
         after: Option<i64>,
         exact: Option<&str>,
         limit: usize,
+        maximum_work: u64,
     ) -> CoreResult<Vec<(i64, crate::device_sync::read_model::BackupMetadata)>> {
         use crate::device_sync::read_model::{BackupMetadata, BackupUnavailableReason as Reason};
         let mut connection = self.connection.try_lock().map_err(|error| match error {
@@ -8367,7 +8396,7 @@ impl Database {
         })?;
         // Old journals need no new persistent index. A bounded metadata read
         // yields Unavailable rather than monopolizing SQL on a very large store.
-        let interrupt = ScanSqlInterrupt::bounded(&mut connection, 16_000_000);
+        let interrupt = ScanSqlInterrupt::bounded(&mut connection, maximum_work);
         let connection = &*interrupt.connection;
         let library = device_sync_header(connection)?.library_uuid;
         let saved = if backup_has_created_at(connection)? {

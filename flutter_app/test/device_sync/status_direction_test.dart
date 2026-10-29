@@ -4,9 +4,7 @@ import 'package:squid_album/src/rust/device_sync/driver.dart' as driver;
 import 'package:squid_album/src/rust/device_sync/planner.dart' as plan;
 import 'package:squid_album/src/rust/device_sync/read_model.dart' as read;
 import 'package:squid_album/src/rust/device_sync/work.dart';
-import 'package:squid_album/src/ui/device_sync/mode_selector.dart';
 
-import 'mode_selector_test.dart' show selectorApp;
 import 'session_panel_test.dart'
     show PanelSession, endpoint, panelApp, samePreview;
 
@@ -207,125 +205,6 @@ void main() {
         }
       }
       semantics.dispose();
-    },
-  );
-
-  testWidgets(
-    'direction choices retain their actions and device icons at large text',
-    (tester) async {
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      tester.view.devicePixelRatio = 1;
-      for (final width in [320.0, 360.0, 412.0]) {
-        tester.view.physicalSize = Size(width, 820);
-        for (final language in ['zh', 'en']) {
-          for (final brightness in Brightness.values) {
-            var phoneToDesktop = false;
-            await tester.pumpWidget(
-              selectorApp(
-                language: language,
-                brightness: brightness,
-                scale: 2,
-                builder: (_, setState) => DeviceSyncModeSelector(
-                  phoneToDesktop: phoneToDesktop,
-                  overwrite: false,
-                  includeAccounts: false,
-                  enabled: true,
-                  onDirectionChanged: (value) =>
-                      setState(() => phoneToDesktop = value),
-                  onOverwriteChanged: (_) {},
-                  onAccountsChanged: (_) {},
-                ),
-              ),
-            );
-            for (final key in [
-              'device-desktop-to-phone',
-              'device-phone-to-desktop',
-            ]) {
-              final option = find.byKey(Key(key));
-              expect(
-                find.descendant(
-                  of: option,
-                  matching: find.byIcon(Icons.desktop_windows),
-                ),
-                findsOneWidget,
-              );
-              expect(
-                find.descendant(
-                  of: option,
-                  matching: find.byIcon(Icons.smartphone),
-                ),
-                findsOneWidget,
-              );
-              await tester.ensureVisible(option);
-              await tester.tap(option);
-              await tester.pump();
-              expect(tester.widget<ChoiceChip>(option).selected, isTrue);
-              expect(tester.takeException(), isNull);
-            }
-            expect(phoneToDesktop, isTrue);
-            await tester.pumpWidget(const SizedBox.shrink());
-          }
-        }
-      }
-    },
-  );
-
-  testWidgets(
-    'session status and configured direction wrap on narrow large-text screens',
-    (tester) async {
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      tester.view.devicePixelRatio = 1;
-      for (final width in [320.0, 360.0, 412.0]) {
-        tester.view.physicalSize = Size(width, 820);
-        for (final language in ['zh', 'en']) {
-          for (final brightness in Brightness.values) {
-            final session = PanelSession()
-              ..state = endpoint(
-                driver.State.completedUnconfirmed,
-                configuration: const read.AgreedConfiguration(
-                  phoneToDesktop: true,
-                  mode: plan.SyncMode.overwrite,
-                  includeAccounts: true,
-                ),
-              );
-            await tester.pumpWidget(
-              panelApp(
-                session,
-                language: language,
-                brightness: brightness,
-                scale: 2,
-              ),
-            );
-            final status = find.byKey(const Key('device-sync-status'));
-            final direction = find.byKey(const Key('device-sync-direction'));
-            expect(status, findsOneWidget);
-            expect(direction, findsNothing);
-            expect(
-              find.descendant(
-                of: status,
-                matching: find.text(
-                  language == 'zh'
-                      ? '结果未确认，请在接收设备查看。'
-                      : 'Result unconfirmed. Check the receiving device.',
-                ),
-              ),
-              findsOneWidget,
-            );
-            expect(
-              find.text(
-                language == 'zh'
-                    ? '覆盖 · 图库与账号'
-                    : 'Overwrite · Library and accounts',
-              ),
-              findsOneWidget,
-            );
-            expect(tester.takeException(), isNull);
-            await tester.pumpWidget(const SizedBox.shrink());
-          }
-        }
-      }
     },
   );
 

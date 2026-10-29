@@ -51,6 +51,10 @@ class VideoThumbnailCache {
         '$root${Platform.pathSeparator}cache${Platform.pathSeparator}video_thumbnails';
   }
 
+  /// Returns a cached thumbnail without touching disk or starting FFmpeg.
+  static VideoThumbnailData? peek(MediaAsset asset) =>
+      _memory.peek(asset.sha256);
+
   static Future<VideoThumbnailData> readCachedFiles({
     required String cacheRoot,
     required String sha256,

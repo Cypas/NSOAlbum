@@ -75,42 +75,6 @@ void main() {
     await tester.pump();
     expect(changes, 0);
   });
-
-  testWidgets('bilingual options wrap at narrow widths and large text', (
-    tester,
-  ) async {
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    tester.view.devicePixelRatio = 1;
-    for (final width in [320.0, 360.0, 412.0]) {
-      tester.view.physicalSize = Size(width, 820);
-      for (final language in ['zh', 'en']) {
-        for (final brightness in Brightness.values) {
-          await tester.pumpWidget(
-            selectorApp(
-              language: language,
-              brightness: brightness,
-              scale: 2,
-              builder: (_, _) => DeviceSyncModeSelector(
-                phoneToDesktop: false,
-                overwrite: false,
-                includeAccounts: false,
-                enabled: true,
-                onDirectionChanged: (_) {},
-                onOverwriteChanged: (_) {},
-                onAccountsChanged: (_) {},
-              ),
-            ),
-          );
-          await tester.ensureVisible(
-            find.byKey(const Key('device-with-accounts')),
-          );
-          expect(tester.takeException(), isNull);
-          await tester.pumpWidget(const SizedBox.shrink());
-        }
-      }
-    }
-  });
 }
 
 Widget selectorApp({

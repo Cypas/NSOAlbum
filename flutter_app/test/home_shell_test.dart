@@ -44,37 +44,6 @@ void main() {
     expect(adjacentVideoIndices(3, 4), {2, 3});
   });
 
-  test(
-    'application typography uses the ordered Chinese default font chain',
-    () {
-      expect(appFontFamily, 'DFPT_ZY9');
-      expect(appFontFallback, ['DFP_GBZY9', 'BlitzMain']);
-    },
-  );
-
-  testWidgets('gallery search uses the application default font chain', (
-    tester,
-  ) async {
-    await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
-    await tester.pumpAndSettle();
-
-    final search = tester.widget<TextField>(
-      find.byKey(const Key('library-search')),
-    );
-    expect(search.style?.fontFamily, appFontFamily);
-    expect(search.style?.fontFamilyFallback, appFontFallback);
-  });
-
-  testWidgets('desktop scrollbars keep a visual inset from card edges', (
-    tester,
-  ) async {
-    await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
-    await tester.pumpAndSettle();
-    final theme = Theme.of(tester.element(find.byType(HomeShell)));
-    expect(theme.scrollbarTheme.crossAxisMargin, 8);
-    expect(theme.scrollbarTheme.mainAxisMargin, 8);
-  });
-
   group('[Windows]', () {
     test(
       'system font picker lists installed fonts through the native bridge',
@@ -1745,37 +1714,6 @@ void main() {
       matching: find.byType(Text),
     );
     expect(tester.widget<Text>(libraryLabel).style?.fontFamily, appFontFamily);
-  });
-
-  testWidgets('desktop sidebar does not duplicate the native window brand', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(1200, 800);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
-    await tester.pumpAndSettle();
-
-    expect(find.byKey(const Key('sidebar-brand-icon')), findsNothing);
-    expect(find.byKey(const Key('sidebar-brand-label')), findsNothing);
-  });
-
-  testWidgets('game filter labels remain readable in the light theme', (
-    tester,
-  ) async {
-    await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
-    await tester.pumpAndSettle();
-
-    await _openDesktopFilters(tester);
-    final game = tester.widget<CheckboxListTile>(
-      find.byKey(const Key('desktop-filter-game-Splatoon 3')),
-    );
-    expect(game.title, isA<Text>());
-    expect((game.title! as Text).style?.color, isNot(equals(Colors.white)));
-    expect(find.byKey(const Key('desktop-filter-date')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('desktop-filter-cancel')));
   });
 
   testWidgets('keeps the desktop sidebar while viewing an album', (

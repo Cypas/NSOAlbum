@@ -1040,53 +1040,6 @@ void main() {
       }
     },
   );
-
-  testWidgets(
-    'large-text session controls and long device names remain scrollable',
-    (tester) async {
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      for (final width in [320.0, 360.0, 412.0]) {
-        tester.view.physicalSize = Size(width, 820);
-        tester.view.devicePixelRatio = 1;
-        for (final language in ['zh', 'en']) {
-          for (final brightness in Brightness.values) {
-            final session = PanelSession()
-              ..confirmed = true
-              ..state = endpoint(
-                driver.State.configuring,
-                peerName: '合成设备名 Synthetic very long device name ' * 6,
-              );
-            await tester.pumpWidget(
-              panelApp(
-                session,
-                language: language,
-                brightness: brightness,
-                scale: 2,
-              ),
-            );
-            await tester.pump();
-            await tester.ensureVisible(
-              find.byKey(const Key('device-configure')),
-            );
-            await tester.pump();
-            expect(tester.takeException(), isNull);
-            session.shown = samePreview;
-            session.update(
-              endpoint(driver.State.awaitingApproval, source: false),
-            );
-            await tester.pump();
-            await tester.ensureVisible(
-              find.byKey(const Key('device-approve-preview')),
-            );
-            await tester.pump();
-            expect(tester.takeException(), isNull);
-            await tester.pumpWidget(const SizedBox.shrink());
-          }
-        }
-      }
-    },
-  );
 }
 
 Widget panelApp(

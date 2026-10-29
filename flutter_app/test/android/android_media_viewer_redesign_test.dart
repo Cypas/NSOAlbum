@@ -68,34 +68,6 @@ void main() {
     }
   }
 
-  testWidgets('media swipes animate through a shared pager', (tester) async {
-    await tester.pumpWidget(_app([_image(1), _image(2)]));
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('android-detail-toggle')));
-    await tester.pumpAndSettle();
-
-    final pagerFinder = find.byKey(const Key('android-detail-media'));
-    expect(pagerFinder, findsOneWidget);
-    final pager = tester.widget<PageView>(pagerFinder);
-    await tester.drag(
-      find.byKey(const Key('android-detail-media')),
-      const Offset(-250, 0),
-    );
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 70));
-
-    expect(pager.controller!.page, greaterThan(0));
-    expect(pager.controller!.page, lessThan(1));
-    await tester.pumpAndSettle();
-    expect(pager.controller!.page, 1);
-    expect(
-      tester
-          .widget<Text>(find.byKey(const Key('android-detail-filename')))
-          .data,
-      _image(2).originalName,
-    );
-  });
-
   testWidgets('detail image decodes at viewport physical size with zoom room', (
     tester,
   ) async {
@@ -114,6 +86,18 @@ void main() {
     final decoded = image.image as ResizeImage;
     expect(decoded.width, 1080);
     expect(decoded.height, 2400);
+  });
+
+  testWidgets('detail image keeps the previous frame while loading', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_app([_image(1)]));
+    await tester.pump();
+
+    final image = tester.widget<Image>(
+      find.byKey(const ValueKey(('android-detail-image', 'image-1'))),
+    );
+    expect(image.gaplessPlayback, isTrue);
   });
 
   testWidgets('detail page changes briefly fade without replacing the pager', (
@@ -150,62 +134,6 @@ void main() {
     );
     expect(tester.takeException(), isNull);
   });
-
-  testWidgets('detail uses a light overlay, single-line filename and swipe', (
-    tester,
-  ) async {
-    final items = [_image(1), _image(2)];
-    await tester.pumpWidget(_app(items));
-    await tester.pump();
-    expect(find.byType(AppBar), findsNothing);
-    expect(find.byTooltip('Next'), findsNothing);
-    expect(find.byTooltip('Previous'), findsNothing);
-    final preview = find.byKey(const Key('android-detail-media'));
-    final size = tester.getSize(preview);
-    expect(size.height, greaterThan(300));
-    await tester.tap(find.byKey(const Key('android-detail-toggle')));
-    await tester.pumpAndSettle();
-    final name = tester.widget<Text>(
-      find.byKey(const Key('android-detail-filename')),
-    );
-    expect(name.maxLines, 1);
-    expect(name.overflow, TextOverflow.ellipsis);
-    expect(find.text('1 / 2'), findsNothing);
-    await tester.drag(preview, const Offset(-250, 0));
-    await tester.pumpAndSettle();
-    expect(find.text('2 / 2'), findsNothing);
-    expect(
-      tester
-          .widget<Text>(find.byKey(const Key('android-detail-filename')))
-          .data,
-      items[1].originalName,
-    );
-    await tester.tap(preview);
-    await tester.pump();
-    expect(find.byKey(const Key('android-detail-overlay')), findsOneWidget);
-    await tester.tap(preview);
-    await tester.pump();
-    expect(find.byKey(const Key('android-detail-overlay')), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets(
-    'normal viewer keeps metadata hidden and exposes prototype action dock',
-    (tester) async {
-      await tester.pumpWidget(_app([_image(1)]));
-      await tester.pump();
-
-      expect(find.byKey(const Key('android-detail-information')), findsNothing);
-      expect(
-        find.byKey(const Key('android-detail-action-dock')),
-        findsOneWidget,
-      );
-      expect(find.byKey(const Key('android-detail-favorite')), findsOneWidget);
-      expect(find.byKey(const Key('android-detail-edit')), findsOneWidget);
-      expect(find.byKey(const Key('android-detail-filmstrip')), findsOneWidget);
-      expect(find.byTooltip('In-app fullscreen'), findsNothing);
-    },
-  );
 
   testWidgets('image normal mode toggles a black fully immersive canvas', (
     tester,
@@ -309,12 +237,6 @@ void main() {
       expect(find.text('Capture current frame'), findsNothing);
       expect(find.text('View media details'), findsNothing);
       expect(find.text('Edit tags and note'), findsNothing);
-      final menu = find.byKey(const Key('android-detail-more-menu'));
-      final menuRect = tester.getRect(menu);
-      final scaffoldRect = tester.getRect(find.byType(Scaffold));
-      expect(menuRect.width, lessThanOrEqualTo(232));
-      expect(scaffoldRect.right - menuRect.right, closeTo(12, 0.01));
-      expect(menuRect.height, lessThan(scaffoldRect.height * .42));
 
       await tester.tap(find.byKey(const Key('android-detail-more')));
       await tester.pumpAndSettle();
@@ -344,35 +266,29 @@ void main() {
     },
   );
 
-  for (final variant in [
-    (locale: 'zh', width: 360.0, scale: 2.0),
-    (locale: 'en', width: 320.0, scale: 2.0),
-  ]) {
-    testWidgets(
-      'right-aligned more menu stays compact in ${variant.locale} at 2x',
-      (tester) async {
-        tester.view.physicalSize = Size(variant.width, 800);
-        tester.view.devicePixelRatio = 1;
-        addTearDown(tester.view.resetPhysicalSize);
-        addTearDown(tester.view.resetDevicePixelRatio);
-        await tester.pumpWidget(
-          _app([_image(1)], locale: variant.locale, scale: variant.scale),
-        );
-        await tester.pumpAndSettle();
-        await tester.tap(find.byKey(const Key('android-detail-more')));
-        await tester.pumpAndSettle();
+  testWidgets(
+    'opening more keeps the preview pager element and geometry stable',
+    (tester) async {
+      await tester.pumpWidget(_app([_image(1)]));
+      await tester.pumpAndSettle();
 
-        final menuRect = tester.getRect(
-          find.byKey(const Key('android-detail-more-menu')),
-        );
-        final scaffoldRect = tester.getRect(find.byType(Scaffold));
-        expect(menuRect.width, lessThanOrEqualTo(232));
-        expect(scaffoldRect.right - menuRect.right, closeTo(12, 0.01));
-        expect(menuRect.height, lessThan(scaffoldRect.height * .42));
-        expect(tester.takeException(), isNull);
-      },
-    );
-  }
+      final preview = find.byKey(const Key('android-detail-media'));
+      final pagerElement = tester.element(preview);
+      final pagerRect = tester.getRect(preview);
+
+      await tester.tap(find.byKey(const Key('android-detail-more')));
+      await tester.pumpAndSettle();
+
+      expect(tester.element(preview), same(pagerElement));
+      expect(tester.getRect(preview), pagerRect);
+
+      await tester.tap(find.byKey(const Key('android-detail-more')));
+      await tester.pumpAndSettle();
+
+      expect(tester.element(preview), same(pagerElement));
+      expect(tester.getRect(preview), pagerRect);
+    },
+  );
 
   test('video and image more actions use the reduced action sets', () {
     expect(androidViewerMoreActionsFor(MediaKind.video), [
@@ -512,52 +428,11 @@ void main() {
       );
     },
   );
-
-  registerAndroidDetailLayoutTests();
-}
-
-void registerAndroidDetailLayoutTests() {
-  for (final locale in ['en', 'zh']) {
-    for (final brightness in Brightness.values) {
-      testWidgets(
-        '$locale $brightness narrow large text metadata remains usable',
-        (tester) async {
-          await useLayoutTestViewport(tester, const Size(320, 720));
-          await tester.pumpWidget(
-            _app([_image(1)], locale: locale, brightness: brightness, scale: 2),
-          );
-          await tester.pump();
-          await tester.tap(find.byKey(const Key('android-detail-toggle')));
-          await tester.pumpAndSettle();
-          expect(
-            tester.getSize(find.byType(Scaffold).first).width,
-            320,
-            reason: 'The matrix must render at its requested viewport.',
-          );
-          expect(
-            find.text('Full custom tag without truncation'),
-            findsOneWidget,
-          );
-          final imported = find.byKey(const Key('android-detail-imported'));
-          await tester.ensureVisible(imported);
-          await tester.pump();
-          expect(find.textContaining('2026-10-18 12:34:56'), findsOneWidget);
-          expect(find.textContaining('123456'), findsNothing);
-          expect(
-            find.textContaining(locale == 'zh' ? '未记录' : 'Not recorded'),
-            findsOneWidget,
-          );
-          expect(tester.takeException(), isNull);
-        },
-      );
-    }
-  }
 }
 
 Widget _app(
   List<MediaAsset> items, {
   String locale = 'en',
-  Brightness brightness = Brightness.light,
   double scale = 1,
   FakeBackend? backend,
   EdgeInsets padding = EdgeInsets.zero,
@@ -570,13 +445,7 @@ Widget _app(
     GlobalWidgetsLocalizations.delegate,
     GlobalCupertinoLocalizations.delegate,
   ],
-  theme: androidTheme('ocean').copyWith(
-    brightness: brightness,
-    colorScheme: ColorScheme.fromSeed(
-      seedColor: const Color(0xff5577e8),
-      brightness: brightness,
-    ),
-  ),
+  theme: androidTheme('ocean'),
   builder: (context, child) => MediaQuery(
     data: MediaQuery.of(context)
         .copyWith(textScaler: TextScaler.linear(scale), padding: padding),

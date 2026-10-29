@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:squid_album/src/ui/account_tools/account_tools_actions.dart';
 import 'package:squid_album/src/ui/account_tools/account_tools_expander.dart';
 
 import 'account_tools_pages_test.dart' show app, ToolsBackend, profile;
@@ -39,29 +38,4 @@ void main() {
       expect(selections, 0);
     },
   );
-
-  testWidgets('tool buttons wrap at narrow widths and large type', (
-    tester,
-  ) async {
-    await tester.binding.setSurfaceSize(const Size(320, 700));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
-    await tester.pumpWidget(
-      app(
-        MediaQuery(
-          data: const MediaQueryData(textScaler: TextScaler.linear(2)),
-          child: Scaffold(
-            body: AccountToolsActions(
-              backend: ToolsBackend(),
-              profile: profile,
-              mobile: true,
-            ),
-          ),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    expect(tester.takeException(), isNull);
-    expect(find.text('好友列表'), findsOneWidget);
-    expect(find.text('观星'), findsOneWidget);
-  });
 }

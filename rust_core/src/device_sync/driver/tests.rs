@@ -1807,8 +1807,7 @@ fn driver_cancel_and_eof_at_actual_durable_boundaries_preserve_recovery_or_commi
     }
 }
 
-#[tokio::test]
-async fn driver_257_mib_real_file_streams_with_bounded_buffers_and_final_sha() {
+async fn driver_file_streams_with_bounded_buffers_and_final_sha(length: u64) {
     use std::io::Write;
     let mut pair = Pair::new();
     let input = tempfile::tempdir().unwrap();
@@ -1816,7 +1815,6 @@ async fn driver_257_mib_real_file_streams_with_bounded_buffers_and_final_sha() {
     let mut file = File::create(&path).unwrap();
     let chunk = [0x53u8; 65_536];
     let mut hash = Sha256::new();
-    let length = 257 * 1024 * 1024u64;
     for _ in 0..length / chunk.len() as u64 {
         file.write_all(&chunk).unwrap();
         hash.update(chunk);
@@ -1882,6 +1880,17 @@ async fn driver_257_mib_real_file_streams_with_bounded_buffers_and_final_sha() {
         assert!(driver.progress().peak_ciphertext_bytes <= 65_536);
         assert!(driver.progress().peak_receiving_files <= 1);
     }
+}
+
+#[tokio::test]
+async fn driver_16_mib_real_file_streams_with_bounded_buffers_and_final_sha() {
+    driver_file_streams_with_bounded_buffers_and_final_sha(16 * 1024 * 1024).await;
+}
+
+#[tokio::test]
+#[ignore = "high-resource 257 MiB media streaming QA"]
+async fn driver_257_mib_real_file_streams_with_bounded_buffers_and_final_sha() {
+    driver_file_streams_with_bounded_buffers_and_final_sha(257 * 1024 * 1024).await;
 }
 
 #[tokio::test]

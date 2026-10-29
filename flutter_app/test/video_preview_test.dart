@@ -358,6 +358,67 @@ void main() {
     },
   );
 
+  testWidgets(
+    'cached initial cover is visible before the async thumbnail completes',
+    (tester) async {
+      final frame = Completer<void>();
+      final thumbnail = Completer<VideoThumbnailData>();
+      await tester.pumpWidget(
+        _app(
+          VideoFirstFrameCover(
+            identity: 'cached-initial-cover',
+            firstFrame: frame.future,
+            thumbnail: thumbnail.future,
+            initialThumbnail: VideoThumbnailData(bytes: _pixel),
+            showLoadingIndicator: false,
+            child: const Text('Playback controls'),
+          ),
+        ),
+      );
+
+      expect(find.byKey(const Key('video-first-frame-cover')), findsOneWidget);
+      expect(find.byType(Image), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'first-frame cover fades for 120ms after frame and decoded output',
+    (tester) async {
+      final frame = Completer<void>();
+      final decoded = StreamController<bool>.broadcast();
+      addTearDown(decoded.close);
+      await tester.pumpWidget(
+        _app(
+          VideoFirstFrameCover(
+            identity: 'fade-cover',
+            firstFrame: frame.future,
+            thumbnail: Future.value(VideoThumbnailData(bytes: _pixel)),
+            decoderReady: decoded.stream,
+            decoderInitiallyReady: false,
+            showLoadingIndicator: false,
+            child: const Text('Playback controls'),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.byKey(const Key('video-first-frame-cover')), findsOneWidget);
+
+      frame.complete();
+      await tester.pump();
+      expect(find.byKey(const Key('video-first-frame-cover')), findsOneWidget);
+
+      decoded.add(true);
+      await tester.pump();
+      expect(find.byKey(const Key('video-first-frame-cover')), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 119));
+      expect(find.byKey(const Key('video-first-frame-cover')), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 2));
+      expect(find.byKey(const Key('video-first-frame-cover')), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets('a rendered fallback frame clears a preceding decoder error', (
     tester,
   ) async {
@@ -383,6 +444,7 @@ void main() {
     frame.complete();
     await tester.pump();
     await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.text('Unable to play this video'), findsNothing);
     expect(find.byKey(const Key('video-first-frame-cover')), findsNothing);
     expect(find.text('Playback controls'), findsOneWidget);
@@ -430,6 +492,7 @@ void main() {
     expect(find.byKey(const Key('video-first-frame-cover')), findsOneWidget);
     newFrame.complete();
     await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('video-first-frame-cover')), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
@@ -481,6 +544,7 @@ void main() {
     frame.complete();
     await tester.pump();
     await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('video-first-frame-cover')), findsNothing);
     expect(find.text('Playback controls'), findsOneWidget);
   });
@@ -518,6 +582,7 @@ void main() {
     expect(find.byKey(const Key('video-first-frame-cover')), findsOneWidget);
     newFrame.complete();
     await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('video-first-frame-cover')), findsNothing);
   });
 
