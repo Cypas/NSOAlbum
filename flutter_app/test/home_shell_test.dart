@@ -21,6 +21,7 @@ import 'package:squid_album/src/ui/font_families.dart';
 import 'package:squid_album/src/backend/storage_paths.dart' as storage_paths;
 import 'package:squid_album/src/ui/media_viewer.dart';
 import 'package:squid_album/src/ui/video_runtime.dart';
+import 'package:squid_album/src/ui/video_thumbnail.dart';
 import 'package:squid_album/src/release_update.dart';
 import 'package:squid_album/src/platform/windows_system_fonts.dart';
 
@@ -272,7 +273,7 @@ void main() {
 
     expect(backend.listAlbumsCalls, greaterThan(albumCalls));
     expect(find.text('收藏'), findsOneWidget);
-    expect(find.text('1 个媒体 · 自动相册'), findsOneWidget);
+    expect(find.text('1 张图片 · 0 个视频 · 自动相册'), findsOneWidget);
     expect(find.byKey(const ValueKey('album-cover-1-1')), findsOneWidget);
   });
 
@@ -291,6 +292,8 @@ void main() {
           pinned: true,
           systemKey: 'favorites',
           mediaCount: BigInt.from(2),
+          imageCount: BigInt.from(2),
+          videoCount: BigInt.zero,
         ),
       ],
     );
@@ -463,15 +466,48 @@ void main() {
     final search = await _openDesktopSearch(tester);
     await tester.tap(search);
     const composingText = '不存在';
-    tester.testTextInput.updateEditingValue(
-      const TextEditingValue(
-        text: composingText,
-        selection: TextSelection.collapsed(offset: composingText.length),
-        composing: TextRange(start: 0, end: composingText.length),
-      ),
+    const composingValue = TextEditingValue(
+      text: composingText,
+      selection: TextSelection.collapsed(offset: composingText.length),
+      composing: TextRange(start: 0, end: composingText.length),
     );
+    tester.testTextInput.updateEditingValue(composingValue);
     await tester.pump(const Duration(milliseconds: 700));
     expect(find.text('sample.jpg'), findsOneWidget);
+    final editable = find.descendant(
+      of: search,
+      matching: find.byType(EditableText),
+    );
+    final composingField = tester.widget<EditableText>(editable);
+    expect(composingField.controller.value.text, composingValue.text);
+    expect(
+      composingField.controller.value.selection.baseOffset,
+      composingValue.selection.baseOffset,
+    );
+    expect(
+      composingField.controller.value.selection.extentOffset,
+      composingValue.selection.extentOffset,
+    );
+    expect(composingField.controller.value.composing, composingValue.composing);
+    expect(composingField.focusNode.hasFocus, isTrue);
+    final clearSearch = find.byTooltip('清除搜索');
+    expect(clearSearch, findsOneWidget);
+    final clearSearchButton = find.ancestor(
+      of: clearSearch,
+      matching: find.byType(IconButton),
+    );
+    expect(clearSearchButton, findsOneWidget);
+    expect(tester.widget<IconButton>(clearSearchButton).onPressed, isNull);
+    await tester.tap(clearSearch);
+    await tester.pump();
+    expect(
+      tester.widget<EditableText>(editable).controller.value.text,
+      composingText,
+    );
+    expect(
+      tester.widget<EditableText>(editable).controller.value.composing,
+      composingValue.composing,
+    );
 
     tester.testTextInput.updateEditingValue(
       const TextEditingValue(
@@ -482,11 +518,85 @@ void main() {
     await tester.pump(const Duration(milliseconds: 650));
     await tester.pumpAndSettle();
     expect(find.text('sample.jpg'), findsNothing);
+    final committedField = tester.widget<EditableText>(editable);
+    expect(committedField.controller.value.text, composingText);
+    expect(
+      committedField.controller.value.selection.baseOffset,
+      composingText.length,
+    );
+    expect(
+      committedField.controller.value.selection.extentOffset,
+      composingText.length,
+    );
+    expect(committedField.controller.value.composing, TextRange.empty);
+    expect(committedField.focusNode.hasFocus, isTrue);
 
     await tester.enterText(search, '庆典');
     await tester.pump(const Duration(milliseconds: 650));
     await tester.pumpAndSettle();
     expect(find.text('sample.jpg'), findsOneWidget);
+  });
+
+  testWidgets('desktop filter game search waits for Chinese IME commit', (
+    tester,
+  ) async {
+    await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
+    await tester.pumpAndSettle();
+    await _openDesktopFilters(tester);
+
+    final search = find.byKey(const Key('desktop-filter-game-search'));
+    await tester.tap(search);
+    const composingText = 'shi';
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: composingText,
+        selection: TextSelection.collapsed(offset: composingText.length),
+        composing: TextRange(start: 0, end: composingText.length),
+      ),
+    );
+    await tester.pump();
+
+    final editable = find.descendant(
+      of: search,
+      matching: find.byType(EditableText),
+    );
+    expect(
+      tester.widget<EditableText>(editable).controller.value,
+      const TextEditingValue(
+        text: composingText,
+        selection: TextSelection.collapsed(offset: composingText.length),
+        composing: TextRange(start: 0, end: composingText.length),
+      ),
+    );
+    expect(tester.widget<EditableText>(editable).focusNode.hasFocus, isTrue);
+    expect(
+      tester.widget<EditableText>(editable).controller.value.composing,
+      const TextRange(start: 0, end: composingText.length),
+    );
+    expect(
+      find.byKey(const ValueKey('desktop-filter-game-Splatoon 3')),
+      findsOneWidget,
+    );
+
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: composingText,
+        selection: TextSelection.collapsed(offset: composingText.length),
+      ),
+    );
+    await tester.pump();
+    expect(
+      tester.widget<EditableText>(editable).controller.value,
+      TextEditingValue(
+        text: composingText,
+        selection: TextSelection.collapsed(offset: composingText.length),
+      ),
+    );
+    expect(tester.widget<EditableText>(editable).focusNode.hasFocus, isTrue);
+    expect(
+      find.byKey(const ValueKey('desktop-filter-game-Splatoon 3')),
+      findsNothing,
+    );
   });
 
   testWidgets('tag and note fields preserve Chinese IME composing text', (
@@ -751,10 +861,6 @@ void main() {
     await tester.tap(find.byKey(const Key('desktop-filter-game-expand')));
     await tester.pumpAndSettle();
 
-    expect(
-      tester.getSize(find.byKey(const Key('desktop-filter-game-list'))).height,
-      lessThanOrEqualTo(220),
-    );
     expect(find.text('共 1 项'), findsWidgets);
     await tester.tap(find.byKey(const Key('desktop-filter-cancel')));
   });
@@ -775,6 +881,8 @@ void main() {
           albumType: 'manual',
           pinned: false,
           mediaCount: BigInt.one,
+          imageCount: BigInt.one,
+          videoCount: BigInt.zero,
         ),
       ],
       albumMediaIds: const {
@@ -924,6 +1032,8 @@ void main() {
           pinned: true,
           systemKey: 'favorites',
           mediaCount: BigInt.one,
+          imageCount: BigInt.one,
+          videoCount: BigInt.zero,
         ),
         AlbumSummary(
           id: 2,
@@ -932,6 +1042,8 @@ void main() {
           albumType: 'manual',
           pinned: false,
           mediaCount: BigInt.zero,
+          imageCount: BigInt.zero,
+          videoCount: BigInt.zero,
         ),
       ],
     );
@@ -1245,6 +1357,8 @@ void main() {
           albumType: 'manual',
           pinned: false,
           mediaCount: BigInt.zero,
+          imageCount: BigInt.zero,
+          videoCount: BigInt.zero,
         ),
       ],
     );
@@ -1297,6 +1411,8 @@ void main() {
           albumType: 'manual',
           pinned: false,
           mediaCount: BigInt.one,
+          imageCount: BigInt.one,
+          videoCount: BigInt.zero,
         ),
         AlbumSummary(
           id: 3,
@@ -1305,6 +1421,8 @@ void main() {
           albumType: 'manual',
           pinned: false,
           mediaCount: BigInt.zero,
+          imageCount: BigInt.zero,
+          videoCount: BigInt.zero,
         ),
       ],
       albumMediaIds: const {
@@ -1346,6 +1464,8 @@ void main() {
           pinned: true,
           systemKey: 'favorites',
           mediaCount: BigInt.one,
+          imageCount: BigInt.one,
+          videoCount: BigInt.zero,
         ),
         AlbumSummary(
           id: 2,
@@ -1354,6 +1474,8 @@ void main() {
           albumType: 'manual',
           pinned: false,
           mediaCount: BigInt.zero,
+          imageCount: BigInt.zero,
+          videoCount: BigInt.zero,
         ),
       ],
       albumMediaIds: const {
@@ -1448,10 +1570,29 @@ void main() {
     final backend = FakeBackend(
       mediaItems: [
         _media(id: 1, name: 'cover.jpg'),
-        _media(id: 2, name: 'first.mp4', kind: MediaKind.video),
-        _media(id: 3, name: 'second.mp4', kind: MediaKind.video),
+        _media(
+          id: 2,
+          name: 'first.mp4',
+          kind: MediaKind.video,
+          sha256: 'batch-merge-selection-first',
+        ),
+        _media(
+          id: 3,
+          name: 'second.mp4',
+          kind: MediaKind.video,
+          sha256: 'batch-merge-selection-second',
+        ),
       ],
     );
+    // This test exercises selection, not asynchronous filesystem/FFmpeg work.
+    for (final asset in backend.mediaItems!.where(
+      (asset) => asset.kind == MediaKind.video,
+    )) {
+      VideoThumbnailCache.seedForTest(
+        asset.sha256,
+        const VideoThumbnailData(duration: Duration(seconds: 10)),
+      );
+    }
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
     await tester.pumpAndSettle();
 
@@ -1547,37 +1688,147 @@ void main() {
     );
   });
 
-  testWidgets('hovering a long filename starts marquee scrolling', (
-    tester,
-  ) async {
-    final backend = FakeBackend(
-      mediaItems: [
-        _media(
-          id: 1,
-          name: 'this-is-a-very-long-media-file-name-that-needs-to-scroll.jpg',
-        ),
-      ],
-    );
-    await tester.pumpWidget(SquidAlbumApp(backend: backend));
-    await tester.pumpAndSettle();
+  testWidgets(
+    'filename scrolls only during hover and resets without changing layout',
+    (tester) async {
+      final backend = FakeBackend(
+        mediaItems: [
+          _media(
+            id: 1,
+            name:
+                'this-is-a-very-long-media-file-name-that-needs-to-scroll.jpg',
+          ),
+        ],
+      );
+      await tester.pumpWidget(SquidAlbumApp(backend: backend));
+      await tester.pumpAndSettle();
 
-    final filename = find.byKey(const ValueKey('media-filename-1'));
-    final mouseRegion = find.descendant(
-      of: filename,
-      matching: find.byType(MouseRegion),
-    );
-    tester.widget<MouseRegion>(mouseRegion).onEnter!(const PointerEnterEvent());
-    await tester.pump(const Duration(milliseconds: 400));
-    await tester.pump(const Duration(milliseconds: 900));
-
-    final scroll = tester.widget<SingleChildScrollView>(
-      find.descendant(
+      final filename = find.byKey(const ValueKey('media-filename-1'));
+      final idleRect = tester.getRect(filename);
+      expect(
+        find.descendant(of: filename, matching: find.byType(Scrollable)),
+        findsNothing,
+        reason: 'Idle captions must not attach a scroll position.',
+      );
+      final mouseRegion = find.descendant(
         of: filename,
-        matching: find.byKey(const Key('filename-marquee-scroll')),
-      ),
-    );
-    expect(scroll.controller!.offset, greaterThan(0));
-  });
+        matching: find.byType(MouseRegion),
+      );
+      tester.widget<MouseRegion>(mouseRegion).onEnter!(
+        const PointerEnterEvent(),
+      );
+      // Deliberately let the delay expire before the lazy scroll subtree gets
+      // its first layout. A delayed UI frame must not disable this hover.
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 900));
+
+      final scroll = tester.widget<SingleChildScrollView>(
+        find.descendant(
+          of: filename,
+          matching: find.byKey(const Key('filename-marquee-scroll')),
+        ),
+      );
+      expect(scroll.controller!.offset, greaterThan(0));
+      expect(tester.getRect(filename), idleRect);
+      tester.widget<MouseRegion>(mouseRegion).onExit!(const PointerExitEvent());
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 220));
+      await tester.pumpAndSettle();
+      expect(scroll.controller!.hasClients, isFalse);
+      expect(
+        find.descendant(of: filename, matching: find.byType(Scrollable)),
+        findsNothing,
+      );
+      expect(tester.getRect(filename), idleRect);
+      tester.widget<MouseRegion>(mouseRegion).onEnter!(
+        const PointerEnterEvent(),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 900));
+      tester.widget<MouseRegion>(mouseRegion).onExit!(const PointerExitEvent());
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      tester.widget<MouseRegion>(mouseRegion).onEnter!(
+        const PointerEnterEvent(),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 900));
+      final reentered = tester.widget<SingleChildScrollView>(
+        find.descendant(
+          of: filename,
+          matching: find.byKey(const Key('filename-marquee-scroll')),
+        ),
+      );
+      expect(reentered.controller!.hasClients, isTrue);
+      expect(reentered.controller!.offset, greaterThan(0));
+      expect(tester.getRect(filename), idleRect);
+      tester.widget<MouseRegion>(mouseRegion).onExit!(const PointerExitEvent());
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 220));
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(of: filename, matching: find.byType(Scrollable)),
+        findsNothing,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'filename replacement during hover exit still detaches scrolling',
+    (tester) async {
+      final backend = FakeBackend(
+        mediaItems: [
+          _media(
+            id: 1,
+            name:
+                'this-is-a-long-original-filename-for-the-exit-transition.jpg',
+          ),
+        ],
+      );
+      await tester.pumpWidget(SquidAlbumApp(backend: backend));
+      await tester.pumpAndSettle();
+      final filename = find.byKey(const ValueKey('media-filename-1'));
+      final state = tester.state(filename);
+      final mouseRegion = find.descendant(
+        of: filename,
+        matching: find.byType(MouseRegion),
+      );
+      tester.widget<MouseRegion>(mouseRegion).onEnter!(
+        const PointerEnterEvent(),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 900));
+      tester.widget<MouseRegion>(mouseRegion).onExit!(const PointerExitEvent());
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      backend.mediaItems = [_media(id: 1, name: 'renamed.jpg')];
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(const Key('desktop-gallery-kind-filter')),
+          matching: find.text('图片'),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('renamed.jpg'), findsOneWidget);
+      expect(tester.state(filename), same(state));
+      await tester.pump(const Duration(milliseconds: 220));
+      await tester.pump();
+      expect(
+        find.descendant(of: filename, matching: find.byType(Scrollable)),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets('manages custom tags with photo and video usage counts', (
     tester,
@@ -1735,7 +1986,7 @@ void main() {
     expect(find.byKey(const Key('album-detail-back')), findsOneWidget);
   });
 
-  testWidgets('renames and deletes a regular album from its context menu', (
+  testWidgets('edits album type and rules in one dialog then deletes it', (
     tester,
   ) async {
     final backend = FakeBackend(
@@ -1748,6 +1999,8 @@ void main() {
           pinned: true,
           systemKey: 'favorites',
           mediaCount: BigInt.one,
+          imageCount: BigInt.one,
+          videoCount: BigInt.zero,
         ),
         AlbumSummary(
           id: 2,
@@ -1756,6 +2009,8 @@ void main() {
           albumType: 'manual',
           pinned: false,
           mediaCount: BigInt.one,
+          imageCount: BigInt.one,
+          videoCount: BigInt.zero,
         ),
       ],
     );
@@ -1770,20 +2025,72 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('编辑相册'), findsOneWidget);
-    expect(find.text('转换为自动相册'), findsOneWidget);
+    expect(find.text('转换为自动相册'), findsNothing);
+    expect(find.text('编辑自动规则'), findsNothing);
     expect(find.text('删除相册'), findsOneWidget);
 
     await tester.tap(find.text('编辑相册'));
     await tester.pumpAndSettle();
+    final renameField = find.byKey(const Key('rename-album-field'));
+    await tester.tap(renameField);
+    const composingAlbumName = '中文相册';
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: composingAlbumName,
+        selection: TextSelection.collapsed(offset: composingAlbumName.length),
+        composing: TextRange(start: 0, end: composingAlbumName.length),
+      ),
+    );
+    await tester.pump();
+    final renameEditable = find.descendant(
+      of: renameField,
+      matching: find.byType(EditableText),
+    );
+    expect(
+      tester.widget<EditableText>(renameEditable).controller.value.composing,
+      const TextRange(start: 0, end: composingAlbumName.length),
+    );
     await tester.enterText(find.byKey(const Key('rename-album-field')), '新相册');
     await tester.enterText(
       find.byKey(const Key('edit-album-description-field')),
       '新的相册描述',
     );
+    await tester.tap(find.byKey(const Key('edit-album-smart-toggle')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('edit-album-configure-rules')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('edit-album-configure-rules')));
+    await tester.pumpAndSettle();
+    final ruleValue = find.byKey(const ValueKey('rule-value-0-tag'));
+    await tester.tap(ruleValue);
+    const composingRule = '中文规则';
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: composingRule,
+        selection: TextSelection.collapsed(offset: composingRule.length),
+        composing: TextRange(start: 0, end: composingRule.length),
+      ),
+    );
+    await tester.pump();
+    expect(
+      tester
+          .widget<EditableText>(
+            find.descendant(of: ruleValue, matching: find.byType(EditableText)),
+          )
+          .controller
+          .value
+          .composing,
+      const TextRange(start: 0, end: composingRule.length),
+    );
+    await tester.enterText(ruleValue, 'Splatoon');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('save-smart-album-rules')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('confirm-rename-album')));
     await tester.pumpAndSettle();
     expect(backend.albumItems!.last.name, '新相册');
     expect(backend.albumItems!.last.description, '新的相册描述');
+    expect(backend.albumItems!.last.albumType, 'smart');
+    expect(backend.albumRules[2]!.single.value, 'Splatoon');
 
     await tester.tap(
       find.byKey(const ValueKey('album-card-2')),
@@ -2958,6 +3265,8 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
       pinned: current.pinned,
       systemKey: current.systemKey,
       mediaCount: current.mediaCount,
+      imageCount: current.imageCount,
+      videoCount: current.videoCount,
     );
   }
 
@@ -3047,6 +3356,8 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
               pinned: true,
               systemKey: 'favorites',
               mediaCount: BigInt.one,
+              imageCount: BigInt.one,
+              videoCount: BigInt.zero,
             ),
           ],
     );
@@ -3489,9 +3800,10 @@ MediaAsset _media({
   MediaKind kind = MediaKind.image,
   DateTime? capturedAt,
   String gameName = 'Splatoon 3',
+  String? sha256,
 }) => MediaAsset(
   id: id,
-  sha256: 'abc$id',
+  sha256: sha256 ?? 'abc$id',
   originalName: name,
   storagePath: 'C:/library/$name',
   kind: kind,

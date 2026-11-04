@@ -37,4 +37,42 @@ void main() {
     expect(formatDeviceTransferRate(null, unknown: '—'), '—');
     expect(() => formatDeviceTransferRate(-BigInt.one), throwsArgumentError);
   });
+
+  test(
+    'device sync ETA switches from minutes to hours and handles unknowns',
+    () {
+      expect(formatDeviceSyncEta(const Duration(minutes: 8)), '8 分钟');
+      expect(formatDeviceSyncEta(const Duration(minutes: 65)), '1 小时 5 分钟');
+    expect(formatDeviceSyncEta(Duration.zero), '不到 1 分钟');
+    expect(formatDeviceSyncEta(const Duration(seconds: 30)), '不到 1 分钟');
+      expect(formatDeviceSyncEta(null, unknown: '正在估算'), '正在估算');
+    },
+  );
+
+  test('transfer ETA requires a positive measured rate', () {
+    expect(
+      estimateDeviceSyncRemainingMs(
+        processedBytes: BigInt.from(250),
+        totalBytes: BigInt.from(1000),
+        bytesPerSecond: BigInt.from(50),
+      ),
+      BigInt.from(15000),
+    );
+    expect(
+      estimateDeviceSyncRemainingMs(
+        processedBytes: BigInt.from(1000),
+        totalBytes: BigInt.from(1000),
+        bytesPerSecond: BigInt.from(50),
+      ),
+      BigInt.zero,
+    );
+    expect(
+      estimateDeviceSyncRemainingMs(
+        processedBytes: BigInt.zero,
+        totalBytes: BigInt.from(1000),
+        bytesPerSecond: BigInt.zero,
+      ),
+      isNull,
+    );
+  });
 }

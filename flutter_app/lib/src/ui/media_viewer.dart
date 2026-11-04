@@ -290,6 +290,13 @@ class _MediaViewerState extends State<MediaViewer> {
     return KeyEventResult.ignored;
   }
 
+  /// Desktop convention: the secondary mouse button leaves the viewer, so a
+  /// quick preview can be dismissed without hunting for the close button.
+  /// Dialogs opened above the viewer own their own pointer events.
+  void _closeWithSecondaryTap() {
+    Navigator.of(context).maybePop();
+  }
+
   Future<void> _copyCurrentMedia() async {
     final messenger = messengerKey.currentState;
     final l10n = context.l10n;
@@ -481,251 +488,263 @@ class _MediaViewerState extends State<MediaViewer> {
           autofocus: true,
           focusNode: keyboardFocus,
           onKeyEvent: _handleKey,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              PageView.builder(
-                key: ValueKey(windowRevision),
-                controller: pageController,
-                itemCount: items.length,
-                allowImplicitScrolling: true,
-                onPageChanged: (index) async {
-                  final generation = ++navigationGeneration;
-                  await videoKeys[items[currentIndex].id]?.currentState
-                      ?.pausePlayback();
-                  final retainedIds = {
-                    for (final position in adjacentVideoIndices(
-                      index,
-                      items.length,
-                    ))
-                      items[position].id,
-                  };
-                  for (final id in videoKeys.keys.toList(growable: false)) {
-                    if (retainedIds.contains(id)) continue;
-                    await videoKeys.remove(id)?.currentState?.release();
-                  }
-                  if (!mounted || generation != navigationGeneration) return;
-                  setState(() {
-                    currentIndex = index;
-                    if (items[index].kind != MediaKind.video) immersive = false;
-                  });
-                  _preloadAround(index);
-                  unawaited(_extendWindow());
-                },
-                itemBuilder: (context, index) {
-                  final media = items[index];
-                  return Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      horizontalInset,
-                      immersive ? 12 : 48,
-                      horizontalInset,
-                      immersive ? 12 : 126,
-                    ),
-                    child: media.kind == MediaKind.video
-                        ? (index - currentIndex).abs() > 1
-                              ? VideoPoster(asset: media)
-                              : _VideoViewer(
-                                  key: videoKeys.putIfAbsent(
-                                    media.id,
-                                    () => GlobalKey<_VideoViewerState>(
-                                      debugLabel: 'video-viewer-${media.id}',
+          child: GestureDetector(
+            key: const Key('media-viewer-secondary-back'),
+            behavior: HitTestBehavior.translucent,
+            onSecondaryTap: _closeWithSecondaryTap,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                PageView.builder(
+                  key: ValueKey(windowRevision),
+                  controller: pageController,
+                  itemCount: items.length,
+                  allowImplicitScrolling: true,
+                  onPageChanged: (index) async {
+                    final generation = ++navigationGeneration;
+                    await videoKeys[items[currentIndex].id]?.currentState
+                        ?.pausePlayback();
+                    final retainedIds = {
+                      for (final position in adjacentVideoIndices(
+                        index,
+                        items.length,
+                      ))
+                        items[position].id,
+                    };
+                    for (final id in videoKeys.keys.toList(growable: false)) {
+                      if (retainedIds.contains(id)) continue;
+                      await videoKeys.remove(id)?.currentState?.release();
+                    }
+                    if (!mounted || generation != navigationGeneration) return;
+                    setState(() {
+                      currentIndex = index;
+                      if (items[index].kind != MediaKind.video) {
+                        immersive = false;
+                      }
+                    });
+                    _preloadAround(index);
+                    unawaited(_extendWindow());
+                  },
+                  itemBuilder: (context, index) {
+                    final media = items[index];
+                    return Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        horizontalInset,
+                        immersive ? 12 : 48,
+                        horizontalInset,
+                        immersive ? 12 : 126,
+                      ),
+                      child: media.kind == MediaKind.video
+                          ? (index - currentIndex).abs() > 1
+                                ? VideoPoster(asset: media)
+                                : _VideoViewer(
+                                    key: videoKeys.putIfAbsent(
+                                      media.id,
+                                      () => GlobalKey<_VideoViewerState>(
+                                        debugLabel: 'video-viewer-${media.id}',
+                                      ),
                                     ),
-                                  ),
-                                  asset: media,
-                                  active: index == currentIndex,
-                                  prewarm: index != currentIndex,
-                                  autoPlay: widget.autoPlayVideo,
-                                  immersive: immersive,
-                                  onToggleImmersive: () =>
-                                      setState(() => immersive = !immersive),
-                                )
-                        : _ImageViewer(
-                            path: media.storagePath,
-                            active: index == currentIndex,
-                          ),
-                  );
-                },
-              ),
-              Positioned(
-                top: 0,
-                left: 82,
-                right: 82,
-                height: 44,
-                child: DesktopWindowDragArea(
-                  key: const Key('media-viewer-window-drag-area'),
-                  child: const SizedBox.expand(),
+                                    asset: media,
+                                    active: index == currentIndex,
+                                    prewarm: index != currentIndex,
+                                    autoPlay: widget.autoPlayVideo,
+                                    immersive: immersive,
+                                    onToggleImmersive: () =>
+                                        setState(() => immersive = !immersive),
+                                  )
+                          : _ImageViewer(
+                              path: media.storagePath,
+                              active: index == currentIndex,
+                            ),
+                    );
+                  },
                 ),
-              ),
-              Positioned(
-                top: 18,
-                left: 18,
-                child: SafeArea(
-                  child: IconButton.filledTonal(
-                    key: const Key('media-viewer-close'),
-                    tooltip: context.l10n.select(
-                      zh: '关闭预览',
-                      en: 'Close preview',
-                    ),
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close_rounded),
-                  ),
-                ),
-              ),
-              if (canGoBack)
                 Positioned(
-                  left: 16,
                   top: 0,
-                  bottom: 0,
-                  child: Center(
-                    child: IconButton.filledTonal(
-                      key: const Key('media-viewer-previous'),
-                      tooltip: context.l10n.select(
-                        zh: '上一项',
-                        en: 'Previous item',
-                      ),
-                      onPressed: () => _goTo(currentIndex - 1),
-                      icon: const Icon(Icons.chevron_left_rounded, size: 34),
-                    ),
+                  left: 82,
+                  right: 82,
+                  height: 44,
+                  child: DesktopWindowDragArea(
+                    key: const Key('media-viewer-window-drag-area'),
+                    child: const SizedBox.expand(),
                   ),
                 ),
-              if (window?.error != null)
                 Positioned(
-                  top: 64,
-                  right: 24,
-                  child: TextButton.icon(
-                    onPressed: _extendWindow,
-                    icon: const Icon(Icons.refresh),
-                    label: Text(
-                      context.l10n.select(
-                        zh: '相邻媒体加载失败，重试',
-                        en: 'Could not load adjacent media. Retry',
-                      ),
-                    ),
-                  ),
-                ),
-              if (canGoForward)
-                Positioned(
-                  right: 16,
-                  top: 0,
-                  bottom: 0,
-                  child: Center(
-                    child: IconButton.filledTonal(
-                      key: const Key('media-viewer-next'),
-                      tooltip: context.l10n.select(zh: '下一项', en: 'Next item'),
-                      onPressed: () => _goTo(currentIndex + 1),
-                      icon: const Icon(Icons.chevron_right_rounded, size: 34),
-                    ),
-                  ),
-                ),
-              if (!immersive)
-                Positioned(
-                  left: horizontalInset,
-                  right: horizontalInset,
-                  bottom: 8,
+                  top: 18,
+                  left: 18,
                   child: SafeArea(
-                    top: false,
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxHeight: 112),
-                      child: Material(
-                        color: const Color(0xdd181b24),
-                        borderRadius: BorderRadius.circular(20),
-                        child: SingleChildScrollView(
-                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      item.originalName,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  if (item.kind == MediaKind.video) ...[
-                                    FilledButton.tonalIcon(
-                                      key: const Key('media-viewer-edit-video'),
-                                      onPressed: _editCurrentVideo,
-                                      icon: const Icon(
-                                        Icons.content_cut_rounded,
-                                      ),
-                                      label: Text(
-                                        context.l10n.select(
-                                          zh: '剪辑',
-                                          en: 'Edit video',
+                    child: IconButton.filledTonal(
+                      key: const Key('media-viewer-close'),
+                      tooltip: context.l10n.select(
+                        zh: '关闭预览',
+                        en: 'Close preview',
+                      ),
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ),
+                ),
+                if (canGoBack)
+                  Positioned(
+                    left: 16,
+                    top: 0,
+                    bottom: 0,
+                    child: Center(
+                      child: IconButton.filledTonal(
+                        key: const Key('media-viewer-previous'),
+                        tooltip: context.l10n.select(
+                          zh: '上一项',
+                          en: 'Previous item',
+                        ),
+                        onPressed: () => _goTo(currentIndex - 1),
+                        icon: const Icon(Icons.chevron_left_rounded, size: 34),
+                      ),
+                    ),
+                  ),
+                if (window?.error != null)
+                  Positioned(
+                    top: 64,
+                    right: 24,
+                    child: TextButton.icon(
+                      onPressed: _extendWindow,
+                      icon: const Icon(Icons.refresh),
+                      label: Text(
+                        context.l10n.select(
+                          zh: '相邻媒体加载失败，重试',
+                          en: 'Could not load adjacent media. Retry',
+                        ),
+                      ),
+                    ),
+                  ),
+                if (canGoForward)
+                  Positioned(
+                    right: 16,
+                    top: 0,
+                    bottom: 0,
+                    child: Center(
+                      child: IconButton.filledTonal(
+                        key: const Key('media-viewer-next'),
+                        tooltip: context.l10n.select(
+                          zh: '下一项',
+                          en: 'Next item',
+                        ),
+                        onPressed: () => _goTo(currentIndex + 1),
+                        icon: const Icon(Icons.chevron_right_rounded, size: 34),
+                      ),
+                    ),
+                  ),
+                if (!immersive)
+                  Positioned(
+                    left: horizontalInset,
+                    right: horizontalInset,
+                    bottom: 8,
+                    child: SafeArea(
+                      top: false,
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 112),
+                        child: Material(
+                          color: const Color(0xdd181b24),
+                          borderRadius: BorderRadius.circular(20),
+                          child: SingleChildScrollView(
+                            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        item.originalName,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w600,
                                         ),
                                       ),
                                     ),
-                                    const SizedBox(width: 8),
-                                  ],
-                                  FilledButton.tonalIcon(
-                                    key: const Key(
-                                      'media-viewer-edit-metadata',
-                                    ),
-                                    onPressed: _editCurrent,
-                                    icon: const Icon(Icons.edit_note_rounded),
-                                    label: Text(
-                                      context.l10n.select(
-                                        zh: '编辑标签与备注',
-                                        en: 'Edit tags & note',
+                                    const SizedBox(width: 12),
+                                    if (item.kind == MediaKind.video) ...[
+                                      FilledButton.tonalIcon(
+                                        key: const Key(
+                                          'media-viewer-edit-video',
+                                        ),
+                                        onPressed: _editCurrentVideo,
+                                        icon: const Icon(
+                                          Icons.content_cut_rounded,
+                                        ),
+                                        label: Text(
+                                          context.l10n.select(
+                                            zh: '剪辑',
+                                            en: 'Edit video',
+                                          ),
+                                        ),
                                       ),
-                                    ),
-                                  ),
-                                  if (!Platform.isAndroid) ...[
-                                    const SizedBox(width: 8),
+                                      const SizedBox(width: 8),
+                                    ],
                                     FilledButton.tonalIcon(
-                                      key: const Key('media-viewer-details'),
-                                      onPressed: _showDetails,
-                                      icon: const Icon(Icons.info_outline),
+                                      key: const Key(
+                                        'media-viewer-edit-metadata',
+                                      ),
+                                      onPressed: _editCurrent,
+                                      icon: const Icon(Icons.edit_note_rounded),
                                       label: Text(
                                         context.l10n.select(
-                                          zh: '详情',
-                                          en: 'Details',
+                                          zh: '编辑标签与备注',
+                                          en: 'Edit tags & note',
                                         ),
                                       ),
                                     ),
-                                  ],
-                                ],
-                              ),
-                              const SizedBox(height: 7),
-                              _ViewerTags(
-                                item: item,
-                                compact: widget.compactTagDisplay,
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                item.note?.isNotEmpty == true
-                                    ? item.note!
-                                    : context.l10n.select(
-                                        zh: '暂无备注',
-                                        en: 'No note',
+                                    if (!Platform.isAndroid) ...[
+                                      const SizedBox(width: 8),
+                                      FilledButton.tonalIcon(
+                                        key: const Key('media-viewer-details'),
+                                        onPressed: _showDetails,
+                                        icon: const Icon(Icons.info_outline),
+                                        label: Text(
+                                          context.l10n.select(
+                                            zh: '详情',
+                                            en: 'Details',
+                                          ),
+                                        ),
                                       ),
-                                key: const Key('media-viewer-note'),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  color: item.note?.isNotEmpty == true
-                                      ? Colors.white70
-                                      : Colors.white38,
-                                  height: 1.35,
+                                    ],
+                                  ],
                                 ),
-                              ),
-                            ],
+                                const SizedBox(height: 7),
+                                _ViewerTags(
+                                  item: item,
+                                  compact: widget.compactTagDisplay,
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  item.note?.isNotEmpty == true
+                                      ? item.note!
+                                      : context.l10n.select(
+                                          zh: '暂无备注',
+                                          en: 'No note',
+                                        ),
+                                  key: const Key('media-viewer-note'),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: item.note?.isNotEmpty == true
+                                        ? Colors.white70
+                                        : Colors.white38,
+                                    height: 1.35,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
                     ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -989,6 +1008,7 @@ class _VideoViewerState extends State<_VideoViewer> {
               cover: widget.asset,
               controls: AdaptiveVideoControls,
               showLoadingIndicator: false,
+              initialThumbnail: VideoThumbnailCache.peekCover(widget.asset),
             ),
           ),
         ),

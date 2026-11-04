@@ -10,6 +10,7 @@ import 'package:squid_album/src/platform/device_sync_network.dart';
 import 'package:squid_album/src/rust/device_sync/connection.dart';
 import 'package:squid_album/src/rust/device_sync/driver.dart' as driver;
 import 'package:squid_album/src/rust/device_sync/read_model.dart' as read;
+import 'package:squid_album/src/rust/device_sync/runtime.dart' as runtime;
 import 'package:squid_album/src/rust/device_sync/work.dart';
 import 'package:squid_album/src/ui/desktop_window_drag_area.dart';
 import 'package:squid_album/src/ui/device_sync/invitation_qr.dart';
@@ -48,6 +49,297 @@ void main() {
       expect(find.byType(DeviceSyncPage), findsNothing);
       expect(find.byKey(const Key('open-page')), findsOneWidget);
       expect(access.sessions.single.closed, isTrue);
+    },
+  );
+  testWidgets(
+    'completed sync close failure does not render a second result page',
+    (tester) async {
+      final session = PanelSession()
+        ..state = endpoint(
+          driver.State.completed,
+          host: true,
+          controller: false,
+          source: false,
+        )
+        ..closeFailure = const DeviceSyncReadFailure(
+          read.ReadError.invalidInput,
+        );
+      final access = PageAccess()..sessionFactory = () => session;
+      await openPage(tester, access);
+      await createHost(tester);
+      await tester.ensureVisible(find.byKey(const Key('device-sync-complete')));
+      await tester.tap(find.byKey(const Key('device-sync-complete')));
+      await tester.pumpAndSettle();
+
+      expect(session.closed, isTrue);
+      expect(session.settled, isTrue);
+      expect(find.byType(DeviceSyncPage), findsNothing);
+      expect(find.byKey(const Key('device-sync-result')), findsNothing);
+      expect(find.byKey(const Key('device-page-error')), findsNothing);
+      expect(find.byKey(const Key('open-page')), findsOneWidget);
+    },
+  );
+  testWidgets(
+    'terminal sync outcomes notify once with a safe stage and transferred-byte summary',
+    (tester) async {
+      final cases =
+          <
+            ({
+              driver.State stage,
+              read.ReadError? error,
+              String title,
+              String bodyPart,
+            })
+          >[
+            (
+              stage: driver.State.completed,
+              error: null,
+              title: 'NSOAlbum · Device sync complete',
+              bodyPart: 'Transferred 0.02 KB',
+            ),
+            (
+              stage: driver.State.completedUnconfirmed,
+              error: null,
+              title: 'NSOAlbum · Device sync incomplete',
+              bodyPart: 'Result unconfirmed',
+            ),
+            (
+              stage: driver.State.cancelled,
+              error: read.ReadError.cancelled,
+              title: 'NSOAlbum · Device sync cancelled',
+              bodyPart: 'Sync cancelled',
+            ),
+            (
+              stage: driver.State.failed,
+              error: read.ReadError.disconnected,
+              title: 'NSOAlbum · Device sync incomplete',
+              bodyPart: 'Connection was lost',
+            ),
+            (
+              stage: driver.State.failed,
+              error: read.ReadError.timeout,
+              title: 'NSOAlbum · Device sync incomplete',
+              bodyPart: 'Connection timed out',
+            ),
+            (
+              stage: driver.State.failed,
+              error: read.ReadError.applyFailed,
+              title: 'NSOAlbum · Device sync incomplete',
+              bodyPart: 'matching cache can be reused',
+            ),
+          ];
+
+      for (final item in cases) {
+        final session = PanelSession();
+        final access = PageAccess()..sessionFactory = () => session;
+        await openPage(tester, access);
+        await createHost(tester);
+
+        final terminal = endpoint(
+          item.stage,
+          host: true,
+          controller: false,
+          source: false,
+        );
+        session.failure = item.error == read.ReadError.disconnected
+            ? null
+            : item.error;
+        final useTcpError =
+            item.error == read.ReadError.disconnected ||
+            item.error == read.ReadError.timeout;
+        session.update(
+          read.EndpointRead(
+            value: terminal.value,
+            progress: read.ProgressView(
+              workStage: WorkStage.idle,
+              workActive: false,
+              scannedItems: BigInt.zero,
+              transferredBytes: BigInt.from(25),
+            ),
+            error: useTcpError ? null : item.error,
+            tcp: useTcpError
+                ? runtime.TcpView(
+                    phase: runtime.TcpPhase.closed,
+                    error: item.error ?? read.ReadError.disconnected,
+                  )
+                : null,
+          ),
+        );
+        await tester.pump(const Duration(milliseconds: 600));
+        await tester.pump();
+
+        expect(access.notifications, hasLength(1), reason: '${item.stage}');
+        expect(access.notifications.single.title, item.title);
+        expect(
+          access.notifications.single.body,
+          contains(item.bodyPart),
+          reason: '${item.stage}',
+        );
+        expect(
+          access.notifications.single.body,
+          isNot(contains('secret-path')),
+        );
+        expect(find.byKey(const Key('device-sync-result')), findsOneWidget);
+
+        await endPage(tester);
+        await tester.pumpWidget(const SizedBox());
+      }
+    },
+  );
+  testWidgets(
+    'terminal notification waits for cleanup and remains one-shot while polling',
+    (tester) async {
+      final session = PanelSession()
+        ..state = endpoint(
+          driver.State.completed,
+          host: true,
+          controller: false,
+          source: false,
+          cleanupPending: true,
+        );
+      final access = PageAccess()..sessionFactory = () => session;
+      await openPage(tester, access);
+      await createHost(tester);
+      await tester.pump();
+      expect(access.notifications, isEmpty);
+
+      session.update(
+        endpoint(
+          driver.State.completed,
+          host: true,
+          controller: false,
+          source: false,
+          cleanupPending: false,
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 2));
+      expect(access.notifications, hasLength(1));
+
+      await endPage(tester);
+    },
+  );
+  testWidgets(
+    'applied-media cache callback runs once only after confirmed receiver completion',
+    (tester) async {
+      final session = PanelSession()
+        ..state = endpoint(
+          driver.State.completed,
+          host: true,
+          controller: false,
+          source: false,
+          cleanupPending: true,
+        );
+      final access = PageAccess()..sessionFactory = () => session;
+      final warmedSessions = <DeviceSyncSessionController>[];
+      await openPage(
+        tester,
+        access,
+        onAppliedMediaCache: (session) async => warmedSessions.add(session),
+      );
+      await createHost(tester);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(warmedSessions, isEmpty, reason: 'Cleanup must finish first.');
+
+      session.update(
+        endpoint(
+          driver.State.completed,
+          host: true,
+          controller: false,
+          source: false,
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+      expect(warmedSessions, [same(session)]);
+
+      session.update(
+        endpoint(
+          driver.State.completed,
+          host: true,
+          controller: false,
+          source: false,
+          cleanupPending: true,
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      session.update(
+        endpoint(
+          driver.State.completed,
+          host: true,
+          controller: false,
+          source: false,
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+      expect(warmedSessions, [same(session)], reason: 'A session warms once.');
+      await endPage(tester);
+
+      final unconfirmedSession = PanelSession()
+        ..state = endpoint(
+          driver.State.completedUnconfirmed,
+          host: true,
+          controller: false,
+          source: false,
+        );
+      final unconfirmedAccess = PageAccess()
+        ..sessionFactory = () => unconfirmedSession;
+      await openPage(
+        tester,
+        unconfirmedAccess,
+        onAppliedMediaCache: (session) async => warmedSessions.add(session),
+      );
+      await createHost(tester);
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+      expect(warmedSessions, [
+        same(session),
+      ], reason: 'Unconfirmed completion cannot authorize cache-page reads.');
+      await endPage(tester);
+    },
+  );
+  testWidgets(
+    'apply failure offers a cache-reusing continuation through a fresh pairing',
+    (tester) async {
+      final session = PanelSession()
+        ..state = (() {
+          final failed = endpoint(
+            driver.State.failed,
+            host: true,
+            controller: false,
+            source: false,
+          );
+          return read.EndpointRead(
+            value: failed.value,
+            progress: failed.progress,
+            error: read.ReadError.applyFailed,
+          );
+        })();
+      final access = PageAccess()..sessionFactory = () => session;
+      await openPage(tester, access);
+      await createHost(tester);
+      session.update(session.state);
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      final continueButton = find.byKey(const Key('device-continue-apply'));
+      await tester.ensureVisible(continueButton);
+      expect(continueButton, findsOneWidget);
+      expect(
+        find.text(
+          'After re-pairing, the manifest, target library and file SHA-256 are checked again. Matching cached files can be reused without retransferring; missing or mismatched files must be sent again.',
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(continueButton);
+      await tester.pumpAndSettle();
+
+      expect(session.closed, isTrue);
+      expect(find.byType(DeviceSyncPage), findsOneWidget);
+      expect(find.byKey(const Key('device-create-code')), findsOneWidget);
+      await endPage(tester);
     },
   );
   testWidgets(
@@ -297,12 +589,32 @@ void main() {
         await tester.pump(const Duration(milliseconds: 600));
         await tester.pump();
         expect(session.refreshes, greaterThanOrEqualTo(2));
-        expect(find.text('Sync did not complete'), findsOneWidget);
+        expect(find.byKey(const Key('device-sync-result')), findsOneWidget);
+        expect(
+          find.descendant(
+            of: find.byKey(const Key('device-sync-result')),
+            matching: find.textContaining(
+              failure is DeviceSyncBusy
+                  ? 'Sync complete'
+                  : 'Connection was lost',
+            ),
+          ),
+          findsOneWidget,
+        );
         expect(
           find.byKey(const Key('device-page-error')),
           failure is DeviceSyncBusy ? findsNothing : findsOneWidget,
         );
-        expect(find.byKey(const Key('device-session-error')), findsOneWidget);
+        expect(
+          find.byKey(const Key('device-session-error')),
+          failure is DeviceSyncBusy ? findsNothing : findsOneWidget,
+        );
+        expect(
+          access.notifications.single.title,
+          failure is DeviceSyncBusy
+              ? 'NSOAlbum · Device sync complete'
+              : 'NSOAlbum · Device sync incomplete',
+        );
         await endPage(tester);
         await tester.pumpWidget(const SizedBox.shrink());
       }
@@ -325,7 +637,18 @@ void main() {
       await tester.pump(const Duration(milliseconds: 600));
       await tester.pump();
       expect(find.byKey(const Key('device-page-error')), findsNothing);
-      expect(find.text('Sync did not complete'), findsOneWidget);
+      expect(find.byKey(const Key('device-sync-result')), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('device-sync-result')),
+          matching: find.textContaining('Sync complete'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        access.notifications.single.title,
+        'NSOAlbum · Device sync complete',
+      );
       await endPage(tester);
     },
   );
@@ -492,10 +815,19 @@ Future<void> endPage(WidgetTester tester) async {
   }
 }
 
-Future<void> openPage(WidgetTester tester, PageAccess access) async {
+Future<void> openPage(
+  WidgetTester tester,
+  PageAccess access, {
+  Future<void> Function(DeviceSyncSessionController session)?
+  onAppliedMediaCache,
+}) async {
   await tester.pumpWidget(
     pageApp(
-      builder: (context) => DeviceSyncPage(access: access, mobile: false),
+      builder: (context) => DeviceSyncPage(
+        access: access,
+        mobile: false,
+        onAppliedMediaCache: onAppliedMediaCache,
+      ),
     ),
   );
   await tester.tap(find.byKey(const Key('open-page')));
@@ -539,6 +871,7 @@ class PageAccess extends DeviceSyncPageAccess {
   int checks = 0;
   final hosts = <({bool usb, String name, String? address})>[];
   final sessions = <PanelSession>[];
+  final notifications = <({String title, String body})>[];
   Future<DeviceSyncSessionController>? opening;
   Object? hostFailure;
   String interfacePrefix = 'LAN';
@@ -558,6 +891,14 @@ class PageAccess extends DeviceSyncPageAccess {
   Future<void> checkRecovery() async {
     checks++;
     setReady(true);
+  }
+
+  @override
+  Future<void> notifyResult({
+    required String title,
+    required String body,
+  }) async {
+    notifications.add((title: title, body: body));
   }
 
   @override
@@ -707,8 +1048,18 @@ class _RecoveringObservationSession extends PanelSession {
       );
       return state;
     }
-    failure = read.ReadError.disconnected;
-    state = endpoint(driver.State.failed, host: true, controller: false);
+    if (firstFailure is DeviceSyncBusy) {
+      failure = null;
+      state = endpoint(
+        driver.State.completed,
+        host: true,
+        controller: false,
+        source: false,
+      );
+    } else {
+      failure = read.ReadError.disconnected;
+      state = endpoint(driver.State.failed, host: true, controller: false);
+    }
     return state;
   }
 }

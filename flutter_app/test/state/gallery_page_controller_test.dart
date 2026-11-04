@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:squid_album/src/backend/app_backend.dart';
 import 'package:squid_album/src/rust/models.dart';
 import 'package:squid_album/src/state/gallery_page_controller.dart';
 import 'package:squid_album/src/state/media_window_controller.dart';
@@ -50,6 +51,19 @@ class DeferredPages extends FakeBackend {
     final response = Completer<GalleryPage>();
     pending.add(response);
     return response.future;
+  }
+}
+
+class CountingPages extends DeferredPages implements MediaCountBackend {
+  final countResults = <Completer<BigInt>>[];
+  GalleryQuery? countedQuery;
+
+  @override
+  Future<BigInt> countMedia(GalleryQuery query) {
+    countedQuery = query;
+    final result = Completer<BigInt>();
+    countResults.add(result);
+    return result.future;
   }
 }
 
@@ -140,6 +154,27 @@ void main() {
     },
   );
 
+  test('count uses a count-only query and ignores stale generations', () async {
+    final backend = CountingPages();
+    final controller = GalleryPageController(backend);
+    addTearDown(controller.dispose);
+    final first = controller.reload(query());
+    backend.pending[0].complete(page([5, 4], after: true));
+    await first;
+    await Future<void>.delayed(Duration.zero);
+    expect(backend.countedQuery?.kind, GalleryKindFilter.all);
+    expect(backend.requests, hasLength(1));
+    expect(backend.countResults, hasLength(1));
+    final changed = controller.reload(query(favorites: true));
+    backend.pending[1].complete(page([2, 1]));
+    await changed;
+    expect(backend.countResults, hasLength(2));
+    backend.countResults[0].complete(BigInt.from(5));
+    backend.countResults[1].complete(BigInt.from(2));
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.totalMatching, 2);
+  });
+
   test('opposite page directions complete independently without dropping either page', () async {
     final backend = DeferredPages();
     final controller = GalleryPageController(backend);
@@ -171,6 +206,31 @@ void main() {
     expect(controller.hasAfter, isFalse);
     expect(controller.hasBefore, isFalse);
   });
+
+  test(
+    'load all matching walks every page without changing the visible window',
+    () async {
+      final backend = DeferredPages();
+      final controller = GalleryPageController(backend);
+      addTearDown(controller.dispose);
+      controller.seed(query(), page([9, 8], after: true));
+
+      final pending = controller.loadAllMatching(
+        filter: (item) => item.id.isEven,
+      );
+      expect(backend.requests.single.cursor?.mediaId, 8);
+      backend.pending[0].complete(page([7, 6], after: true));
+      await Future<void>.delayed(Duration.zero);
+      expect(backend.requests.last.cursor?.mediaId, 6);
+      backend.pending[1].complete(page([5, 4]));
+      final all = await pending;
+
+      expect(all.map((item) => item.id), [8, 6, 4]);
+      expect(controller.items.map((item) => item.id), [9, 8]);
+      expect(controller.hasAfter, isTrue);
+    },
+  );
+
   test(
     'repeated scroll coalesces; a failed page retries the unchanged cursor',
     () async {

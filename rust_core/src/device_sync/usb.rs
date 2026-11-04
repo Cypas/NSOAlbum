@@ -15,6 +15,17 @@ use super::read_model::ReadError;
 use super::runtime::{self, Owner};
 
 const IO_DEADLINE: Duration = Duration::from_secs(30);
+/// Discovery waits for the phone to unlock, authorize its exchange folder and
+/// publish the scanned session. It is user-paced and must outlive normal I/O.
+const DISCOVERY_DEADLINE: Duration = Duration::from_secs(90);
+
+fn deadline_for(action: &UsbAction) -> Duration {
+    if action.kind == UsbActionKind::Open && action.device.is_none() && action.storage.is_none() {
+        DISCOVERY_DEADLINE
+    } else {
+        IO_DEADLINE
+    }
+}
 const TICK: Duration = Duration::from_millis(2);
 const CLEANUP_BATCH_DELAY: Duration = Duration::from_millis(250);
 const DIRECTORY_BYTES: usize = 32 * 1024 * 1024;
@@ -280,7 +291,7 @@ impl Control {
         }
         // Judge OS completion at receipt, not when the owner eventually
         // consumes it after synchronous source integrity work.
-        if pending.started.elapsed() >= IO_DEADLINE {
+        if pending.started.elapsed() >= deadline_for(action) {
             return Err(ReadError::Timeout);
         }
         let valid_payload = if reply.error.is_some() {
@@ -473,7 +484,9 @@ impl UsbDriver {
         let completed = {
             let mut exchange = control.exchange.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(pending) = &mut exchange.pending {
-                if pending.reply.is_none() && pending.started.elapsed() >= IO_DEADLINE {
+                if pending.reply.is_none()
+                    && pending.started.elapsed() >= deadline_for(&pending.action)
+                {
                     if let Some(kind) = io_kind(pending.action.kind) {
                         self.driver.record_usb_io(
                             kind,
@@ -1123,7 +1136,9 @@ pub(crate) fn launch(
                     if let Some(action) = action {
                         // Both pipe write and read run independently of the Driver.
                         match native_request(&action).and_then(|r| {
-                            process.begin_request(r, IO_DEADLINE).map_err(native_error)
+                            process
+                                .begin_request(r, deadline_for(&action))
+                                .map_err(native_error)
                         }) {
                             Ok(()) => native_pending = Some(action),
                             Err(error) => outcome = Err(error),
@@ -1214,6 +1229,21 @@ mod completion_tests {
         assert_eq!(value["method"], "discover");
         assert_eq!(value["session"], "d".repeat(32));
         assert!(value.get("device").is_none());
+    }
+
+    #[test]
+    fn discovery_open_uses_the_user_paced_deadline() {
+        let discovery = discovery_action();
+        assert_eq!(deadline_for(&discovery), DISCOVERY_DEADLINE);
+
+        let mut opened = discovery.clone();
+        opened.device = Some("d".repeat(32));
+        opened.storage = Some("e".repeat(16));
+        assert_eq!(deadline_for(&opened), IO_DEADLINE);
+
+        let mut listed = discovery.clone();
+        listed.kind = UsbActionKind::List;
+        assert_eq!(deadline_for(&listed), IO_DEADLINE);
     }
 
     #[test]

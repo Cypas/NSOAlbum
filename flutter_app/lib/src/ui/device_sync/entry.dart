@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../backend/app_backend.dart';
 import '../../l10n/app_localizations.dart';
+import 'applied_media_prefetch.dart';
 import 'device_sync_page.dart';
 import 'multi_device_sync_page.dart';
 import 'page_access.dart';
@@ -16,6 +19,7 @@ class DeviceSyncEntry extends StatelessWidget {
   final AppBackend backend;
   final bool mobile;
   final Future<void> Function() onLibraryChanged;
+
   Future<void> _open(BuildContext context) async {
     if (!mobile) {
       await Navigator.of(context).push<void>(
@@ -23,6 +27,7 @@ class DeviceSyncEntry extends StatelessWidget {
           builder: (_) => MultiDeviceSyncPage(
             backend: backend,
             onLibraryChanged: onLibraryChanged,
+            onAppliedMediaCache: warmAppliedMediaCache,
           ),
         ),
       );
@@ -38,6 +43,7 @@ class DeviceSyncEntry extends StatelessWidget {
             access: access,
             mobile: true,
             onLibraryChanged: onLibraryChanged,
+            onAppliedMediaCache: warmAppliedMediaCache,
           ),
         ),
       );
@@ -62,20 +68,18 @@ class DeviceSyncEntry extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Card(
-      child: ListTile(
-        key: const Key('device-sync-entry'),
-        leading: const Icon(Icons.devices_outlined),
-        title: Text(
-          context.l10n.select(zh: '多设备同步', en: 'Multi-device sync'),
+    child: ListTile(
+      key: const Key('device-sync-entry'),
+      leading: const Icon(Icons.devices_outlined),
+      title: Text(context.l10n.select(zh: '多设备同步', en: 'Multi-device sync')),
+      subtitle: Text(
+        context.l10n.select(
+          zh: '在电脑与 Android 之间同步图库',
+          en: 'Sync libraries between desktop and Android',
         ),
-        subtitle: Text(
-          context.l10n.select(
-            zh: '在电脑与 Android 之间同步图库',
-            en: 'Sync libraries between desktop and Android',
-          ),
-        ),
-        trailing: const Icon(Icons.chevron_right),
-        onTap: () => _open(context),
       ),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => _open(context),
+    ),
   );
 }

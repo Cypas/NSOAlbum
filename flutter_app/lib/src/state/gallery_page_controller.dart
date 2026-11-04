@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../backend/app_backend.dart';
 import '../rust/models.dart';
+import '../ui/gallery_perf.dart';
 
 /// Owns one query snapshot. Late pages can never enter a newer query/window.
 class GalleryPageController extends ChangeNotifier {
@@ -14,6 +17,8 @@ class GalleryPageController extends ChangeNotifier {
   GalleryCursor? beforeCursor, afterCursor;
   bool hasBefore = false, hasAfter = false;
   bool loading = false, loadingNext = false, loadingPrevious = false;
+  int? totalMatching;
+  bool countingTotal = false;
   Object? error;
   int _generation = 0;
   bool _disposed = false;
@@ -32,6 +37,8 @@ class GalleryPageController extends ChangeNotifier {
     afterCursor = page.afterCursor;
     hasBefore = page.hasBefore;
     hasAfter = page.hasAfter;
+    totalMatching = null;
+    countingTotal = false;
     loading = loadingNext = loadingPrevious = false;
     _next = _previous = null;
     error = null;
@@ -48,6 +55,8 @@ class GalleryPageController extends ChangeNotifier {
     items = const [];
     beforeCursor = afterCursor = null;
     hasBefore = hasAfter = false;
+    totalMatching = null;
+    countingTotal = false;
     loadingNext = loadingPrevious = false;
     _next = _previous = null;
     loading = true;
@@ -74,6 +83,33 @@ class GalleryPageController extends ChangeNotifier {
       if (!_disposed && generation == _generation) {
         loading = false;
         _notify();
+        unawaited(_countMatching(frozen, generation));
+      }
+    }
+  }
+
+  Future<void> _countMatching(GalleryQuery scope, int generation) async {
+    if (_disposed ||
+        generation != _generation ||
+        countingTotal ||
+        accept != null ||
+        backend is! MediaCountBackend) {
+      return;
+    }
+    countingTotal = true;
+    _notify();
+    try {
+      final count = await (backend as MediaCountBackend).countMedia(scope);
+      if (!_disposed && generation == _generation) {
+        totalMatching = count.toInt();
+      }
+    } catch (_) {
+      // The indicator remains on the loaded-page count if counting is
+      // unavailable in a compatibility backend.
+    } finally {
+      if (!_disposed && generation == _generation) {
+        countingTotal = false;
+        _notify();
       }
     }
   }
@@ -92,6 +128,89 @@ class GalleryPageController extends ChangeNotifier {
       return Future.value();
     }
     return _previous = _load(GalleryPageDirection.backward);
+  }
+
+  /// Loads every media item matching the current query and optional search
+  /// filter. This does not replace or extend the visible paging window.
+  Future<List<MediaAsset>> loadAllMatching({
+    bool Function(MediaAsset)? filter,
+  }) async {
+    final scope = query;
+    if (_disposed) return const [];
+    if (scope == null) return _unique(List.of(items));
+    final generation = _generation;
+    final effectiveFilter = filter ?? accept;
+    final leading = <MediaAsset>[];
+    final trailing = <MediaAsset>[];
+
+    Future<void> walk({
+      required GalleryPageDirection direction,
+      required GalleryCursor? initialCursor,
+      required bool initialHasMore,
+      required List<MediaAsset> target,
+    }) async {
+      var cursor = initialCursor;
+      var hasMore = initialHasMore;
+      while (hasMore) {
+        if (cursor == null) {
+          throw StateError('The media page set cannot advance');
+        }
+        final page = await backend
+            .listMediaPage(
+              GalleryPageRequest(
+                query: scope,
+                cursor: cursor,
+                direction: direction,
+              ),
+            )
+            .timeout(const Duration(seconds: 25));
+        if (_disposed || generation != _generation) return;
+        final nextCursor = direction == GalleryPageDirection.forward
+            ? page.afterCursor
+            : page.beforeCursor;
+        if (page.hasAfter &&
+            direction == GalleryPageDirection.forward &&
+            (page.items.isEmpty || nextCursor == cursor)) {
+          throw StateError('The media page did not advance');
+        }
+        if (page.hasBefore &&
+            direction == GalleryPageDirection.backward &&
+            (page.items.isEmpty || nextCursor == cursor)) {
+          throw StateError('The media page did not advance');
+        }
+        target.addAll(
+          effectiveFilter == null
+              ? page.items
+              : page.items.where(effectiveFilter),
+        );
+        cursor = nextCursor;
+        hasMore = direction == GalleryPageDirection.forward
+            ? page.hasAfter
+            : page.hasBefore;
+      }
+    }
+
+    await walk(
+      direction: GalleryPageDirection.forward,
+      initialCursor: afterCursor,
+      initialHasMore: hasAfter,
+      target: trailing,
+    );
+    if (_disposed || generation != _generation) return const [];
+    await walk(
+      direction: GalleryPageDirection.backward,
+      initialCursor: beforeCursor,
+      initialHasMore: hasBefore,
+      target: leading,
+    );
+    if (_disposed || generation != _generation) return const [];
+    return _unique([
+      ...leading,
+      ...items.where(
+        (item) => effectiveFilter == null || effectiveFilter(item),
+      ),
+      ...trailing,
+    ]);
   }
 
   Future<void> _load(GalleryPageDirection direction) async {
@@ -153,11 +272,16 @@ class GalleryPageController extends ChangeNotifier {
   ) async {
     var current = request;
     while (true) {
-      final page = await backend
-          .listMediaPage(current)
-          .timeout(const Duration(seconds: 25));
+      final page = await GalleryPerf.instance.async(
+        GalleryMetric.pageWait,
+        () =>
+            backend.listMediaPage(current).timeout(const Duration(seconds: 25)),
+      );
       if (filter == null || _disposed || generation != _generation) return page;
-      final matches = page.items.where(filter).toList();
+      final matches = GalleryPerf.instance.sync(
+        GalleryMetric.filter,
+        () => page.items.where(filter).toList(),
+      );
       final forward = current.direction == GalleryPageDirection.forward;
       final more = forward ? page.hasAfter : page.hasBefore;
       final cursor = forward ? page.afterCursor : page.beforeCursor;

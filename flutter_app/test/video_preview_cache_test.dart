@@ -4,6 +4,37 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:squid_album/src/ui/video_preview_cache.dart';
 
 void main() {
+  test('bounded cache workers run independent jobs concurrently', () async {
+    final gates = <Completer<int?>>[];
+    var active = 0;
+    var peak = 0;
+    final cache = PreviewCache<int>(
+      maxEntries: 4,
+      maxBytes: 10,
+      sizeOf: (_) => 1,
+      maxConcurrent: 2,
+    );
+    Future<int?> load(PreviewWork _) {
+      active++;
+      if (active > peak) peak = active;
+      final gate = Completer<int?>();
+      gates.add(gate);
+      return gate.future.whenComplete(() => active--);
+    }
+
+    final first = cache.request('first', load: load);
+    final second = cache.request('second', load: load);
+    final third = cache.request('third', load: load);
+    await Future<void>.delayed(Duration.zero);
+    expect(peak, 2);
+    gates[0].complete(1);
+    await Future<void>.delayed(Duration.zero);
+    expect(gates, hasLength(3));
+    gates[1].complete(2);
+    gates[2].complete(3);
+    await Future.wait([first.future, second.future, third.future]);
+  });
+
   test(
     'shared decode is cancelled only after its last consumer leaves',
     () async {

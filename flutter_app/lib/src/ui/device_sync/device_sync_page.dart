@@ -26,11 +26,14 @@ class DeviceSyncPage extends StatefulWidget {
     required this.access,
     required this.mobile,
     this.onLibraryChanged,
+    this.onAppliedMediaCache,
     this.cameraFactory = createDeviceQrCamera,
   });
   final DeviceSyncPageAccess access;
   final bool mobile;
   final Future<void> Function()? onLibraryChanged;
+  final Future<void> Function(DeviceSyncSessionController session)?
+  onAppliedMediaCache;
   final DeviceQrCamera Function() cameraFactory;
   @override
   State<DeviceSyncPage> createState() => _DeviceSyncPageState();
@@ -55,6 +58,9 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
   bool _errorFromObservation = false;
   bool _usb = false, _leaving = false, _asking = false, _allowPop = false;
   bool _changed = false;
+  bool _appliedMediaCacheRequested = false;
+  bool _resultNotified = false;
+  String? _terminalResult;
   bool _autoPreviewAttempted = false;
   bool _ownedSettled = false, _settledFailure = false;
   Object? _lateOpeningFailure;
@@ -233,6 +239,9 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
     setState(() {
       _session = session;
       _changed = false;
+      _appliedMediaCacheRequested = false;
+      _resultNotified = false;
+      _terminalResult = null;
       _autoPreviewAttempted = false;
     });
     await _observe(session);
@@ -262,6 +271,40 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
           return;
         }
         final view = read.value;
+        final resultError =
+            read.error ??
+            session.issue ??
+            session.transportIssue ??
+            read.tcp?.error;
+        if (!_resultNotified &&
+            view?.terminal == true &&
+            view?.cleanupPending != true) {
+          _resultNotified = true;
+          final stage = view?.stage ?? driver.State.failed;
+          final isSuccess = stage == driver.State.completed;
+          final isCancelled = stage == driver.State.cancelled;
+          final title = context.l10n.select(
+            zh: isSuccess
+                ? '鱿型相册 · 多设备同步完成'
+                : isCancelled
+                ? '鱿型相册 · 多设备同步已取消'
+                : '鱿型相册 · 多设备同步未完成',
+            en: isSuccess
+                ? 'NSOAlbum · Device sync complete'
+                : isCancelled
+                ? 'NSOAlbum · Device sync cancelled'
+                : 'NSOAlbum · Device sync incomplete',
+          );
+          final body = deviceSyncResult(
+            context,
+            stage: stage,
+            error: resultError,
+            transferredBytes: read.progress.transferredBytes,
+          );
+          _terminalResult = body;
+          unawaited(widget.access.notifyResult(title: title, body: body));
+          if (mounted && epoch == _epoch && !_leaving) setState(() {});
+        }
         if (view?.stage != driver.State.awaitingApproval) {
           _autoPreviewAttempted = false;
         }
@@ -295,6 +338,18 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
             !_changed) {
           _changed = true;
           await widget.onLibraryChanged?.call();
+        }
+        if (view?.source == false &&
+            view?.stage == driver.State.completed &&
+            view?.cleanupPending != true &&
+            !_appliedMediaCacheRequested) {
+          _appliedMediaCacheRequested = true;
+          final warmAppliedMedia = widget.onAppliedMediaCache;
+          if (warmAppliedMedia != null) {
+            // Cache warming is best-effort work and must not hold the session
+            // observation loop or delay its terminal presentation.
+            unawaited(_warmAppliedMedia(warmAppliedMedia, session));
+          }
         }
         final after = (
           session.invitation,
@@ -341,6 +396,17 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
     });
     _observation = flight;
     return flight;
+  }
+
+  Future<void> _warmAppliedMedia(
+    Future<void> Function(DeviceSyncSessionController session) callback,
+    DeviceSyncSessionController session,
+  ) async {
+    try {
+      await callback(session);
+    } catch (error, stack) {
+      unawaited(widget.access.logError(error, stack));
+    }
   }
 
   Future<void> _host(int epoch) async {
@@ -506,7 +572,10 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
       ) ==
       true;
 
-  Future<void> _end({required bool leave}) async {
+  Future<void> _end({
+    required bool leave,
+    bool fromCompletionAction = false,
+  }) async {
     if (_leaving || _asking) return;
     if (_settledFailure && _ownedSettled) {
       if (leave) {
@@ -534,8 +603,18 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
       } else {
         _reset();
       }
-    } catch (error) {
+    } catch (error, stack) {
       if (mounted) {
+        if (leave && fromCompletionAction && _ownedSettled) {
+          // A completed transfer must not turn into a second result page just
+          // because teardown reported a recoverable receipt/cleanup failure.
+          // The session is fully settled, so leaving is safe; keep the
+          // diagnostic in the backend log without replacing the successful
+          // sync result with a generic page error.
+          unawaited(widget.access.logError(error, stack));
+          await _pop();
+          return;
+        }
         setState(() {
           _setError(error);
           _leaving = false;
@@ -816,6 +895,12 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
               },
             ),
             DeviceSyncSessionPanel(key: ObjectKey(session), session: session),
+            if (_terminalResult case final result?)
+              Semantics(
+                key: const Key('device-sync-result'),
+                liveRegion: true,
+                child: Text(result),
+              ),
             const SizedBox(height: 16),
             AnimatedBuilder(
               animation: session,
@@ -827,39 +912,70 @@ class _DeviceSyncPageState extends State<DeviceSyncPage>
                         session.localCleanupPending);
                 final completed =
                     view?.stage == driver.State.completed && !cleanupPending;
+                final continueApply =
+                    view?.stage == driver.State.failed &&
+                    view?.source == false &&
+                    (session.snapshot?.error == read.ReadError.applyFailed ||
+                        session.issue == read.ReadError.applyFailed);
                 final terminal =
                     (view?.terminal == true && view?.cleanupPending != true) ||
                     session.closed;
-                return OutlinedButton(
-                  key: Key(
-                    completed
-                        ? 'device-sync-complete'
-                        : cleanupPending
-                        ? 'device-cleanup-pending'
-                        : terminal
-                        ? 'device-new-pairing'
-                        : 'device-end-session',
-                  ),
-                  onPressed: _leaving || cleanupPending
-                      ? null
-                      : completed
-                      ? () => _end(leave: true)
-                      : () => _end(leave: false),
-                  child: Text(
-                    completed
-                        ? context.l10n.select(zh: '同步完成', en: 'Sync complete')
-                        : cleanupPending
-                        ? context.l10n.select(
-                            zh: '正在完成安全清理…',
-                            en: 'Finishing safe cleanup…',
-                          )
-                        : terminal
-                        ? context.l10n.select(zh: '重新配对', en: 'Pair again')
-                        : context.l10n.select(
-                            zh: '取消并结束连接',
-                            en: 'Cancel and end connection',
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    OutlinedButton(
+                      key: Key(
+                        completed
+                            ? 'device-sync-complete'
+                            : continueApply
+                            ? 'device-continue-apply'
+                            : cleanupPending
+                            ? 'device-cleanup-pending'
+                            : terminal
+                            ? 'device-new-pairing'
+                            : 'device-end-session',
+                      ),
+                      onPressed: _leaving || cleanupPending
+                          ? null
+                          : completed
+                          ? () => _end(leave: true, fromCompletionAction: true)
+                          : () => _end(leave: false),
+                      child: Text(
+                        completed
+                            ? context.l10n.select(
+                                zh: '同步完成',
+                                en: 'Sync complete',
+                              )
+                            : continueApply
+                            ? context.l10n.select(
+                                zh: '重新配对并继续应用',
+                                en: 'Re-pair and continue apply',
+                              )
+                            : cleanupPending
+                            ? context.l10n.select(
+                                zh: '正在完成安全清理…',
+                                en: 'Finishing safe cleanup…',
+                              )
+                            : terminal
+                            ? context.l10n.select(zh: '重新配对', en: 'Pair again')
+                            : context.l10n.select(
+                                zh: '取消并结束连接',
+                                en: 'Cancel and end connection',
+                              ),
+                      ),
+                    ),
+                    if (continueApply)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(
+                          context.l10n.select(
+                            zh: '重新配对后会重新核对清单、目标图库和文件 SHA-256；匹配的缓存可复用而不重传，缺失或不匹配的文件需要重新传输。',
+                            en: 'After re-pairing, the manifest, target library and file SHA-256 are checked again. Matching cached files can be reused without retransferring; missing or mismatched files must be sent again.',
                           ),
-                  ),
+                          key: const Key('device-continue-apply-explanation'),
+                        ),
+                      ),
+                  ],
                 );
               },
             ),

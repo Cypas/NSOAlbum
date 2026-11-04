@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../../backend/app_backend.dart';
 import '../../l10n/app_localizations.dart';
 import '../../rust/models.dart';
-import '../device_sync/album_source_label.dart';
+import '../album_media_counts.dart';
 
 String androidMediaAlbumActionMessage({
   required bool move,
@@ -64,10 +64,7 @@ Future<void> showAndroidMediaAlbumAction(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(album.name),
-                AlbumSourceLabel(
-                  name: album.sourceDeviceName,
-                  systemKey: album.systemKey,
-                ),
+                Text(albumMediaCountText(context, album)),
               ],
             ),
           ),

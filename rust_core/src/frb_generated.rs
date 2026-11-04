@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 123636003;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1364285108;
 
 // Section: executor
 
@@ -212,6 +212,39 @@ fn wire__crate__bridge__cancel_current_sync_impl(
         },
     )
 }
+fn wire__crate__bridge__cancel_import_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "cancel_import",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::bridge::cancel_import(api_operation_id)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__bridge__clear_account_tool_cache_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -323,6 +356,39 @@ fn wire__crate__bridge__commit_video_edit_impl(
                     })()
                     .await,
                 )
+            }
+        },
+    )
+}
+fn wire__crate__bridge__count_media_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "count_media",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_query = <crate::models::GalleryQuery>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::bridge::count_media(api_query)?;
+                    std::result::Result::Ok(output_ok)
+                })())
             }
         },
     )
@@ -626,6 +692,43 @@ fn wire__crate__bridge__device_sync_account_payload_impl(
                     })()
                     .await,
                 )
+            }
+        },
+    )
+}
+fn wire__crate__bridge__device_sync_applied_media_page_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "device_sync_applied_media_page",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_endpoint = <String>::sse_decode(&mut deserializer);
+            let api_offset = <u64>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let output_ok = Ok::<_, ()>(crate::bridge::device_sync_applied_media_page(
+                        api_endpoint,
+                        api_offset,
+                    ))?;
+                    std::result::Result::Ok(output_ok)
+                })())
             }
         },
     )
@@ -3111,6 +3214,49 @@ fn wire__crate__bridge__import_mtp_files_impl(
         },
     )
 }
+fn wire__crate__bridge__import_mtp_files_with_progress_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "import_mtp_files_with_progress",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_paths = <Vec<String>>::sse_decode(&mut deserializer);
+            let api_device_name = <String>::sse_decode(&mut deserializer);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let output_ok = crate::bridge::import_mtp_files_with_progress(
+                            api_paths,
+                            api_device_name,
+                            api_operation_id,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__bridge__init_core_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -4600,6 +4746,214 @@ fn wire__crate__bridge__set_runtime_proxy_policy_impl(
         },
     )
 }
+fn wire__crate__bridge__switch_mtp_cancel_stage_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "switch_mtp_cancel_stage",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let output_ok =
+                        Ok::<_, ()>(crate::bridge::switch_mtp_cancel_stage(api_operation_id))?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__switch_mtp_cleanup_stage_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "switch_mtp_cleanup_stage",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let output_ok = Ok::<_, ()>({
+                        crate::bridge::switch_mtp_cleanup_stage(api_operation_id);
+                    })?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__switch_mtp_list_devices_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "switch_mtp_list_devices",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::bridge::switch_mtp_list_devices()?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__switch_mtp_scan_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "switch_mtp_scan",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_device = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::bridge::switch_mtp_scan(api_device)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__switch_mtp_stage_status_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "switch_mtp_stage_status",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let output_ok =
+                        Ok::<_, ()>(crate::bridge::switch_mtp_stage_status(api_operation_id))?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__switch_mtp_start_stage_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "switch_mtp_start_stage",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+            let api_device = <String>::sse_decode(&mut deserializer);
+            let api_entries =
+                <Vec<crate::switch_import::SwitchMtpEntry>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::bridge::switch_mtp_start_stage(
+                        api_operation_id,
+                        api_device,
+                        api_entries,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__bridge__sync_account_history_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -4892,6 +5246,8 @@ impl SseDecode for crate::models::AlbumSummary {
         let mut var_pinned = <bool>::sse_decode(deserializer);
         let mut var_systemKey = <Option<String>>::sse_decode(deserializer);
         let mut var_mediaCount = <u64>::sse_decode(deserializer);
+        let mut var_imageCount = <u64>::sse_decode(deserializer);
+        let mut var_videoCount = <u64>::sse_decode(deserializer);
         let mut var_sourceDeviceName = <Option<String>>::sse_decode(deserializer);
         return crate::models::AlbumSummary {
             id: var_id,
@@ -4901,6 +5257,8 @@ impl SseDecode for crate::models::AlbumSummary {
             pinned: var_pinned,
             system_key: var_systemKey,
             media_count: var_mediaCount,
+            image_count: var_imageCount,
+            video_count: var_videoCount,
             source_device_name: var_sourceDeviceName,
         };
     }
@@ -4958,6 +5316,64 @@ impl SseDecode for crate::device_sync::connection::ApplicationBuild {
         return crate::device_sync::connection::ApplicationBuild {
             version: var_version,
             build_number: var_buildNumber,
+        };
+    }
+}
+
+impl SseDecode for crate::device_sync::read_model::AppliedMediaCacheEntry {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_sha256 = <String>::sse_decode(deserializer);
+        let mut var_storagePath = <String>::sse_decode(deserializer);
+        let mut var_kind = <crate::models::MediaKind>::sse_decode(deserializer);
+        return crate::device_sync::read_model::AppliedMediaCacheEntry {
+            sha256: var_sha256,
+            storage_path: var_storagePath,
+            kind: var_kind,
+        };
+    }
+}
+
+impl SseDecode for crate::device_sync::read_model::AppliedMediaCachePage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_items =
+            <Vec<crate::device_sync::read_model::AppliedMediaCacheEntry>>::sse_decode(deserializer);
+        let mut var_nextOffset = <Option<u64>>::sse_decode(deserializer);
+        return crate::device_sync::read_model::AppliedMediaCachePage {
+            items: var_items,
+            next_offset: var_nextOffset,
+        };
+    }
+}
+
+impl SseDecode for crate::device_sync::read_model::AppliedMediaCachePageRead {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_page =
+            <Option<crate::device_sync::read_model::AppliedMediaCachePage>>::sse_decode(
+                deserializer,
+            );
+        let mut var_error =
+            <Option<crate::device_sync::read_model::ReadError>>::sse_decode(deserializer);
+        return crate::device_sync::read_model::AppliedMediaCachePageRead {
+            page: var_page,
+            error: var_error,
+        };
+    }
+}
+
+impl SseDecode for crate::device_sync::read_model::ApplyProgressPhase {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::device_sync::read_model::ApplyProgressPhase::Preparing,
+            1 => crate::device_sync::read_model::ApplyProgressPhase::Publishing,
+            2 => crate::device_sync::read_model::ApplyProgressPhase::Sql,
+            3 => crate::device_sync::read_model::ApplyProgressPhase::Finalizing,
+            4 => crate::device_sync::read_model::ApplyProgressPhase::Accounts,
+            _ => unreachable!("Invalid variant for ApplyProgressPhase: {}", inner),
         };
     }
 }
@@ -5622,6 +6038,20 @@ impl SseDecode for Vec<crate::models::AlbumSummary> {
     }
 }
 
+impl SseDecode for Vec<crate::device_sync::read_model::AppliedMediaCacheEntry> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(
+                <crate::device_sync::read_model::AppliedMediaCacheEntry>::sse_decode(deserializer),
+            );
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<crate::device_sync::read_model::BackupMetadata> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -5823,6 +6253,20 @@ impl SseDecode for Vec<crate::device_sync::space_budget::StorageRole> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::device_sync::space_budget::StorageRole>::sse_decode(
+                deserializer,
+            ));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::switch_import::SwitchMtpEntry> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::switch_import::SwitchMtpEntry>::sse_decode(
                 deserializer,
             ));
         }
@@ -6234,6 +6678,32 @@ impl SseDecode for Option<crate::device_sync::connection::ApplicationBuild> {
     }
 }
 
+impl SseDecode for Option<crate::device_sync::read_model::AppliedMediaCachePage> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::device_sync::read_model::AppliedMediaCachePage>::sse_decode(deserializer),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::device_sync::read_model::ApplyProgressPhase> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::device_sync::read_model::ApplyProgressPhase>::sse_decode(deserializer),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::device_sync::read_model::BackupPage> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -6367,6 +6837,19 @@ impl SseDecode for Option<crate::models::OperationProgress> {
     }
 }
 
+impl SseDecode for Option<crate::device_sync::work::PreparationStage> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::device_sync::work::PreparationStage>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::device_sync::read_model::PreviewSummary> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -6432,6 +6915,19 @@ impl SseDecode for Option<crate::device_sync::source_names::SourceDescription> {
     }
 }
 
+impl SseDecode for Option<crate::switch_import::SwitchMtpStageStatus> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::switch_import::SwitchMtpStageStatus>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::settings::SyncAttemptSummary> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -6463,6 +6959,17 @@ impl SseDecode for Option<crate::device_sync::runtime::TcpView> {
             return Some(<crate::device_sync::runtime::TcpView>::sse_decode(
                 deserializer,
             ));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<u16> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<u16>::sse_decode(deserializer));
         } else {
             return None;
         }
@@ -6565,6 +7072,22 @@ impl SseDecode for crate::device_sync::read_model::PairingStage {
     }
 }
 
+impl SseDecode for crate::device_sync::work::PreparationStage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::device_sync::work::PreparationStage::ReadingLibrary,
+            1 => crate::device_sync::work::PreparationStage::ComparingRecords,
+            2 => crate::device_sync::work::PreparationStage::CheckingCache,
+            3 => crate::device_sync::work::PreparationStage::CheckingSpace,
+            4 => crate::device_sync::work::PreparationStage::PreparingPreview,
+            5 => crate::device_sync::work::PreparationStage::WaitingForPeer,
+            _ => unreachable!("Invalid variant for PreparationStage: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::device_sync::read_model::PreviewRead {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -6617,20 +7140,50 @@ impl SseDecode for crate::device_sync::read_model::ProgressView {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_workStage = <crate::device_sync::work::WorkStage>::sse_decode(deserializer);
+        let mut var_preparationPhase =
+            <Option<crate::device_sync::work::PreparationStage>>::sse_decode(deserializer);
         let mut var_workActive = <bool>::sse_decode(deserializer);
         let mut var_scannedItems = <u64>::sse_decode(deserializer);
         let mut var_totalItems = <Option<u64>>::sse_decode(deserializer);
+        let mut var_comparedItems = <Option<u64>>::sse_decode(deserializer);
+        let mut var_totalComparedItems = <Option<u64>>::sse_decode(deserializer);
+        let mut var_processedItems = <Option<u64>>::sse_decode(deserializer);
+        let mut var_currentItem = <Option<String>>::sse_decode(deserializer);
+        let mut var_processedBytes = <Option<u64>>::sse_decode(deserializer);
+        let mut var_totalBytes = <Option<u64>>::sse_decode(deserializer);
         let mut var_transferredBytes = <Option<u64>>::sse_decode(deserializer);
         let mut var_transferTotalBytes = <Option<u64>>::sse_decode(deserializer);
         let mut var_transferBytesPerSecond = <Option<u64>>::sse_decode(deserializer);
+        let mut var_ratePerSecond = <Option<u64>>::sse_decode(deserializer);
+        let mut var_etaMs = <Option<u64>>::sse_decode(deserializer);
+        let mut var_isEstimate = <Option<bool>>::sse_decode(deserializer);
+        let mut var_applyPhase =
+            <Option<crate::device_sync::read_model::ApplyProgressPhase>>::sse_decode(deserializer);
+        let mut var_applyPublicationBytes = <Option<u64>>::sse_decode(deserializer);
+        let mut var_applySqlSteps = <Option<u64>>::sse_decode(deserializer);
+        let mut var_applyAccountSteps = <Option<u16>>::sse_decode(deserializer);
         return crate::device_sync::read_model::ProgressView {
             work_stage: var_workStage,
+            preparation_phase: var_preparationPhase,
             work_active: var_workActive,
             scanned_items: var_scannedItems,
             total_items: var_totalItems,
+            compared_items: var_comparedItems,
+            total_compared_items: var_totalComparedItems,
+            processed_items: var_processedItems,
+            current_item: var_currentItem,
+            processed_bytes: var_processedBytes,
+            total_bytes: var_totalBytes,
             transferred_bytes: var_transferredBytes,
             transfer_total_bytes: var_transferTotalBytes,
             transfer_bytes_per_second: var_transferBytesPerSecond,
+            rate_per_second: var_ratePerSecond,
+            eta_ms: var_etaMs,
+            is_estimate: var_isEstimate,
+            apply_phase: var_applyPhase,
+            apply_publication_bytes: var_applyPublicationBytes,
+            apply_sql_steps: var_applySqlSteps,
+            apply_account_steps: var_applyAccountSteps,
         };
     }
 }
@@ -6648,11 +7201,12 @@ impl SseDecode for crate::device_sync::read_model::ReadError {
             5 => crate::device_sync::read_model::ReadError::Unavailable,
             6 => crate::device_sync::read_model::ReadError::Disconnected,
             7 => crate::device_sync::read_model::ReadError::Timeout,
-            8 => crate::device_sync::read_model::ReadError::InvalidInput,
-            9 => crate::device_sync::read_model::ReadError::VersionMismatch,
-            10 => crate::device_sync::read_model::ReadError::Internal,
-            11 => crate::device_sync::read_model::ReadError::Cancelled,
-            12 => crate::device_sync::read_model::ReadError::InsufficientSpace,
+            8 => crate::device_sync::read_model::ReadError::ApplyFailed,
+            9 => crate::device_sync::read_model::ReadError::InvalidInput,
+            10 => crate::device_sync::read_model::ReadError::VersionMismatch,
+            11 => crate::device_sync::read_model::ReadError::Internal,
+            12 => crate::device_sync::read_model::ReadError::Cancelled,
+            13 => crate::device_sync::read_model::ReadError::InsufficientSpace,
             _ => unreachable!("Invalid variant for ReadError: {}", inner),
         };
     }
@@ -6827,6 +7381,48 @@ impl SseDecode for crate::device_sync::space_budget::StorageRole {
             1 => crate::device_sync::space_budget::StorageRole::Originals,
             2 => crate::device_sync::space_budget::StorageRole::Database,
             _ => unreachable!("Invalid variant for StorageRole: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::switch_import::SwitchMtpEntry {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_gameName = <String>::sse_decode(deserializer);
+        let mut var_fileName = <String>::sse_decode(deserializer);
+        let mut var_sizeBytes = <u64>::sse_decode(deserializer);
+        let mut var_capturedAt = <Option<String>>::sse_decode(deserializer);
+        return crate::switch_import::SwitchMtpEntry {
+            game_name: var_gameName,
+            file_name: var_fileName,
+            size_bytes: var_sizeBytes,
+            captured_at: var_capturedAt,
+        };
+    }
+}
+
+impl SseDecode for crate::switch_import::SwitchMtpStageStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_phase = <String>::sse_decode(deserializer);
+        let mut var_completedFiles = <i64>::sse_decode(deserializer);
+        let mut var_totalFiles = <i64>::sse_decode(deserializer);
+        let mut var_completedBytes = <i64>::sse_decode(deserializer);
+        let mut var_totalBytes = <i64>::sse_decode(deserializer);
+        let mut var_currentFile = <Option<String>>::sse_decode(deserializer);
+        let mut var_errorCode = <Option<String>>::sse_decode(deserializer);
+        let mut var_error = <Option<String>>::sse_decode(deserializer);
+        let mut var_stagedFiles = <Vec<String>>::sse_decode(deserializer);
+        return crate::switch_import::SwitchMtpStageStatus {
+            phase: var_phase,
+            completed_files: var_completedFiles,
+            total_files: var_totalFiles,
+            completed_bytes: var_completedBytes,
+            total_bytes: var_totalBytes,
+            current_file: var_currentFile,
+            error_code: var_errorCode,
+            error: var_error,
+            staged_files: var_stagedFiles,
         };
     }
 }
@@ -7029,6 +7625,13 @@ impl SseDecode for crate::device_sync::read_model::TransportKind {
     }
 }
 
+impl SseDecode for u16 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        deserializer.cursor.read_u16::<NativeEndian>().unwrap()
+    }
+}
+
 impl SseDecode for u32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -7221,281 +7824,303 @@ fn pde_ffi_dispatcher_primary_impl(
             data_len,
         ),
         5 => wire__crate__bridge__cancel_current_sync_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__bridge__clear_account_tool_cache_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__bridge__commit_merged_video_impl(port, ptr, rust_vec_len, data_len),
-        8 => wire__crate__bridge__commit_video_edit_impl(port, ptr, rust_vec_len, data_len),
-        9 => wire__crate__bridge__create_album_impl(port, ptr, rust_vec_len, data_len),
-        10 => wire__crate__bridge__create_nintendo_login_challenge_impl(
+        6 => wire__crate__bridge__cancel_import_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__bridge__clear_account_tool_cache_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__bridge__commit_merged_video_impl(port, ptr, rust_vec_len, data_len),
+        9 => wire__crate__bridge__commit_video_edit_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__bridge__count_media_impl(port, ptr, rust_vec_len, data_len),
+        11 => wire__crate__bridge__create_album_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__bridge__create_nintendo_login_challenge_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        11 => wire__crate__bridge__create_tag_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__bridge__current_import_progress_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__bridge__current_sync_progress_impl(port, ptr, rust_vec_len, data_len),
-        14 => wire__crate__bridge__delete_album_impl(port, ptr, rust_vec_len, data_len),
-        15 => wire__crate__bridge__delete_media_impl(port, ptr, rust_vec_len, data_len),
-        16 => wire__crate__bridge__delete_tag_impl(port, ptr, rust_vec_len, data_len),
-        17 => {
+        13 => wire__crate__bridge__create_tag_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__bridge__current_import_progress_impl(port, ptr, rust_vec_len, data_len),
+        15 => wire__crate__bridge__current_sync_progress_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__bridge__delete_album_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__bridge__delete_media_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__bridge__delete_tag_impl(port, ptr, rust_vec_len, data_len),
+        19 => {
             wire__crate__bridge__device_sync_account_payload_impl(port, ptr, rust_vec_len, data_len)
         }
-        18 => {
+        20 => wire__crate__bridge__device_sync_applied_media_page_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        21 => {
             wire__crate__bridge__device_sync_apply_restore_impl(port, ptr, rust_vec_len, data_len)
         }
-        19 => wire__crate__bridge__device_sync_approve_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__bridge__device_sync_approve_accounts_impl(
+        22 => wire__crate__bridge__device_sync_approve_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__bridge__device_sync_approve_accounts_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        21 => wire__crate__bridge__device_sync_approve_controlled_impl(
-            port,
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        22 => {
-            wire__crate__bridge__device_sync_backup_journal_impl(port, ptr, rust_vec_len, data_len)
-        }
-        23 => wire__crate__bridge__device_sync_benchmark_metrics_impl(
-            port,
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        24 => wire__crate__bridge__device_sync_benchmark_require_noop_impl(
+        24 => wire__crate__bridge__device_sync_approve_controlled_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
         25 => {
+            wire__crate__bridge__device_sync_backup_journal_impl(port, ptr, rust_vec_len, data_len)
+        }
+        26 => wire__crate__bridge__device_sync_benchmark_metrics_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        27 => wire__crate__bridge__device_sync_benchmark_require_noop_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        28 => {
             wire__crate__bridge__device_sync_cancel_restore_impl(port, ptr, rust_vec_len, data_len)
         }
-        26 => {
+        29 => {
             wire__crate__bridge__device_sync_cancel_signal_impl(port, ptr, rust_vec_len, data_len)
         }
-        27 => wire__crate__bridge__device_sync_client_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__bridge__device_sync_client_tcp_impl(port, ptr, rust_vec_len, data_len),
-        29 => wire__crate__bridge__device_sync_client_usb_impl(port, ptr, rust_vec_len, data_len),
-        30 => {
+        30 => wire__crate__bridge__device_sync_client_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__bridge__device_sync_client_tcp_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__bridge__device_sync_client_usb_impl(port, ptr, rust_vec_len, data_len),
+        33 => {
             wire__crate__bridge__device_sync_close_endpoint_impl(port, ptr, rust_vec_len, data_len)
         }
-        31 => {
+        34 => {
             wire__crate__bridge__device_sync_close_library_impl(port, ptr, rust_vec_len, data_len)
         }
-        32 => {
+        35 => {
             wire__crate__bridge__device_sync_close_restore_impl(port, ptr, rust_vec_len, data_len)
         }
-        33 => wire__crate__bridge__device_sync_compensate_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__bridge__device_sync_configure_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__bridge__device_sync_confirm_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__bridge__device_sync_confirmation_code_impl(
+        36 => wire__crate__bridge__device_sync_compensate_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__bridge__device_sync_configure_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__bridge__device_sync_confirm_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__bridge__device_sync_confirmation_code_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        37 => wire__crate__bridge__device_sync_consent_controlled_impl(
+        40 => wire__crate__bridge__device_sync_consent_controlled_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        38 => wire__crate__bridge__device_sync_decline_accounts_impl(
+        41 => wire__crate__bridge__device_sync_decline_accounts_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        39 => wire__crate__bridge__device_sync_detach_transport_impl(
+        42 => wire__crate__bridge__device_sync_detach_transport_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        40 => wire__crate__bridge__device_sync_drain_impl(port, ptr, rust_vec_len, data_len),
-        41 => {
+        43 => wire__crate__bridge__device_sync_drain_impl(port, ptr, rust_vec_len, data_len),
+        44 => {
             wire__crate__bridge__device_sync_export_accounts_impl(port, ptr, rust_vec_len, data_len)
         }
-        42 => {
+        45 => {
             wire__crate__bridge__device_sync_external_check_impl(port, ptr, rust_vec_len, data_len)
         }
-        43 => {
+        46 => {
             wire__crate__bridge__device_sync_external_step_impl(port, ptr, rust_vec_len, data_len)
         }
-        44 => wire__crate__bridge__device_sync_finalize_accounts_impl(
+        47 => wire__crate__bridge__device_sync_finalize_accounts_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        45 => wire__crate__bridge__device_sync_finalize_restore_impl(
+        48 => wire__crate__bridge__device_sync_finalize_restore_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        46 => {
+        49 => {
             wire__crate__bridge__device_sync_finish_success_impl(port, ptr, rust_vec_len, data_len)
         }
-        47 => wire__crate__bridge__device_sync_host_impl(port, ptr, rust_vec_len, data_len),
-        48 => wire__crate__bridge__device_sync_host_tcp_impl(port, ptr, rust_vec_len, data_len),
-        49 => wire__crate__bridge__device_sync_host_usb_impl(port, ptr, rust_vec_len, data_len),
-        50 => wire__crate__bridge__device_sync_ingest_impl(port, ptr, rust_vec_len, data_len),
-        51 => wire__crate__bridge__device_sync_inspect_invitation_impl(
+        50 => wire__crate__bridge__device_sync_host_impl(port, ptr, rust_vec_len, data_len),
+        51 => wire__crate__bridge__device_sync_host_tcp_impl(port, ptr, rust_vec_len, data_len),
+        52 => wire__crate__bridge__device_sync_host_usb_impl(port, ptr, rust_vec_len, data_len),
+        53 => wire__crate__bridge__device_sync_ingest_impl(port, ptr, rust_vec_len, data_len),
+        54 => wire__crate__bridge__device_sync_inspect_invitation_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        52 => wire__crate__bridge__device_sync_journal_impl(port, ptr, rust_vec_len, data_len),
-        53 => wire__crate__bridge__device_sync_library_info_impl(port, ptr, rust_vec_len, data_len),
-        54 => wire__crate__bridge__device_sync_open_library_impl(port, ptr, rust_vec_len, data_len),
-        55 => wire__crate__bridge__device_sync_poll_impl(port, ptr, rust_vec_len, data_len),
-        56 => {
+        55 => wire__crate__bridge__device_sync_journal_impl(port, ptr, rust_vec_len, data_len),
+        56 => wire__crate__bridge__device_sync_library_info_impl(port, ptr, rust_vec_len, data_len),
+        57 => wire__crate__bridge__device_sync_open_library_impl(port, ptr, rust_vec_len, data_len),
+        58 => wire__crate__bridge__device_sync_poll_impl(port, ptr, rust_vec_len, data_len),
+        59 => {
             wire__crate__bridge__device_sync_preview_restore_impl(port, ptr, rust_vec_len, data_len)
         }
-        57 => wire__crate__bridge__device_sync_publish_account_preview_impl(
+        60 => wire__crate__bridge__device_sync_publish_account_preview_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        58 => wire__crate__bridge__device_sync_read_backups_impl(port, ptr, rust_vec_len, data_len),
-        59 => {
+        61 => wire__crate__bridge__device_sync_read_backups_impl(port, ptr, rust_vec_len, data_len),
+        62 => {
             wire__crate__bridge__device_sync_read_conflicts_impl(port, ptr, rust_vec_len, data_len)
         }
-        60 => {
+        63 => {
             wire__crate__bridge__device_sync_read_endpoint_impl(port, ptr, rust_vec_len, data_len)
         }
-        61 => wire__crate__bridge__device_sync_read_preview_impl(port, ptr, rust_vec_len, data_len),
-        62 => wire__crate__bridge__device_sync_read_restore_summary_impl(
+        64 => wire__crate__bridge__device_sync_read_preview_impl(port, ptr, rust_vec_len, data_len),
+        65 => wire__crate__bridge__device_sync_read_restore_summary_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        63 => wire__crate__bridge__device_sync_receive_accounts_impl(
+        66 => wire__crate__bridge__device_sync_receive_accounts_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        64 => wire__crate__bridge__device_sync_recover_interrupted_sessions_impl(
+        67 => wire__crate__bridge__device_sync_recover_interrupted_sessions_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        65 => wire__crate__bridge__device_sync_shutdown_impl(port, ptr, rust_vec_len, data_len),
-        66 => wire__crate__bridge__device_sync_source_final_impl(port, ptr, rust_vec_len, data_len),
-        67 => wire__crate__bridge__device_sync_status_impl(port, ptr, rust_vec_len, data_len),
-        68 => wire__crate__bridge__device_sync_target_final_impl(port, ptr, rust_vec_len, data_len),
-        69 => wire__crate__bridge__device_sync_usb_complete_impl(port, ptr, rust_vec_len, data_len),
-        70 => wire__crate__bridge__device_sync_usb_next_impl(port, ptr, rust_vec_len, data_len),
-        71 => wire__crate__bridge__device_sync_usb_select_impl(port, ptr, rust_vec_len, data_len),
-        72 => wire__crate__bridge__device_sync_usb_view_impl(port, ptr, rust_vec_len, data_len),
-        73 => {
+        68 => wire__crate__bridge__device_sync_shutdown_impl(port, ptr, rust_vec_len, data_len),
+        69 => wire__crate__bridge__device_sync_source_final_impl(port, ptr, rust_vec_len, data_len),
+        70 => wire__crate__bridge__device_sync_status_impl(port, ptr, rust_vec_len, data_len),
+        71 => wire__crate__bridge__device_sync_target_final_impl(port, ptr, rust_vec_len, data_len),
+        72 => wire__crate__bridge__device_sync_usb_complete_impl(port, ptr, rust_vec_len, data_len),
+        73 => wire__crate__bridge__device_sync_usb_next_impl(port, ptr, rust_vec_len, data_len),
+        74 => wire__crate__bridge__device_sync_usb_select_impl(port, ptr, rust_vec_len, data_len),
+        75 => wire__crate__bridge__device_sync_usb_view_impl(port, ptr, rust_vec_len, data_len),
+        76 => {
             wire__crate__bridge__device_sync_usb_wait_closed_impl(port, ptr, rust_vec_len, data_len)
         }
-        74 => wire__crate__bridge__device_sync_validate_restore_impl(
+        77 => wire__crate__bridge__device_sync_validate_restore_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        75 => wire__crate__bridge__device_sync_written_impl(port, ptr, rust_vec_len, data_len),
-        76 => wire__crate__bridge__establish_coral_session_impl(port, ptr, rust_vec_len, data_len),
-        77 => wire__crate__bridge__establish_coral_session_for_account_impl(
+        78 => wire__crate__bridge__device_sync_written_impl(port, ptr, rust_vec_len, data_len),
+        79 => wire__crate__bridge__establish_coral_session_impl(port, ptr, rust_vec_len, data_len),
+        80 => wire__crate__bridge__establish_coral_session_for_account_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        78 => {
+        81 => {
             wire__crate__bridge__exchange_nintendo_callback_impl(port, ptr, rust_vec_len, data_len)
         }
-        79 => wire__crate__bridge__export_media_impl(port, ptr, rust_vec_len, data_len),
-        80 => wire__crate__bridge__import_custom_files_impl(port, ptr, rust_vec_len, data_len),
-        81 => wire__crate__bridge__import_custom_files_with_progress_impl(
+        82 => wire__crate__bridge__export_media_impl(port, ptr, rust_vec_len, data_len),
+        83 => wire__crate__bridge__import_custom_files_impl(port, ptr, rust_vec_len, data_len),
+        84 => wire__crate__bridge__import_custom_files_with_progress_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        82 => wire__crate__bridge__import_local_files_impl(port, ptr, rust_vec_len, data_len),
-        83 => wire__crate__bridge__import_mtp_files_impl(port, ptr, rust_vec_len, data_len),
-        84 => wire__crate__bridge__init_core_impl(port, ptr, rust_vec_len, data_len),
-        85 => wire__crate__bridge__list_album_rules_impl(port, ptr, rust_vec_len, data_len),
-        86 => wire__crate__bridge__list_albums_impl(port, ptr, rust_vec_len, data_len),
-        87 => wire__crate__bridge__list_game_media_counts_impl(port, ptr, rust_vec_len, data_len),
-        88 => wire__crate__bridge__list_game_tag_aliases_impl(port, ptr, rust_vec_len, data_len),
-        89 => wire__crate__bridge__list_game_tags_impl(port, ptr, rust_vec_len, data_len),
-        90 => wire__crate__bridge__list_media_impl(port, ptr, rust_vec_len, data_len),
-        91 => wire__crate__bridge__list_media_page_impl(port, ptr, rust_vec_len, data_len),
-        92 => wire__crate__bridge__list_tag_usage_impl(port, ptr, rust_vec_len, data_len),
-        93 => wire__crate__bridge__list_tags_impl(port, ptr, rust_vec_len, data_len),
-        94 => wire__crate__bridge__load_settings_impl(port, ptr, rust_vec_len, data_len),
-        95 => wire__crate__bridge__media_details_impl(port, ptr, rust_vec_len, data_len),
-        96 => wire__crate__bridge__merge_game_tags_impl(port, ptr, rust_vec_len, data_len),
-        97 => wire__crate__bridge__merge_tags_impl(port, ptr, rust_vec_len, data_len),
-        98 => wire__crate__bridge__nintendo_friend_avatar_impl(port, ptr, rust_vec_len, data_len),
-        99 => wire__crate__bridge__nintendo_friend_code_impl(port, ptr, rust_vec_len, data_len),
-        100 => wire__crate__bridge__nintendo_friend_lookup_impl(port, ptr, rust_vec_len, data_len),
-        101 => {
+        85 => wire__crate__bridge__import_local_files_impl(port, ptr, rust_vec_len, data_len),
+        86 => wire__crate__bridge__import_mtp_files_impl(port, ptr, rust_vec_len, data_len),
+        87 => wire__crate__bridge__import_mtp_files_with_progress_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        88 => wire__crate__bridge__init_core_impl(port, ptr, rust_vec_len, data_len),
+        89 => wire__crate__bridge__list_album_rules_impl(port, ptr, rust_vec_len, data_len),
+        90 => wire__crate__bridge__list_albums_impl(port, ptr, rust_vec_len, data_len),
+        91 => wire__crate__bridge__list_game_media_counts_impl(port, ptr, rust_vec_len, data_len),
+        92 => wire__crate__bridge__list_game_tag_aliases_impl(port, ptr, rust_vec_len, data_len),
+        93 => wire__crate__bridge__list_game_tags_impl(port, ptr, rust_vec_len, data_len),
+        94 => wire__crate__bridge__list_media_impl(port, ptr, rust_vec_len, data_len),
+        95 => wire__crate__bridge__list_media_page_impl(port, ptr, rust_vec_len, data_len),
+        96 => wire__crate__bridge__list_tag_usage_impl(port, ptr, rust_vec_len, data_len),
+        97 => wire__crate__bridge__list_tags_impl(port, ptr, rust_vec_len, data_len),
+        98 => wire__crate__bridge__load_settings_impl(port, ptr, rust_vec_len, data_len),
+        99 => wire__crate__bridge__media_details_impl(port, ptr, rust_vec_len, data_len),
+        100 => wire__crate__bridge__merge_game_tags_impl(port, ptr, rust_vec_len, data_len),
+        101 => wire__crate__bridge__merge_tags_impl(port, ptr, rust_vec_len, data_len),
+        102 => wire__crate__bridge__nintendo_friend_avatar_impl(port, ptr, rust_vec_len, data_len),
+        103 => wire__crate__bridge__nintendo_friend_code_impl(port, ptr, rust_vec_len, data_len),
+        104 => wire__crate__bridge__nintendo_friend_lookup_impl(port, ptr, rust_vec_len, data_len),
+        105 => {
             wire__crate__bridge__nintendo_friend_play_log_impl(port, ptr, rust_vec_len, data_len)
         }
-        102 => wire__crate__bridge__nintendo_friends_impl(port, ptr, rust_vec_len, data_len),
-        103 => wire__crate__bridge__nintendo_game_image_impl(port, ptr, rust_vec_len, data_len),
-        104 => wire__crate__bridge__nintendo_send_friend_request_impl(
+        106 => wire__crate__bridge__nintendo_friends_impl(port, ptr, rust_vec_len, data_len),
+        107 => wire__crate__bridge__nintendo_game_image_impl(port, ptr, rust_vec_len, data_len),
+        108 => wire__crate__bridge__nintendo_send_friend_request_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        105 => {
+        109 => {
             wire__crate__bridge__nintendo_update_friend_note_impl(port, ptr, rust_vec_len, data_len)
         }
-        106 => wire__crate__bridge__prepare_seed_export_impl(port, ptr, rust_vec_len, data_len),
-        107 => {
+        110 => wire__crate__bridge__prepare_seed_export_impl(port, ptr, rust_vec_len, data_len),
+        111 => {
             wire__crate__bridge__prepare_splatnet_session_impl(port, ptr, rust_vec_len, data_len)
         }
-        108 => wire__crate__bridge__probe_library_root_impl(port, ptr, rust_vec_len, data_len),
-        109 => {
+        112 => wire__crate__bridge__probe_library_root_impl(port, ptr, rust_vec_len, data_len),
+        113 => {
             wire__crate__bridge__record_game_tag_selection_impl(port, ptr, rust_vec_len, data_len)
         }
-        110 => wire__crate__bridge__record_sync_attempt_impl(port, ptr, rust_vec_len, data_len),
-        111 => wire__crate__bridge__record_sync_outcome_impl(port, ptr, rust_vec_len, data_len),
-        112 => wire__crate__bridge__relocate_media_library_impl(port, ptr, rust_vec_len, data_len),
-        113 => wire__crate__bridge__remove_media_from_album_impl(port, ptr, rust_vec_len, data_len),
-        114 => wire__crate__bridge__rename_game_tag_impl(port, ptr, rust_vec_len, data_len),
-        115 => wire__crate__bridge__rename_tag_impl(port, ptr, rust_vec_len, data_len),
-        116 => wire__crate__bridge__replace_album_rules_impl(port, ptr, rust_vec_len, data_len),
-        117 => wire__crate__bridge__replace_tags_impl(port, ptr, rust_vec_len, data_len),
-        118 => wire__crate__bridge__save_settings_impl(port, ptr, rust_vec_len, data_len),
-        119 => wire__crate__bridge__save_sync_policy_impl(port, ptr, rust_vec_len, data_len),
-        120 => wire__crate__bridge__save_video_frame_impl(port, ptr, rust_vec_len, data_len),
-        121 => wire__crate__bridge__set_favorite_impl(port, ptr, rust_vec_len, data_len),
-        122 => wire__crate__bridge__set_note_impl(port, ptr, rust_vec_len, data_len),
-        123 => {
+        114 => wire__crate__bridge__record_sync_attempt_impl(port, ptr, rust_vec_len, data_len),
+        115 => wire__crate__bridge__record_sync_outcome_impl(port, ptr, rust_vec_len, data_len),
+        116 => wire__crate__bridge__relocate_media_library_impl(port, ptr, rust_vec_len, data_len),
+        117 => wire__crate__bridge__remove_media_from_album_impl(port, ptr, rust_vec_len, data_len),
+        118 => wire__crate__bridge__rename_game_tag_impl(port, ptr, rust_vec_len, data_len),
+        119 => wire__crate__bridge__rename_tag_impl(port, ptr, rust_vec_len, data_len),
+        120 => wire__crate__bridge__replace_album_rules_impl(port, ptr, rust_vec_len, data_len),
+        121 => wire__crate__bridge__replace_tags_impl(port, ptr, rust_vec_len, data_len),
+        122 => wire__crate__bridge__save_settings_impl(port, ptr, rust_vec_len, data_len),
+        123 => wire__crate__bridge__save_sync_policy_impl(port, ptr, rust_vec_len, data_len),
+        124 => wire__crate__bridge__save_video_frame_impl(port, ptr, rust_vec_len, data_len),
+        125 => wire__crate__bridge__set_favorite_impl(port, ptr, rust_vec_len, data_len),
+        126 => wire__crate__bridge__set_note_impl(port, ptr, rust_vec_len, data_len),
+        127 => {
             wire__crate__bridge__set_runtime_proxy_policy_impl(port, ptr, rust_vec_len, data_len)
         }
-        124 => wire__crate__bridge__sync_account_history_impl(port, ptr, rust_vec_len, data_len),
-        125 => wire__crate__bridge__sync_nso_impl(port, ptr, rust_vec_len, data_len),
-        126 => {
+        128 => wire__crate__bridge__switch_mtp_cancel_stage_impl(port, ptr, rust_vec_len, data_len),
+        129 => {
+            wire__crate__bridge__switch_mtp_cleanup_stage_impl(port, ptr, rust_vec_len, data_len)
+        }
+        130 => wire__crate__bridge__switch_mtp_list_devices_impl(port, ptr, rust_vec_len, data_len),
+        131 => wire__crate__bridge__switch_mtp_scan_impl(port, ptr, rust_vec_len, data_len),
+        132 => wire__crate__bridge__switch_mtp_stage_status_impl(port, ptr, rust_vec_len, data_len),
+        133 => wire__crate__bridge__switch_mtp_start_stage_impl(port, ptr, rust_vec_len, data_len),
+        134 => wire__crate__bridge__sync_account_history_impl(port, ptr, rust_vec_len, data_len),
+        135 => wire__crate__bridge__sync_nso_impl(port, ptr, rust_vec_len, data_len),
+        136 => {
             wire__crate__bridge__sync_nso_from_session_token_impl(port, ptr, rust_vec_len, data_len)
         }
-        127 => wire__crate__bridge__sync_nso_from_session_token_for_account_impl(
+        137 => wire__crate__bridge__sync_nso_from_session_token_for_account_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        128 => wire__crate__bridge__sync_schedule_status_impl(port, ptr, rust_vec_len, data_len),
-        129 => wire__crate__bridge__update_album_impl(port, ptr, rust_vec_len, data_len),
+        138 => wire__crate__bridge__sync_schedule_status_impl(port, ptr, rust_vec_len, data_len),
+        139 => wire__crate__bridge__update_album_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -7565,6 +8190,8 @@ impl flutter_rust_bridge::IntoDart for crate::models::AlbumSummary {
             self.pinned.into_into_dart().into_dart(),
             self.system_key.into_into_dart().into_dart(),
             self.media_count.into_into_dart().into_dart(),
+            self.image_count.into_into_dart().into_dart(),
+            self.video_count.into_into_dart().into_dart(),
             self.source_device_name.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -7632,6 +8259,94 @@ impl flutter_rust_bridge::IntoIntoDart<crate::device_sync::connection::Applicati
     for crate::device_sync::connection::ApplicationBuild
 {
     fn into_into_dart(self) -> crate::device_sync::connection::ApplicationBuild {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::device_sync::read_model::AppliedMediaCacheEntry {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.sha256.into_into_dart().into_dart(),
+            self.storage_path.into_into_dart().into_dart(),
+            self.kind.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::device_sync::read_model::AppliedMediaCacheEntry
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::device_sync::read_model::AppliedMediaCacheEntry>
+    for crate::device_sync::read_model::AppliedMediaCacheEntry
+{
+    fn into_into_dart(self) -> crate::device_sync::read_model::AppliedMediaCacheEntry {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::device_sync::read_model::AppliedMediaCachePage {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.items.into_into_dart().into_dart(),
+            self.next_offset.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::device_sync::read_model::AppliedMediaCachePage
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::device_sync::read_model::AppliedMediaCachePage>
+    for crate::device_sync::read_model::AppliedMediaCachePage
+{
+    fn into_into_dart(self) -> crate::device_sync::read_model::AppliedMediaCachePage {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::device_sync::read_model::AppliedMediaCachePageRead {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.page.into_into_dart().into_dart(),
+            self.error.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::device_sync::read_model::AppliedMediaCachePageRead
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::device_sync::read_model::AppliedMediaCachePageRead>
+    for crate::device_sync::read_model::AppliedMediaCachePageRead
+{
+    fn into_into_dart(self) -> crate::device_sync::read_model::AppliedMediaCachePageRead {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::device_sync::read_model::ApplyProgressPhase {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Preparing => 0.into_dart(),
+            Self::Publishing => 1.into_dart(),
+            Self::Sql => 2.into_dart(),
+            Self::Finalizing => 3.into_dart(),
+            Self::Accounts => 4.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::device_sync::read_model::ApplyProgressPhase
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::device_sync::read_model::ApplyProgressPhase>
+    for crate::device_sync::read_model::ApplyProgressPhase
+{
+    fn into_into_dart(self) -> crate::device_sync::read_model::ApplyProgressPhase {
         self
     }
 }
@@ -8833,6 +9548,31 @@ impl flutter_rust_bridge::IntoIntoDart<crate::device_sync::read_model::PairingSt
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::device_sync::work::PreparationStage {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::ReadingLibrary => 0.into_dart(),
+            Self::ComparingRecords => 1.into_dart(),
+            Self::CheckingCache => 2.into_dart(),
+            Self::CheckingSpace => 3.into_dart(),
+            Self::PreparingPreview => 4.into_dart(),
+            Self::WaitingForPeer => 5.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::device_sync::work::PreparationStage
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::device_sync::work::PreparationStage>
+    for crate::device_sync::work::PreparationStage
+{
+    fn into_into_dart(self) -> crate::device_sync::work::PreparationStage {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::device_sync::read_model::PreviewRead {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -8886,12 +9626,26 @@ impl flutter_rust_bridge::IntoDart for crate::device_sync::read_model::ProgressV
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.work_stage.into_into_dart().into_dart(),
+            self.preparation_phase.into_into_dart().into_dart(),
             self.work_active.into_into_dart().into_dart(),
             self.scanned_items.into_into_dart().into_dart(),
             self.total_items.into_into_dart().into_dart(),
+            self.compared_items.into_into_dart().into_dart(),
+            self.total_compared_items.into_into_dart().into_dart(),
+            self.processed_items.into_into_dart().into_dart(),
+            self.current_item.into_into_dart().into_dart(),
+            self.processed_bytes.into_into_dart().into_dart(),
+            self.total_bytes.into_into_dart().into_dart(),
             self.transferred_bytes.into_into_dart().into_dart(),
             self.transfer_total_bytes.into_into_dart().into_dart(),
             self.transfer_bytes_per_second.into_into_dart().into_dart(),
+            self.rate_per_second.into_into_dart().into_dart(),
+            self.eta_ms.into_into_dart().into_dart(),
+            self.is_estimate.into_into_dart().into_dart(),
+            self.apply_phase.into_into_dart().into_dart(),
+            self.apply_publication_bytes.into_into_dart().into_dart(),
+            self.apply_sql_steps.into_into_dart().into_dart(),
+            self.apply_account_steps.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -8919,11 +9673,12 @@ impl flutter_rust_bridge::IntoDart for crate::device_sync::read_model::ReadError
             Self::Unavailable => 5.into_dart(),
             Self::Disconnected => 6.into_dart(),
             Self::Timeout => 7.into_dart(),
-            Self::InvalidInput => 8.into_dart(),
-            Self::VersionMismatch => 9.into_dart(),
-            Self::Internal => 10.into_dart(),
-            Self::Cancelled => 11.into_dart(),
-            Self::InsufficientSpace => 12.into_dart(),
+            Self::ApplyFailed => 8.into_dart(),
+            Self::InvalidInput => 9.into_dart(),
+            Self::VersionMismatch => 10.into_dart(),
+            Self::Internal => 11.into_dart(),
+            Self::Cancelled => 12.into_dart(),
+            Self::InsufficientSpace => 13.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -9182,6 +9937,57 @@ impl flutter_rust_bridge::IntoIntoDart<crate::device_sync::space_budget::Storage
     for crate::device_sync::space_budget::StorageRole
 {
     fn into_into_dart(self) -> crate::device_sync::space_budget::StorageRole {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::switch_import::SwitchMtpEntry {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.game_name.into_into_dart().into_dart(),
+            self.file_name.into_into_dart().into_dart(),
+            self.size_bytes.into_into_dart().into_dart(),
+            self.captured_at.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::switch_import::SwitchMtpEntry
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::switch_import::SwitchMtpEntry>
+    for crate::switch_import::SwitchMtpEntry
+{
+    fn into_into_dart(self) -> crate::switch_import::SwitchMtpEntry {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::switch_import::SwitchMtpStageStatus {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.phase.into_into_dart().into_dart(),
+            self.completed_files.into_into_dart().into_dart(),
+            self.total_files.into_into_dart().into_dart(),
+            self.completed_bytes.into_into_dart().into_dart(),
+            self.total_bytes.into_into_dart().into_dart(),
+            self.current_file.into_into_dart().into_dart(),
+            self.error_code.into_into_dart().into_dart(),
+            self.error.into_into_dart().into_dart(),
+            self.staged_files.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::switch_import::SwitchMtpStageStatus
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::switch_import::SwitchMtpStageStatus>
+    for crate::switch_import::SwitchMtpStageStatus
+{
+    fn into_into_dart(self) -> crate::switch_import::SwitchMtpStageStatus {
         self
     }
 }
@@ -9669,6 +10475,8 @@ impl SseEncode for crate::models::AlbumSummary {
         <bool>::sse_encode(self.pinned, serializer);
         <Option<String>>::sse_encode(self.system_key, serializer);
         <u64>::sse_encode(self.media_count, serializer);
+        <u64>::sse_encode(self.image_count, serializer);
+        <u64>::sse_encode(self.video_count, serializer);
         <Option<String>>::sse_encode(self.source_device_name, serializer);
     }
 }
@@ -9702,6 +10510,54 @@ impl SseEncode for crate::device_sync::connection::ApplicationBuild {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.version, serializer);
         <String>::sse_encode(self.build_number, serializer);
+    }
+}
+
+impl SseEncode for crate::device_sync::read_model::AppliedMediaCacheEntry {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.sha256, serializer);
+        <String>::sse_encode(self.storage_path, serializer);
+        <crate::models::MediaKind>::sse_encode(self.kind, serializer);
+    }
+}
+
+impl SseEncode for crate::device_sync::read_model::AppliedMediaCachePage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<crate::device_sync::read_model::AppliedMediaCacheEntry>>::sse_encode(
+            self.items, serializer,
+        );
+        <Option<u64>>::sse_encode(self.next_offset, serializer);
+    }
+}
+
+impl SseEncode for crate::device_sync::read_model::AppliedMediaCachePageRead {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<crate::device_sync::read_model::AppliedMediaCachePage>>::sse_encode(
+            self.page, serializer,
+        );
+        <Option<crate::device_sync::read_model::ReadError>>::sse_encode(self.error, serializer);
+    }
+}
+
+impl SseEncode for crate::device_sync::read_model::ApplyProgressPhase {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::device_sync::read_model::ApplyProgressPhase::Preparing => 0,
+                crate::device_sync::read_model::ApplyProgressPhase::Publishing => 1,
+                crate::device_sync::read_model::ApplyProgressPhase::Sql => 2,
+                crate::device_sync::read_model::ApplyProgressPhase::Finalizing => 3,
+                crate::device_sync::read_model::ApplyProgressPhase::Accounts => 4,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 
@@ -10170,6 +11026,16 @@ impl SseEncode for Vec<crate::models::AlbumSummary> {
     }
 }
 
+impl SseEncode for Vec<crate::device_sync::read_model::AppliedMediaCacheEntry> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::device_sync::read_model::AppliedMediaCacheEntry>::sse_encode(item, serializer);
+        }
+    }
+}
+
 impl SseEncode for Vec<crate::device_sync::read_model::BackupMetadata> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -10326,6 +11192,16 @@ impl SseEncode for Vec<crate::device_sync::space_budget::StorageRole> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::device_sync::space_budget::StorageRole>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::switch_import::SwitchMtpEntry> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::switch_import::SwitchMtpEntry>::sse_encode(item, serializer);
         }
     }
 }
@@ -10603,6 +11479,26 @@ impl SseEncode for Option<crate::device_sync::connection::ApplicationBuild> {
     }
 }
 
+impl SseEncode for Option<crate::device_sync::read_model::AppliedMediaCachePage> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::device_sync::read_model::AppliedMediaCachePage>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::device_sync::read_model::ApplyProgressPhase> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::device_sync::read_model::ApplyProgressPhase>::sse_encode(value, serializer);
+        }
+    }
+}
+
 impl SseEncode for Option<crate::device_sync::read_model::BackupPage> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -10715,6 +11611,16 @@ impl SseEncode for Option<crate::models::OperationProgress> {
     }
 }
 
+impl SseEncode for Option<crate::device_sync::work::PreparationStage> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::device_sync::work::PreparationStage>::sse_encode(value, serializer);
+        }
+    }
+}
+
 impl SseEncode for Option<crate::device_sync::read_model::PreviewSummary> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -10765,6 +11671,16 @@ impl SseEncode for Option<crate::device_sync::source_names::SourceDescription> {
     }
 }
 
+impl SseEncode for Option<crate::switch_import::SwitchMtpStageStatus> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::switch_import::SwitchMtpStageStatus>::sse_encode(value, serializer);
+        }
+    }
+}
+
 impl SseEncode for Option<crate::settings::SyncAttemptSummary> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -10791,6 +11707,16 @@ impl SseEncode for Option<crate::device_sync::runtime::TcpView> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::device_sync::runtime::TcpView>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<u16> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <u16>::sse_encode(value, serializer);
         }
     }
 }
@@ -10884,6 +11810,26 @@ impl SseEncode for crate::device_sync::read_model::PairingStage {
     }
 }
 
+impl SseEncode for crate::device_sync::work::PreparationStage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::device_sync::work::PreparationStage::ReadingLibrary => 0,
+                crate::device_sync::work::PreparationStage::ComparingRecords => 1,
+                crate::device_sync::work::PreparationStage::CheckingCache => 2,
+                crate::device_sync::work::PreparationStage::CheckingSpace => 3,
+                crate::device_sync::work::PreparationStage::PreparingPreview => 4,
+                crate::device_sync::work::PreparationStage::WaitingForPeer => 5,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for crate::device_sync::read_model::PreviewRead {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -10922,12 +11868,32 @@ impl SseEncode for crate::device_sync::read_model::ProgressView {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <crate::device_sync::work::WorkStage>::sse_encode(self.work_stage, serializer);
+        <Option<crate::device_sync::work::PreparationStage>>::sse_encode(
+            self.preparation_phase,
+            serializer,
+        );
         <bool>::sse_encode(self.work_active, serializer);
         <u64>::sse_encode(self.scanned_items, serializer);
         <Option<u64>>::sse_encode(self.total_items, serializer);
+        <Option<u64>>::sse_encode(self.compared_items, serializer);
+        <Option<u64>>::sse_encode(self.total_compared_items, serializer);
+        <Option<u64>>::sse_encode(self.processed_items, serializer);
+        <Option<String>>::sse_encode(self.current_item, serializer);
+        <Option<u64>>::sse_encode(self.processed_bytes, serializer);
+        <Option<u64>>::sse_encode(self.total_bytes, serializer);
         <Option<u64>>::sse_encode(self.transferred_bytes, serializer);
         <Option<u64>>::sse_encode(self.transfer_total_bytes, serializer);
         <Option<u64>>::sse_encode(self.transfer_bytes_per_second, serializer);
+        <Option<u64>>::sse_encode(self.rate_per_second, serializer);
+        <Option<u64>>::sse_encode(self.eta_ms, serializer);
+        <Option<bool>>::sse_encode(self.is_estimate, serializer);
+        <Option<crate::device_sync::read_model::ApplyProgressPhase>>::sse_encode(
+            self.apply_phase,
+            serializer,
+        );
+        <Option<u64>>::sse_encode(self.apply_publication_bytes, serializer);
+        <Option<u64>>::sse_encode(self.apply_sql_steps, serializer);
+        <Option<u16>>::sse_encode(self.apply_account_steps, serializer);
     }
 }
 
@@ -10944,11 +11910,12 @@ impl SseEncode for crate::device_sync::read_model::ReadError {
                 crate::device_sync::read_model::ReadError::Unavailable => 5,
                 crate::device_sync::read_model::ReadError::Disconnected => 6,
                 crate::device_sync::read_model::ReadError::Timeout => 7,
-                crate::device_sync::read_model::ReadError::InvalidInput => 8,
-                crate::device_sync::read_model::ReadError::VersionMismatch => 9,
-                crate::device_sync::read_model::ReadError::Internal => 10,
-                crate::device_sync::read_model::ReadError::Cancelled => 11,
-                crate::device_sync::read_model::ReadError::InsufficientSpace => 12,
+                crate::device_sync::read_model::ReadError::ApplyFailed => 8,
+                crate::device_sync::read_model::ReadError::InvalidInput => 9,
+                crate::device_sync::read_model::ReadError::VersionMismatch => 10,
+                crate::device_sync::read_model::ReadError::Internal => 11,
+                crate::device_sync::read_model::ReadError::Cancelled => 12,
+                crate::device_sync::read_model::ReadError::InsufficientSpace => 13,
                 _ => {
                     unimplemented!("");
                 }
@@ -11088,6 +12055,31 @@ impl SseEncode for crate::device_sync::space_budget::StorageRole {
             },
             serializer,
         );
+    }
+}
+
+impl SseEncode for crate::switch_import::SwitchMtpEntry {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.game_name, serializer);
+        <String>::sse_encode(self.file_name, serializer);
+        <u64>::sse_encode(self.size_bytes, serializer);
+        <Option<String>>::sse_encode(self.captured_at, serializer);
+    }
+}
+
+impl SseEncode for crate::switch_import::SwitchMtpStageStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.phase, serializer);
+        <i64>::sse_encode(self.completed_files, serializer);
+        <i64>::sse_encode(self.total_files, serializer);
+        <i64>::sse_encode(self.completed_bytes, serializer);
+        <i64>::sse_encode(self.total_bytes, serializer);
+        <Option<String>>::sse_encode(self.current_file, serializer);
+        <Option<String>>::sse_encode(self.error_code, serializer);
+        <Option<String>>::sse_encode(self.error, serializer);
+        <Vec<String>>::sse_encode(self.staged_files, serializer);
     }
 }
 
@@ -11239,6 +12231,13 @@ impl SseEncode for crate::device_sync::read_model::TransportKind {
             },
             serializer,
         );
+    }
+}
+
+impl SseEncode for u16 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        serializer.cursor.write_u16::<NativeEndian>(self).unwrap();
     }
 }
 

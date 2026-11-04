@@ -56,7 +56,6 @@ fn receiver_driver_sql_interrupt_rolls_back_and_removes_handler_for_ordinary_con
             &mut |_| {},
             &mut |_| {},
             Some(guard.clone()),
-            false,
         )
         .is_err());
     assert!(guard.work.load(Ordering::SeqCst) > 0);

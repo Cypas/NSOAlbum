@@ -43,6 +43,8 @@ class AlbumSummary {
   final bool pinned;
   final String? systemKey;
   final BigInt mediaCount;
+  final BigInt imageCount;
+  final BigInt videoCount;
   final String? sourceDeviceName;
 
   const AlbumSummary({
@@ -53,6 +55,8 @@ class AlbumSummary {
     required this.pinned,
     this.systemKey,
     required this.mediaCount,
+    required this.imageCount,
+    required this.videoCount,
     this.sourceDeviceName,
   });
 
@@ -65,6 +69,8 @@ class AlbumSummary {
       pinned.hashCode ^
       systemKey.hashCode ^
       mediaCount.hashCode ^
+      imageCount.hashCode ^
+      videoCount.hashCode ^
       sourceDeviceName.hashCode;
 
   @override
@@ -79,6 +85,8 @@ class AlbumSummary {
           pinned == other.pinned &&
           systemKey == other.systemKey &&
           mediaCount == other.mediaCount &&
+          imageCount == other.imageCount &&
+          videoCount == other.videoCount &&
           sourceDeviceName == other.sourceDeviceName;
 }
 

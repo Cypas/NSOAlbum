@@ -213,6 +213,8 @@ void registerAndroidExperienceTests({bool layoutOnly = false}) {
           albumType: 'normal',
           pinned: false,
           mediaCount: BigInt.two,
+          imageCount: BigInt.two,
+          videoCount: BigInt.zero,
         ),
         AlbumSummary(
           id: 1,
@@ -222,6 +224,8 @@ void registerAndroidExperienceTests({bool layoutOnly = false}) {
           pinned: true,
           systemKey: 'favorites',
           mediaCount: BigInt.one,
+          imageCount: BigInt.one,
+          videoCount: BigInt.zero,
         ),
       ],
     );

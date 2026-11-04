@@ -11,6 +11,7 @@ pub mod models;
 pub mod nso;
 pub mod settings;
 pub mod smart_album;
+pub mod switch_import;
 pub mod sync;
 pub mod transport;
 

@@ -7,6 +7,15 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+enum PreparationStage {
+  readingLibrary,
+  comparingRecords,
+  checkingCache,
+  checkingSpace,
+  preparingPreview,
+  waitingForPeer,
+}
+
 enum WorkStage {
   idle,
   scanning,

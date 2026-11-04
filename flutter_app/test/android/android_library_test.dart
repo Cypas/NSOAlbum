@@ -17,6 +17,47 @@ import '../home_shell_test.dart' show FakeBackend;
 import '../layout_viewport.dart';
 
 void main() {
+  testWidgets('only real filter items highlight the filter bubble', (
+    tester,
+  ) async {
+    await useLayoutTestViewport(tester, const Size(360, 800));
+    final backend = FakeBackend(mediaItems: [_image(), _image(id: 2)]);
+    await tester.pumpWidget(
+      SquidAlbumApp(backend: backend, uiPlatform: AppUiPlatform.android),
+    );
+    await tester.pumpAndSettle();
+
+    final kind = find.byKey(const Key('android-kind-filter'));
+    await tester.tap(find.descendant(of: kind, matching: find.text('图片')));
+    await tester.pumpAndSettle();
+    expect(find.text('已应用筛选'), findsNothing);
+    final filter = find.byKey(const Key('android-library-filter'));
+    expect(
+      tester
+          .widget<IconButton>(filter)
+          .style
+          ?.backgroundColor
+          ?.resolve(<WidgetState>{}),
+      Colors.transparent,
+      reason: 'The media-kind segment is a view, not a filter item.',
+    );
+
+    await tester.tap(filter);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('android-filter-favorites-switch')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('应用'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<IconButton>(filter)
+          .style
+          ?.backgroundColor
+          ?.resolve(<WidgetState>{}),
+      Theme.of(tester.element(filter)).colorScheme.primaryContainer,
+    );
+  });
+
   testWidgets('gallery toolbar switches between title, search and selection', (
     tester,
   ) async {
@@ -139,6 +180,27 @@ void main() {
     expect(find.text('已选择 2 项'), findsNothing);
     expect(find.byKey(const Key('android-select-media')), findsOneWidget);
     expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant({TargetPlatform.android}));
+
+  testWidgets('select all includes every matching page beyond the viewport', (
+    tester,
+  ) async {
+    await useLayoutTestViewport(tester, const Size(360, 800));
+    final backend = FakeBackend(
+      mediaItems: [for (var id = 1; id <= 130; id++) _image(id: id)],
+    );
+    await tester.pumpWidget(
+      SquidAlbumApp(backend: backend, uiPlatform: AppUiPlatform.android),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('android-select-media')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('更多操作'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('全选'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('已选择 130 项'), findsOneWidget);
   }, variant: TargetPlatformVariant({TargetPlatform.android}));
 
   for (final partialFailure in [false, true]) {

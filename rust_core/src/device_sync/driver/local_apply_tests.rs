@@ -586,16 +586,7 @@ fn local_handoff_local_cancel_after_install_compensates_prepared_library() {
 }
 
 #[tokio::test]
-async fn local_handoff_corrupt_controlled_reuse_fails_locally_before_formal_mutation() {
-    corrupt_controlled_reuse(true).await;
-}
-
-#[tokio::test]
-async fn local_handoff_attached_corrupt_reuse_reconciles_worker_failure() {
-    corrupt_controlled_reuse(false).await;
-}
-
-async fn corrupt_controlled_reuse(detached: bool) {
+async fn local_handoff_rejects_truncated_reuse_before_installing_local_apply() {
     let mut pair = pair();
     let input = tempfile::tempdir().unwrap();
     let path = input.path().join("synthetic.mp4");
@@ -613,24 +604,12 @@ async fn corrupt_controlled_reuse(detached: bool) {
         .list_media(GalleryQuery::default())
         .unwrap()
         .remove(0);
-    // Same length, same DB-approved CAS identity: only full local SHA can reject.
-    std::fs::write(&original.storage_path, b"synthetic-corrupt!").unwrap();
-    issued(&mut pair, Direction::DesktopToPhone);
-    transmit(&mut pair.host, &mut pair.phone);
-    pair.phone.poll().unwrap();
-    assert!(pair.phone.local_apply_installed());
-    if detached {
-        pair.phone.disconnect();
-    }
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut failed = false;
-    while pair.phone.worker.is_some() {
-        failed |= pair.phone.poll().is_err();
-        assert!(std::time::Instant::now() < until);
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    assert!(failed);
-    assert_eq!(pair.phone.state(), State::Failed);
+    // Length checks still reject a damaged original without a normal full scan.
+    std::fs::write(&original.storage_path, b"truncated").unwrap();
+    let binding = pair.phone.preview_binding().unwrap().to_owned();
+    assert!(pair.phone.approve_controlled_preview(&binding).is_err());
+    assert!(!pair.phone.local_apply_installed());
+    assert!(pair.phone.worker.is_none());
     assert!(pair.phone.receipt().is_none());
     assert!(!pair.b.database().device_sync_recovery_pending());
     assert!(pair
@@ -646,16 +625,7 @@ async fn corrupt_controlled_reuse(detached: bool) {
             .records,
         before.manifest.records
     );
-    assert_eq!(
-        std::fs::read(&original.storage_path).unwrap(),
-        b"synthetic-corrupt!"
-    );
-    for _ in 0..3 {
-        let _ = pair.phone.poll();
-        assert_eq!(pair.phone.state(), State::Failed);
-        assert!(pair.phone.worker.is_none());
-        assert!(pair.phone.receipt().is_none());
-    }
+    assert_eq!(std::fs::read(&original.storage_path).unwrap(), b"truncated");
 }
 
 #[test]

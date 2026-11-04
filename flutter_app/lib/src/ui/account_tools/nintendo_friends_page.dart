@@ -286,38 +286,34 @@ class _NintendoFriendsPageState extends State<NintendoFriendsPage> {
                               offlineExpanded = !offlineExpanded;
                             }
                           }),
-                          bottomRadius: !group.$2 || rows == 0,
                         );
                       }
                       final cardRow = row - 1;
-                      return _FriendGroupRow(
-                        bottomRadius: cardRow == rows - 1,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 4,
-                            vertical: 4,
-                          ),
-                          child: IntrinsicHeight(
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                for (var column = 0; column < columns; column++)
-                                  Expanded(
-                                    child:
-                                        cardRow * columns + column <
-                                            group.$1.length
-                                        ? _FriendTile(
-                                            friend: group
-                                                .$1[cardRow * columns + column],
-                                            accountId: widget.profile.accountId,
-                                            backend: widget.backend,
-                                            mobile: widget.mobile,
-                                            onChanged: load,
-                                          )
-                                        : const SizedBox.shrink(),
-                                  ),
-                              ],
-                            ),
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 4,
+                        ),
+                        child: IntrinsicHeight(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              for (var column = 0; column < columns; column++)
+                                Expanded(
+                                  child:
+                                      cardRow * columns + column <
+                                          group.$1.length
+                                      ? _FriendTile(
+                                          friend: group
+                                              .$1[cardRow * columns + column],
+                                          accountId: widget.profile.accountId,
+                                          backend: widget.backend,
+                                          mobile: widget.mobile,
+                                          onChanged: load,
+                                        )
+                                      : const SizedBox.shrink(),
+                                ),
+                            ],
                           ),
                         ),
                       );
@@ -360,7 +356,6 @@ class _FriendGroupHeader extends StatelessWidget {
     required this.mobile,
     required this.expanded,
     required this.onTap,
-    required this.bottomRadius,
   });
 
   final String title;
@@ -369,7 +364,6 @@ class _FriendGroupHeader extends StatelessWidget {
   final bool mobile;
   final bool expanded;
   final VoidCallback onTap;
-  final bool bottomRadius;
 
   @override
   Widget build(BuildContext context) {
@@ -420,24 +414,6 @@ class _FriendGroupHeader extends StatelessWidget {
       ),
     );
   }
-}
-
-class _FriendGroupRow extends StatelessWidget {
-  const _FriendGroupRow({required this.child, required this.bottomRadius});
-
-  final Widget child;
-  final bool bottomRadius;
-
-  @override
-  Widget build(BuildContext context) => Container(
-    decoration: BoxDecoration(
-      color: Theme.of(context).colorScheme.surfaceContainerHighest,
-      borderRadius: BorderRadius.vertical(
-        bottom: bottomRadius ? const Radius.circular(18) : Radius.zero,
-      ),
-    ),
-    child: child,
-  );
 }
 
 class _AddFriendDialog extends StatefulWidget {

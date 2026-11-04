@@ -69,6 +69,48 @@ void main() {
       expect(find.textContaining('校验'), findsOneWidget);
     },
   );
+  for (final language in ['zh', 'en']) {
+    testWidgets(
+      'apply failure explains verified files can be reused in $language',
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            locale: Locale(language),
+            supportedLocales: AppLocalizations.supportedLocales,
+            localizationsDelegates: const [
+              AppLocalizations.delegate,
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            home: Builder(
+              builder: (context) => Text(
+                deviceSyncError(
+                  context,
+                  const DeviceSyncReadFailure(read.ReadError.applyFailed),
+                ),
+              ),
+            ),
+          ),
+        );
+        expect(
+          find.textContaining(
+            language == 'zh' ? '已校验的暂存文件' : 'Verified staged files',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining(
+            language == 'zh'
+                ? '匹配的缓存可复用而不重传'
+                : 'matching cached files can be reused without retransferring',
+          ),
+          findsOneWidget,
+        );
+        expect(find.textContaining('SHA-256'), findsNothing);
+      },
+    );
+  }
   testWidgets(
     'invalid invitations name QR validation while transfer corruption does not',
     (tester) async {
@@ -91,4 +133,39 @@ void main() {
       expect(find.textContaining('QR code is invalid'), findsOneWidget);
     },
   );
+  for (final language in ['zh', 'en']) {
+    testWidgets(
+      'USB timeout explains unlocking the phone and file transfer in $language',
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            locale: Locale(language),
+            supportedLocales: AppLocalizations.supportedLocales,
+            localizationsDelegates: const [
+              AppLocalizations.delegate,
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            home: Builder(
+              builder: (context) => Text(
+                deviceSyncError(
+                  context,
+                  const DeviceSyncReadFailure(read.ReadError.timeout),
+                ),
+              ),
+            ),
+          ),
+        );
+        expect(
+          find.textContaining(language == 'zh' ? '解锁手机' : 'unlock the phone'),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining(language == 'zh' ? '文件传输' : 'file transfer'),
+          findsOneWidget,
+        );
+      },
+    );
+  }
 }

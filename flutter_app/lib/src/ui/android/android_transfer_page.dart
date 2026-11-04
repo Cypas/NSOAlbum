@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -15,6 +17,7 @@ import 'android_account_status.dart';
 import 'android_custom_import_page.dart';
 import 'android_nintendo_sync_page.dart';
 import 'android_page_frame.dart';
+import '../image_thumbnail.dart';
 
 class AndroidTransferPage extends StatelessWidget {
   const AndroidTransferPage({
@@ -109,7 +112,22 @@ class AndroidTransferPage extends StatelessWidget {
                                   if (syncing) {
                                     await controller.sync.cancel();
                                   } else {
+                                    final importedSince = DateTime.now()
+                                        .toUtc();
                                     await controller.sync.run();
+                                    final downloaded =
+                                        controller.sync.summary?.downloaded;
+                                    if (downloaded != null &&
+                                        controller.sync.onMediaImported ==
+                                            null) {
+                                      unawaited(
+                                        ImageThumbnailCache.prefetchImportedImages(
+                                          controller.backend,
+                                          downloaded,
+                                          importedSince: importedSince,
+                                        ),
+                                      );
+                                    }
                                     await controller.refresh();
                                     if (context.mounted &&
                                         controller.sync.error != null) {

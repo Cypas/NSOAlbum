@@ -4,6 +4,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../account_name_history.dart';
+import '../../diagnostics/gallery_work_probe.dart';
 
 const legacySessionKey = 'nintendo.session_token';
 const accountTokensKey = 'nintendo.account_tokens.v1';
@@ -29,7 +30,8 @@ class FlutterAccountSecureStorage implements AccountSecureStorage {
   FlutterAccountSecureStorage(this.storage);
   final FlutterSecureStorage storage;
   @override
-  Future<String?> read(String key) => storage.read(key: key);
+  Future<String?> read(String key) =>
+      GalleryWorkProbe.instance.secureRead(key, () => storage.read(key: key));
   @override
   Future<void> write(String key, String value) =>
       storage.write(key: key, value: value);

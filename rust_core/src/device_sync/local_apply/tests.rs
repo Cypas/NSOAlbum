@@ -84,6 +84,34 @@ fn local_authority_full_cache_budget_is_not_zero_download_bytes() {
 }
 
 #[test]
+fn local_authority_exposes_only_bounded_apply_progress_counts() {
+    let control = LifecycleControl::new(CancellationToken::default());
+    let id = identity();
+    control.ready(id.clone()).unwrap();
+    let authority = control
+        .install(
+            &id,
+            "receiver".into(),
+            publications(3),
+            Arc::new(SystemClock::default()),
+        )
+        .unwrap();
+    authority.publication_started("sha", 3).unwrap();
+    authority.publication_progress(&Progress {
+        phase: Phase::Copying,
+        completed_bytes: 2,
+        total_bytes: Some(3),
+    });
+    authority.sql_started();
+    authority.sql_progress();
+    let (published, sql, accounts, sql_started) = authority.progress_counts();
+    assert_eq!(published, 2);
+    assert_eq!(sql, 2048);
+    assert_eq!(accounts, 0);
+    assert!(sql_started);
+}
+
+#[test]
 fn local_authority_issue_failure_does_not_forge_or_repeat_grant() {
     let control = LifecycleControl::new(CancellationToken::default());
     let id = identity();

@@ -30,6 +30,13 @@
 Gradle 中间目录、Cargo target 和用户级缓存的位置。不要并行启动会争用同一
 原生构建目录的任务，也不要擅自清理或替换已有构建缓存/产物。
 
+图库性能宿主工具显式读取 `NSOALBUM_BUILD_ROOT`，只接受该根目录下的
+`source/flutter_app` 工作目录，并将脱敏报告存入其 `perf` 子目录。
+Flutter 可执行文件可由 `NSOALBUM_FLUTTER` 指定，否则从 PATH 解析；
+Android 采集还要求 PATH 中的 adb、Dart 及显式 `ANDROID_SERIAL`。
+这些工具不内置维护者路径或设备序列号。Windows IME 合成夹具优先使用
+`NSOALBUM_BUILD_ROOT`，CI 使用 `RUNNER_TEMP`，其他环境回退到系统临时目录。
+
 图库生成 Bridge 的实际 DLL 回归位于 `test/gallery_query_bridge_test.dart`。
 仅在已验证为当前源码/生成接口的 Debug 库后，将其绝对路径放入
 `NSOALBUM_DEVICE_SYNC_TEST_LIBRARY`，再单独执行该测试。它通过正式 Rust API

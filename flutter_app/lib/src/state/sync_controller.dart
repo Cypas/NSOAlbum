@@ -20,11 +20,14 @@ class SyncController extends ChangeNotifier {
     this._backend, {
     this.allAccounts = false,
     DateTime Function()? now,
+    this.onMediaImported,
   }) : _now = now ?? DateTime.now;
 
   final AppBackend _backend;
   final DateTime Function() _now;
   final bool allAccounts;
+  final Future<void> Function(BigInt importedCount, DateTime importedSince)?
+  onMediaImported;
   SyncState state = SyncState.idle;
   SyncSummary? summary;
   SyncProgress? progress;
@@ -140,7 +143,9 @@ class SyncController extends ChangeNotifier {
   }
 
   Future<void> _runLegacySync() async {
+    final importedSince = _now().toUtc();
     final result = await _backend.syncNintendoAlbum();
+    _warmImportedMedia(result.downloaded, importedSince);
     if (_cancelRequested || _disposed) return;
     summary = result;
     if (_backend case final SyncScheduleBackend backend) {
@@ -198,10 +203,12 @@ class SyncController extends ChangeNotifier {
       _authenticationOverrides.remove(accountId);
       currentAccountId = accountId;
       accountAttemptedAt[accountId] = _now();
+      final importedSince = _now().toUtc();
       progress = null;
       _notify();
       try {
         final result = await backend.syncNintendoAccount(accountId);
+        _warmImportedMedia(result.downloaded, importedSince);
         if (_cancelRequested || _disposed) break;
         accountResults[accountId] = result;
         accountErrors.remove(accountId);
@@ -260,6 +267,18 @@ class SyncController extends ChangeNotifier {
           .toList(growable: false),
       failedAccountCount: queue.where(accountErrors.containsKey).length,
     );
+  }
+
+  void _warmImportedMedia(BigInt importedCount, DateTime importedSince) {
+    final callback = onMediaImported;
+    if (callback == null || importedCount <= BigInt.zero) return;
+    unawaited(() async {
+      try {
+        await callback(importedCount, importedSince);
+      } catch (_) {
+        // Preview warming is optional and must not affect a completed sync.
+      }
+    }());
   }
 
   SyncSummary? _combinedAccountResults(Iterable<String> accountIds) {
@@ -419,13 +438,20 @@ class SyncController extends ChangeNotifier {
     return accountSchedules;
   }
 
-  Future<List<String>> dueAccountIds({DateTime? now}) async {
+  Future<List<String>> dueAccountIds({
+    DateTime? now,
+    DateTime Function()? clock,
+  }) async {
     if (!allAccounts || _backend is! AccountSyncBackend) return const [];
     final profiles = await _backend.listNintendoAccounts();
     final ids = profiles.map((profile) => profile.accountId).toList();
     accountSchedules.removeWhere((id, _) => !ids.contains(id));
     await refreshAccountScheduleStatuses(accountIds: ids);
-    final instant = (now ?? _now()).toUtc();
+    // Rust clamps an overdue nextSyncAt to its current clock during the
+    // asynchronous read. A pre-read cutoff can therefore reject every due
+    // account forever; resolve the live scheduler clock only after refresh.
+    // Explicit `now` remains available for fixed historical queries.
+    final instant = (now ?? (clock ?? _now)()).toUtc();
     return ids.where((id) {
       if (authPausedAccountIds.contains(id)) return false;
       final due = accountSchedules[id]?.nextSyncAt?.toUtc();

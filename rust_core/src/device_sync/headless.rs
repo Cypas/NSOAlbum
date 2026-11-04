@@ -755,6 +755,14 @@ pub fn read_endpoint(handle: &str) -> EndpointRead {
         },
     }
 }
+pub fn applied_media_page(handle: &str, offset: u64) -> AppliedMediaCachePageRead {
+    (|| {
+        let owner = read_owner(handle)?;
+        let inner = read_lock(&owner.owner)?;
+        inner.driver().applied_media_cache_page(offset)
+    })()
+    .into()
+}
 pub fn read_preview(handle: &str) -> PreviewRead {
     (|| {
         let owner = read_owner(handle)?;
@@ -1352,3 +1360,50 @@ pub(crate) mod owner_test_tools {
 #[cfg(test)]
 #[path = "runtime_local_apply_tests.rs"]
 mod runtime_local_apply_tests;
+
+#[cfg(test)]
+mod progress_read_tests {
+    use super::*;
+
+    #[test]
+    fn busy_endpoint_read_preserves_scan_and_compare_progress_projection() {
+        for (stage, processed, total, expected_item) in [
+            (
+                super::super::work::WorkStage::Scanning,
+                3_u64,
+                10_u64,
+                "4/10",
+            ),
+            (
+                super::super::work::WorkStage::Comparing,
+                4_u64,
+                12_u64,
+                "5/12",
+            ),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let library = open(root.path().to_string_lossy().into_owned()).unwrap();
+            let host = host(&library.handle, "Desktop", None).unwrap();
+            let owner = endpoint(&host.handle).unwrap();
+            let _work_scope = owner.work.begin(stage).unwrap();
+            owner.work.set_total(stage, total);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            owner.work.checkpoint(stage, processed as usize).unwrap();
+
+            let _owner_guard = owner.owner.lock().unwrap();
+            let read = read_endpoint(&host.handle);
+
+            assert_eq!(read.error, Some(ReadError::Busy));
+            assert_eq!(read.progress.work_stage, stage);
+            assert_eq!(read.progress.processed_items, Some(processed));
+            assert_eq!(read.progress.total_items, Some(total));
+            assert_eq!(read.progress.current_item.as_deref(), Some(expected_item));
+            assert!(read.progress.rate_per_second.is_some_and(|rate| rate > 0));
+            assert!(read.progress.eta_ms.is_some());
+
+            drop(_owner_guard);
+            close_endpoint(&host.handle).unwrap();
+            close_library(&library.handle).unwrap();
+        }
+    }
+}

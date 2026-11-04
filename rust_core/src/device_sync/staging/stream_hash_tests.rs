@@ -51,12 +51,12 @@ fn final_validation_reads_once_and_copying_does_not_reread_verified_bytes() {
     assert_eq!(after_copy.copy_bytes, 3);
     assert_eq!(
         after_copy.checksum_read_bytes, 3,
-        "publication must hash the copy, not reread it"
+        "publication must not hash or reread bytes already checked at first receive"
     );
 }
 
 #[test]
-fn copy_rejects_same_length_corruption_without_a_second_pass() {
+fn copying_trusted_staging_does_not_recompute_the_content_digest() {
     let (root, _database, source, _target, _plan) = fixture();
     let ManifestRecord::Media(record) = &source.records[0] else {
         panic!()
@@ -64,17 +64,39 @@ fn copy_rejects_same_length_corruption_without_a_second_pass() {
     let input = root.path().join("synthetic-input");
     std::fs::write(&input, b"abd").unwrap();
     let mut output = OwnedPart::create(root.path()).unwrap();
-    assert_eq!(
-        copy_file(
-            File::open(input).unwrap(),
-            &mut output,
-            record,
-            &CancellationToken::default(),
-            &mut |_| {},
-            &Default::default()
-        ),
-        Err(StagingError::ChecksumMismatch),
-    );
+    copy_file(
+        File::open(input).unwrap(),
+        &mut output,
+        record,
+        &CancellationToken::default(),
+        &mut |_| {},
+        &Default::default(),
+    )
+    .expect("publication copies already verified bytes without another SHA-256 pass");
+}
+
+#[test]
+fn copying_trusted_staging_still_rejects_incomplete_or_oversized_bytes() {
+    let (root, _database, source, _target, _plan) = fixture();
+    let ManifestRecord::Media(record) = &source.records[0] else {
+        panic!()
+    };
+    for bytes in [b"ab".as_slice(), b"abcd".as_slice()] {
+        let input = root.path().join("synthetic-input");
+        std::fs::write(&input, bytes).unwrap();
+        let mut output = OwnedPart::create(root.path()).unwrap();
+        assert_eq!(
+            copy_file(
+                File::open(input).unwrap(),
+                &mut output,
+                record,
+                &CancellationToken::default(),
+                &mut |_| {},
+                &Default::default(),
+            ),
+            Err(StagingError::LengthMismatch),
+        );
+    }
 }
 
 #[test]
@@ -270,7 +292,63 @@ fn final_batch_waits_for_all_files_then_reports_cumulative_real_bytes() {
 }
 
 #[test]
-fn new_operation_revalidates_cache_once_then_reuses_its_result() {
+fn final_batch_verification_reports_file_ordinals_and_real_byte_totals() {
+    let (_root, database, mut source, target, _) = fixture();
+    let ManifestRecord::Media(mut second) = source.records[0].clone() else {
+        panic!()
+    };
+    const XYZ_SHA: &str = "3608bca1e44ea6c4d268eb6db02260269892c0b42b86bbf1e77a6fa16c3c9282";
+    second.sha256 = XYZ_SHA.into();
+    source.records.push(ManifestRecord::Media(second));
+    let plan = crate::device_sync::planner::build_plan(
+        &source,
+        &target,
+        crate::device_sync::planner::SyncMode::Merge,
+    )
+    .unwrap();
+    let work = super::super::work::WorkControl::default();
+    let mut operation =
+        StagingOperation::prepare_controlled(database, &source, &target, &plan, &work).unwrap();
+    let cancel = CancellationToken::default();
+    for (sha, bytes) in [(ABC_SHA, b"abc".as_slice()), (XYZ_SHA, b"xyz".as_slice())] {
+        operation.begin_file(operation.id, sha).unwrap();
+        operation.write_chunk(operation.id, sha, 0, bytes).unwrap();
+        operation.seal_file(operation.id, sha, &cancel).unwrap();
+    }
+    let mut events = Vec::new();
+    operation
+        .verify_received_with_progress(
+            &work,
+            &cancel,
+            &mut |progress, files_completed, files_total| {
+                events.push((progress, files_completed, files_total));
+            },
+        )
+        .unwrap();
+
+    assert!(events.iter().all(|(progress, _, files_total)| {
+        matches!(progress.phase, Phase::Verifying | Phase::Verified)
+            && progress.total_bytes == Some(6)
+            && *files_total == 2
+    }));
+    assert!(events.iter().any(
+        |(progress, files_completed, _)| progress.completed_bytes > 0 && *files_completed == 0
+    ));
+    assert!(events.iter().any(|(progress, files_completed, _)| {
+        progress.phase == Phase::Verified && *files_completed == 1
+    }));
+    assert_eq!(events.last().unwrap().0.completed_bytes, 6);
+    assert_eq!(events.last().unwrap().1, 2);
+    assert_eq!(work.observe().verified_bytes, 6);
+    assert_eq!(work.observe().verified_files, 2);
+    assert_eq!(work.observe().total_verified_files, Some(2));
+    assert_eq!(work.observe().total_verified_bytes, Some(6));
+    assert!(!format!("{events:?}").contains(ABC_SHA));
+    assert!(!format!("{events:?}").contains(XYZ_SHA));
+}
+
+#[test]
+fn new_operation_reuses_verified_cache_without_reading_its_contents() {
     let (_root, database, source, target, plan) = fixture();
     let mut first = StagingOperation::prepare(database.clone(), &source, &target, &plan).unwrap();
     receive(&mut first);
@@ -279,7 +357,7 @@ fn new_operation_revalidates_cache_once_then_reuses_its_result() {
     let mut retry =
         StagingOperation::prepare_controlled(database.clone(), &source, &target, &plan, &work)
             .unwrap();
-    assert_eq!(work.validation_metrics().checksum_read_bytes, 3);
+    assert_eq!(work.validation_metrics().checksum_read_bytes, 0);
     for _ in 0..100 {
         assert!(!retry.requires_transfer(ABC_SHA).unwrap());
     }
@@ -297,7 +375,7 @@ fn new_operation_revalidates_cache_once_then_reuses_its_result() {
         std::fs::read(publication.identity().path()).unwrap(),
         b"abc"
     );
-    assert_eq!(work.validation_metrics().checksum_read_bytes, 3);
+    assert_eq!(work.validation_metrics().checksum_read_bytes, 0);
     assert_eq!(work.validation_metrics().copy_bytes, 3);
     assert_eq!(work.validation_metrics().receive_hashed_bytes, 0);
 }

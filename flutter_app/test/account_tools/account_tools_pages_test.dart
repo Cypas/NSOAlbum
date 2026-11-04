@@ -589,6 +589,48 @@ void registerAccountToolsPageTests() {
       expect(backend.notes, ['clicked-b:note-friend:Updated']);
     },
   );
+  testWidgets('friend note editor preserves Chinese IME composing text', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      app(
+        NintendoFriendDetailPage(
+          backend: ToolsBackend(),
+          friend: const NintendoFriend(
+            friendId: 'note-friend',
+            nickname: 'Note friend',
+            note: 'Original',
+            isFavorite: false,
+            presence: 'ONLINE',
+          ),
+          accountId: 'clicked-b',
+          mobile: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('编辑备注'));
+    await tester.pumpAndSettle();
+
+    const composingText = '中文备注';
+    final composingValue = TextEditingValue(
+      text: composingText,
+      selection: TextSelection.collapsed(offset: composingText.length),
+      composing: TextRange(start: 0, end: composingText.length),
+    );
+    tester.testTextInput.updateEditingValue(composingValue);
+    await tester.pump();
+
+    final field = tester.widget<EditableText>(find.byType(EditableText));
+    expect(field.controller.value.text, composingText);
+    expect(field.controller.value.selection.baseOffset, composingText.length);
+    expect(
+      field.controller.value.selection.extentOffset,
+      composingText.length,
+    );
+    expect(field.controller.value.composing, composingValue.composing);
+    expect(field.focusNode.hasFocus, isTrue);
+  });
   testWidgets(
     'friend detail reuses the list avatar and supports a full size preview',
     (tester) async {

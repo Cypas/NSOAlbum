@@ -9,6 +9,7 @@
 
 #include <memory>
 
+#include "ime_context_association.h"
 #include "win32_window.h"
 #include "native_single_instance.h"
 
@@ -60,7 +61,8 @@ class FlutterWindow : public Win32Window {
   // Third-party TSF/IMM32 IMEs such as Sogou need an IME context whose lifetime
   // follows Flutter's active text client instead of arbitrary pointer events.
   HWND ime_window_ = nullptr;
-  HIMC ime_context_ = nullptr;
+  nsoalbum::ImeContextAssociation<nsoalbum::WindowsImeContextApi>
+      ime_context_association_;
   bool text_client_active_ = false;
   BOOL ime_open_status_ = FALSE;
   DWORD ime_conversion_mode_ = 0;

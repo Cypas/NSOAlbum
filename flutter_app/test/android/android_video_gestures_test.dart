@@ -93,6 +93,7 @@ void main() {
     'video swipe changes media, seek drag only changes playback time',
     (tester) async {
       final swipes = <int>[];
+      final progress = <double>[];
       final seeks = <Duration>[];
       await tester.pumpWidget(
         MaterialApp(
@@ -107,6 +108,7 @@ void main() {
                   Expanded(
                     child: AndroidMediaSwipeRegion(
                       onSwipe: swipes.add,
+                      onHorizontalProgress: progress.add,
                       child: const ColoredBox(
                         key: Key('picture-area'),
                         color: Colors.blueGrey,
@@ -135,6 +137,7 @@ void main() {
         const Offset(-150, 0),
       );
       expect(swipes, [1]);
+      expect(progress.any((value) => value < -0.1), isTrue);
       await tester.drag(
         find.byKey(const Key('android-video-seek')),
         const Offset(100, 0),

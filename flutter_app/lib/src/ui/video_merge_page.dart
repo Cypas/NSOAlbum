@@ -9,6 +9,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../backend/app_backend.dart';
 import '../l10n/app_localizations.dart';
 import '../rust/models.dart';
+import 'image_thumbnail.dart';
 import 'desktop_window_drag_area.dart';
 import 'video_runtime.dart';
 import 'video_thumbnail.dart';
@@ -57,6 +58,7 @@ class VideoMergePage extends StatefulWidget {
 class _VideoMergePageState extends State<VideoMergePage> {
   late final MediaEditController mediaEditor = MediaEditController(
     widget.backend,
+    onMediaCreated: (asset) => unawaited(ImageThumbnailCache.prefetch([asset])),
   );
   late final List<MediaAsset> videos = List.of(widget.videos);
   Player? previewPlayer;
@@ -473,6 +475,7 @@ class _VideoMergePageState extends State<VideoMergePage> {
                 cover: videos.first,
                 controls: AdaptiveVideoControls,
                 showLoadingIndicator: false,
+                initialThumbnail: VideoThumbnailCache.peekCover(videos.first),
               ),
             ),
           ),
@@ -749,6 +752,9 @@ class _SourceVideoPreviewState extends State<_SourceVideoPreview> {
                               cover: widget.video,
                               controls: AdaptiveVideoControls,
                               showLoadingIndicator: false,
+                              initialThumbnail: VideoThumbnailCache.peekCover(
+                                widget.video,
+                              ),
                             ),
                           ),
                         ),

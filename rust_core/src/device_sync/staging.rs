@@ -505,6 +505,10 @@ impl StagingOperation {
         })?;
         let mut entries = BTreeMap::new();
         let mut cached_bytes = 0_u64;
+        work.set_preparation_phase(
+            super::work::PreparationStage::CheckingCache,
+            Some(plan.media.len() as u64),
+        );
         for entry in &plan.media {
             work.check().map_err(core_error)?;
             if let Some(record) = &entry.final_record {
@@ -540,6 +544,7 @@ impl StagingOperation {
                     },
                 );
             }
+            work.preparation_item_completed();
         }
         let requirements = SpaceRequirements::checked(
             plan.space
@@ -774,11 +779,28 @@ impl StagingOperation {
 
     /// No content is examined until every required incoming file is sealed.
     /// Validated entries alone enter the reusable cache, including on failure.
+    #[allow(dead_code)]
     pub(crate) fn verify_received(
         &mut self,
         cancel: &CancellationToken,
         observer: &mut impl FnMut(Progress),
     ) -> StagingResult<()> {
+        self.verify_received_with_progress(
+            &super::work::WorkControl::default(),
+            cancel,
+            &mut |progress, _, _| observer(progress),
+        )
+    }
+
+    pub(crate) fn verify_received_with_progress(
+        &mut self,
+        work: &super::work::WorkControl,
+        cancel: &CancellationToken,
+        observer: &mut impl FnMut(Progress, u64, u64),
+    ) -> StagingResult<()> {
+        let _work_scope = work
+            .begin(super::work::WorkStage::Validating)
+            .map_err(|_| StagingError::Cancelled)?;
         check_cancel(cancel)?;
         if self.state != OperationState::Active
             || self.receiving != 0
@@ -798,14 +820,32 @@ impl StagingOperation {
         let total = pending.iter().try_fold(0_u64, |sum, (_, length)| {
             sum.checked_add(*length).ok_or(StagingError::Overflow)
         })?;
+        let total_files = u64::try_from(pending.len()).map_err(|_| StagingError::Overflow)?;
+        work.begin_verification(total, total_files);
         let mut completed = 0_u64;
-        for (sha, length) in pending {
+        for (files_completed, (index, (sha, length))) in pending.into_iter().enumerate().enumerate()
+        {
+            let files_completed =
+                u64::try_from(files_completed).map_err(|_| StagingError::Overflow)?;
             self.verify_sealed_file(&sha, cancel, &mut |event| {
-                observer(progress(
-                    Phase::Verifying,
-                    completed + event.completed_bytes,
-                    Some(total),
-                ));
+                let current_file = u64::try_from(index + 1).unwrap_or(u64::MAX);
+                if event.phase == Phase::Verified {
+                    let verified = progress(Phase::Verified, completed + length, Some(total));
+                    work.verification_progress(verified.completed_bytes, files_completed + 1, None);
+                    observer(verified, files_completed + 1, total_files);
+                } else {
+                    let verifying = progress(
+                        Phase::Verifying,
+                        completed + event.completed_bytes,
+                        Some(total),
+                    );
+                    work.verification_progress(
+                        verifying.completed_bytes,
+                        files_completed,
+                        Some(current_file),
+                    );
+                    observer(verifying, files_completed, total_files);
+                }
             })?;
             completed += length;
         }
@@ -836,30 +876,6 @@ impl StagingOperation {
             self.fail(*error);
         }
         result
-    }
-
-    pub fn verify_reused_original(
-        &mut self,
-        operation: uuid::Uuid,
-        sha: &str,
-        cancel: &CancellationToken,
-        observer: &mut impl FnMut(Progress),
-    ) -> StagingResult<()> {
-        self.check(operation, sha)?;
-        let entry = self.entries.get(sha).ok_or(StagingError::InvalidState)?;
-        if entry.needs_transfer {
-            return Err(StagingError::InvalidState);
-        }
-        let record = &entry.record;
-        let (path, length) = self
-            .database
-            .device_sync_original_path(sha)
-            .map_err(core_error)?
-            .ok_or(StagingError::CorruptOriginal)?;
-        if length != record.length {
-            return Err(StagingError::CorruptOriginal);
-        }
-        verify_original(&path, record, cancel, observer, &self.validation)
     }
 
     pub fn cancel(&mut self) -> StagingResult<()> {
@@ -972,6 +988,13 @@ impl StagingOperation {
                 &mut emit,
                 &self.validation,
             )?;
+            // Detect a changed/replaced cache object while copying, without
+            // recomputing a digest of bytes already checked at first receive.
+            entry
+                .cached
+                .as_ref()
+                .ok_or(StagingError::InvalidState)?
+                .open()?;
             sync_file(temporary.file_mut())?;
             emit(progress(Phase::Publishing, 0, None));
             check_cancel(cancel)?;
@@ -1198,7 +1221,7 @@ fn copy_file(
 ) -> StagingResult<()> {
     let mut buffer = [0_u8; CHECKSUM_BUFFER_BYTES];
     let mut copied = 0_u64;
-    let mut digest = Sha256::new();
+    let stamp = file_stamp(&source)?;
     observer(progress(Phase::Copying, 0, Some(record.length)));
     loop {
         check_cancel(cancel)?;
@@ -1226,7 +1249,6 @@ fn copy_file(
             if written == 0 {
                 return Err(StagingError::Write);
             }
-            digest.update(&remaining[..written]);
             validation.copied(written as u64);
             remaining = &remaining[written..];
         }
@@ -1236,14 +1258,9 @@ fn copy_file(
     if copied != record.length {
         return Err(StagingError::LengthMismatch);
     }
-    if hex::encode(digest.finalize()) != record.sha256 {
-        return Err(StagingError::ChecksumMismatch);
+    if file_stamp(&source)? != stamp {
+        return Err(StagingError::UnsafePath);
     }
-    observer(progress(
-        Phase::Verifying,
-        record.length,
-        Some(record.length),
-    ));
     Ok(())
 }
 
@@ -1403,7 +1420,8 @@ mod tests {
         assert!(published.created_by_operation());
         assert_eq!(std::fs::read(published.identity().path()).unwrap(), b"abc");
         assert_eq!(events.last().unwrap().phase, Phase::Published);
-        assert!(events.iter().any(|event| event.phase == Phase::Verifying));
+        assert!(events.iter().any(|event| event.phase == Phase::Copying));
+        assert!(!events.iter().any(|event| event.phase == Phase::Verifying));
         assert!(events
             .iter()
             .any(|event| event.phase == Phase::Publishing && event.total_bytes.is_none()));

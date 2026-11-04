@@ -14,6 +14,48 @@ import 'package:squid_album/src/state/transfer_controller.dart';
 import 'home_shell_test.dart' show FakeBackend;
 
 void main() {
+  test(
+    'automatic due check uses time after asynchronous clamped schedule reads',
+    () {
+      fakeAsync((async) {
+        final origin = DateTime.utc(2026, 11, 3);
+        DateTime now() => origin.add(async.elapsed);
+        final backend = _ClampedScheduledAccountBackend(now);
+        backend.settings = copyAppSettings(
+          backend.settings,
+          syncPolicy: const SyncPolicy(
+            enabled: true,
+            activeIntervalMinutes: 30,
+            sleepAfterHours: 24,
+          ),
+        );
+        final settings = SettingsController(backend);
+        final sync = SyncController(backend, allAccounts: true, now: now);
+        final coordinator = AutomaticSyncCoordinator(
+          backend,
+          settings,
+          sync,
+          now: now,
+        );
+        try {
+          unawaited(coordinator.start());
+          async.elapse(const Duration(milliseconds: 250));
+          async.flushMicrotasks();
+          expect(backend.accountCalls, ['a']);
+          final reads = backend.scheduleReads;
+          async.elapse(const Duration(seconds: 2));
+          async.flushMicrotasks();
+          expect(backend.accountCalls, ['a']);
+          expect(backend.scheduleReads, reads);
+        } finally {
+          coordinator.dispose();
+          sync.dispose();
+          settings.dispose();
+        }
+      });
+    },
+  );
+
   test('rate limited sync errors request a one minute automatic retry', () {
     expect(
       automaticSyncRetryDelayForError(
@@ -49,6 +91,36 @@ void main() {
       expect(controller.totalAccounts, 2);
       expect(controller.accountResults.keys, ['a', 'b']);
       expect(controller.accountAttemptedAt.keys, ['a', 'b']);
+      expect(controller.state, SyncState.completed);
+    },
+  );
+
+  test(
+    'automatic account sync warms only downloaded media after success',
+    () async {
+      final startedAt = DateTime.utc(2026, 11, 1, 12);
+      final backend = _AccountBackend(
+        outcomes: {
+          'a': _summary('a', downloaded: 2),
+          'b': _summary('b', duplicates: 1),
+        },
+        now: () => startedAt,
+      );
+      final warmed = <(BigInt, DateTime)>[];
+      final controller = SyncController(
+        backend,
+        allAccounts: true,
+        now: () => startedAt,
+        onMediaImported: (count, since) async {
+          warmed.add((count, since));
+        },
+      );
+
+      await controller.run(automatic: true, accountIds: ['a', 'b']);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(backend.accountCalls, ['a', 'b']);
+      expect(warmed, [(BigInt.from(2), startedAt)]);
       expect(controller.state, SyncState.completed);
     },
   );
@@ -665,17 +737,22 @@ SyncSummary _summary(
 );
 
 class _AccountBackend extends FakeBackend implements AccountSyncBackend {
-  _AccountBackend({required this.outcomes, this.preparingAccount})
-    : super(
-        signedIn: true,
-        accountProfiles: const [
-          NintendoAccountProfile(accountId: 'a', nickname: 'A'),
-          NintendoAccountProfile(accountId: 'b', nickname: 'B'),
-        ],
-      );
+  _AccountBackend({
+    required this.outcomes,
+    this.preparingAccount,
+    DateTime Function()? now,
+  }) : _now = now ?? DateTime.now,
+       super(
+         signedIn: true,
+         accountProfiles: const [
+           NintendoAccountProfile(accountId: 'a', nickname: 'A'),
+           NintendoAccountProfile(accountId: 'b', nickname: 'B'),
+         ],
+       );
 
   final Map<String, Object> outcomes;
   final String? preparingAccount;
+  final DateTime Function() _now;
   final preparationStarted = Completer<void>();
   final preparationReleased = Completer<void>();
   final List<String> accountCalls = [];
@@ -704,7 +781,7 @@ class _AccountBackend extends FakeBackend implements AccountSyncBackend {
   Future<SyncScheduleStatus?> loadAccountSyncSchedule(String accountId) async =>
       SyncScheduleStatus(
         sleeping: false,
-        nextSyncAt: DateTime.now().toUtc().subtract(const Duration(minutes: 1)),
+        nextSyncAt: _now().toUtc().subtract(const Duration(minutes: 1)),
       );
 
   @override
@@ -713,7 +790,7 @@ class _AccountBackend extends FakeBackend implements AccountSyncBackend {
     required bool foundNewMedia,
   }) async => SyncScheduleStatus(
     sleeping: false,
-    nextSyncAt: DateTime.now().toUtc().add(const Duration(minutes: 30)),
+    nextSyncAt: _now().toUtc().add(const Duration(minutes: 30)),
   );
 }
 
@@ -846,6 +923,24 @@ class _ScheduledAccountBackend extends _AccountBackend {
     return super.recordAccountSyncOutcome(
       accountId,
       foundNewMedia: foundNewMedia,
+    );
+  }
+}
+
+class _ClampedScheduledAccountBackend extends _ScheduledAccountBackend {
+  _ClampedScheduledAccountBackend(this.clock);
+  final DateTime Function() clock;
+  int scheduleReads = 0;
+
+  @override
+  Future<SyncScheduleStatus?> loadAccountSyncSchedule(String accountId) async {
+    scheduleReads++;
+    await Future<void>.delayed(const Duration(milliseconds: 1));
+    return SyncScheduleStatus(
+      sleeping: false,
+      nextSyncAt: accountId == 'a' && !attemptedAccounts.contains(accountId)
+          ? clock()
+          : clock().add(const Duration(hours: 1)),
     );
   }
 }

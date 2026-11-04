@@ -2,11 +2,15 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as image;
 import 'package:squid_album/main.dart';
 import 'package:squid_album/src/backend/app_backend.dart';
 import 'package:squid_album/src/rust/models.dart';
 import 'package:squid_album/src/state/settings_copy.dart';
 import 'package:squid_album/src/ui/font_families.dart';
+import 'package:squid_album/src/ui/gallery_perf.dart';
+import 'package:squid_album/src/ui/scroll_to_top_button.dart';
+import 'package:squid_album/src/ui/video_thumbnail.dart';
 
 import 'home_shell_test.dart' show FakeBackend;
 
@@ -31,6 +35,56 @@ class _DelayedAccountsBackend extends FakeBackend {
 void main() {
   setUp(() async {
     await loadCustomFontFamilies(const []);
+  });
+
+  testWidgets('return scrolling shows a warm video cover in the first frame', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final bytes = image.encodeJpg(image.Image(width: 16, height: 9));
+    final assets = List.generate(
+      60,
+      (index) => MediaAsset(
+        id: index + 1,
+        sha256: 'desktop-return-scroll-video-$index',
+        originalName: 'video-$index.mp4',
+        storagePath: 'unavailable-$index.mp4',
+        kind: MediaKind.video,
+        gameName: '',
+        favorite: false,
+        tags: const [],
+      ),
+    );
+    for (final asset in assets) {
+      VideoThumbnailCache.seedForTest(
+        asset.sha256,
+        VideoThumbnailData(bytes: bytes, duration: const Duration(seconds: 10)),
+      );
+    }
+    await tester.pumpWidget(
+      SquidAlbumApp(backend: FakeBackend(mediaItems: assets)),
+    );
+    await tester.pumpAndSettle();
+    final scroll = tester
+        .widget<CustomScrollView>(find.byType(CustomScrollView))
+        .controller!;
+    scroll.jumpTo(scroll.position.maxScrollExtent);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('media-card-60')), findsNothing);
+
+    scroll.jumpTo(0);
+    await tester.pump();
+
+    final card = find.byKey(const ValueKey('media-card-60'));
+    expect(card, findsOneWidget);
+    expect(
+      find.descendant(of: card, matching: find.byType(Image)),
+      findsOneWidget,
+      reason: 'A cached cover must not return to a placeholder after disposal.',
+    );
   });
 
   testWidgets('desktop title bar uses plain brand text without underline', (
@@ -97,6 +151,8 @@ void main() {
           albumType: 'manual',
           pinned: false,
           mediaCount: BigInt.one,
+          imageCount: BigInt.one,
+          videoCount: BigInt.zero,
         ),
       ],
       albumMediaIds: const {
@@ -183,6 +239,88 @@ void main() {
     },
   );
 
+  testWidgets('favorites header grows instead of overflowing by a pixel', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final backend = FakeBackend(
+      mediaItems: [_asset(1)],
+      albumItems: [
+        AlbumSummary(
+          id: 1,
+          name: '收藏',
+          description: '',
+          albumType: 'smart',
+          pinned: true,
+          systemKey: 'favorites',
+          mediaCount: BigInt.one,
+          imageCount: BigInt.one,
+          videoCount: BigInt.zero,
+        ),
+      ],
+      albumMediaIds: const {
+        1: {1},
+      },
+    );
+    await tester.pumpWidget(SquidAlbumApp(backend: backend));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('相册').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('album-card-1')));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    final extent = tester.getSize(find.byKey(const Key('page-header-extent')));
+    expect(extent.height, greaterThanOrEqualTo(64));
+    final subtitle = tester.getRect(find.text('所有已收藏的图片与视频'));
+    final header = tester.getRect(find.byKey(const Key('page-header')));
+    expect(subtitle.bottom, lessThanOrEqualTo(header.bottom + 0.01));
+  });
+
+  testWidgets('desktop filter bubble highlights while filters are active', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
+    await tester.pumpAndSettle();
+
+    final filter = find.byKey(const Key('library-filter'));
+    Color? background() => tester
+        .widget<IconButton>(filter)
+        .style
+        ?.backgroundColor
+        ?.resolve(<WidgetState>{});
+    final initial = background();
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('desktop-gallery-kind-filter')),
+        matching: find.text('视频'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      background(),
+      initial,
+      reason: 'The media-kind segment is a view, not a filter item.',
+    );
+    await tester.tap(find.byKey(const Key('library-filter')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('desktop-filter-favorites')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('desktop-filter-apply')));
+    await tester.pumpAndSettle();
+    expect(
+      background(),
+      Theme.of(tester.element(filter)).colorScheme.primaryContainer,
+    );
+  });
+
   testWidgets('desktop cards never show note previews', (tester) async {
     final asset = _asset(
       1,
@@ -199,6 +337,8 @@ void main() {
           albumType: 'manual',
           pinned: false,
           mediaCount: BigInt.one,
+          imageCount: BigInt.one,
+          videoCount: BigInt.zero,
         ),
       ],
       albumMediaIds: {
@@ -217,6 +357,27 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Hidden desktop note'), findsNothing);
+  });
+
+  testWidgets('desktop select all includes every matching page', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final backend = FakeBackend(
+      mediaItems: [for (var id = 1; id <= 130; id++) _asset(id)],
+    );
+    await tester.pumpWidget(SquidAlbumApp(backend: backend));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('start-media-selection')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('batch-select-all')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('已选择 130 项'), findsOneWidget);
   });
 
   testWidgets(
@@ -262,36 +423,54 @@ void main() {
     },
   );
 
-  testWidgets('desktop date grouping emits one header across pagination', (
-    tester,
-  ) async {
-    final importedAt = DateUtils.dateOnly(DateTime.now())
-        .add(const Duration(hours: 9));
-    final backend = FakeBackend(
-      mediaItems: [
-        for (var id = 1; id <= 65; id++) _asset(id, importedAt: importedAt),
-      ],
-    );
-    await tester.pumpWidget(SquidAlbumApp(backend: backend));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('library-filter')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('desktop-filter-group-by-date')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('desktop-filter-apply')));
-    await tester.pumpAndSettle();
+  testWidgets(
+    'desktop date grouping bounds far-return layouts across pagination',
+    (tester) async {
+      final importedAt = DateUtils.dateOnly(DateTime.now())
+          .add(const Duration(hours: 9));
+      final backend = FakeBackend(
+        mediaItems: [
+          for (var id = 1; id <= 180; id++) _asset(id, importedAt: importedAt),
+        ],
+      );
+      await tester.pumpWidget(SquidAlbumApp(backend: backend));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('library-filter')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('desktop-filter-group-by-date')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('desktop-filter-apply')));
+      await tester.pumpAndSettle();
 
-    final scrollView = tester.widget<CustomScrollView>(
-      find.byType(CustomScrollView),
-    );
-    scrollView.controller!.jumpTo(
-      scrollView.controller!.position.maxScrollExtent,
-    );
-    await tester.pumpAndSettle();
-    scrollView.controller!.jumpTo(0);
-    await tester.pumpAndSettle();
-    expect(find.text('今天'), findsOneWidget);
-  });
+      final scrollView = tester.widget<CustomScrollView>(
+        find.byType(CustomScrollView),
+      );
+      final controller = scrollView.controller!;
+      for (var page = 0; page < 4; page++) {
+        controller.jumpTo(controller.position.maxScrollExtent);
+        await tester.pumpAndSettle();
+      }
+      final position = controller.position;
+      final queries = backend.listMediaCalls;
+      GalleryPerf.instance.start(scenario: GalleryScenario.returnTop);
+      final returning = scrollGalleryToTop(controller);
+      await tester.pumpAndSettle();
+      await returning;
+      final snapshot = GalleryPerf.instance.stop();
+      expect(controller.position, same(position));
+      expect(backend.listMediaCalls, queries);
+      expect(controller.offset, 0);
+      if (GalleryPerf.compiled) {
+        expect((snapshot['gallery'] as Map)['loaded'], 180);
+        expect(
+          ((snapshot['counters'] as Map)['cardMount'] as int?) ?? 0,
+          lessThan(60),
+          reason: 'Returning must not mount the intervening date-group rows.',
+        );
+      }
+      expect(find.text('今天'), findsOneWidget);
+    },
+  );
 
   testWidgets('desktop albums page provides a scroll-to-top control', (
     tester,

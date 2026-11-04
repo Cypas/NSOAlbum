@@ -74,6 +74,78 @@ fn confirmed_pair_is_durable_until_explicit_cancel_has_fully_settled() {
         .unwrap()
         .is_empty());
 }
+
+#[test]
+fn apply_progress_projects_phase_and_bounded_work_counters() {
+    use super::super::read_model::ApplyProgressPhase;
+
+    let mut pair = Pair::new();
+    let target = &mut pair.phone;
+    target.state = State::Applying;
+    target.step = Step::Apply;
+    target.permit.work.store(128, Ordering::SeqCst);
+    target.permit.published_bytes.store(128, Ordering::SeqCst);
+    target.permit.sql_work.store(4096, Ordering::SeqCst);
+    target.permit.sql_started.store(true, Ordering::SeqCst);
+    target.account_steps = 3;
+    target.permit.boundary.store(1, Ordering::SeqCst);
+    target.work.set_preparation_phase(
+        crate::device_sync::work::PreparationStage::ComparingRecords,
+        Some(897),
+    );
+    target
+        .work
+        .checkpoint(crate::device_sync::work::WorkStage::Comparing, 100)
+        .unwrap();
+
+    let progress = target.read_view().progress;
+    assert_eq!(progress.apply_phase, Some(ApplyProgressPhase::Sql));
+    assert_eq!(progress.apply_publication_bytes, Some(128));
+    assert_eq!(progress.apply_sql_steps, Some(4096));
+    assert_eq!(progress.apply_account_steps, Some(3));
+    assert_eq!(progress.preparation_phase, None);
+    assert_eq!(progress.processed_items, None);
+    assert_eq!(progress.total_items, None);
+    assert_eq!(progress.current_item, None);
+    assert_eq!(progress.rate_per_second, None);
+    assert_eq!(progress.eta_ms, None);
+
+    target.permit.boundary.store(2, Ordering::SeqCst);
+    target.permit.sql_started.store(false, Ordering::SeqCst);
+    let progress = target.read_view().progress;
+    assert_eq!(progress.apply_phase, Some(ApplyProgressPhase::Finalizing));
+
+    target.state = State::AwaitingExternal;
+    let progress = target.read_view().progress;
+    assert_eq!(progress.apply_phase, Some(ApplyProgressPhase::Accounts));
+}
+
+#[test]
+fn apply_worker_errors_keep_cancellation_and_expose_recoverable_apply_failure() {
+    use crate::device_sync::{receiver::ReceiverError, staging::StagingError};
+    use crate::error::CoreError;
+
+    assert!(matches!(
+        receiver_apply_error(ReceiverError::Staging(StagingError::Write), false),
+        DriverError::ApplyFailed
+    ));
+    assert!(matches!(
+        receiver_apply_error(ReceiverError::Core(CoreError::Cancelled), true),
+        DriverError::Cancelled
+    ));
+    assert!(matches!(
+        receiver_apply_error(ReceiverError::PlanChanged, false),
+        DriverError::Library
+    ));
+    assert!(matches!(
+        receiver_apply_error(
+            ReceiverError::Staging(StagingError::InsufficientSpace),
+            false
+        ),
+        DriverError::InsufficientSpace
+    ));
+}
+
 impl TestClock {
     fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -156,7 +228,10 @@ impl Pair {
         let seconds = if self.host.progress.transfer_total_bytes > 256 * 1024 * 1024 {
             600
         } else {
-            30
+            // Real-file streaming tests can spend substantial wall time in
+            // hashing and filesystem I/O on loaded CI workers. This is only
+            // the fixture's outer wait budget, not a product deadline.
+            120
         };
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
         while std::time::Instant::now() < deadline {

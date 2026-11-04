@@ -13,9 +13,11 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../backend/app_backend.dart';
 import '../l10n/app_localizations.dart';
 import '../rust/models.dart';
+import 'image_thumbnail.dart';
 import 'desktop_window_drag_area.dart';
 import 'video_runtime.dart';
 import 'video_preview.dart';
+import 'video_thumbnail.dart';
 import 'font_families.dart';
 
 class VideoEditorResult {
@@ -75,6 +77,7 @@ class VideoEditorPage extends StatefulWidget {
 class _VideoEditorPageState extends State<VideoEditorPage> {
   late final MediaEditController mediaEditor = MediaEditController(
     widget.backend,
+    onMediaCreated: (asset) => unawaited(ImageThumbnailCache.prefetch([asset])),
   );
   late final Player player = _createPlayer();
   late final VideoController controller = VideoController(player);
@@ -351,6 +354,9 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
                                 controller: controller,
                                 cover: widget.source,
                                 controls: NoVideoControls,
+                                initialThumbnail: VideoThumbnailCache.peekCover(
+                                  widget.source,
+                                ),
                               ),
                             ),
                           )

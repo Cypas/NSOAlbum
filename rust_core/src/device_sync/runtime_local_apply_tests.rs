@@ -2,6 +2,7 @@
 use super::*;
 use crate::device_sync::read_model::PairingStage;
 use crate::device_sync::runtime::TcpPhase;
+use sha2::Digest;
 use std::time::{Duration, Instant};
 
 struct Pair {
@@ -113,6 +114,213 @@ async fn benchmark_managed_tcp_and_usb_finish_only_after_real_owner_cleanup() {
                 );
             }
         }
+    }
+}
+
+#[tokio::test]
+async fn runtime_applied_media_page_is_target_only_bounded_and_complete() {
+    let _serial = owner_test_tools::SERIAL.lock().await;
+    let pair = Pair::tcp();
+    let source = owner_test_tools::runtime_api(&pair.libraries[0]);
+    let target = owner_test_tools::runtime_api(&pair.libraries[1]);
+
+    let input = tempfile::tempdir().unwrap();
+    let mut expected = std::collections::BTreeSet::new();
+    let mut paths = Vec::new();
+    let common = input.path().join("already-present.jpg");
+    std::fs::write(&common, b"already present on both libraries").unwrap();
+    source
+        .import_local_files(vec![common.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+    target
+        .import_local_files(vec![common.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+    for index in 0..61 {
+        let path = input.path().join(format!("media-{index:03}.jpg"));
+        let bytes = format!("synthetic media payload {index}").into_bytes();
+        expected.insert(hex::encode(sha2::Sha256::digest(&bytes)));
+        std::fs::write(&path, bytes).unwrap();
+        paths.push(path.to_string_lossy().into_owned());
+    }
+    source.import_local_files(paths).await.unwrap();
+
+    pair.wait(|| {
+        read_endpoint(&pair.endpoints[1])
+            .value
+            .is_some_and(|view| view.pairing == PairingStage::AwaitingConfirmation)
+    })
+    .await;
+    command(&pair.endpoints[1], |driver| driver.confirm_pairing())
+        .await
+        .unwrap();
+    pair.wait(|| {
+        pair.endpoints
+            .iter()
+            .all(|endpoint| status(endpoint).unwrap().state == "Configuring")
+    })
+    .await;
+    command(&pair.endpoints[1], |driver| {
+        driver.configure(Direction::DesktopToPhone, SyncMode::Merge, false)
+    })
+    .await
+    .unwrap();
+    pair.wait(|| {
+        pair.endpoints
+            .iter()
+            .all(|endpoint| status(endpoint).unwrap().state == "AwaitingApproval")
+    })
+    .await;
+
+    let pending = loop {
+        let read = crate::bridge::device_sync_applied_media_page(pair.endpoints[1].clone(), 0);
+        if read.error != Some(crate::device_sync::read_model::ReadError::Busy) {
+            break read;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    };
+    assert_eq!(
+        pending.error,
+        Some(crate::device_sync::read_model::ReadError::PreviewChanged),
+        "a pending preview cannot expose applied-media cache entries"
+    );
+    let binding = status(&pair.endpoints[1]).unwrap().binding.unwrap();
+    command(&pair.endpoints[1], move |driver| {
+        driver.approve_controlled_preview(&binding)
+    })
+    .await
+    .unwrap();
+    pair.wait_for(Duration::from_secs(120), || {
+        status(&pair.endpoints[1]).unwrap().state == "Completed"
+    })
+    .await;
+
+    let busy = {
+        let owner = super::endpoint(&pair.endpoints[1]).unwrap();
+        let _owner = owner.owner.lock().unwrap();
+        crate::bridge::device_sync_applied_media_page(pair.endpoints[1].clone(), 0)
+    };
+    assert_eq!(
+        busy.error,
+        Some(crate::device_sync::read_model::ReadError::Busy),
+        "a transient owner lock must be returned as typed Busy data"
+    );
+    assert!(busy.page.is_none());
+
+    let first = read_applied_media_page_with_retry(&pair.endpoints[1], 0).await;
+    assert_eq!(first.error, None);
+    let first = first.page.expect("the released receiver owner must read");
+    assert_eq!(first.items.len(), 60);
+    assert_eq!(first.next_offset, Some(60));
+    let second = read_applied_media_page_with_retry(&pair.endpoints[1], 60).await;
+    assert_eq!(second.error, None);
+    let second = second.page.expect("the next page must remain available");
+    assert_eq!(second.items.len(), 1);
+    assert_eq!(second.next_offset, None);
+
+    let mut actual = first
+        .items
+        .into_iter()
+        .chain(second.items)
+        .map(|item| item.sha256)
+        .collect::<Vec<_>>();
+    actual.sort();
+    assert_eq!(actual, expected.into_iter().collect::<Vec<_>>());
+    let source_read = read_applied_media_page_with_retry(&pair.endpoints[0], 0).await;
+    assert_eq!(
+        source_read.error,
+        Some(crate::device_sync::read_model::ReadError::PreviewChanged),
+        "the source endpoint cannot access the receiver's applied-media result"
+    );
+}
+
+#[tokio::test]
+async fn runtime_completed_applied_media_page_retries_after_transient_owner_busy() {
+    let _serial = owner_test_tools::SERIAL.lock().await;
+    let pair = Pair::tcp();
+    let source = owner_test_tools::runtime_api(&pair.libraries[0]);
+    let input = tempfile::tempdir().unwrap();
+    let path = input.path().join("single-applied-media.jpg");
+    let bytes = b"synthetic completed media".to_vec();
+    std::fs::write(&path, &bytes).unwrap();
+    let expected_sha = hex::encode(sha2::Sha256::digest(&bytes));
+    source
+        .import_local_files(vec![path.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+
+    pair.wait(|| {
+        read_endpoint(&pair.endpoints[1])
+            .value
+            .is_some_and(|view| view.pairing == PairingStage::AwaitingConfirmation)
+    })
+    .await;
+    command(&pair.endpoints[1], |driver| driver.confirm_pairing())
+        .await
+        .unwrap();
+    pair.wait(|| {
+        pair.endpoints
+            .iter()
+            .all(|endpoint| status(endpoint).unwrap().state == "Configuring")
+    })
+    .await;
+    command(&pair.endpoints[1], |driver| {
+        driver.configure(Direction::DesktopToPhone, SyncMode::Merge, false)
+    })
+    .await
+    .unwrap();
+    pair.wait(|| {
+        pair.endpoints
+            .iter()
+            .all(|endpoint| status(endpoint).unwrap().state == "AwaitingApproval")
+    })
+    .await;
+    let binding = status(&pair.endpoints[1]).unwrap().binding.unwrap();
+    command(&pair.endpoints[1], move |driver| {
+        driver.approve_controlled_preview(&binding)
+    })
+    .await
+    .unwrap();
+    pair.wait(|| status(&pair.endpoints[1]).unwrap().state == "Completed")
+        .await;
+
+    let busy = {
+        let owner = super::endpoint(&pair.endpoints[1]).unwrap();
+        let _owner = owner.owner.lock().unwrap();
+        crate::bridge::device_sync_applied_media_page(pair.endpoints[1].clone(), 0)
+    };
+    assert_eq!(
+        busy.error,
+        Some(crate::device_sync::read_model::ReadError::Busy)
+    );
+    assert!(busy.page.is_none());
+
+    let page = crate::bridge::device_sync_applied_media_page(pair.endpoints[1].clone(), 0);
+    assert_eq!(page.error, None);
+    let page = page
+        .page
+        .expect("the released completed receiver must read");
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].sha256, expected_sha);
+    assert_eq!(page.next_offset, None);
+}
+
+async fn read_applied_media_page_with_retry(
+    endpoint: &str,
+    offset: u64,
+) -> crate::device_sync::read_model::AppliedMediaCachePageRead {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let read = crate::bridge::device_sync_applied_media_page(endpoint.to_owned(), offset);
+        if read.error != Some(crate::device_sync::read_model::ReadError::Busy) {
+            return read;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "applied-media page remained Busy past the test-only read deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 
@@ -435,9 +643,17 @@ impl Pair {
         &'a self,
         predicate: impl Fn() -> bool + 'a,
     ) -> impl std::future::Future<Output = ()> + 'a {
+        self.wait_for(Duration::from_secs(10), predicate)
+    }
+    #[track_caller]
+    fn wait_for<'a>(
+        &'a self,
+        timeout: Duration,
+        predicate: impl Fn() -> bool + 'a,
+    ) -> impl std::future::Future<Output = ()> + 'a {
         let caller = std::panic::Location::caller();
         async move {
-            let until = Instant::now() + Duration::from_secs(10);
+            let until = Instant::now() + timeout;
             while !predicate() {
                 assert!(
                     Instant::now() < until,

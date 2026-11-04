@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+import '../models.dart';
 import 'driver.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
@@ -38,6 +39,74 @@ class AgreedConfiguration {
           mode == other.mode &&
           includeAccounts == other.includeAccounts;
 }
+
+/// Minimal local-cache input for media successfully added or replaced by a
+/// completed receive operation. The storage path is an in-process bridge value
+/// only; it must never be written to device-sync logs.
+class AppliedMediaCacheEntry {
+  final String sha256;
+  final String storagePath;
+  final MediaKind kind;
+
+  const AppliedMediaCacheEntry({
+    required this.sha256,
+    required this.storagePath,
+    required this.kind,
+  });
+
+  @override
+  int get hashCode => sha256.hashCode ^ storagePath.hashCode ^ kind.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AppliedMediaCacheEntry &&
+          runtimeType == other.runtimeType &&
+          sha256 == other.sha256 &&
+          storagePath == other.storagePath &&
+          kind == other.kind;
+}
+
+/// Bounded page from the immutable plan retained by a successful receiver.
+class AppliedMediaCachePage {
+  final List<AppliedMediaCacheEntry> items;
+  final BigInt? nextOffset;
+
+  const AppliedMediaCachePage({required this.items, this.nextOffset});
+
+  @override
+  int get hashCode => items.hashCode ^ nextOffset.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AppliedMediaCachePage &&
+          runtimeType == other.runtimeType &&
+          items == other.items &&
+          nextOffset == other.nextOffset;
+}
+
+/// Typed projection so transient endpoint contention can be retried by readers
+/// without turning a read-only result into an executed command failure.
+class AppliedMediaCachePageRead {
+  final AppliedMediaCachePage? page;
+  final ReadError? error;
+
+  const AppliedMediaCachePageRead({this.page, this.error});
+
+  @override
+  int get hashCode => page.hashCode ^ error.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AppliedMediaCachePageRead &&
+          runtimeType == other.runtimeType &&
+          page == other.page &&
+          error == other.error;
+}
+
+enum ApplyProgressPhase { preparing, publishing, sql, finalizing, accounts }
 
 class BackupMetadata {
   final String? backup;
@@ -423,32 +492,76 @@ class PreviewSummary {
 
 class ProgressView {
   final WorkStage workStage;
+  final PreparationStage? preparationPhase;
   final bool workActive;
   final BigInt scannedItems;
   final BigInt? totalItems;
+  final BigInt? comparedItems;
+  final BigInt? totalComparedItems;
+  final BigInt? processedItems;
+
+  /// Safe display hint only (for example "1/4"), never a media identifier.
+  final String? currentItem;
+  final BigInt? processedBytes;
+  final BigInt? totalBytes;
   final BigInt? transferredBytes;
   final BigInt? transferTotalBytes;
   final BigInt? transferBytesPerSecond;
+  final BigInt? ratePerSecond;
+  final BigInt? etaMs;
+  final bool? isEstimate;
+  final ApplyProgressPhase? applyPhase;
+  final BigInt? applyPublicationBytes;
+  final BigInt? applySqlSteps;
+  final int? applyAccountSteps;
 
   const ProgressView({
     required this.workStage,
+    this.preparationPhase,
     required this.workActive,
     required this.scannedItems,
     this.totalItems,
+    this.comparedItems,
+    this.totalComparedItems,
+    this.processedItems,
+    this.currentItem,
+    this.processedBytes,
+    this.totalBytes,
     this.transferredBytes,
     this.transferTotalBytes,
     this.transferBytesPerSecond,
+    this.ratePerSecond,
+    this.etaMs,
+    this.isEstimate,
+    this.applyPhase,
+    this.applyPublicationBytes,
+    this.applySqlSteps,
+    this.applyAccountSteps,
   });
 
   @override
   int get hashCode =>
       workStage.hashCode ^
+      preparationPhase.hashCode ^
       workActive.hashCode ^
       scannedItems.hashCode ^
       totalItems.hashCode ^
+      comparedItems.hashCode ^
+      totalComparedItems.hashCode ^
+      processedItems.hashCode ^
+      currentItem.hashCode ^
+      processedBytes.hashCode ^
+      totalBytes.hashCode ^
       transferredBytes.hashCode ^
       transferTotalBytes.hashCode ^
-      transferBytesPerSecond.hashCode;
+      transferBytesPerSecond.hashCode ^
+      ratePerSecond.hashCode ^
+      etaMs.hashCode ^
+      isEstimate.hashCode ^
+      applyPhase.hashCode ^
+      applyPublicationBytes.hashCode ^
+      applySqlSteps.hashCode ^
+      applyAccountSteps.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -456,12 +569,26 @@ class ProgressView {
       other is ProgressView &&
           runtimeType == other.runtimeType &&
           workStage == other.workStage &&
+          preparationPhase == other.preparationPhase &&
           workActive == other.workActive &&
           scannedItems == other.scannedItems &&
           totalItems == other.totalItems &&
+          comparedItems == other.comparedItems &&
+          totalComparedItems == other.totalComparedItems &&
+          processedItems == other.processedItems &&
+          currentItem == other.currentItem &&
+          processedBytes == other.processedBytes &&
+          totalBytes == other.totalBytes &&
           transferredBytes == other.transferredBytes &&
           transferTotalBytes == other.transferTotalBytes &&
-          transferBytesPerSecond == other.transferBytesPerSecond;
+          transferBytesPerSecond == other.transferBytesPerSecond &&
+          ratePerSecond == other.ratePerSecond &&
+          etaMs == other.etaMs &&
+          isEstimate == other.isEstimate &&
+          applyPhase == other.applyPhase &&
+          applyPublicationBytes == other.applyPublicationBytes &&
+          applySqlSteps == other.applySqlSteps &&
+          applyAccountSteps == other.applyAccountSteps;
 }
 
 enum ReadError {
@@ -473,6 +600,7 @@ enum ReadError {
   unavailable,
   disconnected,
   timeout,
+  applyFailed,
   invalidInput,
   versionMismatch,
   internal,

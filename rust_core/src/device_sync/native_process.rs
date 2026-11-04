@@ -56,7 +56,7 @@ impl NativeProcess {
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::piped());
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -65,6 +65,15 @@ impl NativeProcess {
         let mut child = command.spawn().map_err(|_| NativeError::Unavailable)?;
         let mut input = child.stdin.take().ok_or(NativeError::Io)?;
         let mut output = child.stdout.take().ok_or(NativeError::Io)?;
+        let error_output = child.stderr.take().ok_or(NativeError::Io)?;
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            for line in BufReader::new(error_output).lines().map_while(Result::ok) {
+                if let Some(stage) = worker_stage(line.trim()) {
+                    crate::diagnostics::device_measurement(&format!("usb_worker stage={stage}"));
+                }
+            }
+        });
         let child = Arc::new(Mutex::new(child));
         let terminal = Arc::new(AtomicBool::new(false));
         let (commands, incoming) = mpsc::sync_channel::<CommandPacket>(1);
@@ -238,6 +247,36 @@ impl NativeProcess {
         self.cancellation().cancel();
     }
 }
+
+/// Fixed worker progress markers only. Never forward arbitrary worker text.
+fn worker_stage(line: &str) -> Option<&'static str> {
+    if line.starts_with("MTP_WORKER enumerate candidates=") {
+        return Some("enumerate_candidates");
+    }
+    if line.starts_with("MTP_WORKER session open complete") {
+        return Some("session_open_complete");
+    }
+    if line.starts_with("MTP_WORKER cleanup complete") {
+        return Some("cleanup_complete");
+    }
+    Some(match line {
+        "MTP_WORKER ready" => "ready",
+        "MTP_WORKER enumerate start" => "enumerate_start",
+        "MTP_WORKER open start" => "device_open_start",
+        "MTP_WORKER open complete" => "device_open_complete",
+        "MTP_WORKER storages start" => "storages_start",
+        "MTP_WORKER storages complete" => "storages_complete",
+        "MTP_WORKER close start" => "device_close_start",
+        "MTP_WORKER close complete" => "device_close_complete",
+        "MTP_WORKER session open start" => "session_open_start",
+        "MTP_WORKER session storage selected" => "storage_selected",
+        "MTP_WORKER Documents found" => "documents_found",
+        "MTP_WORKER exchange root found" => "exchange_root_found",
+        "MTP_WORKER exchange dirs created" => "exchange_dirs_created",
+        "MTP_WORKER cleanup start" => "cleanup_start",
+        _ => return None,
+    })
+}
 impl Drop for NativeProcess {
     fn drop(&mut self) {
         self.cancel();
@@ -265,6 +304,24 @@ impl Drop for NativeProcess {
 mod tests {
     use super::*;
     use std::sync::OnceLock;
+
+    #[test]
+    fn worker_stage_forwards_only_fixed_progress_markers() {
+        assert_eq!(
+            worker_stage("MTP_WORKER enumerate candidates=1"),
+            Some("enumerate_candidates")
+        );
+        assert_eq!(
+            worker_stage("MTP_WORKER session open start"),
+            Some("session_open_start")
+        );
+        assert_eq!(
+            worker_stage("MTP_WORKER cleanup complete pruned=2"),
+            Some("cleanup_complete")
+        );
+        assert_eq!(worker_stage("MTP_WORKER unknown detail"), None);
+        assert_eq!(worker_stage("private device name"), None);
+    }
 
     fn response_fixture(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
         let directory = tempfile::tempdir().unwrap();

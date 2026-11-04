@@ -10,6 +10,8 @@ import '../../rust/models.dart';
 import '../../state/media_edit_controller.dart';
 import '../video_runtime.dart';
 import '../video_preview.dart';
+import '../video_thumbnail.dart';
+import '../image_thumbnail.dart';
 import 'android_back_guard.dart';
 import 'android_page_frame.dart';
 import 'android_media_card.dart' show androidDuration;
@@ -29,7 +31,10 @@ class AndroidVideoEditor extends StatefulWidget {
 }
 
 class _AndroidVideoEditorState extends State<AndroidVideoEditor> {
-  late final MediaEditController editor = MediaEditController(widget.backend);
+  late final MediaEditController editor = MediaEditController(
+    widget.backend,
+    onMediaCreated: (asset) => unawaited(ImageThumbnailCache.prefetch([asset])),
+  );
   late final Player player;
   late final VideoController video;
   StreamSubscription<Duration>? durationSubscription;
@@ -140,7 +145,13 @@ class _AndroidVideoEditorState extends State<AndroidVideoEditor> {
         children: [
           AspectRatio(
             aspectRatio: 16 / 9,
-            child: VideoPreview(controller: video, cover: widget.source),
+            child: VideoPreview(
+              controller: video,
+              cover: widget.source,
+              // Reuse the gallery's cached cover so opening the editor does not
+              // blank/re-decode the thumbnail before the player shows a frame.
+              initialThumbnail: VideoThumbnailCache.peekCover(widget.source),
+            ),
           ),
           Wrap(
             spacing: 8,

@@ -392,6 +392,8 @@ pub struct AlbumSummary {
     pub pinned: bool,
     pub system_key: Option<String>,
     pub media_count: u64,
+    pub image_count: u64,
+    pub video_count: u64,
     #[serde(default)]
     pub source_device_name: Option<String>,
 }

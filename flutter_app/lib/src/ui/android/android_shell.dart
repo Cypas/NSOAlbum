@@ -17,6 +17,7 @@ import 'android_settings_page.dart';
 import 'android_transfer_page.dart';
 import 'android_page_frame.dart';
 import '../active_page_host.dart';
+import '../gallery_perf.dart';
 
 class AndroidShell extends StatefulWidget {
   const AndroidShell({
@@ -69,7 +70,20 @@ class _AndroidShellState extends State<AndroidShell> {
     widget.notificationNavigation?.addListener(openGalleryFromNotification);
     unawaited(transfer.refresh());
     widget.sync.addListener(syncChanged);
+    if (GalleryPerf.compiled) {
+      transfer.addListener(_recordPerfBackground);
+      _recordPerfBackground();
+    }
     unawaited(warnUnavailableStorage());
+  }
+
+  void _recordPerfBackground() {
+    // Any transfer-controller work contaminates an otherwise idle capture,
+    // even when it is an account operation rather than media import.
+    GalleryPerf.instance.background(
+      syncBusy: widget.sync.running,
+      importBusy: transfer.busy,
+    );
   }
 
   void openGalleryFromNotification() {
@@ -101,6 +115,7 @@ class _AndroidShellState extends State<AndroidShell> {
   }
 
   void syncChanged() {
+    if (GalleryPerf.compiled) _recordPerfBackground();
     if (widget.sync.state == SyncState.failed &&
         previous != SyncState.failed &&
         mounted &&
@@ -139,6 +154,9 @@ class _AndroidShellState extends State<AndroidShell> {
   void dispose() {
     widget.notificationNavigation?.removeListener(openGalleryFromNotification);
     widget.sync.removeListener(syncChanged);
+    if (GalleryPerf.compiled) {
+      transfer.removeListener(_recordPerfBackground);
+    }
     library.dispose();
     transfer.dispose();
     destination.dispose();

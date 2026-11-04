@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show OverflowBoxFit;
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -24,20 +25,29 @@ import '../startup/startup_diagnostics.dart';
 import 'media_metadata_editor.dart';
 import 'media_viewer.dart';
 import 'app_image_viewer.dart';
+import 'image_thumbnail.dart';
+import 'gallery_perf.dart';
+import 'gallery_drag_loading.dart';
+import 'gallery_deferred_card.dart';
+import 'gallery_return_layout.dart';
+import 'scroll_position_indicator.dart';
 import 'video_merge_page.dart';
 import 'video_thumbnail.dart';
+import 'video_preview_cache.dart';
 import 'active_page_host.dart';
 import 'scroll_to_top_button.dart';
 import 'desktop_fluid_scroll_physics.dart';
 import 'font_families.dart';
 import 'gallery_date_groups.dart';
+import 'game_filter_order.dart';
 import 'display_time.dart';
 import 'account_tools/account_tools_expander.dart';
 import 'account_tools/account_tool_errors.dart';
 import 'nxapi_disclosure_card.dart';
 import 'macos_update_dialog.dart';
 import '../platform/windows_system_fonts.dart';
-import 'device_sync/album_source_label.dart';
+import 'album_media_counts.dart';
+import 'device_sync/applied_media_prefetch.dart';
 import 'device_sync/multi_device_sync_page.dart';
 
 Future<void> showLatestReleaseUpdate(
@@ -396,6 +406,7 @@ class _HomeShellState extends State<HomeShell> {
     widget.notificationNavigation?.addListener(_openGalleryFromNotification);
     ownsSyncController = widget.syncController == null;
     sync = widget.syncController ?? SyncController(widget.backend);
+    GalleryPerf.instance.background(syncBusy: sync.running, importBusy: false);
     _lastSyncState = sync.state;
     sync.addListener(_handleSyncStateChanged);
     _accountSnapshot = _readAccountSnapshot();
@@ -442,6 +453,7 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   void _handleSyncStateChanged() {
+    GalleryPerf.instance.background(syncBusy: sync.running);
     final next = sync.state;
     if (next == SyncState.running && mounted) {
       setState(() => _syncFailureMessage = null);
@@ -549,7 +561,6 @@ class _HomeShellState extends State<HomeShell> {
           albumId: album.id,
           albumName: _albumDisplayName(context, album),
           albumDescription: album.description,
-          albumSourceDeviceName: album.sourceDeviceName,
           albumType: album.albumType,
           albumSystemKey: album.systemKey,
           showTransferAction: false,
@@ -865,6 +876,10 @@ class _PageFrame extends StatelessWidget {
     this.bodySliver,
     this.onPointerMove,
     this.onPointerUp,
+    this.scrollTotalCount,
+    this.scrollLoadedCount,
+    this.scrollCounting = false,
+    this.galleryLoadExperiment = false,
   });
 
   final String title;
@@ -881,6 +896,10 @@ class _PageFrame extends StatelessWidget {
   final Widget? bodySliver;
   final PointerMoveEventListener? onPointerMove;
   final PointerUpEventListener? onPointerUp;
+  final int? scrollTotalCount;
+  final int? scrollLoadedCount;
+  final bool scrollCounting;
+  final bool galleryLoadExperiment;
 
   Widget _titleContent(BuildContext context) => Row(
     children: [
@@ -936,6 +955,41 @@ class _PageFrame extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// The compact wide header keeps 64dp for title-only pages. Pages with an
+  /// album subtitle need the measured line heights so a fractional font metric
+  /// cannot overflow the pinned header by a pixel.
+  double _compactWideExtent(BuildContext context) {
+    final theme = Theme.of(context);
+    final scaler = MediaQuery.textScalerOf(context);
+    double lineHeight(String text, TextStyle? style) {
+      final painter = TextPainter(
+        text: TextSpan(text: text, style: style),
+        textDirection: TextDirection.ltr,
+        textScaler: scaler,
+        maxLines: 1,
+      )..layout();
+      return painter.height;
+    }
+
+    var measured =
+        4 +
+        lineHeight(
+          title,
+          theme.textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w700),
+        );
+    if (subtitle != null && subtitle!.isNotEmpty) {
+      measured +=
+          4 +
+          lineHeight(
+            subtitle!,
+            DefaultTextStyle.of(context).style
+                .copyWith(color: theme.colorScheme.onSurfaceVariant),
+          );
+    }
+    final rounded = measured.ceilToDouble();
+    return rounded < 64 ? 64 : rounded;
   }
 
   Widget _header(BuildContext context) => Padding(
@@ -1004,7 +1058,7 @@ class _PageFrame extends StatelessWidget {
           final wideGalleryHeader = constraints.maxWidth - 48 >= 960;
           final extent = compactGalleryHeader
               ? wideGalleryHeader
-                    ? 64.0
+                    ? _compactWideExtent(context)
                     : 112.0
               : 72.0;
           final content = CustomScrollView(
@@ -1050,7 +1104,25 @@ class _PageFrame extends StatelessWidget {
             onPointerUp: onPointerUp,
             child: Stack(
               children: [
-                content,
+                if (galleryLoadExperiment && controller != null)
+                  DesktopSmoothScroll(
+                    controller: controller!,
+                    child: GalleryDragLoadRegion(
+                      controller: controller!,
+                      child: content,
+                    ),
+                  )
+                else
+                  content,
+                if (controller != null && scrollLoadedCount != null)
+                  ScrollPositionIndicator(
+                    controller: controller!,
+                    loadedCount: scrollLoadedCount!,
+                    totalCount: scrollTotalCount,
+                    counting: scrollCounting,
+                    right: 28,
+                    bottom: 72,
+                  ),
                 if (controller != null)
                   Positioned(
                     right: 28,
@@ -1353,12 +1425,35 @@ class _DesktopLibraryFilterDialogState
   late bool groupByImportedDate = widget.groupByImportedDate;
   late final Set<String> selectedGameTags = {...widget.selectedGameTags};
   final TextEditingController gameSearch = TextEditingController();
+  final ScrollController filterScroll = ScrollController();
+  final ScrollController gameScroll = ScrollController();
+  String gameQuery = '';
   bool expanded = false;
 
   @override
+  void initState() {
+    super.initState();
+    gameSearch.addListener(_onGameSearchChanged);
+  }
+
+  @override
   void dispose() {
-    gameSearch.dispose();
+    gameSearch
+      ..removeListener(_onGameSearchChanged)
+      ..dispose();
+    filterScroll.dispose();
+    gameScroll.dispose();
     super.dispose();
+  }
+
+  void _onGameSearchChanged() {
+    final value = gameSearch.value;
+    if (value.composing.isValid && !value.composing.isCollapsed) return;
+    if (gameQuery != value.text) {
+      gameQuery = value.text;
+      if (gameScroll.hasClients) gameScroll.jumpTo(0);
+    }
+    if (mounted) setState(() {});
   }
 
   Future<void> _chooseDate() async {
@@ -1378,21 +1473,26 @@ class _DesktopLibraryFilterDialogState
     });
   }
 
-  List<GameTagSummary> _visibleGames(List<GameTagSummary> games) {
-    final term = gameSearch.text.trim();
+  List<GameTagSummary> _filteredGames(List<GameTagSummary> games) {
+    final value = gameSearch.value;
+    final composing = value.composing.isValid && !value.composing.isCollapsed;
+    final term = composing ? '' : value.text.trim();
     final filtered = term.isEmpty
         ? games
         : games
-              .where((game) => normalizedTextContains(game.name, term))
+              .where(
+                (game) =>
+                    selectedGameTags.contains(game.name) ||
+                    normalizedTextContains(game.name, term),
+              )
               .toList(growable: false);
-    final values = <GameTagSummary>[...filtered];
-    for (final game in games) {
-      if (selectedGameTags.contains(game.name) &&
-          !values.any((item) => item.name == game.name)) {
-        values.insert(0, game);
-      }
+    return filtered;
+  }
+
+  List<GameTagSummary> _visibleGames(List<GameTagSummary> values) {
+    if (expanded || values.length <= 8) {
+      return selectedGameTagsFirst(values, selectedGameTags);
     }
-    if (expanded || values.length <= 8) return values;
     final visible = values.take(8).toList();
     for (final game in values) {
       if (selectedGameTags.contains(game.name) &&
@@ -1400,7 +1500,24 @@ class _DesktopLibraryFilterDialogState
         visible.add(game);
       }
     }
-    return visible;
+    return selectedGameTagsFirst(visible, selectedGameTags);
+  }
+
+  void _toggleGames() {
+    final collapsing = expanded;
+    if (gameScroll.hasClients) gameScroll.jumpTo(0);
+    setState(() => expanded = !expanded);
+    if (!collapsing) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || expanded || !filterScroll.hasClients) return;
+      unawaited(
+        filterScroll.animateTo(
+          0,
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+        ),
+      );
+    });
   }
 
   void _apply() {
@@ -1419,237 +1536,285 @@ class _DesktopLibraryFilterDialogState
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    key: const Key('desktop-library-filter-dialog'),
-    title: Row(
-      children: [
-        Expanded(
-          child: Text(context.l10n.select(zh: '筛选图库', en: 'Filter library')),
-        ),
-        TextButton(
-          key: const Key('desktop-filter-clear'),
-          onPressed: () => setState(() {
-            kind = GalleryKindFilter.all;
-            favoritesOnly = false;
-            capturedRange = null;
-            capturedOnThisDay = null;
-            groupByImportedDate = false;
-            selectedGameTags.clear();
-          }),
-          child: Text(context.l10n.select(zh: '清除筛选', en: 'Clear filters')),
-        ),
-      ],
-    ),
-    content: SizedBox(
-      width: 620,
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: (MediaQuery.sizeOf(context).height - 190)
-              .clamp(240.0, 650.0)
-              .toDouble(),
-        ),
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      context.l10n.select(
-                        zh: '游戏标签（可多选）',
-                        en: 'Game tags (multi-select)',
-                      ),
-                      style: Theme.of(context).textTheme.titleSmall,
-                    ),
-                  ),
-                  if (selectedGameTags.isNotEmpty)
-                    Text(
-                      context.l10n.select(
-                        zh: '已选 ${selectedGameTags.length}',
-                        en: '${selectedGameTags.length} selected',
-                      ),
-                      style: Theme.of(context).textTheme.labelMedium,
-                    ),
-                ],
+  Widget build(BuildContext context) => ScrollConfiguration(
+    behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+    child: ScrollbarTheme(
+      data: ScrollbarTheme.of(context)
+          .copyWith(crossAxisMargin: 0, mainAxisMargin: 4),
+      child: AlertDialog(
+        key: const Key('desktop-library-filter-dialog'),
+        title: Row(
+          children: [
+            Expanded(
+              child: Text(
+                context.l10n.select(zh: '筛选图库', en: 'Filter library'),
               ),
-              const SizedBox(height: 8),
-              TextField(
-                key: const Key('desktop-filter-game-search'),
-                controller: gameSearch,
-                onChanged: (_) => setState(() {}),
-                decoration: InputDecoration(
-                  isDense: true,
-                  prefixIcon: const Icon(Icons.search_rounded),
-                  hintText: context.l10n.select(
-                    zh: '搜索游戏标签',
-                    en: 'Search game tags',
-                  ),
-                  border: const OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 8),
-              FutureBuilder<List<GameTagSummary>>(
-                future: widget.gameTags,
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState != ConnectionState.done) {
-                    return const LinearProgressIndicator();
-                  }
-                  if (snapshot.hasError || snapshot.data?.isEmpty != false) {
-                    return Text(
-                      context.l10n.select(
-                        zh: '暂无可用游戏标签',
-                        en: 'No game tags available',
+            ),
+            TextButton(
+              key: const Key('desktop-filter-clear'),
+              onPressed: () => setState(() {
+                kind = GalleryKindFilter.all;
+                favoritesOnly = false;
+                capturedRange = null;
+                capturedOnThisDay = null;
+                groupByImportedDate = false;
+                selectedGameTags.clear();
+              }),
+              child: Text(context.l10n.select(zh: '清除筛选', en: 'Clear filters')),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 620,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: (MediaQuery.sizeOf(context).height - 190)
+                  .clamp(240.0, 650.0)
+                  .toDouble(),
+            ),
+            child: Scrollbar(
+              key: const Key('desktop-filter-scrollbar'),
+              controller: filterScroll,
+              thumbVisibility: true,
+              thickness: 6,
+              child: SingleChildScrollView(
+                key: const Key('desktop-filter-scroll'),
+                controller: filterScroll,
+                primary: false,
+                padding: const EdgeInsets.only(right: 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            context.l10n.select(
+                              zh: '游戏标签（可多选）',
+                              en: 'Game tags (multi-select)',
+                            ),
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                        ),
+                        if (selectedGameTags.isNotEmpty)
+                          Text(
+                            context.l10n.select(
+                              zh: '已选 ${selectedGameTags.length}',
+                              en: '${selectedGameTags.length} selected',
+                            ),
+                            style: Theme.of(context).textTheme.labelMedium,
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      key: const Key('desktop-filter-game-search'),
+                      controller: gameSearch,
+                      decoration: InputDecoration(
+                        isDense: true,
+                        prefixIcon: const Icon(Icons.search_rounded),
+                        hintText: context.l10n.select(
+                          zh: '搜索游戏标签',
+                          en: 'Search game tags',
+                        ),
+                        border: const OutlineInputBorder(),
                       ),
-                    );
-                  }
-                  final games = _visibleGames(snapshot.data!);
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      ConstrainedBox(
-                        constraints: const BoxConstraints(maxHeight: 220),
-                        child: ListView.builder(
-                          key: const Key('desktop-filter-game-list'),
-                          shrinkWrap: true,
-                          itemCount: games.length,
-                          itemBuilder: (context, index) {
-                            final game = games[index];
-                            final total = game.imageCount + game.videoCount;
-                            return CheckboxListTile(
-                              key: ValueKey('desktop-filter-game-${game.name}'),
-                              dense: true,
-                              contentPadding: EdgeInsets.zero,
-                              value: selectedGameTags.contains(game.name),
-                              title: Text(
-                                game.name,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              subtitle: Text(
-                                context.l10n.select(
-                                  zh: '共 $total 项',
-                                  en: '$total total',
+                    ),
+                    const SizedBox(height: 8),
+                    FutureBuilder<List<GameTagSummary>>(
+                      future: widget.gameTags,
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState != ConnectionState.done) {
+                          return const LinearProgressIndicator();
+                        }
+                        if (snapshot.hasError ||
+                            snapshot.data?.isEmpty != false) {
+                          return Text(
+                            context.l10n.select(
+                              zh: '暂无可用游戏标签',
+                              en: 'No game tags available',
+                            ),
+                          );
+                        }
+                        final filteredGames = _filteredGames(snapshot.data!);
+                        final games = _visibleGames(filteredGames);
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Scrollbar(
+                              key: const Key('desktop-filter-game-scrollbar'),
+                              controller: gameScroll,
+                              thumbVisibility: true,
+                              thickness: 6,
+                              child: ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  maxHeight: expanded
+                                      ? (MediaQuery.sizeOf(context).height * .5)
+                                            .clamp(280.0, 420.0)
+                                            .toDouble()
+                                      : 220,
+                                ),
+                                child: ListView.builder(
+                                  key: const Key('desktop-filter-game-list'),
+                                  controller: gameScroll,
+                                  primary: false,
+                                  padding: const EdgeInsets.only(right: 16),
+                                  shrinkWrap: true,
+                                  itemCount: games.length,
+                                  itemBuilder: (context, index) {
+                                    final game = games[index];
+                                    final total =
+                                        game.imageCount + game.videoCount;
+                                    return CheckboxListTile(
+                                      key: ValueKey(
+                                        'desktop-filter-game-${game.name}',
+                                      ),
+                                      dense: true,
+                                      contentPadding: EdgeInsets.zero,
+                                      value: selectedGameTags.contains(
+                                        game.name,
+                                      ),
+                                      title: Text(
+                                        game.name,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      subtitle: Text(
+                                        context.l10n.select(
+                                          zh: '共 $total 项',
+                                          en: '$total total',
+                                        ),
+                                      ),
+                                      onChanged: (value) => setState(() {
+                                        if (value == true) {
+                                          selectedGameTags.add(game.name);
+                                        } else {
+                                          selectedGameTags.remove(game.name);
+                                        }
+                                      }),
+                                    );
+                                  },
                                 ),
                               ),
-                              onChanged: (value) => setState(() {
-                                if (value == true) {
-                                  selectedGameTags.add(game.name);
-                                } else {
-                                  selectedGameTags.remove(game.name);
-                                }
+                            ),
+                            if (filteredGames.length > 8)
+                              TextButton.icon(
+                                key: const Key('desktop-filter-game-expand'),
+                                onPressed: _toggleGames,
+                                icon: AnimatedRotation(
+                                  turns: expanded ? .5 : 0,
+                                  duration: const Duration(milliseconds: 180),
+                                  child: const Icon(Icons.expand_more_rounded),
+                                ),
+                                label: Text(
+                                  expanded
+                                      ? context.l10n.select(
+                                          zh: '收起',
+                                          en: 'Show less',
+                                        )
+                                      : context.l10n.select(
+                                          zh: '展开全部（${filteredGames.length}）',
+                                          en: 'Show all (${filteredGames.length})',
+                                        ),
+                                ),
+                              ),
+                          ],
+                        );
+                      },
+                    ),
+                    const Divider(height: 28),
+                    Text(
+                      context.l10n.select(zh: '日期筛选', en: 'Date filter'),
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 4),
+                    ListTile(
+                      key: const Key('desktop-filter-date'),
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.date_range_rounded),
+                      title: Text(
+                        capturedOnThisDay != null
+                            ? context.l10n.select(
+                                zh: '那年今日 · ${capturedOnThisDay!.month}/${capturedOnThisDay!.day}',
+                                en: 'This date in history · ${capturedOnThisDay!.month}/${capturedOnThisDay!.day}',
+                              )
+                            : capturedRange == null
+                            ? context.l10n.select(
+                                zh: '未设置日期',
+                                en: 'No date range',
+                              )
+                            : '${_shortDate(capturedRange!.start)} – ${_shortDate(capturedRange!.end)}',
+                      ),
+                      trailing:
+                          capturedRange == null && capturedOnThisDay == null
+                          ? const Icon(Icons.chevron_right_rounded)
+                          : IconButton(
+                              tooltip: context.l10n.select(
+                                zh: '清除日期',
+                                en: 'Clear date',
+                              ),
+                              onPressed: () => setState(() {
+                                capturedRange = null;
+                                capturedOnThisDay = null;
                               }),
-                            );
-                          },
-                        ),
+                              icon: const Icon(Icons.close_rounded),
+                            ),
+                      onTap: _chooseDate,
+                    ),
+                    SwitchListTile(
+                      key: const Key('desktop-filter-group-by-date'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        context.l10n.select(zh: '按日期归类', en: 'Group by date'),
                       ),
-                      if (snapshot.data!.length > 8)
-                        TextButton.icon(
-                          key: const Key('desktop-filter-game-expand'),
-                          onPressed: () => setState(() => expanded = !expanded),
-                          icon: AnimatedRotation(
-                            turns: expanded ? .5 : 0,
-                            duration: const Duration(milliseconds: 180),
-                            child: const Icon(Icons.expand_more_rounded),
-                          ),
-                          label: Text(
-                            expanded
-                                ? context.l10n.select(zh: '收起', en: 'Show less')
-                                : context.l10n.select(
-                                    zh: '展开全部（${snapshot.data!.length}）',
-                                    en: 'Show all (${snapshot.data!.length})',
-                                  ),
-                          ),
-                        ),
-                    ],
-                  );
-                },
-              ),
-              const Divider(height: 28),
-              Text(
-                context.l10n.select(zh: '日期筛选', en: 'Date filter'),
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
-              const SizedBox(height: 4),
-              ListTile(
-                key: const Key('desktop-filter-date'),
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.date_range_rounded),
-                title: Text(
-                  capturedOnThisDay != null
-                      ? context.l10n.select(
-                          zh: '那年今日 · ${capturedOnThisDay!.month}/${capturedOnThisDay!.day}',
-                          en: 'This date in history · ${capturedOnThisDay!.month}/${capturedOnThisDay!.day}',
-                        )
-                      : capturedRange == null
-                      ? context.l10n.select(zh: '未设置日期', en: 'No date range')
-                      : '${_shortDate(capturedRange!.start)} – ${_shortDate(capturedRange!.end)}',
-                ),
-                trailing: capturedRange == null && capturedOnThisDay == null
-                    ? const Icon(Icons.chevron_right_rounded)
-                    : IconButton(
-                        tooltip: context.l10n.select(
-                          zh: '清除日期',
-                          en: 'Clear date',
-                        ),
-                        onPressed: () => setState(() {
-                          capturedRange = null;
-                          capturedOnThisDay = null;
-                        }),
-                        icon: const Icon(Icons.close_rounded),
+                      value: groupByImportedDate,
+                      onChanged: (value) =>
+                          setState(() => groupByImportedDate = value),
+                    ),
+                    const Divider(height: 28),
+                    Text(
+                      context.l10n.select(zh: '其他筛选条件', en: 'Other filters'),
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    SwitchListTile(
+                      key: const Key('desktop-filter-favorites'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        context.l10n.select(zh: '仅收藏', en: 'Favorites only'),
                       ),
-                onTap: _chooseDate,
-              ),
-              SwitchListTile(
-                key: const Key('desktop-filter-group-by-date'),
-                contentPadding: EdgeInsets.zero,
-                title: Text(
-                  context.l10n.select(zh: '按日期归类', en: 'Group by date'),
+                      value: favoritesOnly,
+                      onChanged: (value) =>
+                          setState(() => favoritesOnly = value),
+                    ),
+                    SwitchListTile(
+                      key: const Key('desktop-filter-newest'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        context.l10n.select(zh: '创建时间倒序', en: 'Newest first'),
+                      ),
+                      value: newestFirst,
+                      onChanged: (value) => setState(() => newestFirst = value),
+                    ),
+                  ],
                 ),
-                value: groupByImportedDate,
-                onChanged: (value) =>
-                    setState(() => groupByImportedDate = value),
               ),
-              const Divider(height: 28),
-              Text(
-                context.l10n.select(zh: '其他筛选条件', en: 'Other filters'),
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
-              SwitchListTile(
-                key: const Key('desktop-filter-favorites'),
-                contentPadding: EdgeInsets.zero,
-                title: Text(
-                  context.l10n.select(zh: '仅收藏', en: 'Favorites only'),
-                ),
-                value: favoritesOnly,
-                onChanged: (value) => setState(() => favoritesOnly = value),
-              ),
-              SwitchListTile(
-                key: const Key('desktop-filter-newest'),
-                contentPadding: EdgeInsets.zero,
-                title: Text(
-                  context.l10n.select(zh: '创建时间倒序', en: 'Newest first'),
-                ),
-                value: newestFirst,
-                onChanged: (value) => setState(() => newestFirst = value),
-              ),
-            ],
+            ),
           ),
         ),
+        actions: [
+          TextButton(
+            key: const Key('desktop-filter-cancel'),
+            onPressed: () => Navigator.pop(context),
+            child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
+          ),
+          FilledButton(
+            key: const Key('desktop-filter-apply'),
+            onPressed: _apply,
+            child: Text(context.l10n.select(zh: '应用', en: 'Apply')),
+          ),
+        ],
       ),
     ),
-    actions: [
-      TextButton(
-        key: const Key('desktop-filter-cancel'),
-        onPressed: () => Navigator.pop(context),
-        child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
-      ),
-      FilledButton(
-        key: const Key('desktop-filter-apply'),
-        onPressed: _apply,
-        child: Text(context.l10n.select(zh: '应用', en: 'Apply')),
-      ),
-    ],
   );
 }
 
@@ -2092,7 +2257,6 @@ class LibraryPage extends StatefulWidget {
     this.albumId,
     this.albumName,
     this.albumDescription,
-    this.albumSourceDeviceName,
     this.albumType,
     this.albumSystemKey,
     this.showTransferAction = true,
@@ -2107,7 +2271,6 @@ class LibraryPage extends StatefulWidget {
   final int? albumId;
   final String? albumName;
   final String? albumDescription;
-  final String? albumSourceDeviceName;
   final String? albumType;
   final String? albumSystemKey;
   final bool showTransferAction;
@@ -2123,15 +2286,21 @@ class _LibraryPageState extends State<LibraryPage> {
   bool get _isDesktop =>
       Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 
+  bool get _hasActiveFilters =>
+      favoritesOnly ||
+      capturedRange != null ||
+      capturedOnThisDay != null ||
+      selectedGameTags.isNotEmpty;
+
   GalleryKindFilter kind = GalleryKindFilter.all;
   bool favoritesOnly = false;
   bool newestFirst = true;
   bool selecting = false;
   bool groupByImportedDate = false;
   final Set<int> selectedMediaIds = {};
+  final Map<int, MediaAsset> selectedMediaAssets = {};
   final Set<int> favoriteBusy = {};
   final Map<int, bool> favoriteOverrides = {};
-  final Set<String> _preloadedImagePaths = {};
   final TextEditingController searchController = TextEditingController();
   final FocusNode searchFocusNode = FocusNode(
     debugLabel: 'desktop-gallery-search',
@@ -2143,8 +2312,12 @@ class _LibraryPageState extends State<LibraryPage> {
   final Set<String> selectedGameTags = {};
   List<MediaAsset> latestMedia = const [];
   List<MediaAsset>? cachedMedia;
+  List<MediaAsset>? _lastThumbnailPrefetchSource;
+  List<MediaAsset>? _lastVideoThumbnailPrefetchSource;
+  bool? _lastVideoThumbnailPrefetchEnabled;
   int loadGeneration = 0;
   bool batchBusy = false;
+  bool selectionScanning = false;
   bool startupGalleryQueryLogged = false;
   List<int> visibleMediaIds = const [];
   bool _selectionPointerActive = false;
@@ -2154,7 +2327,15 @@ class _LibraryPageState extends State<LibraryPage> {
   final Set<int> _selectionDragVisited = {};
   Timer? _selectionAutoScrollTimer;
   double _selectionAutoScrollVelocity = 0;
-  final ScrollController _galleryScroll = ScrollController();
+  final ScrollController _galleryScroll = DesktopGalleryScrollController();
+  late final VoidCallback _unbindReturnLayout;
+  int _returnLayoutGeneration = 0;
+  final _perfClock = Stopwatch()..start();
+  double? _perfLastOffset;
+  int _perfLastMicros = 0;
+  int _perfGeneration = -1;
+  int _perfLoaded = 0, _perfImages = 0, _perfVideos = 0, _perfColumns = 0;
+  VoidCallback? _unbindPerfScroll;
   late final _pages = GalleryPageController(widget.backend);
   late Future<List<MediaAsset>> media = _load();
   late Future<List<GameTagSummary>> gameTags = _loadGameTags();
@@ -2165,9 +2346,21 @@ class _LibraryPageState extends State<LibraryPage> {
     widget.settings.addListener(_handleSettingsChanged);
     searchController.addListener(_onSearchControllerChanged);
     _galleryScroll.addListener(_loadMoreWhenNearEnd);
+    _unbindReturnLayout = GalleryReturnLayout.bind(_galleryScroll, () {
+      if (mounted && _isDesktop && groupByImportedDate) {
+        setState(() => _returnLayoutGeneration++);
+      }
+    });
+    if (GalleryPerf.compiled) {
+      _unbindPerfScroll = GalleryPerf.instance.bindScroll(
+        _galleryScroll,
+        returnToTop: () => scrollGalleryToTop(_galleryScroll),
+      );
+    }
   }
 
   void _loadMoreWhenNearEnd() {
+    _recordPerfScroll();
     if (!_galleryScroll.hasClients ||
         _galleryScroll.position.extentAfter > 900 ||
         _pages.loadingNext ||
@@ -2176,6 +2369,40 @@ class _LibraryPageState extends State<LibraryPage> {
       return;
     }
     unawaited(_loadNextMediaPage());
+  }
+
+  void _recordPerfScroll({bool measureMovement = true}) {
+    if (!GalleryPerf.compiled || !_galleryScroll.hasClients) return;
+    final position = _galleryScroll.position;
+    final perf = GalleryPerf.instance;
+    perf.gallery(
+      loaded: _perfLoaded,
+      images: _perfImages,
+      videos: _perfVideos,
+      columns: _perfColumns,
+      viewport: position.viewportDimension,
+      offset: position.pixels,
+      extent: position.maxScrollExtent,
+      total: _pages.totalMatching,
+    );
+    if (!measureMovement) return;
+    final now = _perfClock.elapsedMicroseconds;
+    final previous = _perfLastOffset;
+    final elapsed = now - _perfLastMicros;
+    if (perf.recording &&
+        _perfGeneration == perf.generation &&
+        previous != null &&
+        elapsed > 0) {
+      final delta = (position.pixels - previous).abs();
+      if (delta > 0) {
+        perf
+          ..sample(GalleryMetric.scrollDelta, delta)
+          ..sample(GalleryMetric.scrollSpeed, delta * 1000000 / elapsed);
+      }
+    }
+    _perfLastOffset = perf.recording ? position.pixels : null;
+    _perfLastMicros = now;
+    _perfGeneration = perf.generation;
   }
 
   void _handleSettingsChanged() {
@@ -2309,6 +2536,8 @@ class _LibraryPageState extends State<LibraryPage> {
     widget.settings.removeListener(_handleSettingsChanged);
     searchDebounce?.cancel();
     _selectionAutoScrollTimer?.cancel();
+    _unbindPerfScroll?.call();
+    _unbindReturnLayout();
     _galleryScroll.dispose();
     _pages.dispose();
     searchController
@@ -2356,17 +2585,30 @@ class _LibraryPageState extends State<LibraryPage> {
     });
   }
 
+  void _clearSearch() {
+    final value = searchController.value;
+    if (value.composing.isValid && !value.composing.isCollapsed) return;
+    searchController.clear();
+    _commitSearch();
+  }
+
   void _setKind(GalleryKindFilter value) => setState(() {
     kind = value;
     selectedMediaIds.clear();
     media = _load();
   });
 
-  void _toggleSelecting() => setState(() {
-    selecting = !selecting;
-    if (selecting) FocusManager.instance.primaryFocus?.unfocus();
-    if (!selecting) selectedMediaIds.clear();
-  });
+  void _toggleSelecting() {
+    if (selectionScanning) return;
+    setState(() {
+      selecting = !selecting;
+      if (selecting) FocusManager.instance.primaryFocus?.unfocus();
+      if (!selecting) {
+        selectedMediaIds.clear();
+        selectedMediaAssets.clear();
+      }
+    });
+  }
 
   Future<void> _openDesktopFilterDialog() async {
     if (!_isDesktop || selecting) return;
@@ -2422,22 +2664,54 @@ class _LibraryPageState extends State<LibraryPage> {
     if (!selectedMediaIds.add(mediaId)) selectedMediaIds.remove(mediaId);
   });
 
-  void _selectAllVisibleMedia() {
-    if (batchBusy || visibleMediaIds.isEmpty) return;
-    setState(() {
-      selecting = true;
-      selectedMediaIds.addAll(visibleMediaIds);
-    });
-  }
+  bool _matchesSearch(MediaAsset item) => normalizedTextContains(
+    [item.originalName, item.gameName, item.note ?? '', ...item.tags].join(' '),
+    searchController.text,
+  );
 
-  void _invertVisibleMediaSelection() {
-    if (batchBusy || visibleMediaIds.isEmpty) return;
-    setState(() {
-      selecting = true;
-      for (final id in visibleMediaIds) {
-        if (!selectedMediaIds.add(id)) selectedMediaIds.remove(id);
-      }
-    });
+  Future<void> _selectAllMatchingMedia({required bool invert}) async {
+    if (batchBusy || selectionScanning) return;
+    setState(() => selectionScanning = true);
+    try {
+      final all = await _pages.loadAllMatching(filter: _matchesSearch);
+      if (!mounted) return;
+      setState(() {
+        selecting = true;
+        if (invert) {
+          for (final item in all) {
+            if (!selectedMediaIds.add(item.id)) {
+              selectedMediaIds.remove(item.id);
+              selectedMediaAssets.remove(item.id);
+            } else {
+              selectedMediaAssets[item.id] = item;
+            }
+          }
+        } else {
+          selectedMediaIds.addAll(all.map((item) => item.id));
+          selectedMediaAssets.addEntries(
+            all.map((item) => MapEntry(item.id, item)),
+          );
+        }
+      });
+    } catch (error, stackTrace) {
+      await widget.backend.logError(
+        'Failed to select all matching media',
+        error,
+        stackTrace,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        _messageSnackBar(
+          context.l10n.select(
+            zh: '选择全部媒体失败：$error',
+            en: 'Failed to select all media: $error',
+          ),
+          error: true,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => selectionScanning = false);
+    }
   }
 
   void _handleSelectionTap(int mediaId) {
@@ -2608,12 +2882,8 @@ class _LibraryPageState extends State<LibraryPage> {
       );
       return;
     }
-    final videos = latestMedia
-        .where(
-          (asset) =>
-              selectedMediaIds.contains(asset.id) &&
-              asset.kind == MediaKind.video,
-        )
+    final videos = selectedMediaAssets.values
+        .where((asset) => asset.kind == MediaKind.video)
         .toList(growable: false);
     if (videos.length < 2) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2774,18 +3044,7 @@ class _LibraryPageState extends State<LibraryPage> {
                   title: Text(album.name),
                   subtitle: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        context.l10n.select(
-                          zh: '${album.mediaCount} 个媒体',
-                          en: '${album.mediaCount} media',
-                        ),
-                      ),
-                      AlbumSourceLabel(
-                        name: album.sourceDeviceName,
-                        systemKey: album.systemKey,
-                      ),
-                    ],
+                    children: [Text(albumMediaCountText(context, album))],
                   ),
                 ),
               ),
@@ -2875,8 +3134,9 @@ class _LibraryPageState extends State<LibraryPage> {
   Future<void> _batchTags({required bool replace}) async {
     final tags = await _showBatchTagDialog(replace: replace);
     if (tags == null || !mounted) return;
-    final selectedAssets = latestMedia
-        .where((asset) => selectedMediaIds.contains(asset.id))
+    final selectedAssets = selectedMediaIds
+        .map((id) => selectedMediaAssets[id])
+        .whereType<MediaAsset>()
         .toList(growable: false);
     await _runBatchMutation(
       () async {
@@ -3103,21 +3363,6 @@ class _LibraryPageState extends State<LibraryPage> {
     );
   }
 
-  void _preloadGalleryImages(List<MediaAsset> items, int columns) {
-    final limit = (columns * 3).clamp(6, 24);
-    for (final asset
-        in items.where((item) => item.kind == MediaKind.image).take(limit)) {
-      if (!_preloadedImagePaths.add(asset.storagePath)) continue;
-      unawaited(
-        precacheImage(
-          FileImage(File(asset.storagePath)),
-          context,
-          size: const Size(900, 600),
-        ).catchError((_) {}),
-      );
-    }
-  }
-
   Widget _buildHeaderActions(BuildContext context) => Wrap(
     spacing: 8,
     runSpacing: 8,
@@ -3126,20 +3371,31 @@ class _LibraryPageState extends State<LibraryPage> {
       if (selecting) ...[
         IconButton.filledTonal(
           key: const Key('batch-select-all'),
-          tooltip: context.l10n.select(
-            zh: '全选当前媒体',
-            en: 'Select all visible media',
-          ),
-          onPressed: batchBusy ? null : _selectAllVisibleMedia,
-          icon: const Icon(Icons.select_all_rounded),
+          tooltip: selectionScanning
+              ? context.l10n.select(zh: '正在加载全部媒体', en: 'Loading all media')
+              : context.l10n.select(
+                  zh: '全选全部匹配媒体',
+                  en: 'Select all matching media',
+                ),
+          onPressed: batchBusy || selectionScanning
+              ? null
+              : () => unawaited(_selectAllMatchingMedia(invert: false)),
+          icon: selectionScanning
+              ? const SizedBox.square(
+                  dimension: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.select_all_rounded),
         ),
         IconButton.filledTonal(
           key: const Key('batch-invert-selection'),
           tooltip: context.l10n.select(
-            zh: '反选当前媒体',
-            en: 'Invert visible selection',
+            zh: '反选全部匹配媒体',
+            en: 'Invert matching selection',
           ),
-          onPressed: batchBusy ? null : _invertVisibleMediaSelection,
+          onPressed: batchBusy || selectionScanning
+              ? null
+              : () => unawaited(_selectAllMatchingMedia(invert: true)),
           icon: const Icon(Icons.flip_to_back_rounded),
         ),
         PopupMenuButton<_BatchMediaAction>(
@@ -3196,12 +3452,8 @@ class _LibraryPageState extends State<LibraryPage> {
             PopupMenuItem(
               value: _BatchMediaAction.mergeVideos,
               enabled:
-                  latestMedia
-                      .where(
-                        (asset) =>
-                            selectedMediaIds.contains(asset.id) &&
-                            asset.kind == MediaKind.video,
-                      )
+                  selectedMediaAssets.values
+                      .where((asset) => asset.kind == MediaKind.video)
                       .length >=
                   2,
               child: _BatchActionLabel(
@@ -3276,19 +3528,19 @@ class _LibraryPageState extends State<LibraryPage> {
               ),
               suffixIcon: ValueListenableBuilder<TextEditingValue>(
                 valueListenable: searchController,
-                builder: (context, value, _) => value.text.isEmpty
-                    ? const SizedBox.shrink()
-                    : IconButton(
-                        tooltip: context.l10n.select(
-                          zh: '清除搜索',
-                          en: 'Clear search',
-                        ),
-                        onPressed: () {
-                          searchController.clear();
-                          _commitSearch();
-                        },
-                        icon: const Icon(Icons.close_rounded),
-                      ),
+                builder: (context, value, _) {
+                  if (value.text.isEmpty) return const SizedBox.shrink();
+                  final composing =
+                      value.composing.isValid && !value.composing.isCollapsed;
+                  return IconButton(
+                    tooltip: context.l10n.select(
+                      zh: '清除搜索',
+                      en: 'Clear search',
+                    ),
+                    onPressed: composing ? null : _clearSearch,
+                    icon: const Icon(Icons.close_rounded),
+                  );
+                },
               ),
               border: const OutlineInputBorder(),
             ),
@@ -3304,6 +3556,15 @@ class _LibraryPageState extends State<LibraryPage> {
           key: const Key('library-filter'),
           tooltip: context.l10n.select(zh: '筛选', en: 'Filter'),
           onPressed: _openDesktopFilterDialog,
+          style: IconButton.styleFrom(
+            backgroundColor: _hasActiveFilters
+                ? Theme.of(context).colorScheme.primaryContainer
+                : null,
+            foregroundColor: _hasActiveFilters
+                ? Theme.of(context).colorScheme.onPrimaryContainer
+                : null,
+            shape: const CircleBorder(),
+          ),
           icon: const Icon(Icons.tune_rounded),
         ),
       ],
@@ -3315,7 +3576,7 @@ class _LibraryPageState extends State<LibraryPage> {
       return IconButton.filledTonal(
         key: const Key('library-selection-back'),
         tooltip: context.l10n.select(zh: '取消选择', en: 'Cancel selection'),
-        onPressed: batchBusy ? null : _toggleSelecting,
+        onPressed: batchBusy || selectionScanning ? null : _toggleSelecting,
         icon: const Icon(Icons.arrow_back_rounded),
       );
     }
@@ -3331,10 +3592,12 @@ class _LibraryPageState extends State<LibraryPage> {
   @override
   Widget build(BuildContext context) => _PageFrame(
     title: selecting
-        ? context.l10n.select(
-            zh: '已选择 ${selectedMediaIds.length} 项',
-            en: '${selectedMediaIds.length} selected',
-          )
+        ? selectionScanning
+              ? context.l10n.select(zh: '正在选择全部媒体…', en: 'Selecting all media…')
+              : context.l10n.select(
+                  zh: '已选择 ${selectedMediaIds.length} 项',
+                  en: '${selectedMediaIds.length} selected',
+                )
         : widget.albumName ?? context.l10n.select(zh: '图库', en: 'Library'),
     subtitle: widget.albumId == null
         ? null
@@ -3360,6 +3623,10 @@ class _LibraryPageState extends State<LibraryPage> {
     fixedHeader: true,
     compactGalleryHeader: _isDesktop,
     controller: _galleryScroll,
+    galleryLoadExperiment: _isDesktop,
+    scrollTotalCount: _pages.totalMatching,
+    scrollLoadedCount: visibleMediaIds.length,
+    scrollCounting: _pages.countingTotal,
     physics: _isDesktop ? const DesktopFluidScrollPhysics() : null,
     hideTitle: false,
     onPointerMove: (event) => _updateSelectionAutoScroll(event.position),
@@ -3367,17 +3634,6 @@ class _LibraryPageState extends State<LibraryPage> {
     bodySliver: _buildMediaSliver(),
     child: Column(
       children: [
-        if (widget.albumId != null && widget.albumSystemKey != 'favorites')
-          Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: AlbumSourceLabel(
-                name: widget.albumSourceDeviceName,
-                systemKey: widget.albumSystemKey,
-              ),
-            ),
-          ),
         if (!_isDesktop && !selecting)
           SizedBox(
             width: 310,
@@ -3396,19 +3652,19 @@ class _LibraryPageState extends State<LibraryPage> {
                 ),
                 suffixIcon: ValueListenableBuilder<TextEditingValue>(
                   valueListenable: searchController,
-                  builder: (context, value, _) => value.text.isEmpty
-                      ? const SizedBox.shrink()
-                      : IconButton(
-                          tooltip: context.l10n.select(
-                            zh: '清除搜索',
-                            en: 'Clear search',
-                          ),
-                          onPressed: () {
-                            searchController.clear();
-                            _commitSearch();
-                          },
-                          icon: const Icon(Icons.close_rounded),
-                        ),
+                  builder: (context, value, _) {
+                    if (value.text.isEmpty) return const SizedBox.shrink();
+                    final composing =
+                        value.composing.isValid && !value.composing.isCollapsed;
+                    return IconButton(
+                      tooltip: context.l10n.select(
+                        zh: '清除搜索',
+                        en: 'Clear search',
+                      ),
+                      onPressed: composing ? null : _clearSearch,
+                      icon: const Icon(Icons.close_rounded),
+                    );
+                  },
                 ),
                 border: const OutlineInputBorder(),
               ),
@@ -3685,26 +3941,56 @@ class _LibraryPageState extends State<LibraryPage> {
           ),
         );
       }
-      final currentItems = source!
-          .map(_withFavoriteOverride)
-          .toList(growable: false);
+      final loadedSource = source!;
+      if (!identical(_lastThumbnailPrefetchSource, loadedSource)) {
+        _lastThumbnailPrefetchSource = loadedSource;
+        unawaited(ImageThumbnailCache.prefetch(loadedSource));
+      }
+      if (!identical(_lastVideoThumbnailPrefetchSource, loadedSource) ||
+          _lastVideoThumbnailPrefetchEnabled != widget.enableVideoFeatures) {
+        _lastVideoThumbnailPrefetchSource = loadedSource;
+        _lastVideoThumbnailPrefetchEnabled = widget.enableVideoFeatures;
+        _preloadVideoThumbnails(loadedSource);
+      }
+      final currentItems = GalleryPerf.instance.sync(
+        GalleryMetric.filter,
+        () => loadedSource.map(_withFavoriteOverride).toList(growable: false),
+      );
       latestMedia = currentItems;
-      _preloadVideoThumbnails(currentItems);
-      final visibleItems = currentItems.where((item) {
-        if ((favoritesOnly || widget.albumSystemKey == 'favorites') &&
-            !item.favorite) {
-          return false;
+      final visibleItems = GalleryPerf.instance.sync(
+        GalleryMetric.filter,
+        () => currentItems.where((item) {
+          if ((favoritesOnly || widget.albumSystemKey == 'favorites') &&
+              !item.favorite) {
+            return false;
+          }
+          final text = [
+            item.originalName,
+            item.gameName,
+            item.note ?? '',
+            ...item.tags,
+          ].join(' ');
+          return normalizedTextContains(text, search);
+        }).toList(),
+      );
+      selectedMediaAssets.removeWhere(
+        (id, _) => !selectedMediaIds.contains(id),
+      );
+      for (final item in visibleItems) {
+        if (selectedMediaIds.contains(item.id)) {
+          selectedMediaAssets[item.id] = item;
         }
-        final text = [
-          item.originalName,
-          item.gameName,
-          item.note ?? '',
-          ...item.tags,
-        ].join(' ');
-        return normalizedTextContains(text, search);
-      }).toList();
+      }
       final columns = widget.settings.value.galleryColumns.clamp(2, 7);
-      _preloadGalleryImages(visibleItems, columns);
+      if (GalleryPerf.compiled) {
+        _perfLoaded = visibleItems.length;
+        _perfImages = visibleItems
+            .where((item) => item.kind == MediaKind.image)
+            .length;
+        _perfVideos = visibleItems.length - _perfImages;
+        _perfColumns = columns;
+        _recordPerfScroll(measureMovement: false);
+      }
       visibleMediaIds = visibleItems
           .map((item) => item.id)
           .toList(growable: false);
@@ -3724,70 +4010,95 @@ class _LibraryPageState extends State<LibraryPage> {
             ? 3
             : widget.settings.value.galleryRows.clamp(2, 8);
         final cardHeight = (420 / previewRows + 130).clamp(210.0, 520.0);
-        Widget card(MediaAsset asset, int index) => _MediaCard(
-          asset: asset,
-          settings: widget.settings.value,
-          onVideoThumbnailError: (error, stackTrace) => widget.backend.logError(
-            'Failed to generate video thumbnail for media ${asset.id}',
-            error,
-            stackTrace,
-          ),
-          selecting: selecting,
-          enableVideoFeatures: widget.enableVideoFeatures,
-          selected: selectedMediaIds.contains(asset.id),
-          onSelect: () => _toggleSelected(asset.id),
-          onSelectionPointerDown: (position) =>
-              _beginSelectionPointer(asset.id, position),
-          onSelectionPointerEnter: (position) =>
-              _enterSelectionPointer(asset.id, position),
-          onSelectionPointerUp: _endSelectionPointer,
-          onFavorite: favoriteBusy.contains(asset.id)
-              ? null
-              : () => _toggleFavorite(asset),
-          onPreview: selecting
-              ? () => _handleSelectionTap(asset.id)
-              : asset.kind == MediaKind.video && !widget.enableVideoFeatures
-              ? () => ScaffoldMessenger.of(context).showSnackBar(
-                  _messageSnackBar(
-                    context.l10n.select(
-                      zh: '安全模式已禁用视频预览。',
-                      en: 'Video preview is disabled in safe mode.',
-                    ),
-                    error: true,
+        Widget card(MediaAsset asset, int index) {
+          Widget fullCard(BuildContext _) {
+            final child = _MediaCard(
+              asset: asset,
+              settings: widget.settings.value,
+              onVideoThumbnailError: (error, stackTrace) =>
+                  widget.backend.logError(
+                    'Failed to generate video thumbnail for media ${asset.id}',
+                    error,
+                    stackTrace,
                   ),
-                )
-              : () => MediaViewer.open(
-                  context,
-                  backend: widget.backend,
-                  items: visibleItems,
-                  initialIndex: index,
-                  autoPlayVideo: widget.settings.value.autoPlayVideo,
-                  compactTagDisplay: widget.settings.value.compactTagDisplay,
-                  onMetadataChanged: _reload,
-                  galleryQuery: _pages.query,
-                  initialPage: _pages.snapshot,
-                  mediaFilter: _pages.accept,
-                ),
-          onSecondaryTapDown: (details) => _showSingleMediaMenu(asset, details),
-          onEdit: () async {
-            final changed = await showModalBottomSheet<MediaMetadataUpdate>(
-              context: context,
-              showDragHandle: true,
-              isScrollControlled: true,
-              constraints: const BoxConstraints(maxWidth: 680),
-              builder: (_) =>
-                  MediaMetadataEditor(backend: widget.backend, asset: asset),
+              selecting: selecting,
+              enableVideoFeatures: widget.enableVideoFeatures,
+              selected: selectedMediaIds.contains(asset.id),
+              onSelect: () => _toggleSelected(asset.id),
+              onSelectionPointerDown: (position) =>
+                  _beginSelectionPointer(asset.id, position),
+              onSelectionPointerEnter: (position) =>
+                  _enterSelectionPointer(asset.id, position),
+              onSelectionPointerUp: _endSelectionPointer,
+              onFavorite: favoriteBusy.contains(asset.id)
+                  ? null
+                  : () => _toggleFavorite(asset),
+              onPreview: selecting
+                  ? () => _handleSelectionTap(asset.id)
+                  : asset.kind == MediaKind.video && !widget.enableVideoFeatures
+                  ? () => ScaffoldMessenger.of(context).showSnackBar(
+                      _messageSnackBar(
+                        context.l10n.select(
+                          zh: '安全模式已禁用视频预览。',
+                          en: 'Video preview is disabled in safe mode.',
+                        ),
+                        error: true,
+                      ),
+                    )
+                  : () => MediaViewer.open(
+                      context,
+                      backend: widget.backend,
+                      items: visibleItems,
+                      initialIndex: index,
+                      autoPlayVideo: widget.settings.value.autoPlayVideo,
+                      compactTagDisplay:
+                          widget.settings.value.compactTagDisplay,
+                      onMetadataChanged: _reload,
+                      galleryQuery: _pages.query,
+                      initialPage: _pages.snapshot,
+                      mediaFilter: _pages.accept,
+                    ),
+              onSecondaryTapDown: (details) =>
+                  _showSingleMediaMenu(asset, details),
+              onEdit: () async {
+                final changed = await showModalBottomSheet<MediaMetadataUpdate>(
+                  context: context,
+                  showDragHandle: true,
+                  isScrollControlled: true,
+                  constraints: const BoxConstraints(maxWidth: 680),
+                  builder: (_) => MediaMetadataEditor(
+                    backend: widget.backend,
+                    asset: asset,
+                  ),
+                );
+                if (changed != null) _reload();
+              },
             );
-            if (changed != null) _reload();
-          },
-        );
+            return GalleryPerf.compiled ? GalleryPerfTile(child: child) : child;
+          }
+
+          return _isDesktop
+              ? GalleryDeferredCard(
+                  key: ValueKey(('deferred-card', asset.id)),
+                  enabled: !selecting,
+                  builder: fullCard,
+                  placeholderBuilder: (context) =>
+                      _GalleryCardPlaceholder(asset: asset),
+                )
+              : fullCard(context);
+        }
+
         if (_isDesktop && groupByImportedDate) {
-          final galleryRows = _desktopGalleryRows(
-            visibleItems,
-            columns: columns,
-            english: context.l10n.locale.languageCode == 'en',
+          final galleryRows = GalleryPerf.instance.sync(
+            GalleryMetric.group,
+            () => _desktopGalleryRows(
+              visibleItems,
+              columns: columns,
+              english: context.l10n.locale.languageCode == 'en',
+            ),
           );
           mediaContent = SliverList.builder(
+            key: ValueKey(('desktop-gallery-rows', _returnLayoutGeneration)),
             itemCount: galleryRows.length,
             itemBuilder: (context, rowIndex) {
               final galleryRow = galleryRows[rowIndex];
@@ -4046,6 +4357,61 @@ List<_DesktopGalleryRow> _desktopGalleryRows(
   return rows;
 }
 
+/// No task requests, interactive Material subtree, labels or tooltips. The
+/// parent grid still supplies the exact same outer extent as a complete card.
+class _GalleryCardPlaceholder extends StatelessWidget {
+  const _GalleryCardPlaceholder({required this.asset});
+  final MediaAsset asset;
+
+  @override
+  Widget build(BuildContext context) {
+    final bytes = asset.kind == MediaKind.image
+        ? ImageThumbnailCache.peek(asset)
+        : VideoThumbnailCache.peekCover(asset)?.bytes;
+    Widget? cover;
+    if (bytes != null && bytes.isNotEmpty) {
+      final provider = ResizeImage.resizeIfNeeded(
+        1024,
+        null,
+        MemoryImage(bytes),
+      );
+      // MemoryImage keys are synchronous; obtainKey never resolves/decodes.
+      provider.obtainKey(ImageConfiguration.empty).then((key) {
+        final status = PaintingBinding.instance.imageCache.statusForKey(key);
+        if (!status.pending && (status.keepAlive || status.live)) {
+          cover = Image(
+            image: provider,
+            fit: BoxFit.cover,
+            gaplessPlayback: true,
+            excludeFromSemantics: true,
+            errorBuilder: (_, _, _) => const SizedBox.expand(),
+          );
+        }
+      });
+    }
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      key: ValueKey('media-card-deferred-${asset.id}'),
+      padding: CardTheme.of(context).margin ?? const EdgeInsets.all(4),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: ColoredBox(
+          color: CardTheme.of(context).color ?? colors.surfaceContainerLow,
+          child: cover == null
+              ? const SizedBox.expand()
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(child: cover!),
+                    const SizedBox(height: 96),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+}
+
 class _MediaCard extends StatelessWidget {
   const _MediaCard({
     required this.asset,
@@ -4081,7 +4447,12 @@ class _MediaCard extends StatelessWidget {
   final bool enableVideoFeatures;
 
   @override
-  Widget build(BuildContext context) => MouseRegion(
+  Widget build(BuildContext context) => GalleryPerf.instance.sync(
+    GalleryMetric.cardBuild,
+    () => _buildCard(context),
+  );
+
+  Widget _buildCard(BuildContext context) => MouseRegion(
     onEnter: selecting
         ? (event) => onSelectionPointerEnter(event.position)
         : null,
@@ -4258,12 +4629,10 @@ class _MediaPreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (asset.kind == MediaKind.image) {
-      return Image.file(
-        File(asset.storagePath),
+      return ImageThumbnail(
+        asset: asset,
         fit: BoxFit.cover,
-        cacheWidth: 900,
-        gaplessPlayback: true,
-        errorBuilder: (_, _, _) => _placeholder(context),
+        placeholder: _placeholder(context),
       );
     }
     return _VideoCardPreview(
@@ -4293,7 +4662,7 @@ class _MediaPreview extends StatelessWidget {
   );
 }
 
-class _VideoCardPreview extends StatelessWidget {
+class _VideoCardPreview extends StatefulWidget {
   const _VideoCardPreview({
     required this.asset,
     required this.onThumbnailError,
@@ -4306,8 +4675,100 @@ class _VideoCardPreview extends StatelessWidget {
   final bool enabled;
 
   @override
+  State<_VideoCardPreview> createState() => _VideoCardPreviewState();
+}
+
+class _VideoCardPreviewState extends State<_VideoCardPreview> {
+  PreviewRequest<VideoThumbnailData>? _request;
+  Future<VideoThumbnailData>? _thumbnail;
+  Future<VideoThumbnailData>? _cachedThumbnail;
+  VideoThumbnailData? _initialThumbnail;
+  GalleryDragLoadController? _drag;
+  bool _initialized = false;
+  bool _waitingForDrag = false;
+  int? _resumeTicket;
+
+  @override
+  void initState() {
+    super.initState();
+    if (GalleryPerf.compiled) {
+      GalleryPerf.instance.coverMode.addListener(_coverModeChanged);
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _drag = GalleryPreviewLoadScope.maybeOf(context);
+    if (!_initialized || (_waitingForDrag && _drag?.defer != true)) {
+      _initialized = true;
+      _load();
+    }
+  }
+
+  void _coverModeChanged() {
+    if (mounted) setState(_load);
+  }
+
+  @override
+  void didUpdateWidget(covariant _VideoCardPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.asset.sha256 != widget.asset.sha256 ||
+        oldWidget.asset.storagePath != widget.asset.storagePath ||
+        oldWidget.enabled != widget.enabled) {
+      _load();
+    }
+  }
+
+  void _load() {
+    _resumeTicket = GalleryPerf.instance.previewTicket(
+      thumbActive: _drag?.held == true && _drag?.hasMoved == true,
+      resumed: _waitingForDrag,
+    );
+    _request?.cancel();
+    _request = null;
+    _thumbnail = null;
+    _cachedThumbnail = null;
+    _initialThumbnail = widget.enabled
+        ? VideoThumbnailCache.peekCover(widget.asset)
+        : null;
+    _waitingForDrag = _drag?.defer == true;
+    if (_waitingForDrag) {
+      GalleryPerf.instance.increment(GalleryMetric.dragDeferred);
+      return;
+    }
+    if (!widget.enabled ||
+        (GalleryPerf.compiled &&
+            GalleryPerf.instance.coverMode.value ==
+                GalleryCoverMode.placeholder)) {
+      return;
+    }
+    if (_initialThumbnail == null) {
+      _cachedThumbnail = VideoThumbnailCache.readExisting(widget.asset);
+    }
+    final pending = VideoThumbnailCache.request(
+      widget.asset,
+      onError: widget.onThumbnailError,
+      urgent: true,
+    );
+    _request = pending;
+    _thumbnail = pending.future
+        .then((data) => data ?? const VideoThumbnailData())
+        .whenComplete(pending.cancel);
+  }
+
+  @override
+  void dispose() {
+    if (GalleryPerf.compiled) {
+      GalleryPerf.instance.coverMode.removeListener(_coverModeChanged);
+    }
+    _request?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (!enabled) {
+    if (!widget.enabled) {
       return const DecoratedBox(
         decoration: BoxDecoration(
           gradient: LinearGradient(
@@ -4320,70 +4781,94 @@ class _VideoCardPreview extends StatelessWidget {
       );
     }
     return FutureBuilder<VideoThumbnailData>(
-      future: VideoThumbnailCache.load(asset, onError: onThumbnailError),
-      builder: (context, snapshot) {
-        final data = snapshot.data ?? const VideoThumbnailData();
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            if (data.bytes != null)
-              Image.memory(
-                data.bytes!,
-                fit: BoxFit.cover,
-                gaplessPlayback: true,
-              )
-            else
-              const DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [Color(0xff69599d), Color(0xffc5b7e7)],
+      future: _cachedThumbnail,
+      builder: (context, cached) => FutureBuilder<VideoThumbnailData>(
+        key: ValueKey((widget.asset.sha256, widget.asset.storagePath)),
+        future: _thumbnail,
+        initialData: _initialThumbnail,
+        builder: (context, snapshot) {
+          final data =
+              snapshot.data ?? cached.data ?? const VideoThumbnailData();
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              if (data.bytes != null &&
+                  !(GalleryPerf.compiled &&
+                      GalleryPerf.instance.coverMode.value ==
+                          GalleryCoverMode.placeholder))
+                galleryPerfImageMemory(
+                  data.bytes!,
+                  fit: BoxFit.cover,
+                  cacheWidth: VideoThumbnailCache.decodeWidth,
+                  resumeTicket: _resumeTicket,
+                  placeholder: const DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [Color(0xff69599d), Color(0xffc5b7e7)],
+                      ),
+                    ),
+                    child: Icon(
+                      Icons.videocam_rounded,
+                      color: Colors.white70,
+                      size: 48,
+                    ),
+                  ),
+                )
+              else
+                const DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xff69599d), Color(0xffc5b7e7)],
+                    ),
+                  ),
+                  child: Icon(
+                    Icons.videocam_rounded,
+                    color: Colors.white70,
+                    size: 48,
                   ),
                 ),
+              const Positioned(
+                left: 10,
+                bottom: 10,
                 child: Icon(
-                  Icons.videocam_rounded,
-                  color: Colors.white70,
-                  size: 48,
+                  Icons.play_circle_fill_rounded,
+                  color: Colors.white,
+                  size: 34,
                 ),
               ),
-            const Positioned(
-              left: 10,
-              bottom: 10,
-              child: Icon(
-                Icons.play_circle_fill_rounded,
-                color: Colors.white,
-                size: 34,
-              ),
-            ),
-            Positioned(
-              right: 10,
-              bottom: 10,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: .72),
-                  borderRadius: BorderRadius.circular(5),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 7,
-                    vertical: 3,
+              Positioned(
+                right: 10,
+                bottom: 10,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: .72),
+                    borderRadius: BorderRadius.circular(5),
                   ),
-                  child: Text(
-                    _formatVideoDuration(data.duration),
-                    key: ValueKey('video-duration-${asset.id}'),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 3,
+                    ),
+                    child: Text(
+                      _formatVideoDuration(data.duration),
+                      key: ValueKey('video-duration-${widget.asset.id}'),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ],
-        );
-      },
+            ],
+          );
+        },
+      ),
     );
   }
 }
@@ -4405,23 +4890,30 @@ class _HoverMarqueeText extends StatefulWidget {
 }
 
 class _HoverMarqueeTextState extends State<_HoverMarqueeText> {
-  final ScrollController controller = ScrollController();
+  ScrollController? controller;
   int animationGeneration = 0;
   bool hovering = false;
+  bool scrollingAttached = false;
 
   @override
   void didUpdateWidget(covariant _HoverMarqueeText oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.text != widget.text) {
       animationGeneration += 1;
-      if (controller.hasClients) controller.jumpTo(0);
+      final currentController = controller;
+      if (currentController?.hasClients == true) {
+        currentController!.jumpTo(0);
+      }
+      if (!hovering && scrollingAttached) {
+        unawaited(_releaseAfterReset(animationGeneration));
+      }
     }
   }
 
   @override
   void dispose() {
     animationGeneration += 1;
-    controller.dispose();
+    controller?.dispose();
     super.dispose();
   }
 
@@ -4431,30 +4923,76 @@ class _HoverMarqueeTextState extends State<_HoverMarqueeText> {
     onEnter: (_) => _start(),
     onExit: (_) => _stop(),
     child: ClipRect(
-      child: SingleChildScrollView(
-        key: const Key('filename-marquee-scroll'),
-        controller: controller,
-        scrollDirection: Axis.horizontal,
-        physics: const NeverScrollableScrollPhysics(),
-        child: Text(
-          widget.text,
-          maxLines: 1,
-          softWrap: false,
-          style: const TextStyle(fontWeight: FontWeight.w600),
-        ),
-      ),
+      child: scrollingAttached
+          ? SingleChildScrollView(
+              key: const Key('filename-marquee-scroll'),
+              controller: controller,
+              scrollDirection: Axis.horizontal,
+              physics: const NeverScrollableScrollPhysics(),
+              child: _filenameText(),
+            )
+          : OverflowBox(
+              alignment: AlignmentDirectional.centerStart,
+              fit: OverflowBoxFit.deferToChild,
+              minWidth: 0,
+              maxWidth: double.infinity,
+              child: _filenameText(),
+            ),
     ),
   );
 
+  Widget _filenameText() => Text(
+    widget.text,
+    maxLines: 1,
+    softWrap: false,
+    style: const TextStyle(fontWeight: FontWeight.w600),
+  );
+
+  Future<void> _releaseAfterReset(int generation) async {
+    final currentController = controller;
+    if (currentController?.hasClients == true) {
+      await currentController!.animateTo(
+        0,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+      );
+    }
+    if (!mounted || hovering || generation != animationGeneration) return;
+    setState(() => scrollingAttached = false);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          hovering ||
+          generation != animationGeneration ||
+          scrollingAttached) {
+        return;
+      }
+      final retired = controller;
+      if (retired?.hasClients == false) {
+        retired!.dispose();
+        controller = null;
+      }
+    });
+  }
+
   Future<void> _start() async {
+    if (hovering) return;
     hovering = true;
     final generation = ++animationGeneration;
+    controller ??= ScrollController();
+    if (!scrollingAttached) {
+      setState(() => scrollingAttached = true);
+    }
     await Future<void>.delayed(const Duration(milliseconds: 350));
+    if (!mounted || !hovering || generation != animationGeneration) return;
+    if (controller?.hasClients != true) {
+      await WidgetsBinding.instance.endOfFrame;
+    }
     while (mounted && hovering && generation == animationGeneration) {
-      if (!controller.hasClients) return;
-      final extent = controller.position.maxScrollExtent;
+      final currentController = controller;
+      if (currentController?.hasClients != true) return;
+      final extent = currentController!.position.maxScrollExtent;
       if (extent <= 0) return;
-      await controller.animateTo(
+      await currentController.animateTo(
         extent,
         duration: Duration(
           milliseconds: (extent * 28).round().clamp(1200, 6000).toInt(),
@@ -4464,7 +5002,7 @@ class _HoverMarqueeTextState extends State<_HoverMarqueeText> {
       if (!mounted || !hovering || generation != animationGeneration) return;
       await Future<void>.delayed(const Duration(milliseconds: 700));
       if (!mounted || !hovering || generation != animationGeneration) return;
-      await controller.animateTo(
+      await currentController.animateTo(
         0,
         duration: Duration(
           milliseconds: (extent * 18).round().clamp(800, 4000).toInt(),
@@ -4476,17 +5014,10 @@ class _HoverMarqueeTextState extends State<_HoverMarqueeText> {
   }
 
   void _stop() {
+    if (!hovering) return;
     hovering = false;
-    animationGeneration += 1;
-    if (controller.hasClients) {
-      unawaited(
-        controller.animateTo(
-          0,
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOutCubic,
-        ),
-      );
-    }
+    final generation = ++animationGeneration;
+    unawaited(_releaseAfterReset(generation));
   }
 }
 
@@ -4518,7 +5049,7 @@ class _Tag extends StatelessWidget {
   );
 }
 
-enum _AlbumAction { rename, toggleSmart, editRules, delete }
+enum _AlbumAction { edit, delete }
 
 class AlbumsPage extends StatefulWidget {
   const AlbumsPage({
@@ -4807,7 +5338,7 @@ class _AlbumsPageState extends State<AlbumsPage> {
       ),
       items: [
         PopupMenuItem(
-          value: _AlbumAction.rename,
+          value: _AlbumAction.edit,
           child: ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
@@ -4815,41 +5346,6 @@ class _AlbumsPageState extends State<AlbumsPage> {
             title: Text(context.l10n.select(zh: '编辑相册', en: 'Edit album')),
           ),
         ),
-        PopupMenuItem(
-          value: _AlbumAction.toggleSmart,
-          child: ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(
-              album.albumType == 'smart'
-                  ? Icons.photo_album_outlined
-                  : Icons.auto_awesome_rounded,
-            ),
-            title: Text(
-              album.albumType == 'smart'
-                  ? context.l10n.select(
-                      zh: '转换为普通相册',
-                      en: 'Convert to regular album',
-                    )
-                  : context.l10n.select(
-                      zh: '转换为自动相册',
-                      en: 'Convert to smart album',
-                    ),
-            ),
-          ),
-        ),
-        if (album.albumType == 'smart')
-          PopupMenuItem(
-            value: _AlbumAction.editRules,
-            child: ListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.rule_rounded),
-              title: Text(
-                context.l10n.select(zh: '编辑自动规则', en: 'Edit smart rules'),
-              ),
-            ),
-          ),
         const PopupMenuDivider(),
         PopupMenuItem(
           value: _AlbumAction.delete,
@@ -4870,14 +5366,8 @@ class _AlbumsPageState extends State<AlbumsPage> {
     );
     if (action == null || !mounted) return;
     switch (action) {
-      case _AlbumAction.rename:
-        await _renameAlbum(album);
-        return;
-      case _AlbumAction.toggleSmart:
-        await _toggleAlbumType(album);
-        return;
-      case _AlbumAction.editRules:
-        await _editAlbumRules(album);
+      case _AlbumAction.edit:
+        await _editAlbum(album);
         return;
       case _AlbumAction.delete:
         await _deleteAlbum(album);
@@ -4885,10 +5375,12 @@ class _AlbumsPageState extends State<AlbumsPage> {
     }
   }
 
-  Future<void> _renameAlbum(AlbumSummary album) async {
+  Future<void> _editAlbum(AlbumSummary album) async {
     final draft = await _promptAlbumDetails(album);
     if (draft == null ||
-        (draft.name == album.name && draft.description == album.description)) {
+        (draft.name == album.name &&
+            draft.description == album.description &&
+            draft.smart == (album.albumType == 'smart'))) {
       return;
     }
     if (!mounted) return;
@@ -4896,92 +5388,18 @@ class _AlbumsPageState extends State<AlbumsPage> {
       zh: '相册信息已更新。',
       en: 'Album details updated.',
     );
-    await _runAlbumAction(
-      () => widget.backend.updateAlbum(
+    await _runAlbumAction(() async {
+      await widget.backend.updateAlbum(
         album.id,
         draft.name,
         description: draft.description,
-        smart: album.albumType == 'smart',
-      ),
-      success: success,
-    );
-  }
-
-  Future<void> _toggleAlbumType(AlbumSummary album) async {
-    final toSmart = album.albumType != 'smart';
-    if (toSmart) {
-      final rules = await _showRuleEditor(albumId: album.id);
-      if (rules == null || !mounted) return;
-      await _runAlbumAction(
-        () async {
-          await widget.backend.updateAlbum(
-            album.id,
-            album.name,
-            description: album.description,
-            smart: true,
-          );
-          await widget.backend.replaceAlbumRules(album.id, rules);
-        },
-        success: context.l10n.select(
-          zh: '已转换为自动相册。',
-          en: 'Converted to a smart album.',
-        ),
+        smart: draft.smart,
       );
-      return;
-    }
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(
-          context.l10n.select(
-            zh: '转换为普通相册？',
-            en: 'Convert to a regular album?',
-          ),
-        ),
-        content: Text(
-          context.l10n.select(
-            zh: '当前符合规则的媒体会固定加入普通相册，自动规则随后移除。图库中的原文件不会受到影响。',
-            en: 'Current matches will become fixed members and smart rules will be removed. Library files are not affected.',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
-          ),
-          FilledButton(
-            key: const Key('confirm-convert-regular-album'),
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(context.l10n.select(zh: '转换', en: 'Convert')),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-    await _runAlbumAction(
-      () => widget.backend.updateAlbum(
+      await widget.backend.replaceAlbumRules(
         album.id,
-        album.name,
-        description: album.description,
-        smart: false,
-      ),
-      success: context.l10n.select(
-        zh: '已转换为普通相册。',
-        en: 'Converted to a regular album.',
-      ),
-    );
-  }
-
-  Future<void> _editAlbumRules(AlbumSummary album) async {
-    final rules = await _showRuleEditor(albumId: album.id);
-    if (rules == null || !mounted) return;
-    await _runAlbumAction(
-      () => widget.backend.replaceAlbumRules(album.id, rules),
-      success: context.l10n.select(
-        zh: '自动相册规则已更新。',
-        en: 'Smart album rules updated.',
-      ),
-    );
+        draft.smart ? draft.rules : const [],
+      );
+    }, success: success);
   }
 
   Future<void> _deleteAlbum(AlbumSummary album) async {
@@ -5019,51 +5437,155 @@ class _AlbumsPageState extends State<AlbumsPage> {
     );
   }
 
-  Future<_AlbumDraft?> _promptAlbumDetails(AlbumSummary album) {
-    final name = TextEditingController(text: album.name);
-    final description = TextEditingController(text: album.description);
+  Future<_AlbumDraft?> _promptAlbumDetails(AlbumSummary album) async {
+    final albumName = TextEditingController(text: album.name);
+    final albumDescription = TextEditingController(text: album.description);
+    var rules = <AlbumRule>[];
+    Object? rulesError;
+    try {
+      rules = await widget.backend.listAlbumRules(album.id);
+    } catch (error, stackTrace) {
+      await widget.backend.logError(
+        'Failed to load album rules for editing',
+        error,
+        stackTrace,
+      );
+      rulesError = error;
+    }
+    if (!mounted) {
+      return null;
+    }
     var valid = album.name.trim().isNotEmpty;
-    return showDialog<_AlbumDraft>(
+    var smart = album.albumType == 'smart';
+    final result = await showDialog<_AlbumDraft>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: Text(context.l10n.select(zh: '编辑相册', en: 'Edit album')),
           content: SizedBox(
             width: 460,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  key: const Key('rename-album-field'),
-                  controller: name,
-                  autofocus: true,
-                  maxLength: 80,
-                  decoration: InputDecoration(
-                    labelText: context.l10n.select(
-                      zh: '相册名称',
-                      en: 'Album name',
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    key: const Key('rename-album-field'),
+                    controller: albumName,
+                    autofocus: true,
+                    maxLength: 80,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.select(
+                        zh: '相册名称',
+                        en: 'Album name',
+                      ),
+                      border: const OutlineInputBorder(),
                     ),
-                    border: const OutlineInputBorder(),
+                    onChanged: (value) =>
+                        setDialogState(() => valid = value.trim().isNotEmpty),
                   ),
-                  onChanged: (value) =>
-                      setDialogState(() => valid = value.trim().isNotEmpty),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  key: const Key('edit-album-description-field'),
-                  controller: description,
-                  maxLength: 160,
-                  maxLines: 3,
-                  decoration: InputDecoration(
-                    labelText: context.l10n.select(
-                      zh: '相册描述（可选）',
-                      en: 'Album description (optional)',
+                  const SizedBox(height: 4),
+                  TextField(
+                    key: const Key('edit-album-description-field'),
+                    controller: albumDescription,
+                    maxLength: 160,
+                    maxLines: 3,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.select(
+                        zh: '相册描述（可选）',
+                        en: 'Album description (optional)',
+                      ),
+                      alignLabelWithHint: true,
+                      border: const OutlineInputBorder(),
                     ),
-                    alignLabelWithHint: true,
-                    border: const OutlineInputBorder(),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 4),
+                  SwitchListTile(
+                    key: const Key('edit-album-smart-toggle'),
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(
+                      context.l10n.select(zh: '自动相册', en: 'Smart album'),
+                    ),
+                    subtitle: Text(
+                      context.l10n.select(
+                        zh: '自动相册持续匹配规则；关闭后会保留当前匹配媒体并转为普通相册。',
+                        en: 'Smart albums keep matching rules. Turning this off keeps current matches as regular album members.',
+                      ),
+                    ),
+                    value: smart,
+                    onChanged: (value) => setDialogState(() => smart = value),
+                  ),
+                  if (smart) ...[
+                    const SizedBox(height: 4),
+                    if (rulesError != null) ...[
+                      Text(
+                        context.l10n.select(
+                          zh: '自动相册规则读取失败：$rulesError',
+                          en: 'Failed to load smart album rules: $rulesError',
+                        ),
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                      TextButton.icon(
+                        key: const Key('retry-edit-album-rules'),
+                        onPressed: () async {
+                          try {
+                            final loaded = await widget.backend.listAlbumRules(
+                              album.id,
+                            );
+                            if (context.mounted) {
+                              setDialogState(() {
+                                rules = loaded;
+                                rulesError = null;
+                              });
+                            }
+                          } catch (error, stackTrace) {
+                            await widget.backend.logError(
+                              'Failed to reload album rules for editing',
+                              error,
+                              stackTrace,
+                            );
+                            if (context.mounted) {
+                              setDialogState(() => rulesError = error);
+                            }
+                          }
+                        },
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: Text(context.l10n.select(zh: '重试', en: 'Retry')),
+                      ),
+                    ],
+                    SizedBox(
+                      width: double.infinity,
+                      child: rulesError == null
+                          ? OutlinedButton.icon(
+                              key: const Key('edit-album-configure-rules'),
+                              onPressed: () async {
+                                final next = await _showRuleEditor(
+                                  albumId: null,
+                                  initialRules: rules,
+                                );
+                                if (next != null) {
+                                  setDialogState(() => rules = next);
+                                }
+                              },
+                              icon: const Icon(Icons.rule_rounded),
+                              label: Text(
+                                rules.isEmpty
+                                    ? context.l10n.select(
+                                        zh: '配置自动规则',
+                                        en: 'Configure smart rules',
+                                      )
+                                    : context.l10n.select(
+                                        zh: '编辑自动规则（${rules.length}）',
+                                        en: 'Edit smart rules (${rules.length})',
+                                      ),
+                              ),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                  ],
+                ],
+              ),
             ),
           ),
           actions: [
@@ -5073,15 +5595,20 @@ class _AlbumsPageState extends State<AlbumsPage> {
             ),
             FilledButton(
               key: const Key('confirm-rename-album'),
-              onPressed: !valid
+              onPressed:
+                  !valid ||
+                      (smart &&
+                          (rulesError != null ||
+                              rules.isEmpty ||
+                              rules.any((rule) => rule.value.trim().isEmpty)))
                   ? null
                   : () => Navigator.pop(
                       context,
                       _AlbumDraft(
-                        name: name.text.trim(),
-                        description: description.text.trim(),
-                        smart: album.albumType == 'smart',
-                        rules: const [],
+                        name: albumName.text.trim(),
+                        description: albumDescription.text.trim(),
+                        smart: smart,
+                        rules: smart ? List.of(rules) : const [],
                       ),
                     ),
               child: Text(context.l10n.select(zh: '保存', en: 'Save')),
@@ -5090,6 +5617,7 @@ class _AlbumsPageState extends State<AlbumsPage> {
         ),
       ),
     );
+    return result;
   }
 
   Future<List<AlbumRule>?> _showRuleEditor({
@@ -5604,14 +6132,6 @@ class _AlbumCard extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 4),
-                if (album.systemKey != 'favorites') ...[
-                  AlbumSourceLabel(
-                    name: album.sourceDeviceName,
-                    systemKey: album.systemKey,
-                    style: const TextStyle(color: Colors.white70, fontSize: 12),
-                  ),
-                  const SizedBox(height: 3),
-                ],
                 if (album.description.trim().isNotEmpty) ...[
                   Text(
                     album.description.trim(),
@@ -5622,10 +6142,8 @@ class _AlbumCard extends StatelessWidget {
                   const SizedBox(height: 3),
                 ],
                 Text(
-                  context.l10n.select(
-                    zh: '${album.mediaCount} 个媒体 · ${album.albumType == 'smart' ? '自动相册' : '普通相册'}',
-                    en: '${album.mediaCount} media · ${album.albumType == 'smart' ? 'Smart album' : 'Regular album'}',
-                  ),
+                  '${albumMediaCountText(context, album)} · '
+                  '${context.l10n.select(zh: album.albumType == 'smart' ? '自动相册' : '普通相册', en: album.albumType == 'smart' ? 'Smart album' : 'Regular album')}',
                   style: const TextStyle(color: Colors.white70),
                 ),
               ],
@@ -5687,6 +6205,10 @@ class _TransferPageState extends State<TransferPage>
   bool mtpScanning = false;
   bool mtpIndexing = false;
   NintendoMtpProgress? mtpProgress;
+  String? mtpWarning;
+  bool mtpCancelling = false;
+  String? mtpStageOperationId;
+  String? mtpImportOperationId;
   _MtpSelectionStats? mtpSelectionStats;
   List<String> customImportPaths = const [];
   List<GameTagSummary> customGameTags = const [];
@@ -5786,10 +6308,19 @@ class _TransferPageState extends State<TransferPage>
       customImportSummary = null;
       customImportError = null;
     });
+    GalleryPerf.instance.background(importBusy: true);
     try {
+      final importedSince = DateTime.now().toUtc();
       final summary = await widget.backend.importCustomFiles(
         customImportPaths,
         gameName,
+      );
+      unawaited(
+        ImageThumbnailCache.prefetchImportedImages(
+          widget.backend,
+          summary.imported,
+          importedSince: importedSince,
+        ),
       );
       if (!mounted) return;
       setState(() => customImportSummary = summary);
@@ -5803,6 +6334,7 @@ class _TransferPageState extends State<TransferPage>
       );
       if (mounted) setState(() => customImportError = error);
     } finally {
+      GalleryPerf.instance.background(importBusy: importing);
       if (mounted) setState(() => customImporting = false);
     }
   }
@@ -5962,45 +6494,207 @@ class _TransferPageState extends State<TransferPage>
     List<NintendoMtpMediaEntry> entries,
   ) async {
     NintendoMtpStagingResult? staged;
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    final stageOperationId = 'switch-stage-$stamp';
+    final importOperationId = 'switch-import-$stamp';
+    final importedSince = DateTime.now().toUtc();
+    var interruptedByDisconnect = false;
+    GalleryPerf.instance.background(importBusy: true);
     setState(() {
       importing = true;
+      mtpCancelling = false;
+      mtpWarning = null;
+      mtpStageOperationId = stageOperationId;
+      mtpImportOperationId = importOperationId;
       importSummary = null;
       importError = null;
-      mtpProgress = const NintendoMtpProgress(completed: 0, total: 0);
+      mtpProgress = const NintendoMtpProgress(
+        phase: 'copying',
+        completedFiles: 0,
+        totalFiles: 0,
+        completedBytes: 0,
+        totalBytes: 0,
+      );
       mtpSelectionStats = _MtpSelectionStats.fromEntries(entries);
     });
     try {
       staged = await WindowsNintendoMtp.stageAlbum(
         device,
         entries: entries,
+        operationId: stageOperationId,
         onProgress: (progress) {
           if (mounted) setState(() => mtpProgress = progress);
         },
       );
-      final summary = await widget.backend.importMtpFiles(
+      final outcome = await WindowsNintendoMtp.importWithProgress(
         staged.files,
         device.name,
+        operationId: importOperationId,
+        onProgress: (progress) {
+          if (mounted) setState(() => mtpProgress = progress);
+        },
+      );
+      unawaited(
+        ImageThumbnailCache.prefetchImportedImages(
+          widget.backend,
+          outcome.summary.imported,
+          importedSince: importedSince,
+        ),
       );
       if (!mounted) return;
-      setState(() => importSummary = summary);
+      setState(() {
+        importSummary = outcome.summary;
+        if (outcome.cancelled) {
+          mtpWarning = context.l10n.select(
+            zh: '导入已取消；已成功写入图库的媒体已保留。',
+            en: 'Import cancelled. Media already written to the library was kept.',
+          );
+        }
+      });
       widget.onImportComplete();
+      if (!outcome.cancelled) {
+        unawaited(
+          _notifyMtpImport(
+            interrupted: false,
+            summary: outcome.summary,
+            remaining: 0,
+          ),
+        );
+      }
+    } on NintendoMtpCancelled {
+      if (mounted) {
+        setState(
+          () => mtpWarning = context.l10n.select(
+            zh: '导入已取消；已成功写入图库的媒体已保留。',
+            en: 'Import cancelled. Media already written to the library was kept.',
+          ),
+        );
+      }
+    } on NintendoMtpImportException catch (error) {
+      interruptedByDisconnect = error.code == 'disconnected';
+      if (mounted) {
+        setState(() {
+          mtpWarning = context.l10n.select(
+            zh: interruptedByDisconnect
+                ? 'USB 连接已断开，导入已中止。已复制的文件不会丢失，已写入图库的媒体已保留。'
+                : 'USB 导入未完成：${error.message}',
+            en: interruptedByDisconnect
+                ? 'The USB connection was lost and the import stopped. Copied files were cleaned up and media already written to the library was kept.'
+                : 'USB import did not finish: ${error.message}',
+          );
+        });
+      }
+      unawaited(
+        _notifyMtpImport(
+          interrupted: true,
+          summary: importSummary,
+          remaining: mtpProgress == null
+              ? entries.length
+              : (mtpProgress!.totalFiles - mtpProgress!.completedFiles).clamp(
+                  0,
+                  mtpProgress!.totalFiles,
+                ),
+        ),
+      );
+      await widget.backend.logError(
+        interruptedByDisconnect
+            ? 'Switch USB import interrupted by disconnect'
+            : 'Switch USB import failed',
+        error,
+        StackTrace.current,
+      );
     } catch (error, stackTrace) {
       await widget.backend.logError(
         'Nintendo MTP import failed',
         error,
         stackTrace,
       );
-      if (mounted) setState(() => importError = error);
+      if (mounted) {
+        setState(() {
+          importError = error;
+          mtpWarning = context.l10n.select(
+            zh: 'USB 导入未完成，请检查连接后重试。',
+            en: 'USB import did not finish. Check the connection and retry.',
+          );
+        });
+      }
     } finally {
-      if (staged != null && await staged.directory.exists()) {
-        await staged.directory.delete(recursive: true);
+      try {
+        await WindowsNintendoMtp.cleanupStage(stageOperationId);
+        if (staged != null && await staged.directory.exists()) {
+          await staged.directory.delete(recursive: true);
+        }
+      } finally {
+        GalleryPerf.instance.background(importBusy: customImporting);
       }
       if (mounted) {
         setState(() {
           importing = false;
+          mtpCancelling = false;
+          mtpStageOperationId = null;
+          mtpImportOperationId = null;
           mtpProgress = null;
         });
       }
+    }
+  }
+
+  Future<void> _cancelMtpImport() async {
+    if (!importing || mtpCancelling) return;
+    setState(() => mtpCancelling = true);
+    final stage = mtpStageOperationId;
+    final import = mtpImportOperationId;
+    if (stage != null) await WindowsNintendoMtp.cancelStage(stage);
+    if (import != null) await WindowsNintendoMtp.cancelImport(import);
+  }
+
+  double? _mtpProgressValue(NintendoMtpProgress? progress) {
+    if (progress == null) return null;
+    if (progress.totalBytes > 0) {
+      return (progress.completedBytes / progress.totalBytes).clamp(0, 1);
+    }
+    if (progress.totalFiles > 0) {
+      return (progress.completedFiles / progress.totalFiles).clamp(0, 1);
+    }
+    return null;
+  }
+
+  String _mtpProgressLabel(BuildContext context, NintendoMtpProgress progress) {
+    if (progress.phase == 'importing') {
+      return context.l10n.select(
+        zh: '正在写入图库 ${progress.completedFiles} / ${progress.totalFiles}',
+        en: 'Writing to the library ${progress.completedFiles} / ${progress.totalFiles}',
+      );
+    }
+    return context.l10n.select(
+      zh: '正在从媒体设备复制 ${progress.completedFiles} / ${progress.totalFiles}',
+      en: 'Copying ${progress.completedFiles} / ${progress.totalFiles} from the media device',
+    );
+  }
+
+  Future<void> _notifyMtpImport({
+    required bool interrupted,
+    required ImportSummary? summary,
+    required int remaining,
+  }) async {
+    final language = Localizations.localeOf(context).languageCode;
+    final imported = summary?.imported ?? 0;
+    final duplicates = summary?.duplicates ?? 0;
+    final failed = summary?.failed ?? 0;
+    final title = interrupted
+        ? (language == 'zh'
+              ? 'Switch USB 导入已中断'
+              : 'Switch USB import interrupted')
+        : (language == 'zh' ? 'Switch USB 导入完成' : 'Switch USB import complete');
+    final body = language == 'zh'
+        ? '已导入 $imported，重复 $duplicates，失败 $failed${interrupted ? '，剩余 $remaining' : ''}'
+        : 'Imported $imported, duplicates $duplicates, failed $failed'
+              '${interrupted ? ', remaining $remaining' : ''}';
+    try {
+      await const MethodChannel('io.github.cypas.nsoalbum/notifications')
+          .invokeMethod<void>('importFinished', {'title': title, 'body': body});
+    } catch (_) {
+      // A missing or rejected notification must not change the import result.
     }
   }
 
@@ -6359,24 +7053,76 @@ class _TransferPageState extends State<TransferPage>
                       const SizedBox(height: 18),
                       if (importing) ...[
                         LinearProgressIndicator(
-                          value: mtpProgress == null || mtpProgress!.total == 0
-                              ? null
-                              : mtpProgress!.completed / mtpProgress!.total,
+                          value: _mtpProgressValue(mtpProgress),
                         ),
                         if (mtpProgress != null) ...[
                           const SizedBox(height: 8),
                           Text(
-                            mtpProgress!.total == 0
+                            _mtpProgressLabel(context, mtpProgress!),
+                            key: const Key('nintendo-mtp-progress-label'),
+                          ),
+                          if (mtpProgress!.currentFile case final current?)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                current,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ),
+                        ],
+                        const SizedBox(height: 10),
+                        OutlinedButton.icon(
+                          key: const Key('cancel-nintendo-mtp-import'),
+                          onPressed: mtpCancelling ? null : _cancelMtpImport,
+                          icon: const Icon(Icons.close_rounded),
+                          label: Text(
+                            mtpCancelling
                                 ? context.l10n.select(
-                                    zh: '正在读取 Nintendo 相册…',
-                                    en: 'Reading the Nintendo Album…',
+                                    zh: '正在取消…',
+                                    en: 'Cancelling…',
                                   )
                                 : context.l10n.select(
-                                    zh: '正在从媒体设备复制 ${mtpProgress!.completed} / ${mtpProgress!.total}',
-                                    en: 'Copying ${mtpProgress!.completed} / ${mtpProgress!.total} from the media device',
+                                    zh: '取消导入',
+                                    en: 'Cancel import',
                                   ),
                           ),
-                        ],
+                        ),
+                      ],
+                      if (mtpWarning != null) ...[
+                        const SizedBox(height: 12),
+                        Container(
+                          key: const Key('nintendo-mtp-import-warning'),
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.errorContainer,
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                Icons.warning_amber_rounded,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onErrorContainer,
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  mtpWarning!,
+                                  style: TextStyle(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onErrorContainer,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ],
                       if (Platform.isWindows) ...[
                         const SizedBox(height: 18),
@@ -6772,6 +7518,7 @@ class _TransferPageState extends State<TransferPage>
               MultiDeviceSyncPage(
                 backend: widget.backend,
                 embedded: true,
+                onAppliedMediaCache: warmAppliedMediaCache,
                 onLibraryChanged: () async {
                   await _loadAccountState();
                   await _loadCustomGameTags();
@@ -7000,7 +7747,18 @@ class _TransferPageState extends State<TransferPage>
   }
 
   Future<void> _runSync() async {
+    final importedSince = DateTime.now().toUtc();
     await widget.sync.run();
+    final downloaded = widget.sync.summary?.downloaded;
+    if (downloaded != null && widget.sync.onMediaImported == null) {
+      unawaited(
+        ImageThumbnailCache.prefetchImportedImages(
+          widget.backend,
+          downloaded,
+          importedSince: importedSince,
+        ),
+      );
+    }
     await _loadAccountState(force: true);
     widget.onImportComplete();
   }
@@ -7107,6 +7865,44 @@ String _formatByteSize(int bytes) {
   return '${(bytes / mebibyte).toStringAsFixed(bytes >= 10 * mebibyte ? 1 : 2)} MB';
 }
 
+List<MapEntry<String, List<NintendoMtpMediaEntry>>> filterAndSortMtpGames(
+  Map<String, List<NintendoMtpMediaEntry>> folders, {
+  required String query,
+  required MtpGameSortCriterion criterion,
+  required bool ascending,
+}) {
+  final term = query.trim().toLowerCase();
+  final values = folders.entries
+      .where((entry) => term.isEmpty || entry.key.toLowerCase().contains(term))
+      .toList(growable: false);
+  values.sort((left, right) {
+    final primary = switch (criterion) {
+      MtpGameSortCriterion.name => left.key.compareTo(right.key),
+      MtpGameSortCriterion.count => left.value.length.compareTo(
+        right.value.length,
+      ),
+      MtpGameSortCriterion.size =>
+        left.value
+            .fold<int>(0, (total, entry) => total + entry.sizeBytes)
+            .compareTo(
+              right.value.fold<int>(
+                0,
+                (total, entry) => total + entry.sizeBytes,
+              ),
+            ),
+    };
+    if (primary == 0) return left.key.compareTo(right.key);
+    return ascending ? primary : -primary;
+  });
+  return values;
+}
+
+String committedMtpSearchQuery(TextEditingValue value, String previous) {
+  final composing = value.composing;
+  if (composing.isValid && !composing.isCollapsed) return previous;
+  return value.text;
+}
+
 class _NintendoMtpImportDialog extends StatefulWidget {
   const _NintendoMtpImportDialog({required this.entries});
 
@@ -7129,7 +7925,57 @@ class _NintendoMtpImportDialogState extends State<_NintendoMtpImportDialog> {
     );
   }();
   late final Set<String> selectedGames = folders.keys.toSet();
+  final search = TextEditingController();
+  MtpGameSortCriterion sort = MtpGameSortCriterion.name;
+  final Map<MtpGameSortCriterion, bool> ascending = {
+    MtpGameSortCriterion.name: true,
+    MtpGameSortCriterion.count: false,
+    MtpGameSortCriterion.size: false,
+  };
   DateTimeRange? range;
+  String committedSearch = '';
+
+  @override
+  void initState() {
+    super.initState();
+    search.addListener(_onSearchChanged);
+  }
+
+  @override
+  void dispose() {
+    search
+      ..removeListener(_onSearchChanged)
+      ..dispose();
+    super.dispose();
+  }
+
+  void _onSearchChanged() {
+    final next = committedMtpSearchQuery(search.value, committedSearch);
+    if (next == committedSearch || !mounted) return;
+    setState(() => committedSearch = next);
+  }
+
+  List<MapEntry<String, List<NintendoMtpMediaEntry>>> get visibleFolders {
+    return filterAndSortMtpGames(
+      folders,
+      query: committedSearch,
+      criterion: sort,
+      ascending: ascending[sort]!,
+    );
+  }
+
+  Future<void> _pickSort() async {
+    final selection = await showDialog<_MtpSortSelection>(
+      context: context,
+      builder: (context) =>
+          _MtpSortDialog(criterion: sort, ascending: ascending[sort]!),
+    );
+    if (selection == null || !mounted) return;
+    setState(() {
+      sort = selection.criterion;
+      ascending[sort] = selection.ascending;
+    });
+  }
 
   List<NintendoMtpMediaEntry> get selectedEntries => widget.entries
       .where((entry) {
@@ -7253,12 +8099,38 @@ class _NintendoMtpImportDialogState extends State<_NintendoMtpImportDialog> {
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const Key('mtp-game-search'),
+                    controller: search,
+                    decoration: InputDecoration(
+                      isDense: true,
+                      prefixIcon: const Icon(Icons.search),
+                      hintText: context.l10n.select(
+                        zh: '搜索游戏名',
+                        en: 'Search games',
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton.filledTonal(
+                  key: const Key('mtp-sort'),
+                  tooltip: context.l10n.select(zh: '排序方式', en: 'Sort order'),
+                  onPressed: _pickSort,
+                  icon: const Icon(Icons.sort_rounded),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
             Expanded(
               child: ListView.separated(
-                itemCount: folders.length,
+                itemCount: visibleFolders.length,
                 separatorBuilder: (_, _) => const Divider(height: 1),
                 itemBuilder: (context, index) {
-                  final folder = folders.entries.elementAt(index);
+                  final folder = visibleFolders[index];
                   final folderStats = _MtpSelectionStats.fromEntries(
                     folder.value,
                   );
@@ -7303,6 +8175,99 @@ class _NintendoMtpImportDialogState extends State<_NintendoMtpImportDialog> {
       ],
     );
   }
+}
+
+enum MtpGameSortCriterion { name, count, size }
+
+class _MtpSortSelection {
+  const _MtpSortSelection(this.criterion, this.ascending);
+
+  final MtpGameSortCriterion criterion;
+  final bool ascending;
+}
+
+class _MtpSortDialog extends StatefulWidget {
+  const _MtpSortDialog({required this.criterion, required this.ascending});
+
+  final MtpGameSortCriterion criterion;
+  final bool ascending;
+
+  @override
+  State<_MtpSortDialog> createState() => _MtpSortDialogState();
+}
+
+class _MtpSortDialogState extends State<_MtpSortDialog> {
+  late MtpGameSortCriterion criterion = widget.criterion;
+  late bool ascending = widget.ascending;
+
+  String _label(BuildContext context, MtpGameSortCriterion value) =>
+      switch (value) {
+        MtpGameSortCriterion.name => context.l10n.select(zh: '名称', en: 'Name'),
+        MtpGameSortCriterion.count => context.l10n.select(
+          zh: '文件数量',
+          en: 'File count',
+        ),
+        MtpGameSortCriterion.size => context.l10n.select(
+          zh: '文件大小',
+          en: 'File size',
+        ),
+      };
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    key: const Key('mtp-sort-dialog'),
+    title: Text(context.l10n.select(zh: '排序方式', en: 'Sort order')),
+    content: SizedBox(
+      width: 340,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final value in MtpGameSortCriterion.values)
+            ListTile(
+              key: ValueKey('mtp-sort-${value.name}'),
+              leading: Icon(
+                value == criterion
+                    ? Icons.check_circle_rounded
+                    : Icons.circle_outlined,
+              ),
+              title: Text(_label(context, value)),
+              trailing: IconButton(
+                key: ValueKey('mtp-sort-direction-${value.name}'),
+                tooltip: value == criterion && ascending
+                    ? context.l10n.select(zh: '升序', en: 'Ascending')
+                    : context.l10n.select(zh: '降序', en: 'Descending'),
+                onPressed: () => setState(() {
+                  if (criterion == value) {
+                    ascending = !ascending;
+                  } else {
+                    criterion = value;
+                    ascending = value == MtpGameSortCriterion.name;
+                  }
+                }),
+                icon: Icon(
+                  value == criterion && ascending
+                      ? Icons.arrow_upward_rounded
+                      : Icons.arrow_downward_rounded,
+                ),
+              ),
+              onTap: () => setState(() => criterion = value),
+            ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
+      ),
+      FilledButton(
+        key: const Key('mtp-sort-apply'),
+        onPressed: () =>
+            Navigator.pop(context, _MtpSortSelection(criterion, ascending)),
+        child: Text(context.l10n.select(zh: '应用', en: 'Apply')),
+      ),
+    ],
+  );
 }
 
 class _ImportGuideImage extends StatelessWidget {

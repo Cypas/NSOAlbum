@@ -9,6 +9,7 @@ import '../account_tools/account_tool_errors.dart';
 import 'android_back_guard.dart';
 import 'android_layout.dart';
 import '../scroll_to_top_button.dart';
+import '../scroll_position_indicator.dart';
 
 class AndroidPageFrame extends StatelessWidget {
   const AndroidPageFrame({
@@ -22,6 +23,9 @@ class AndroidPageFrame extends StatelessWidget {
     this.onBack,
     this.scrollController,
     this.scrollToTopTooltip,
+    this.scrollTotalCount,
+    this.scrollLoadedCount,
+    this.scrollCounting = false,
   });
 
   final String title;
@@ -33,6 +37,9 @@ class AndroidPageFrame extends StatelessWidget {
   final VoidCallback? onBack;
   final ScrollController? scrollController;
   final String? scrollToTopTooltip;
+  final int? scrollTotalCount;
+  final int? scrollLoadedCount;
+  final bool scrollCounting;
 
   @override
   Widget build(BuildContext context) {
@@ -67,6 +74,15 @@ class AndroidPageFrame extends StatelessWidget {
         child: Stack(
           children: [
             child,
+            if (scrollController != null && scrollLoadedCount != null)
+              ScrollPositionIndicator(
+                controller: scrollController!,
+                loadedCount: scrollLoadedCount!,
+                totalCount: scrollTotalCount,
+                counting: scrollCounting,
+                right: 16,
+                bottom: 66,
+              ),
             if (scrollController != null && scrollToTopTooltip != null)
               Positioned(
                 right: 16,

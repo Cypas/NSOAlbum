@@ -20,6 +20,25 @@ final _pixel = Uint8List.fromList(
 );
 
 void main() {
+  testWidgets('first-frame cover uses the video fill color', (tester) async {
+    await tester.pumpWidget(
+      _app(
+        VideoFirstFrameCover(
+          identity: 'fill-color',
+          firstFrame: Completer<void>().future,
+          thumbnail: Future.value(const VideoThumbnailData()),
+          backgroundColor: Colors.black,
+          child: const SizedBox.expand(),
+        ),
+      ),
+    );
+
+    final cover = tester.widget<ColoredBox>(
+      find.byKey(const Key('video-first-frame-cover')),
+    );
+    expect(cover.color, Colors.black);
+  });
+
   test('desktop controls label fullscreen actions distinctly', () {
     final theme = appDesktopVideoControlsThemeData(
       onToggleImmersive: () {},
@@ -382,6 +401,27 @@ void main() {
     },
   );
 
+  test(
+    'peekCover returns bytes-only cached cover without probing duration',
+    () {
+      VideoThumbnailCache.seedForTest(
+        'cover-only',
+        VideoThumbnailData(bytes: _pixel),
+      );
+      final cover = MediaAsset(
+        id: 1,
+        sha256: 'cover-only',
+        originalName: 'c.mp4',
+        storagePath: 'missing.mp4',
+        kind: MediaKind.video,
+        gameName: 'Game',
+        favorite: false,
+        tags: const [],
+      );
+      expect(VideoThumbnailCache.peekCover(cover)?.bytes, equals(_pixel));
+    },
+  );
+
   testWidgets(
     'first-frame cover fades for 120ms after frame and decoded output',
     (tester) async {
@@ -418,6 +458,112 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets(
+    'android cover waits for playback progress before revealing the texture',
+    (tester) async {
+      final frame = Completer<void>();
+      final decoded = StreamController<bool>.broadcast();
+      final advanced = StreamController<bool>.broadcast();
+      addTearDown(decoded.close);
+      addTearDown(advanced.close);
+      await tester.pumpWidget(
+        _app(
+          VideoFirstFrameCover(
+            identity: 'android-hold-cover',
+            firstFrame: frame.future,
+            thumbnail: Future.value(VideoThumbnailData(bytes: _pixel)),
+            decoderReady: decoded.stream,
+            decoderInitiallyReady: false,
+            playbackAdvanced: advanced.stream,
+            playbackInitiallyAdvanced: false,
+            showLoadingIndicator: false,
+            child: const Text('Playback controls'),
+          ),
+        ),
+      );
+      frame.complete();
+      decoded.add(true);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(
+        find.byKey(const Key('video-first-frame-cover')),
+        findsOneWidget,
+        reason: 'A paused Android texture must keep the cached cover.',
+      );
+
+      advanced.add(true);
+      await tester.pump();
+      expect(find.byKey(const Key('video-first-frame-cover')), findsOneWidget);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('video-first-frame-cover')), findsNothing);
+      expect(find.text('Playback controls'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'android cover reveals immediately when playback already advanced',
+    (tester) async {
+      final decoded = StreamController<bool>.broadcast();
+      addTearDown(decoded.close);
+      await tester.pumpWidget(
+        _app(
+          VideoFirstFrameCover(
+            identity: 'android-advanced-cover',
+            firstFrame: Future.value(),
+            thumbnail: Future.value(VideoThumbnailData(bytes: _pixel)),
+            decoderReady: decoded.stream,
+            decoderInitiallyReady: false,
+            playbackAdvanced: decoded.stream,
+            playbackInitiallyAdvanced: true,
+            showLoadingIndicator: false,
+            child: const Text('Playback controls'),
+          ),
+        ),
+      );
+      await tester.pump();
+      decoded.add(true);
+      await tester.pump();
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('video-first-frame-cover')), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('android placeholder cover does not wait for playback progress', (
+    tester,
+  ) async {
+    final decoded = StreamController<bool>.broadcast();
+    final advanced = StreamController<bool>.broadcast();
+    addTearDown(decoded.close);
+    addTearDown(advanced.close);
+    await tester.pumpWidget(
+      _app(
+        VideoFirstFrameCover(
+          identity: 'android-placeholder-cover',
+          firstFrame: Future.value(),
+          thumbnail: Future.value(const VideoThumbnailData()),
+          decoderReady: decoded.stream,
+          decoderInitiallyReady: false,
+          playbackAdvanced: advanced.stream,
+          playbackInitiallyAdvanced: false,
+          showLoadingIndicator: false,
+          child: const Text('Playback controls'),
+        ),
+      ),
+    );
+    await tester.pump();
+    decoded.add(true);
+    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('video-first-frame-cover')),
+      findsNothing,
+      reason: 'A placeholder must not hide a decodable video frame.',
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('a rendered fallback frame clears a preceding decoder error', (
     tester,

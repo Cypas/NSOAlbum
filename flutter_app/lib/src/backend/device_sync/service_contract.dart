@@ -58,6 +58,9 @@ abstract class DeviceSyncSessionController extends ChangeNotifier {
 
   /// Live, read-only work observation; never a replacement for session authority.
   read.ProgressView? get presentationProgress => snapshot?.progress;
+  Future<read.AppliedMediaCachePage> appliedMediaPage({required BigInt offset}) {
+    throw UnsupportedError('Applied media cache pages are not supported');
+  }
   DeviceSyncProposal? get proposedConfiguration;
   DeviceSyncPreviewView? get preview;
   read.ReadError? get issue;

@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.20)
+project(ImeContextAssociationFixture LANGUAGES CXX)
+
+add_executable(ime_context_association_fixture ime_context_association_fixture.cpp)
+target_include_directories(ime_context_association_fixture PRIVATE
+  "${NSOALBUM_RUNNER_DIR}")
+target_compile_features(ime_context_association_fixture PRIVATE cxx_std_17)
+target_compile_definitions(ime_context_association_fixture PRIVATE
+  UNICODE _UNICODE NOMINMAX)
+target_compile_options(ime_context_association_fixture PRIVATE /W4 /WX /EHsc)

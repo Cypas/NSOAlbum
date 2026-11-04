@@ -344,7 +344,7 @@ class AutomaticSyncCoordinator {
   Future<void> _runAccounts(int generation) async {
     try {
       if (!await _canRun(generation)) return;
-      final dueIds = await _sync.dueAccountIds(now: _now());
+      final dueIds = await _sync.dueAccountIds(clock: _now);
       if (_disposed || generation != _generation || dueIds.isEmpty) {
         await reschedule();
         return;

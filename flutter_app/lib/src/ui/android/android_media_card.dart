@@ -1,10 +1,10 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../../rust/models.dart';
 import '../../rust/settings.dart';
+import '../gallery_perf.dart';
+import '../image_thumbnail.dart';
 import '../video_preview_cache.dart';
 import '../video_thumbnail.dart';
 import 'android_tag.dart';
@@ -17,7 +17,10 @@ class AndroidMediaThumbnail extends StatefulWidget {
   });
   final MediaAsset asset;
   @visibleForTesting
-  final PreviewRequest<VideoThumbnailData> Function(MediaAsset asset)?
+  final PreviewRequest<VideoThumbnailData> Function(
+    MediaAsset asset, {
+    bool urgent,
+  })?
   requestFactory;
 
   @override
@@ -26,18 +29,27 @@ class AndroidMediaThumbnail extends StatefulWidget {
 
 class _AndroidMediaThumbnailState extends State<AndroidMediaThumbnail> {
   Future<VideoThumbnailData>? thumbnail;
+  Future<VideoThumbnailData>? cachedThumbnail;
   PreviewRequest<VideoThumbnailData>? thumbnailRequest;
 
   @override
   void initState() {
     super.initState();
+    if (GalleryPerf.compiled) {
+      GalleryPerf.instance.coverMode.addListener(_coverModeChanged);
+    }
     load();
+  }
+
+  void _coverModeChanged() {
+    if (mounted) setState(load);
   }
 
   @override
   void didUpdateWidget(AndroidMediaThumbnail oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.asset.sha256 != widget.asset.sha256 ||
+        oldWidget.asset.storagePath != widget.asset.storagePath ||
         oldWidget.asset.kind != widget.asset.kind) {
       load();
     }
@@ -46,13 +58,25 @@ class _AndroidMediaThumbnailState extends State<AndroidMediaThumbnail> {
   void load() {
     thumbnailRequest?.cancel();
     thumbnailRequest = null;
-    if (widget.asset.kind != MediaKind.video) {
+    cachedThumbnail = null;
+    if (widget.asset.kind != MediaKind.video ||
+        (GalleryPerf.compiled &&
+            GalleryPerf.instance.coverMode.value ==
+                GalleryCoverMode.placeholder)) {
       thumbnail = null;
       return;
     }
+    if (widget.requestFactory == null &&
+        VideoThumbnailCache.peekCover(widget.asset) == null) {
+      cachedThumbnail = VideoThumbnailCache.readExisting(widget.asset);
+    }
     final request =
-        widget.requestFactory?.call(widget.asset) ??
-        VideoThumbnailCache.request(widget.asset, onError: (_, _) async {});
+        widget.requestFactory?.call(widget.asset, urgent: true) ??
+        VideoThumbnailCache.request(
+          widget.asset,
+          onError: (_, _) async {},
+          urgent: true,
+        );
     thumbnailRequest = request;
     thumbnail = request.future
         .then(
@@ -64,6 +88,9 @@ class _AndroidMediaThumbnailState extends State<AndroidMediaThumbnail> {
 
   @override
   void dispose() {
+    if (GalleryPerf.compiled) {
+      GalleryPerf.instance.coverMode.removeListener(_coverModeChanged);
+    }
     thumbnailRequest?.cancel();
     super.dispose();
   }
@@ -81,52 +108,63 @@ class _AndroidMediaThumbnailState extends State<AndroidMediaThumbnail> {
       ),
     );
     if (widget.asset.kind == MediaKind.image) {
-      return Image.file(
-        File(widget.asset.storagePath),
+      return ImageThumbnail(
+        asset: widget.asset,
         fit: BoxFit.cover,
-        cacheWidth:
-            (MediaQuery.sizeOf(context).width *
-                    MediaQuery.devicePixelRatioOf(context) /
-                    2)
-                .round()
-                .clamp(160, 720),
-        errorBuilder: (_, _, _) => placeholder,
+        placeholder: placeholder,
       );
     }
     return FutureBuilder<VideoThumbnailData>(
-      future: thumbnail,
-      builder: (_, snapshot) => Stack(
-        fit: StackFit.expand,
-        children: [
-          snapshot.data?.bytes == null
-              ? placeholder
-              : Image.memory(
-                  snapshot.data!.bytes!,
-                  fit: BoxFit.cover,
-                  cacheWidth: 360,
-                ),
-          if ((snapshot.data?.duration ?? Duration.zero) > Duration.zero)
-            Positioned(
-              right: 5,
-              bottom: 5,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: .75),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 4,
-                    vertical: 1,
+      future: cachedThumbnail,
+      builder: (context, cached) => FutureBuilder<VideoThumbnailData>(
+        key: ValueKey((widget.asset.sha256, widget.asset.storagePath)),
+        future: thumbnail,
+        initialData: widget.requestFactory == null
+            ? VideoThumbnailCache.peekCover(widget.asset)
+            : null,
+        builder: (_, snapshot) {
+          final data = snapshot.data ?? cached.data;
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              data?.bytes == null ||
+                      (GalleryPerf.compiled &&
+                          GalleryPerf.instance.coverMode.value ==
+                              GalleryCoverMode.placeholder)
+                  ? placeholder
+                  : galleryPerfImageMemory(
+                      data!.bytes!,
+                      fit: BoxFit.cover,
+                      cacheWidth: VideoThumbnailCache.decodeWidth,
+                      placeholder: placeholder,
+                    ),
+              if ((data?.duration ?? Duration.zero) > Duration.zero)
+                Positioned(
+                  right: 5,
+                  bottom: 5,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: .75),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 4,
+                        vertical: 1,
+                      ),
+                      child: Text(
+                        '▶ ${androidDuration(data!.duration)}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                        ),
+                      ),
+                    ),
                   ),
-                  child: Text(
-                    '▶ ${androidDuration(snapshot.data!.duration)}',
-                    style: const TextStyle(color: Colors.white, fontSize: 10),
-                  ),
                 ),
-              ),
-            ),
-        ],
+            ],
+          );
+        },
       ),
     );
   }
@@ -152,7 +190,12 @@ class AndroidMediaCard extends StatelessWidget {
   final bool selected;
 
   @override
-  Widget build(BuildContext context) => Card(
+  Widget build(BuildContext context) => GalleryPerf.instance.sync(
+    GalleryMetric.cardBuild,
+    () => _buildCard(context),
+  );
+
+  Widget _buildCard(BuildContext context) => Card(
     clipBehavior: Clip.antiAlias,
     margin: EdgeInsets.zero,
     child: InkWell(

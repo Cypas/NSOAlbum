@@ -5,17 +5,51 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as image;
 import 'package:squid_album/src/rust/models.dart';
 import 'package:squid_album/src/ui/android/android_media_card.dart';
 import 'package:squid_album/src/ui/video_preview_cache.dart';
 import 'package:squid_album/src/ui/video_thumbnail.dart';
 
 void main() {
+  testWidgets('warm video cover is visible immediately after remount', (
+    tester,
+  ) async {
+    final asset = _video('android-warm-remount');
+    VideoThumbnailCache.seedForTest(
+      asset.sha256,
+      VideoThumbnailData(
+        bytes: image.encodeJpg(image.Image(width: 16, height: 9)),
+        duration: const Duration(seconds: 10),
+      ),
+    );
+    Widget host() => MaterialApp(
+      home: SizedBox(
+        width: 160,
+        height: 90,
+        child: AndroidMediaThumbnail(asset: asset),
+      ),
+    );
+
+    await tester.pumpWidget(host());
+    expect(find.byType(Image), findsOneWidget);
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(host());
+    expect(find.byType(Image), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('thumbnail releases requests when replaced and removed', (
     tester,
   ) async {
     final releases = <int>[];
-    PreviewRequest<VideoThumbnailData> requestFor(MediaAsset _) {
+    final urgency = <bool>[];
+    PreviewRequest<VideoThumbnailData> requestFor(
+      MediaAsset _, {
+      bool urgent = false,
+    }) {
+      urgency.add(urgent);
       final index = releases.length;
       releases.add(0);
       final completion = Completer<VideoThumbnailData?>();
@@ -41,10 +75,12 @@ void main() {
 
     await tester.pumpWidget(host(_video('first-video')));
     expect(releases, [0]);
+    expect(urgency, [true]);
     expect(find.byIcon(Icons.videocam_outlined), findsOneWidget);
 
     await tester.pumpWidget(host(_video('second-video')));
     expect(releases, [1, 0]);
+    expect(urgency, [true, true]);
 
     await tester.pumpWidget(const SizedBox.shrink());
     expect(releases, [1, 1]);
@@ -60,7 +96,8 @@ void main() {
         home: Scaffold(
           body: AndroidMediaThumbnail(
             asset: _video('failed-video'),
-            requestFactory: (_) => PreviewRequest(failure.future),
+            requestFactory: (_, {bool urgent = false}) =>
+                PreviewRequest(failure.future),
           ),
         ),
       ),

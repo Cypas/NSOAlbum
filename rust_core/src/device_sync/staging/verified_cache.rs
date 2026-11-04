@@ -2,8 +2,10 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::{paths, verify_open_file, MediaRecord, OwnedPart, StagingError, StagingResult};
-use crate::device_sync::work::{WorkControl, WorkStage};
+use super::{
+    file_stamp, paths, verify_open_file, MediaRecord, OwnedPart, StagingError, StagingResult,
+};
+use crate::device_sync::work::WorkControl;
 
 pub(super) struct CacheRoot {
     directory: paths::HeldDirectory,
@@ -14,6 +16,7 @@ pub(super) struct VerifiedObject {
     root: Arc<CacheRoot>,
     path: PathBuf,
     identity: paths::FileIdentity,
+    stamp: (u64, std::time::SystemTime),
 }
 
 impl CacheRoot {
@@ -53,37 +56,14 @@ impl CacheRoot {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(super::io_error(&error, StagingError::Read)),
         }
-        let _scope = work
-            .begin(WorkStage::Validating)
-            .map_err(super::core_error)?;
-        let mut file = paths::open_regular(&path)?;
+        // Only the successful first receive check publishes into verified-v1.
+        // A retry trusts that private cache instead of reading every byte again.
+        let file = paths::open_regular(&path)?;
         paths::require_single_link(&file)?;
-        let mut work_result = Ok(());
-        let mut previous = 0_u64;
-        verify_open_file(
-            &mut file,
-            record,
-            &work.cancellation(),
-            &mut |event| {
-                if work_result.is_ok() {
-                    work_result = (|| {
-                        let delta =
-                            event.completed_bytes.checked_sub(previous).ok_or_else(|| {
-                                crate::error::CoreError::InvalidConfig(
-                                    "preparation bytes regressed".into(),
-                                )
-                            })?;
-                        work.preparation_read(delta)?;
-                        previous = event.completed_bytes;
-                        work.checkpoint(WorkStage::Validating, 1)
-                    })();
-                }
-                #[cfg(test)]
-                crate::device_sync::work::test_observer::cache_read(work, event.completed_bytes);
-            },
-            &self.validation,
-        )?;
-        work_result.map_err(super::core_error)?;
+        let stamp = file_stamp(&file)?;
+        if stamp.0 != record.length {
+            return Err(StagingError::LengthMismatch);
+        }
         work.check().map_err(super::core_error)?;
         self.directory.inspect()?;
         let identity = paths::FileIdentity::of(&file)?;
@@ -94,6 +74,7 @@ impl CacheRoot {
             root: self.clone(),
             path,
             identity,
+            stamp,
         }))
     }
 
@@ -137,6 +118,7 @@ impl CacheRoot {
             root: self.clone(),
             path,
             identity: paths::FileIdentity::of(&file)?,
+            stamp: file_stamp(&file)?,
         })
     }
 }
@@ -146,7 +128,7 @@ impl VerifiedObject {
         self.root.directory.inspect()?;
         let file = paths::open_regular(&self.path)?;
         paths::require_single_link(&file)?;
-        if paths::FileIdentity::of(&file)? != self.identity {
+        if paths::FileIdentity::of(&file)? != self.identity || file_stamp(&file)? != self.stamp {
             return Err(StagingError::UnsafePath);
         }
         self.root.directory.inspect()?;

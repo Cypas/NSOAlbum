@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -7,6 +8,7 @@ import 'package:path/path.dart' as p;
 import '../../backend/app_backend.dart';
 import '../../l10n/app_localizations.dart';
 import '../../state/transfer_controller.dart';
+import '../image_thumbnail.dart';
 import 'android_back_guard.dart';
 import 'android_page_frame.dart';
 
@@ -48,7 +50,18 @@ class _AndroidCustomImportPageState extends State<AndroidCustomImportPage> {
   }
 
   Future<void> importSelected() async {
+    final importedSince = DateTime.now().toUtc();
     final success = await widget.controller.importSelected();
+    final summary = widget.controller.importSummary;
+    if (success && summary != null) {
+      unawaited(
+        ImageThumbnailCache.prefetchImportedImages(
+          widget.controller.backend,
+          summary.imported,
+          importedSince: importedSince,
+        ),
+      );
+    }
     if (!success && mounted && widget.controller.error != null) {
       androidMessage(context, widget.controller.error!);
     }

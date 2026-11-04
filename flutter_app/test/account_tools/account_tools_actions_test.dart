@@ -38,4 +38,38 @@ void main() {
       expect(selections, 0);
     },
   );
+
+  testWidgets('account card body selects and toggles its own tools', (
+    tester,
+  ) async {
+    var selections = 0;
+    final backend = ToolsBackend();
+    await tester.pumpWidget(
+      app(
+        Scaffold(
+          body: AccountToolsExpander(
+            backend: backend,
+            profile: profile,
+            onHeaderTap: () => selections++,
+            header: const Text('Account header'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Account header'));
+    await tester.pumpAndSettle();
+    expect(selections, 1);
+    expect(find.text('好友列表'), findsOneWidget);
+
+    await tester.tap(find.text('Account header'));
+    await tester.pumpAndSettle();
+    expect(selections, 2);
+    expect(find.text('好友列表'), findsNothing);
+
+    await tester.tap(find.byKey(const Key('account-tools-expand-clicked-b')));
+    await tester.pumpAndSettle();
+    expect(selections, 2, reason: 'The arrow only expands the tools.');
+    expect(find.text('好友列表'), findsOneWidget);
+  });
 }

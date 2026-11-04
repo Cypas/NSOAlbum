@@ -47,6 +47,16 @@ class LibraryController extends ChangeNotifier {
       capturedUntil != null ||
       capturedOnThisDay != null;
 
+  /// Filter-button feedback excludes the media-kind segment and sorting.
+  bool get hasActiveFilterItems =>
+      favoriteOnly ||
+      gameNames.isNotEmpty ||
+      importedFrom != null ||
+      importedUntil != null ||
+      capturedFrom != null ||
+      capturedUntil != null ||
+      capturedOnThisDay != null;
+
   List<MediaAsset> get visible {
     if (identical(_visibleSource, items) && _visibleSearch == search) {
       return _visibleCache;

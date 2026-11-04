@@ -16,9 +16,10 @@ import '../../platform/android_media_share.dart';
 import '../../platform/android_media_clipboard.dart';
 import 'android_media_album_actions.dart';
 import 'android_media_card.dart';
+import '../video_preview.dart';
 import '../video_preview_prefetch.dart';
 import '../video_thumbnail.dart';
-import '../video_preview.dart';
+import '../image_thumbnail.dart';
 import 'android_back_guard.dart';
 import 'android_media_information.dart';
 import 'android_media_swipe_region.dart';
@@ -209,45 +210,137 @@ class _AndroidDockAction extends StatelessWidget {
   );
 }
 
-class _AndroidMediaFilmstrip extends StatelessWidget {
+class _AndroidMediaFilmstrip extends StatefulWidget {
   const _AndroidMediaFilmstrip({
     required this.items,
-    required this.currentIndex,
+    required this.selectedPosition,
     required this.onSelected,
   });
   final List<MediaAsset> items;
-  final int currentIndex;
+  final double selectedPosition;
   final ValueChanged<int> onSelected;
+
+  @override
+  State<_AndroidMediaFilmstrip> createState() => _AndroidMediaFilmstripState();
+}
+
+class _AndroidMediaFilmstripState extends State<_AndroidMediaFilmstrip> {
+  static const itemWidth = 64.0;
+  static const gap = 8.0;
+  static const horizontalPadding = 12.0;
+  late final ScrollController scroll;
+
+  @override
+  void initState() {
+    super.initState();
+    scroll = ScrollController(
+      initialScrollOffset:
+          horizontalPadding +
+          widget.selectedPosition.clamp(0, widget.items.length - 1) *
+              (itemWidth + gap),
+    );
+    _scheduleReveal();
+  }
+
+  @override
+  void didUpdateWidget(_AndroidMediaFilmstrip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.selectedPosition != widget.selectedPosition ||
+        oldWidget.items.length != widget.items.length) {
+      _scheduleReveal();
+    }
+  }
+
+  void _scheduleReveal() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !scroll.hasClients || widget.items.isEmpty) return;
+      final viewport = scroll.position.viewportDimension;
+      final position = widget.selectedPosition.clamp(
+        0.0,
+        (widget.items.length - 1).toDouble(),
+      );
+      final centered =
+          horizontalPadding +
+          position * (itemWidth + gap) +
+          itemWidth / 2 -
+          viewport / 2;
+      final target = centered.clamp(
+        scroll.position.minScrollExtent,
+        scroll.position.maxScrollExtent,
+      );
+      if ((scroll.offset - target).abs() < .5) return;
+      scroll.jumpTo(target);
+    });
+  }
+
+  @override
+  void dispose() {
+    scroll.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) => SizedBox(
     key: const Key('android-detail-filmstrip'),
     height: 56,
     child: ListView.separated(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      controller: scroll,
+      padding: const EdgeInsets.symmetric(
+        horizontal: horizontalPadding,
+        vertical: 6,
+      ),
       scrollDirection: Axis.horizontal,
-      itemCount: items.length,
-      separatorBuilder: (_, _) => const SizedBox(width: 8),
+      itemCount: widget.items.length,
+      separatorBuilder: (_, _) => const SizedBox(width: gap),
       itemBuilder: (context, index) {
-        final item = items[index];
-        return InkWell(
-          onTap: () => onSelected(index),
-          borderRadius: BorderRadius.circular(8),
-          child: Container(
-            width: 64,
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: index == currentIndex
-                    ? Theme.of(context).colorScheme.primary
-                    : Colors.transparent,
-                width: 2,
+        final item = widget.items[index];
+        final distance = (index - widget.selectedPosition).abs();
+        final proximity = (1 - distance).clamp(0.0, 1.0);
+        final selected = distance < .5;
+        final colors = Theme.of(context).colorScheme;
+        return Semantics(
+          selected: selected,
+          child: InkWell(
+            onTap: () => widget.onSelected(index),
+            borderRadius: BorderRadius.circular(8),
+            child: AnimatedContainer(
+              key: ValueKey('android-filmstrip-item-${item.id}'),
+              duration: const Duration(milliseconds: 90),
+              curve: Curves.easeOut,
+              width: itemWidth,
+              transform: Matrix4.diagonal3Values(
+                1 + proximity * .035,
+                1 + proximity * .035,
+                1,
               ),
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(6),
-              child: AndroidMediaThumbnail(asset: item),
+              transformAlignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: colors.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: Color.lerp(
+                    Colors.transparent,
+                    colors.primary,
+                    proximity,
+                  )!,
+                  width: 2 + proximity,
+                ),
+                boxShadow: proximity <= 0
+                    ? null
+                    : [
+                        BoxShadow(
+                          color: colors.primary.withValues(
+                            alpha: .42 * proximity,
+                          ),
+                          blurRadius: 10 * proximity,
+                          spreadRadius: 1.5 * proximity,
+                        ),
+                      ],
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: AndroidMediaThumbnail(asset: item),
+              ),
             ),
           ),
         );
@@ -359,7 +452,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
     with SingleTickerProviderStateMixin {
   late List<MediaAsset> items = List.of(widget.items);
   late int index = widget.initialIndex;
-  late PageController pages;
+  late double filmstripPosition;
   late final AnimationController pageFade;
   late final Animation<double> pageOpacity;
   MediaWindowController? window;
@@ -412,7 +505,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
       items = List.of(window!.items);
       index = items.indexWhere((item) => item.id == currentId);
     }
-    pages = PageController(initialPage: index);
+    filmstripPosition = index.toDouble();
     transform.addListener(_zoomChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
@@ -445,7 +538,6 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
     }
     prefetch.dispose();
     window?.dispose();
-    pages.dispose();
     pageFade.dispose();
     // The surface owns its player; do not dispose that player twice here.
     transform.removeListener(_zoomChanged);
@@ -547,10 +639,6 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
       if (!mounted) return;
       next = index + delta;
     }
-    if (!pages.hasClients) {
-      await WidgetsBinding.instance.endOfFrame;
-      if (!mounted || !pages.hasClients) return;
-    }
     if (busy || switching || next < 0 || next >= items.length) return;
     navigationGeneration++;
     setState(() => switching = true);
@@ -563,9 +651,14 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
           if (position >= 0 && position < items.length)
             (items[position].id, items[position].sha256),
       };
+      final fadeIn = pageFade.forward(from: 0);
+      pageFadeStarted = true;
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      if (!mounted) return;
       setState(() {
         player = null;
         index = next;
+        filmstripPosition = next.toDouble();
         controlsVisible = true;
         moreOpen = false;
         addingTag = false;
@@ -575,13 +668,6 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
         transform.value = Matrix4.identity();
       });
       prefetch.around(items, index);
-      final pageTransition = pages.animateToPage(
-        next,
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOutCubic,
-      );
-      pageFadeStarted = true;
-      final fadeIn = pageFade.forward(from: 0);
       final retirements = <Future<void>>[];
       for (final key in videoPages.keys.toList(growable: false)) {
         if (retained.contains(key)) continue;
@@ -589,7 +675,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
         if (surface != null) retirements.add(surface.release());
       }
       unawaited(_extendWindow());
-      await Future.wait([pageTransition, fadeIn, ...retirements]);
+      await Future.wait([fadeIn, ...retirements]);
     } catch (error) {
       if (mounted) androidMessage(context, error);
     } finally {
@@ -597,7 +683,11 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
         if (pageFadeStarted && pageFade.status != AnimationStatus.completed) {
           await pageFade.forward();
         }
-        if (mounted) setState(() => switching = false);
+        if (mounted) {
+          setState(() {
+            switching = false;
+          });
+        }
         if (mounted && detailsOpen) unawaited(openDetails());
       }
     }
@@ -645,16 +735,13 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
       }
       if (!mounted || generation != navigationGeneration) return;
       currentWindow.retainAround(currentId);
-      final old = pages;
       final reanchor = anchor != index;
       setState(() {
         items = List.of(next);
         index = anchor;
-        if (reanchor) pages = PageController(initialPage: anchor);
+        filmstripPosition = anchor.toDouble();
       });
-      if (reanchor) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
-      }
+      if (reanchor) prefetch.around(items, index);
     } catch (failure) {
       if (mounted) setState(() => currentWindow.error = failure);
     } finally {
@@ -726,7 +813,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
   }
 
   Future<void> _setImmersive(bool value) async {
-    if (!mounted || detailsOpen || immersiveMedia == value) {
+    if (!mounted || switching || detailsOpen || immersiveMedia == value) {
       return;
     }
     final request = ++systemUiRequest;
@@ -740,6 +827,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
         immersiveMedia = true;
         moreOpen = false;
         controlsVisible = true;
+        filmstripPosition = index.toDouble();
       });
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
       return;
@@ -755,7 +843,8 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
     }
   }
 
-  Future<void> toggleImmersive() => _setImmersive(!immersiveMedia);
+  Future<void> toggleImmersive() =>
+      switching ? Future.value() : _setImmersive(!immersiveMedia);
 
   Future<void> copyToClipboard() async {
     if (items[index].kind != MediaKind.image || busy) return;
@@ -803,6 +892,16 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
     if (moreOpen && mounted) setState(() => moreOpen = false);
   }
 
+  void previewSwipe(double progress) {
+    if (!mounted || items.isEmpty) return;
+    setState(() {
+      filmstripPosition = (index + progress).clamp(
+        0.0,
+        (items.length - 1).toDouble(),
+      );
+    });
+  }
+
   Future<void> runMoreAction(AndroidViewerMoreAction action) async {
     closeMoreActions();
     switch (action) {
@@ -824,7 +923,11 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
       if (bytes == null || bytes.isEmpty) {
         throw StateError('Frame capture unavailable');
       }
-      final editor = MediaEditController(widget.backend);
+      final editor = MediaEditController(
+        widget.backend,
+        onMediaCreated: (asset) =>
+            unawaited(ImageThumbnailCache.prefetch([asset])),
+      );
       try {
         await editor.frame(items[index], bytes);
       } finally {
@@ -895,6 +998,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
   Widget _picture(MediaAsset item) => AndroidMediaSwipeRegion(
     enabled: !busy && !switching && transform.value.getMaxScaleOnAxis() <= 1.01,
     onSwipe: (delta) => unawaited(navigate(delta)),
+    onHorizontalProgress: previewSwipe,
     onVerticalSwipe: (delta) {
       if (delta > 0 && !detailsOpen) unawaited(openDetails());
       if (delta < 0 && detailsOpen) closeDetails();
@@ -969,6 +1073,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
                   }
                 },
                 onSwipe: (delta) => unawaited(navigate(delta)),
+                onHorizontalProgress: previewSwipe,
                 onVerticalSwipe: (delta) {
                   if (delta > 0 && !detailsOpen) unawaited(openDetails());
                   if (delta < 0 && detailsOpen) closeDetails();
@@ -1021,20 +1126,44 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
                     FadeTransition(
                       key: const Key('android-detail-page-fade'),
                       opacity: pageOpacity,
-                      child: PageView.builder(
+                      child: KeyedSubtree(
                         key: const Key('android-detail-media'),
-                        controller: pages,
-                        physics: const NeverScrollableScrollPhysics(),
-                        allowImplicitScrolling: true,
-                        itemCount: items.length,
-                        itemBuilder: (context, page) {
-                          final asset = items[page];
-                          if ((page - index).abs() > 1 &&
-                              asset.kind == MediaKind.video) {
-                            return VideoPoster(asset: asset);
-                          }
-                          return _media(asset);
-                        },
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            for (final offset in const [0, -1, 1, -2, 2])
+                              if (index + offset >= 0 &&
+                                  index + offset < items.length)
+                                Offstage(
+                                  key: ValueKey((
+                                    'android-detail-cached-media',
+                                    items[index + offset].id,
+                                    items[index + offset].sha256,
+                                  )),
+                                  offstage: offset != 0,
+                                  child: TickerMode(
+                                    enabled: offset == 0,
+                                    child:
+                                        offset.abs() == 2 &&
+                                            items[index + offset].kind ==
+                                                MediaKind.video
+                                        ? VideoPoster(
+                                            asset: items[index + offset],
+                                          )
+                                        : _media(items[index + offset]),
+                                  ),
+                                ),
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: SizedBox.expand(
+                                  key: ValueKey(
+                                    'android-detail-active-media-${item.id}',
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                     if (!immersiveMedia && (controlsVisible || detailsOpen))
@@ -1139,7 +1268,7 @@ class _AndroidMediaViewerState extends State<AndroidMediaViewer>
                           maintainSize: true,
                           child: _AndroidMediaFilmstrip(
                             items: items,
-                            currentIndex: index,
+                            selectedPosition: filmstripPosition,
                             onSelected: (next) {
                               if (immersiveMedia) return;
                               if (moreOpen) {

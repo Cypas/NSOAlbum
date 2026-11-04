@@ -62,8 +62,11 @@ class VideoFirstFrameCover extends StatefulWidget {
     this.playbackErrors,
     this.decoderReady,
     this.decoderInitiallyReady = true,
+    this.playbackAdvanced,
+    this.playbackInitiallyAdvanced = true,
     this.error,
     this.showLoadingIndicator = true,
+    this.backgroundColor,
   });
   final Object identity;
   final Future<void> firstFrame;
@@ -73,8 +76,19 @@ class VideoFirstFrameCover extends StatefulWidget {
   final Stream<String>? playbackErrors;
   final Stream<bool>? decoderReady;
   final bool decoderInitiallyReady;
+
+  /// Android-only proof that the texture has produced playback progress.
+  ///
+  /// `VideoController.waitUntilFirstFrameRendered` completes as soon as the
+  /// decoder reports its dimensions and the texture surface is resized. On
+  /// Android that can happen while the surface is still settling, so revealing
+  /// the texture right then makes the preview visibly pulse. When provided,
+  /// the cached cover stays until this stream reports playback progress.
+  final Stream<bool>? playbackAdvanced;
+  final bool playbackInitiallyAdvanced;
   final Object? error;
   final bool showLoadingIndicator;
+  final Color? backgroundColor;
 
   @override
   State<VideoFirstFrameCover> createState() => _VideoFirstFrameCoverState();
@@ -86,12 +100,14 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
   int generation = 0;
   bool rendered = false;
   bool decoded = false;
+  bool advanced = true;
   bool failed = false;
   bool coverVisible = true;
   bool fading = false;
   String? playbackError;
   StreamSubscription<String>? errors;
   StreamSubscription<bool>? decoder;
+  StreamSubscription<bool>? playback;
   VideoThumbnailData? poster;
 
   @override
@@ -114,6 +130,8 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
     final ticket = ++generation;
     rendered = false;
     decoded = widget.decoderInitiallyReady;
+    advanced =
+        widget.playbackAdvanced == null || widget.playbackInitiallyAdvanced;
     failed = false;
     coverVisible = true;
     fading = false;
@@ -121,6 +139,13 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
     poster = widget.initialThumbnail;
     unawaited(errors?.cancel());
     unawaited(decoder?.cancel());
+    unawaited(playback?.cancel());
+    playback = widget.playbackAdvanced?.listen((value) {
+      if (mounted && ticket == generation && value && !advanced) {
+        setState(() => advanced = true);
+        _maybeFadeCover(ticket);
+      }
+    });
     decoder = widget.decoderReady?.listen((ready) {
       if (mounted && ticket == generation && ready) {
         setState(() {
@@ -188,12 +213,18 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
   }
 
   void _maybeFadeCover(int ticket) {
+    // Only a real cover is worth holding back for playback progress. Without
+    // poster bytes the cover is just a placeholder, so the decoded texture is
+    // the better thing to show.
+    final holdForPlayback =
+        widget.playbackAdvanced != null && poster?.bytes?.isNotEmpty == true;
     if (!mounted ||
         ticket != generation ||
         fading ||
         !coverVisible ||
         !rendered ||
         !decoded ||
+        (holdForPlayback && !advanced) ||
         failed ||
         playbackError != null ||
         widget.error != null) {
@@ -206,6 +237,7 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
   void dispose() {
     unawaited(errors?.cancel());
     unawaited(decoder?.cancel());
+    unawaited(playback?.cancel());
     super.dispose();
   }
 
@@ -230,7 +262,9 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
                 },
                 child: ColoredBox(
                   key: const Key('video-first-frame-cover'),
-                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  color:
+                      widget.backgroundColor ??
+                      Theme.of(context).colorScheme.surfaceContainerHighest,
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
@@ -238,7 +272,10 @@ class _VideoFirstFrameCoverState extends State<VideoFirstFrameCover> {
                         Image.memory(
                           bytes,
                           fit: BoxFit.contain,
-                          gaplessPlayback: false,
+                          // Covers are frequently re-decoded for the same video
+                          // (compact then full-resolution widths); keeping the
+                          // previous frame avoids a blank flash in between.
+                          gaplessPlayback: true,
                           cacheWidth: 1280,
                           errorBuilder: (_, _, _) => Center(
                             child: widget.showLoadingIndicator
@@ -380,6 +417,7 @@ class _VideoPreviewState extends State<VideoPreview> {
   late Future<VideoThumbnailData> thumbnail;
   late Future<void> firstFrame;
   late Stream<bool>? decoderReady;
+  late Stream<bool>? playbackAdvanced;
   VideoThumbnailData? initialThumbnail;
 
   Future<VideoThumbnailData> _load() {
@@ -401,12 +439,19 @@ class _VideoPreviewState extends State<VideoPreview> {
   }
 
   VideoThumbnailData? _initialThumbnail() =>
-      widget.initialThumbnail ?? VideoThumbnailCache.peek(widget.cover);
+      widget.initialThumbnail ?? VideoThumbnailCache.peekCover(widget.cover);
 
   void _watchDecoder() {
-    decoderReady = Platform.isAndroid
-        ? widget.controller.player.stream.videoParams.map(hasDecodedVideo)
-        : null;
+    final player = widget.controller.player;
+    if (Platform.isAndroid) {
+      decoderReady = player.stream.videoParams.map(hasDecodedVideo);
+      playbackAdvanced = player.stream.position
+          .map((position) => position > Duration.zero)
+          .distinct();
+    } else {
+      decoderReady = null;
+      playbackAdvanced = null;
+    }
   }
 
   @override
@@ -443,12 +488,17 @@ class _VideoPreviewState extends State<VideoPreview> {
       firstFrame: firstFrame,
       thumbnail: thumbnail,
       initialThumbnail: initialThumbnail,
+      backgroundColor: widget.fill,
       error: widget.error,
       playbackErrors: widget.controller.player.stream.error,
       decoderReady: decoderReady,
       decoderInitiallyReady:
           !Platform.isAndroid ||
           hasDecodedVideo(widget.controller.player.state.videoParams),
+      playbackAdvanced: playbackAdvanced,
+      playbackInitiallyAdvanced:
+          !Platform.isAndroid ||
+          widget.controller.player.state.position > Duration.zero,
       showLoadingIndicator: widget.showLoadingIndicator,
       child: widget.controls?.call(state) ?? const SizedBox.expand(),
     ),

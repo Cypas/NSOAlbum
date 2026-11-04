@@ -28,6 +28,7 @@ class AndroidVideoSurface extends StatefulWidget {
     this.onReady,
     this.onMediaTap,
     this.onSwipe,
+    this.onHorizontalProgress,
     this.onVerticalSwipe,
   });
   final String path;
@@ -41,6 +42,7 @@ class AndroidVideoSurface extends StatefulWidget {
   final ValueChanged<Player>? onReady;
   final VoidCallback? onMediaTap;
   final ValueChanged<int>? onSwipe;
+  final ValueChanged<double>? onHorizontalProgress;
   final ValueChanged<int>? onVerticalSwipe;
   @override
   State<AndroidVideoSurface> createState() => AndroidVideoSurfaceState();
@@ -192,6 +194,7 @@ class AndroidVideoSurfaceState extends State<AndroidVideoSurface> {
                 child: AndroidMediaSwipeRegion(
                   enabled: !released && widget.active,
                   onSwipe: (delta) => widget.onSwipe?.call(delta),
+                  onHorizontalProgress: widget.onHorizontalProgress,
                   onVerticalSwipe: (delta) =>
                       widget.onVerticalSwipe?.call(delta),
                   child: GestureDetector(

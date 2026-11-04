@@ -21,6 +21,7 @@ import 'nso/provider.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 import 'settings.dart';
+import 'switch_import.dart';
 
 // These functions are ignored because they are not marked as `pub`: `clear_current_sync`, `core`, `error_text`, `register_current_sync`
 
@@ -163,6 +164,14 @@ Future<EndpointStatus> deviceSyncStatus({required String endpoint}) =>
 
 Future<EndpointRead> deviceSyncReadEndpoint({required String endpoint}) =>
     RustLib.instance.api.crateBridgeDeviceSyncReadEndpoint(endpoint: endpoint);
+
+Future<AppliedMediaCachePageRead> deviceSyncAppliedMediaPage({
+  required String endpoint,
+  required BigInt offset,
+}) => RustLib.instance.api.crateBridgeDeviceSyncAppliedMediaPage(
+  endpoint: endpoint,
+  offset: offset,
+);
 
 Future<PreviewRead> deviceSyncReadPreview({required String endpoint}) =>
     RustLib.instance.api.crateBridgeDeviceSyncReadPreview(endpoint: endpoint);
@@ -695,6 +704,9 @@ Future<SyncProgress?> currentSyncProgress() =>
 Future<List<MediaAsset>> listMedia({required GalleryQuery query}) =>
     RustLib.instance.api.crateBridgeListMedia(query: query);
 
+Future<BigInt> countMedia({required GalleryQuery query}) =>
+    RustLib.instance.api.crateBridgeCountMedia(query: query);
+
 Future<GalleryPage> listMediaPage({required GalleryPageRequest request}) =>
     RustLib.instance.api.crateBridgeListMediaPage(request: request);
 
@@ -790,6 +802,51 @@ Future<ImportSummary> importMtpFiles({
   paths: paths,
   deviceName: deviceName,
 );
+
+Future<ImportSummary> importMtpFilesWithProgress({
+  required List<String> paths,
+  required String deviceName,
+  required String operationId,
+}) => RustLib.instance.api.crateBridgeImportMtpFilesWithProgress(
+  paths: paths,
+  deviceName: deviceName,
+  operationId: operationId,
+);
+
+Future<bool> cancelImport({required String operationId}) =>
+    RustLib.instance.api.crateBridgeCancelImport(operationId: operationId);
+
+Future<List<String>> switchMtpListDevices() =>
+    RustLib.instance.api.crateBridgeSwitchMtpListDevices();
+
+Future<List<SwitchMtpEntry>> switchMtpScan({required String device}) =>
+    RustLib.instance.api.crateBridgeSwitchMtpScan(device: device);
+
+Future<void> switchMtpStartStage({
+  required String operationId,
+  required String device,
+  required List<SwitchMtpEntry> entries,
+}) => RustLib.instance.api.crateBridgeSwitchMtpStartStage(
+  operationId: operationId,
+  device: device,
+  entries: entries,
+);
+
+Future<SwitchMtpStageStatus?> switchMtpStageStatus({
+  required String operationId,
+}) => RustLib.instance.api.crateBridgeSwitchMtpStageStatus(
+  operationId: operationId,
+);
+
+Future<bool> switchMtpCancelStage({required String operationId}) => RustLib
+    .instance
+    .api
+    .crateBridgeSwitchMtpCancelStage(operationId: operationId);
+
+Future<void> switchMtpCleanupStage({required String operationId}) => RustLib
+    .instance
+    .api
+    .crateBridgeSwitchMtpCleanupStage(operationId: operationId);
 
 Future<MediaExportSummary> exportMedia({
   required Int64List mediaIds,

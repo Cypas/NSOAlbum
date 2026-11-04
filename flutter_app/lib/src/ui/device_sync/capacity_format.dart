@@ -33,3 +33,37 @@ String formatDeviceTransferRate(
 }) => bytesPerSecond == null
     ? unknown
     : '${_formatDeviceBytes(bytesPerSecond, unknown: unknown, minimumUnit: 1)}/s';
+
+String formatDeviceSyncEta(
+  Duration? remaining, {
+  String unknown = '正在估算',
+  bool english = false,
+}) {
+  if (remaining == null) return unknown;
+  if (remaining < const Duration(minutes: 1)) {
+    return english ? 'Less than 1 min' : '不到 1 分钟';
+  }
+  final minutes = remaining.inMinutes;
+  if (minutes < 60) return english ? '$minutes min' : '$minutes 分钟';
+  final hours = minutes ~/ 60;
+  final remainder = minutes % 60;
+  if (english) return '$hours hr${remainder == 0 ? '' : ' $remainder min'}';
+  return '$hours 小时${remainder == 0 ? '' : ' $remainder 分钟'}';
+}
+
+BigInt? estimateDeviceSyncRemainingMs({
+  required BigInt processedBytes,
+  required BigInt totalBytes,
+  required BigInt bytesPerSecond,
+}) {
+  if (processedBytes.isNegative ||
+      totalBytes.isNegative ||
+      bytesPerSecond.isNegative) {
+    throw ArgumentError('Sync progress values must not be negative');
+  }
+  if (totalBytes <= processedBytes) return BigInt.zero;
+  if (bytesPerSecond == BigInt.zero) return null;
+  final remaining = totalBytes - processedBytes;
+  return (remaining * BigInt.from(1000) + bytesPerSecond - BigInt.one) ~/
+      bytesPerSecond;
+}

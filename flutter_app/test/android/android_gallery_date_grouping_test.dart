@@ -101,7 +101,9 @@ void main() {
       expect(find.text('今天'), findsNothing);
       await tester.tap(find.byKey(const Key('android-library-filter')));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('android-filter-group-by-date')));
+      final groupByDate = find.byKey(const Key('android-filter-group-by-date'));
+      await tester.ensureVisible(groupByDate);
+      await tester.tap(groupByDate);
       await tester.pumpAndSettle();
       await tester.tap(find.text('应用'));
       await tester.pumpAndSettle();

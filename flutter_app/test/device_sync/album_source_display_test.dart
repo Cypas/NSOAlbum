@@ -8,7 +8,7 @@ import '../fixtures/device_sync/album_source_fixture.dart';
 void main() {
   for (final language in ['zh', 'en']) {
     testWidgets(
-      'desktop distinguishes same-name album sources and details at 1280dp/$language',
+      'desktop hides album sources and shows image/video counts/$language',
       (tester) async {
         tester.view.physicalSize = const Size(1280, 900);
         tester.view.devicePixelRatio = 1;
@@ -25,17 +25,27 @@ void main() {
         await tester.pumpAndSettle();
         await tester.tap(find.byKey(const ValueKey('sidebar-destination-1')));
         await tester.pumpAndSettle();
-        final known = language == 'zh' ? '来源：Desktop' : 'Source: Desktop';
         await tester.ensureVisible(find.byKey(const ValueKey('album-card-2')));
         await tester.pumpAndSettle();
-        expect(find.text(known), findsOneWidget);
         expect(
-          find.text(language == 'zh' ? '来源：Phone' : 'Source: Phone'),
-          findsOneWidget,
+          find.textContaining(
+            language == 'zh' ? '1 张图片 · 2 个视频' : '1 photo · 2 videos',
+          ),
+          findsWidgets,
+        );
+        expect(
+          find.textContaining(
+            language == 'zh' ? '3 张图片 · 0 个视频' : '3 photos · 0 videos',
+          ),
+          findsWidgets,
+        );
+        expect(
+          find.textContaining(language == 'zh' ? '来源' : 'Source:'),
+          findsNothing,
         );
         expect(
           find.text(language == 'zh' ? '来源未知' : 'Unknown source'),
-          findsOneWidget,
+          findsNothing,
         );
         expect(
           find.textContaining('FAVORITES_SOURCE_MUST_NOT_APPEAR'),
@@ -43,7 +53,10 @@ void main() {
         );
         await tester.tap(find.byKey(const ValueKey('album-card-2')));
         await tester.pumpAndSettle();
-        expect(find.textContaining(known), findsOneWidget);
+        expect(
+          find.textContaining(language == 'zh' ? '来源' : 'Source:'),
+          findsNothing,
+        );
         expect(tester.takeException(), isNull);
       },
     );

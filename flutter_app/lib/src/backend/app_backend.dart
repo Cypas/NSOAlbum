@@ -172,6 +172,10 @@ abstract interface class AppBackend {
   Future<bool> cancelSync();
 }
 
+abstract interface class MediaCountBackend {
+  Future<BigInt> countMedia(GalleryQuery query);
+}
+
 abstract interface class SyncScheduleBackend {
   Future<SyncScheduleStatus?> loadSyncScheduleStatus();
 

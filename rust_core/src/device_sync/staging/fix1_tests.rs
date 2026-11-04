@@ -236,7 +236,7 @@ fn staging_fix1_closed_verified_path_is_rechecked_before_publication() {
             &CancellationToken::default(),
             &mut |_| {}
         ),
-        Err(StagingError::ChecksumMismatch)
+        Err(StagingError::UnsafePath)
     ));
     assert!(!directory.exists());
     assert_eq!(operation.progress().phase, Phase::Failed);

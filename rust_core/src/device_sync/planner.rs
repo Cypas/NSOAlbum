@@ -133,6 +133,7 @@ pub fn build_plan_controlled(
     work: &super::work::WorkControl,
 ) -> CoreResult<SyncPlan> {
     let _scope = work.begin(super::work::WorkStage::Comparing)?;
+    work.set_preparation_phase(super::work::PreparationStage::ComparingRecords, None);
     let source = source.validate_controlled(work)?;
     let target = target.validate_controlled(work)?;
     let legacy_skew = source
@@ -148,6 +149,31 @@ pub fn build_plan_controlled(
         skew,
         conflicts: vec![],
     };
+    let comparison_total = source
+        .media
+        .keys()
+        .chain(target.media.keys())
+        .collect::<BTreeSet<_>>()
+        .len()
+        + source
+            .albums
+            .keys()
+            .chain(target.albums.keys())
+            .collect::<BTreeSet<_>>()
+            .len()
+        + source
+            .tags
+            .keys()
+            .chain(target.tags.keys())
+            .collect::<BTreeSet<_>>()
+            .len()
+        + source
+            .mappings
+            .keys()
+            .chain(target.mappings.keys())
+            .collect::<BTreeSet<_>>()
+            .len();
+    work.set_total(super::work::WorkStage::Comparing, comparison_total as u64);
     let mut media = Vec::new();
     let mut final_media = BTreeMap::new();
     let mut staging = 0;
@@ -571,7 +597,7 @@ struct EvaluationBudget {
 impl EvaluationBudget {
     fn work(&mut self, amount: usize) -> CoreResult<()> {
         self.control
-            .checkpoint(super::work::WorkStage::Comparing, 1)?;
+            .checkpoint(super::work::WorkStage::Comparing, 0)?;
         let next = self
             .work
             .checked_add(amount)
@@ -807,6 +833,19 @@ mod tests {
             build_plan(&source, &target, SyncMode::Merge).unwrap(),
             build_plan_controlled(&source, &target, SyncMode::Merge, None, &control).unwrap()
         );
+    }
+
+    #[test]
+    fn controlled_plan_reports_exact_comparison_denominator() {
+        let source = manifest(true);
+        let target = manifest(false);
+        let control = WorkControl::default();
+
+        build_plan_controlled(&source, &target, SyncMode::Merge, None, &control).unwrap();
+
+        let observed = control.observe();
+        assert_eq!(observed.total_compared_items, Some(1));
+        assert_eq!(observed.compared_items, 1);
     }
 
     #[test]

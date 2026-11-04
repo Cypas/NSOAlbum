@@ -107,6 +107,66 @@ void main() {
         expect(tester.takeException(), isNull);
       },
     );
+
+    testWidgets(
+      'expanded friend cards keep only the group header bubble mobile=$mobile',
+      (tester) async {
+        final backend = ToolsBackend(
+          friends: const [
+            NintendoFriend(
+              friendId: 'tint-a',
+              nickname: 'Tint A',
+              note: '',
+              isFavorite: false,
+              presence: 'ONLINE',
+            ),
+            NintendoFriend(
+              friendId: 'tint-b',
+              nickname: 'Tint B',
+              note: '',
+              isFavorite: false,
+              presence: 'ONLINE',
+            ),
+          ],
+        );
+        await tester.pumpWidget(
+          app(
+            NintendoFriendsPage(
+              backend: backend,
+              profile: profile,
+              mobile: mobile,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final bubble = find.byKey(const Key('friend-group-bubble-online'));
+        final tint = Theme.of(tester.element(bubble))
+            .colorScheme
+            .surfaceContainerHighest;
+        expect(
+          find.descendant(
+            of: bubble,
+            matching: find.byWidgetPredicate(
+              (widget) =>
+                  widget is DecoratedBox &&
+                  widget.decoration is BoxDecoration &&
+                  (widget.decoration as BoxDecoration).color == tint,
+            ),
+          ),
+          findsOneWidget,
+          reason: 'Only the group header should keep the bubble tint.',
+        );
+        expect(
+          find.byKey(const Key('friend-card-open-tint-a')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('friend-card-open-tint-b')),
+          findsOneWidget,
+        );
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
   }
 
   testWidgets('offline group orders recent first and missing times last', (

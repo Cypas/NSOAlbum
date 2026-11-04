@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 import '../../backend/app_backend.dart';
 import '../../backend/device_sync/account_gate.dart' show DeviceSyncBusy;
@@ -13,6 +14,10 @@ import '../../rust/device_sync/read_model.dart' as read;
 /// Page-level resource factories, never account storage, roots, or native Core.
 abstract class DeviceSyncPageAccess extends ChangeNotifier {
   Future<void> logError(Object error, [StackTrace? stackTrace]) async {}
+  Future<void> notifyResult({
+    required String title,
+    required String body,
+  }) async {}
   bool get ready;
   bool get checking;
   bool get canCheckRecovery;
@@ -53,6 +58,23 @@ final class BackendDeviceSyncPageAccess extends DeviceSyncPageAccess {
   @override
   Future<void> logError(Object error, [StackTrace? stackTrace]) =>
       _backend.logError('Device sync operation failed', error, stackTrace);
+
+  @override
+  Future<void> notifyResult({
+    required String title,
+    required String body,
+  }) async {
+    try {
+      await const MethodChannel('io.github.cypas.nsoalbum/notifications')
+          .invokeMethod<void>('syncCompleted', {'title': title, 'body': body});
+    } on MissingPluginException {
+      // Platforms without a native sync notification channel keep the page
+      // result as the source of truth.
+    } on PlatformException {
+      // Notification failure must not change the authoritative sync result.
+    }
+  }
+
   @override
   bool get ready =>
       !_disposed && _owner?.ready == true && _owner?.isolated == false;

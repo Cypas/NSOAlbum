@@ -94,6 +94,7 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
       sourceGrantIssued: view?.sourceGrantIssued,
       transportDetached: view?.transportDetached,
       workStage: transferring ? null : progress?.workStage,
+      preparationPhase: transferring ? null : progress?.preparationPhase,
       workActive: transferring || progress?.workActive == true,
       busy: session.busy,
       closed: session.closed,
@@ -264,8 +265,6 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
     }
   }
 
-
-
   Future<void> _loadConflicts(DeviceSyncPreviewView shown) async {
     final page = await widget.session.conflicts(
       shown,
@@ -361,10 +360,12 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
         localContinuation ||
         sourceWaiting ||
         view?.stage == driver.State.completed;
+    final terminalSyncFailure = view?.stage == driver.State.failed;
     final tcpFailure = transportCannotUndoOutcome
         ? null
         : session.transportIssue ?? value?.tcp?.error;
-    final reportedFailure = session.issue ?? value?.error ?? tcpFailure;
+    final observedFailure = session.issue ?? value?.error ?? tcpFailure;
+    final reportedFailure = observedFailure;
     final readFailure = workActive && reportedFailure == read.ReadError.busy
         ? null
         : reportedFailure;
@@ -380,6 +381,7 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
           stage: view.stage,
           pinning: pinning,
           reviewing: view.stage == driver.State.awaitingApproval && mayReview,
+          preparationPhase: deviceSyncActivePreparation(view.stage, progress),
         ),
         if (view.peerName case final name?
             when !(view.stage == driver.State.awaitingApproval && mayReview))
@@ -622,6 +624,23 @@ class _DeviceSyncSessionPanelState extends State<DeviceSyncSessionPanel> {
           key: const Key('device-session-error'),
         ),
       ],
+      if (terminalSyncFailure && reportedFailure == null)
+        Semantics(
+          key: const Key('device-sync-terminal-failure'),
+          liveRegion: true,
+          child: Text(
+            deviceSyncResult(
+              context,
+              stage: view?.stage ?? driver.State.failed,
+              error: observedFailure,
+              transferredBytes: progress?.transferredBytes,
+              processedItems: progress?.processedItems,
+              totalItems: progress?.totalItems,
+              processedBytes: progress?.processedBytes,
+              totalBytes: progress?.totalBytes,
+            ),
+          ),
+        ),
     ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -804,6 +823,7 @@ typedef _SessionPanelStructure = ({
   bool? sourceGrantIssued,
   bool? transportDetached,
   WorkStage? workStage,
+  PreparationStage? preparationPhase,
   bool workActive,
   bool busy,
   bool closed,

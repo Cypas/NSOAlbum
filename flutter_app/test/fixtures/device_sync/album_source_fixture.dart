@@ -22,6 +22,8 @@ FakeBackend albumSourceBackend({
         pinned: true,
         systemKey: 'favorites',
         mediaCount: BigInt.zero,
+        imageCount: BigInt.zero,
+        videoCount: BigInt.zero,
         sourceDeviceName: 'FAVORITES_SOURCE_MUST_NOT_APPEAR',
       ),
       AlbumSummary(
@@ -30,7 +32,9 @@ FakeBackend albumSourceBackend({
         description: 'My regular album note',
         albumType: 'manual',
         pinned: false,
-        mediaCount: BigInt.zero,
+        mediaCount: BigInt.from(3),
+        imageCount: BigInt.one,
+        videoCount: BigInt.two,
         sourceDeviceName: longDeviceName ? longAlbumDeviceName : 'Desktop',
       ),
       AlbumSummary(
@@ -39,7 +43,9 @@ FakeBackend albumSourceBackend({
         description: 'My smart album note',
         albumType: 'smart',
         pinned: false,
-        mediaCount: BigInt.zero,
+        mediaCount: BigInt.from(3),
+        imageCount: BigInt.from(3),
+        videoCount: BigInt.zero,
         sourceDeviceName: 'Phone',
       ),
       AlbumSummary(
@@ -49,6 +55,8 @@ FakeBackend albumSourceBackend({
         albumType: 'manual',
         pinned: false,
         mediaCount: BigInt.zero,
+        imageCount: BigInt.zero,
+        videoCount: BigInt.zero,
       ),
     ],
   );

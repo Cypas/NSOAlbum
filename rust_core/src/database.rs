@@ -424,6 +424,55 @@ mod gallery_page_tests {
         assert!(error.to_string().contains("cursor"));
     }
 
+    #[test]
+    fn count_media_uses_the_same_filters_as_gallery_listing() {
+        let root = tempfile::tempdir().unwrap();
+        let database = Database::open(root.path().join("library.sqlite3")).unwrap();
+        {
+            let connection = database.connection.lock().unwrap();
+            for (id, kind, favorite, game) in [
+                (1_i64, "image", 1_i64, "A"),
+                (2_i64, "video", 0_i64, "A"),
+                (3_i64, "image", 0_i64, "B"),
+            ] {
+                connection
+                    .execute(
+                        "INSERT INTO media_asset(
+                           id,sha256,size,media_type,captured_at,imported_at,
+                           game_name,original_name,storage_path,favorite,status
+                         ) VALUES (?1,?2,1,?3,NULL,'2026-01-01T00:00:00Z',?4,?5,?5,?6,'ready')",
+                        params![
+                            id,
+                            format!("{id:064x}"),
+                            kind,
+                            game,
+                            format!("media-{id}.{}", if kind == "video" { "mp4" } else { "jpg" }),
+                            favorite
+                        ],
+                    )
+                    .unwrap();
+            }
+        }
+        let query = GalleryQuery {
+            kind: GalleryKindFilter::Image,
+            favorite_only: true,
+            game_names: vec!["A".into()],
+            ..Default::default()
+        };
+        assert_eq!(database.count_media(&query).unwrap(), 1);
+        assert_eq!(database.list_media(&query).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn device_sync_manifest_work_total_matches_all_manifest_sections() {
+        let root = tempfile::tempdir().unwrap();
+        let database = Database::open(root.path().join("library.sqlite3")).unwrap();
+        let header = database.device_sync_header().unwrap();
+        let total = database.device_sync_manifest_work_total(&header).unwrap();
+        let snapshot = crate::device_sync::receiver::Snapshot::read(&database, "Local").unwrap();
+        assert_eq!(total, snapshot.manifest.records.len() as u64);
+    }
+
     fn fixture() -> (tempfile::TempDir, Database) {
         let root = tempfile::tempdir().unwrap();
         let db = Database::open(root.path().join("library.sqlite3")).unwrap();
@@ -3437,6 +3486,11 @@ impl Database {
                     if device_sync_root_spelling_key(&canonical)
                         != device_sync_root_spelling_key(&media) =>
                 {
+                    // Continue all device-sync I/O with the validated target,
+                    // not the user-facing alias. Android commonly exposes
+                    // `/data/data` as an alias of `/data/user/0`; retaining
+                    // that spelling later makes the staging path checker see
+                    // a symlink/reparse component during publication.
                     self.validate_existing_original_root(&media)?
                 }
                 _ => media,
@@ -4039,6 +4093,44 @@ impl Database {
         })();
         work.check()?;
         result
+    }
+
+    pub(crate) fn device_sync_manifest_work_total(
+        &self,
+        header: &ds::ManifestHeader,
+    ) -> CoreResult<u64> {
+        ds::validate_header(header)?;
+        let connection = self.connection.lock().expect("database mutex poisoned");
+        let current = device_sync_header(&connection)?;
+        if current.library_uuid != header.library_uuid || current.generation != header.generation {
+            return Err(ds::invalid("library changed; restart the manifest"));
+        }
+        let count = |sql: &str| -> CoreResult<u64> {
+            let value: i64 = connection.query_row(sql, [], |row| row.get(0))?;
+            u64::try_from(value).map_err(|_| ds::invalid("manifest work count overflow"))
+        };
+        let mut total = 0_u64;
+        for sql in [
+            "SELECT COUNT(*) FROM media_asset WHERE status='ready'",
+            "SELECT COUNT(*) FROM album",
+            "SELECT COUNT(*) FROM album_rule r JOIN album a ON a.id=r.album_id
+             WHERE a.album_type='smart' AND NOT EXISTS(
+               SELECT 1 FROM album_rule older WHERE older.album_id=r.album_id
+                 AND older.id<r.id AND older.rule_group=r.rule_group
+                 AND older.field=r.field AND older.operator=r.operator
+                 AND older.value=r.value)",
+            "SELECT COUNT(*) FROM album_media am
+             JOIN album a ON a.id=am.album_id
+             JOIN media_asset ma ON ma.id=am.media_id
+             WHERE a.album_type='manual' AND ma.status='ready'",
+            "SELECT COUNT(*) FROM sync_tag_state",
+            "SELECT COUNT(*) FROM sync_mapping",
+        ] {
+            total = total
+                .checked_add(count(sql)?)
+                .ok_or_else(|| ds::invalid("manifest work count overflow"))?;
+        }
+        Ok(total)
     }
 
     pub fn open(path: impl AsRef<Path>) -> CoreResult<Self> {
@@ -5225,6 +5317,8 @@ impl Database {
                     pinned: row.get::<_, i64>(4)? != 0,
                     system_key: row.get(5)?,
                     media_count: 0,
+                    image_count: 0,
+                    video_count: 0,
                     source_device_name: row.get(6)?,
                 })
             })?;
@@ -5234,14 +5328,26 @@ impl Database {
         for album in &mut albums {
             let mut bind = Vec::new();
             let scope = gallery_album_sql(&connection, album.id, &mut bind)?;
-            album.media_count = connection.query_row(
+            let (media_count, image_count, video_count) = connection.query_row(
                 &format!(
-                    "SELECT COUNT(*) FROM media_asset m LEFT JOIN note n ON n.media_id=m.id
+                    "SELECT COUNT(*),
+                            COALESCE(SUM(CASE WHEN m.media_type='image' THEN 1 ELSE 0 END),0),
+                            COALESCE(SUM(CASE WHEN m.media_type='video' THEN 1 ELSE 0 END),0)
+                       FROM media_asset m LEFT JOIN note n ON n.media_id=m.id
                           WHERE m.status='ready' AND ({scope})"
                 ),
                 params_from_iter(&bind),
-                |row| row.get(0),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?.max(0) as u64,
+                        row.get::<_, i64>(1)?.max(0) as u64,
+                        row.get::<_, i64>(2)?.max(0) as u64,
+                    ))
+                },
             )?;
+            album.media_count = media_count;
+            album.image_count = image_count;
+            album.video_count = video_count;
         }
         Ok(albums)
     }
@@ -5781,6 +5887,52 @@ impl Database {
         Ok(entries)
     }
 
+    /// Return only ready local originals whose content hashes were selected
+    /// by a bounded device-sync result page.
+    pub fn media_storage_entries_by_sha256(
+        &self,
+        hashes: &[String],
+    ) -> CoreResult<Vec<MediaStorageEntry>> {
+        const MAX_HASHES: usize = 60;
+        if hashes.len() > MAX_HASHES {
+            return Err(CoreError::InvalidConfig(
+                "device-sync media page exceeds its fixed bound".into(),
+            ));
+        }
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let placeholders = (1..=hashes.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id, sha256, storage_path, media_type
+             FROM media_asset
+             WHERE status='ready' AND sha256 IN ({placeholders})
+             ORDER BY sha256"
+        );
+        let connection = self.connection.lock().expect("database mutex poisoned");
+        let mut statement = connection.prepare(&sql)?;
+        let entries = statement
+            .query_map(params_from_iter(hashes.iter()), |row| {
+                let kind: String = row.get(3)?;
+                Ok(MediaStorageEntry {
+                    id: row.get(0)?,
+                    sha256: row.get(1)?,
+                    storage_path: row.get(2)?,
+                    kind: if kind == "video" {
+                        MediaKind::Video
+                    } else {
+                        MediaKind::Image
+                    },
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(entries)
+    }
+
     pub fn media_export_entries(&self, media_ids: &[i64]) -> CoreResult<Vec<MediaExportEntry>> {
         let connection = self.connection.lock().expect("database mutex poisoned");
         let mut entries = Vec::with_capacity(media_ids.len());
@@ -5911,6 +6063,21 @@ impl Database {
             Value::Integer(i64::from(query.offset)),
         ]);
         read_gallery_rows(&connection, &tail, &bind)
+    }
+
+    pub fn count_media(&self, query: &GalleryQuery) -> CoreResult<u64> {
+        let connection = self.connection.lock().expect("database mutex poisoned");
+        let (condition, bind) = gallery_where_sql(&connection, query)?;
+        let count: i64 = connection.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM media_asset m
+                 LEFT JOIN note n ON n.media_id=m.id
+                 WHERE {condition}"
+            ),
+            params_from_iter(bind),
+            |row| row.get(0),
+        )?;
+        u64::try_from(count).map_err(|_| CoreError::InvalidConfig("media count overflow".into()))
     }
 
     /// Fetch one bounded, keyset-paginated gallery page.  This deliberately
@@ -10881,20 +11048,22 @@ mod tests {
         let mut media_ids = Vec::new();
         {
             let connection = database.connection.lock().unwrap();
-            for (index, favorite, status) in [
-                (1, true, "ready"),
-                (2, false, "ready"),
-                (3, false, "ready"),
-                (4, true, "failed"),
+            for (index, favorite, status, media_type) in [
+                (1, true, "ready", "image"),
+                (2, false, "ready", "image"),
+                (3, false, "ready", "image"),
+                (4, true, "failed", "image"),
+                (5, false, "ready", "video"),
             ] {
                 connection
                     .execute(
                         "INSERT INTO media_asset(
                            sha256, size, media_type, imported_at, game_name,
                            original_name, storage_path, favorite, status
-                         ) VALUES (?1, 42, 'image', ?2, 'Game', ?3, ?3, ?4, ?5)",
+                         ) VALUES (?1, 42, ?2, ?3, 'Game', ?4, ?4, ?5, ?6)",
                         params![
                             format!("{index:064x}"),
+                            media_type,
                             &now,
                             format!("media-{index}.jpg"),
                             favorite,
@@ -10909,6 +11078,9 @@ mod tests {
         let manual_album = database.create_album("Manual", "", false).unwrap();
         database
             .add_media_to_album(manual_album, media_ids[2])
+            .unwrap();
+        database
+            .add_media_to_album(manual_album, media_ids[4])
             .unwrap();
         let smart_album = database.create_album("Smart", "", true).unwrap();
         database.add_tag(media_ids[1], "庆典").unwrap();
@@ -10925,16 +11097,19 @@ mod tests {
             .unwrap();
 
         let albums = database.list_albums().unwrap();
-        let count = |name: &str| {
-            albums
-                .iter()
-                .find(|album| album.name == name)
-                .unwrap()
-                .media_count
-        };
-        assert_eq!(count("收藏"), 1);
-        assert_eq!(count("Manual"), 1);
-        assert_eq!(count("Smart"), 1);
+        let album = |name: &str| albums.iter().find(|album| album.name == name).unwrap();
+        let favorites = album("收藏");
+        assert_eq!(favorites.media_count, 1);
+        assert_eq!(favorites.image_count, 1);
+        assert_eq!(favorites.video_count, 0);
+        let manual = album("Manual");
+        assert_eq!(manual.media_count, 2);
+        assert_eq!(manual.image_count, 1);
+        assert_eq!(manual.video_count, 1);
+        let smart = album("Smart");
+        assert_eq!(smart.media_count, 1);
+        assert_eq!(smart.image_count, 1);
+        assert_eq!(smart.video_count, 0);
     }
 
     #[test]

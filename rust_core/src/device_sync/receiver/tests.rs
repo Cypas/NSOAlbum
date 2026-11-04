@@ -46,7 +46,7 @@ fn receiver_prepare_deterministically_rejects_metadata_peak_without_writing_libr
 
 // Free-space loss after reception must not even create a prepare journal.
 #[tokio::test]
-async fn receiver_apply_rechecks_free_before_journal_and_retains_verified_cache() {
+async fn receiver_verified_media_cache_survives_apply_failure_and_new_operation_reuses_it() {
     use super::super::space_budget::tests_support::Override;
     let (_source, _target, a, b) = empty_pair();
     import(&a, b"cached bytes", "incoming.jpg").await;
@@ -57,6 +57,7 @@ async fn receiver_apply_rechecks_free_before_journal_and_retains_verified_cache(
         ReceiveOperation::prepare(b.database(), snapshot.clone(), "Target", SyncMode::Merge)
             .unwrap()
     };
+    let first_operation = receive.operation_id();
     let initial_additional = receive
         .receiver_budget()
         .volumes
@@ -120,6 +121,33 @@ async fn receiver_apply_rechecks_free_before_journal_and_retains_verified_cache(
     let _free = Override::free(u64::MAX);
     let mut retry =
         ReceiveOperation::prepare(b.database(), snapshot, "Target", SyncMode::Merge).unwrap();
+    assert_ne!(retry.operation_id(), first_operation);
+    let sha = hex::encode(sha2::Sha256::digest(b"cached bytes"));
+    let decision = retry
+        .plan()
+        .media
+        .iter()
+        .find(|decision| decision.sha256 == sha)
+        .expect("the unchanged source media must remain in the confirmed plan");
+    let record = decision
+        .final_record
+        .as_ref()
+        .expect("the incoming media must still be part of the final library");
+    assert_eq!(record.length, b"cached bytes".len() as u64);
+    assert_eq!(record.sha256, sha);
+    assert_eq!(
+        retry
+            .staging_mut()
+            .space_preflight()
+            .requirements
+            .staging_bytes,
+        0,
+        "the fully verified cache entry must remove all retransmission staging bytes"
+    );
+    assert!(
+        !retry.staging_mut().requires_transfer(&sha).unwrap(),
+        "a new operation must reuse the exact SHA/length/type-bound cache object"
+    );
     let retry_metadata = b
         .database()
         .device_sync_metadata_cost(
@@ -147,8 +175,6 @@ async fn receiver_apply_rechecks_free_before_journal_and_retains_verified_cache(
         81_920,
         "cache removes only staging allocation, never publication"
     );
-    let sha = hex::encode(sha2::Sha256::digest(b"cached bytes"));
-    assert!(!retry.staging_mut().requires_transfer(&sha).unwrap());
     let mut approved = retry.authorize().unwrap();
     retry
         .apply(
@@ -158,7 +184,13 @@ async fn receiver_apply_rechecks_free_before_journal_and_retains_verified_cache(
             &mut |_| {},
         )
         .unwrap();
-    assert_eq!(b.list_media(GalleryQuery::default()).unwrap().len(), 1);
+    let imported = b.list_media(GalleryQuery::default()).unwrap();
+    assert_eq!(imported.len(), 1);
+    assert_eq!(imported[0].sha256, sha);
+    assert_eq!(
+        std::fs::read(&imported[0].storage_path).unwrap(),
+        b"cached bytes"
+    );
 }
 
 // Actual backup JSON length depends on the snapshot time's serialized precision.

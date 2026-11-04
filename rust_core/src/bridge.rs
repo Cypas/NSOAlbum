@@ -11,7 +11,8 @@ use crate::device_sync::headless::{
 use crate::device_sync::planner::SyncMode;
 use crate::device_sync::read_model::ReadError;
 use crate::device_sync::read_model::{
-    BackupPageRead, ConflictPageRead, EndpointRead, PreviewRead, RestoreSummaryRead,
+    AppliedMediaCachePageRead, BackupPageRead, ConflictPageRead, EndpointRead, PreviewRead,
+    RestoreSummaryRead,
 };
 use crate::device_sync::runtime::DeviceCommandError;
 use crate::device_sync::usb::{UsbAction, UsbReply, UsbView};
@@ -23,6 +24,7 @@ use crate::models::{
 };
 use crate::nso::CoralSession;
 use crate::settings::{AppSettings, SyncPolicy, SyncRuntimeState, SyncScheduleStatus};
+pub use crate::switch_import::{SwitchMtpEntry, SwitchMtpStageStatus};
 use crate::sync::CancellationToken;
 
 static CORE: OnceLock<CoreApi> = OnceLock::new();
@@ -131,6 +133,9 @@ pub fn device_sync_status(endpoint: String) -> Result<EndpointStatus, String> {
 }
 pub fn device_sync_read_endpoint(endpoint: String) -> EndpointRead {
     headless::read_endpoint(&endpoint)
+}
+pub fn device_sync_applied_media_page(endpoint: String, offset: u64) -> AppliedMediaCachePageRead {
+    headless::applied_media_page(&endpoint, offset)
 }
 pub fn device_sync_read_preview(endpoint: String) -> PreviewRead {
     headless::read_preview(&endpoint)
@@ -836,6 +841,10 @@ pub fn list_media(query: GalleryQuery) -> Result<Vec<MediaAsset>, String> {
     core()?.list_media(query).map_err(error_text)
 }
 
+pub fn count_media(query: GalleryQuery) -> Result<u64, String> {
+    core()?.count_media(query).map_err(error_text)
+}
+
 pub fn list_media_page(
     request: crate::models::GalleryPageRequest,
 ) -> Result<crate::models::GalleryPage, String> {
@@ -945,6 +954,49 @@ pub async fn import_mtp_files(
         .import_mtp_files(paths, device_name)
         .await
         .map_err(error_text)
+}
+
+pub async fn import_mtp_files_with_progress(
+    paths: Vec<String>,
+    device_name: String,
+    operation_id: String,
+) -> Result<ImportSummary, String> {
+    core()?
+        .import_mtp_files_with_progress(paths, device_name, operation_id)
+        .await
+        .map_err(error_text)
+}
+
+pub fn cancel_import(operation_id: String) -> Result<bool, String> {
+    core()?.cancel_import(operation_id).map_err(error_text)
+}
+
+pub fn switch_mtp_list_devices() -> Result<Vec<String>, String> {
+    crate::switch_import::switch_mtp_list_devices()
+}
+
+pub fn switch_mtp_scan(device: String) -> Result<Vec<SwitchMtpEntry>, String> {
+    crate::switch_import::switch_mtp_scan(device)
+}
+
+pub fn switch_mtp_start_stage(
+    operation_id: String,
+    device: String,
+    entries: Vec<SwitchMtpEntry>,
+) -> Result<(), String> {
+    crate::switch_import::switch_mtp_start_stage(operation_id, device, entries)
+}
+
+pub fn switch_mtp_stage_status(operation_id: String) -> Option<SwitchMtpStageStatus> {
+    crate::switch_import::switch_mtp_stage_status(operation_id)
+}
+
+pub fn switch_mtp_cancel_stage(operation_id: String) -> bool {
+    crate::switch_import::switch_mtp_cancel_stage(operation_id)
+}
+
+pub fn switch_mtp_cleanup_stage(operation_id: String) {
+    crate::switch_import::switch_mtp_cleanup_stage(operation_id);
 }
 
 pub async fn export_media(

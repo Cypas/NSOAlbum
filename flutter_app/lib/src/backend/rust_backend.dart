@@ -35,6 +35,7 @@ import 'device_sync/account_storage.dart';
 import 'device_sync/account_coordinator.dart';
 import 'device_sync/startup_lifecycle.dart';
 import '../platform/sync_notifications.dart';
+import '../diagnostics/gallery_work_probe.dart';
 
 const _windowsPicturesKnownFolderId = '{33E28130-4E1E-4676-835A-98395C3BC3BB}';
 
@@ -56,7 +57,8 @@ class RustBackend
         AccountWorkBackend,
         AccountScheduleAdmissionBackend,
         NintendoAccountNameHistoryBackend,
-        DeviceSyncStartupBackend {
+        DeviceSyncStartupBackend,
+        MediaCountBackend {
   RustBackend._(
     this._storage,
     this._logger,
@@ -90,6 +92,8 @@ class RustBackend
   static String _friendCodeKey(String accountId) =>
       'nintendo.friend_code.v1.$accountId';
   final FlutterSecureStorage _storage;
+  Future<String?> _readSecure(String key) =>
+      GalleryWorkProbe.instance.secureRead(key, () => _storage.read(key: key));
   @override
   final accountWorkGate = AccountWorkGate();
   final AppLogger _logger;
@@ -508,6 +512,10 @@ class RustBackend
   @override
   Future<GalleryPage> listMediaPage(GalleryPageRequest request) =>
       rust_api.listMediaPage(request: request);
+
+  @override
+  Future<BigInt> countMedia(GalleryQuery query) =>
+      rust_api.countMedia(query: query);
 
   @override
   Future<List<GameMediaCount>> listGameMediaCounts({int? albumId}) =>
@@ -1070,7 +1078,7 @@ class RustBackend
   Future<bool> _isSignedIn() async {
     if (_isolated) return false;
     if ((await _readStoredAccountTokens()).isNotEmpty) return true;
-    return (await _storage.read(key: _sessionTokenKey))?.isNotEmpty == true;
+    return (await _readSecure(_sessionTokenKey))?.isNotEmpty == true;
   }
 
   @override
@@ -1131,12 +1139,12 @@ class RustBackend
     if (_isolated) return null;
     final tokens = await _readAccountTokens();
     if (tokens.isEmpty) return null;
-    final selected = await _storage.read(key: _selectedAccountKey);
+    final selected = await _readSecure(_selectedAccountKey);
     if (selected != null && tokens.containsKey(selected)) return selected;
     return _commitAccounts(() async {
       final current = await _readStoredAccountTokens();
       if (current.isEmpty) return null;
-      final latest = await _storage.read(key: _selectedAccountKey);
+      final latest = await _readSecure(_selectedAccountKey);
       if (latest != null && current.containsKey(latest)) return latest;
       final fallback = current.keys.first;
       await _storage.write(key: _selectedAccountKey, value: fallback);
@@ -1187,7 +1195,7 @@ class RustBackend
       }
       await _writeCachedProfiles(profiles);
       await _writeAccountTokens(tokens);
-      final selected = await _storage.read(key: _selectedAccountKey);
+      final selected = await _readSecure(_selectedAccountKey);
       if (selected == accountId || !tokens.containsKey(selected)) {
         if (tokens.isEmpty) {
           await _storage.delete(key: _selectedAccountKey);
@@ -1314,7 +1322,7 @@ class RustBackend
     String operationId,
   ) => _withAccountTool(accountId, operationId, (token) async {
     final epoch = _accountCredentialEpoch;
-    final stored = await _storage.read(key: _friendCodeKey(accountId));
+    final stored = await _readSecure(_friendCodeKey(accountId));
     if (stored != null) {
       try {
         final value = jsonDecode(stored) as Map<String, dynamic>;
@@ -1452,7 +1460,7 @@ class RustBackend
 
   Future<Map<String, String>> _readStoredAccountTokens() async {
     _requireAccountAccess();
-    final raw = await _storage.read(key: _accountTokensKey);
+    final raw = await _readSecure(_accountTokensKey);
     if (raw == null || raw.isEmpty) return {};
     final decoded = jsonDecode(raw);
     if (decoded is! Map<String, dynamic>) return {};
@@ -1467,7 +1475,7 @@ class RustBackend
     final epoch = _accountCredentialEpoch;
     final tokens = await _readStoredAccountTokens();
     if (tokens.isNotEmpty) return tokens;
-    final legacy = await _storage.read(key: _sessionTokenKey);
+    final legacy = await _readSecure(_sessionTokenKey);
     if (legacy == null || legacy.isEmpty) return tokens;
     final session = await rust_api.establishCoralSession(
       sessionToken: legacy,
@@ -1484,7 +1492,7 @@ class RustBackend
     return _commitAccounts(() async {
       checkMigration();
       final current = await _readStoredAccountTokens();
-      final currentLegacy = await _storage.read(key: _sessionTokenKey);
+      final currentLegacy = await _readSecure(_sessionTokenKey);
       checkMigration();
       if (current.isNotEmpty || currentLegacy != legacy) {
         throw StateError('Nintendo legacy account state changed');
@@ -1519,7 +1527,7 @@ class RustBackend
 
   Future<Map<String, NintendoAccountProfile>> _readCachedProfiles() async {
     _requireAccountAccess();
-    final raw = await _storage.read(key: _accountProfilesKey);
+    final raw = await _readSecure(_accountProfilesKey);
     if (raw == null || raw.isEmpty) return {};
     if (raw.length > maxAccountRawBytes ||
         utf8.encode(raw).length > maxAccountRawBytes) {
@@ -1567,7 +1575,7 @@ class RustBackend
   }
 
   Future<Map<String, dynamic>> _readRawProfiles() async {
-    final raw = await _storage.read(key: _accountProfilesKey);
+    final raw = await _readSecure(_accountProfilesKey);
     if (raw == null || raw.isEmpty) return {};
     try {
       final decoded = jsonDecode(raw);
@@ -1852,7 +1860,7 @@ class RustBackend
     _pendingLogin = null;
     await _commitAccounts(() async {
       final tokens = await _readStoredAccountTokens();
-      final saved = await _storage.read(key: _selectedAccountKey);
+      final saved = await _readSecure(_selectedAccountKey);
       final selected = tokens.containsKey(saved)
           ? saved
           : tokens.isEmpty

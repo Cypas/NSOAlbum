@@ -350,7 +350,12 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
         jsonEncode({
           'hashes': items.map((item) => item.sha256).toList()..sort(),
           'favorite': videos.first.sha256,
-          'cover': await _hash(p.join(cacheRoot, '${videos.first.sha256}.jpg')),
+          'cover': await _hash(
+            VideoThumbnailCache.thumbnailPath(
+              cacheRoot: cacheRoot,
+              sha256: videos.first.sha256,
+            ),
+          ),
         }),
         flush: true,
       );
@@ -383,7 +388,10 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
       }
     });
     await _step('thumbnail-cache-reuse', () async {
-      final coverFile = p.join(cacheRoot, '${source.sha256}.jpg');
+      final coverFile = VideoThumbnailCache.thumbnailPath(
+        cacheRoot: cacheRoot,
+        sha256: source.sha256,
+      );
       if (await _hash(coverFile) != expected['cover']) {
         throw StateError('Disk cover changed after restart');
       }
@@ -453,7 +461,12 @@ class _CiSmokeAppState extends State<CiSmokeApp> {
 
   Future<void> _verifyCache(MediaAsset asset) async {
     final files = [
-      File(p.join(cacheRoot, '${asset.sha256}.jpg')),
+      File(
+        VideoThumbnailCache.thumbnailPath(
+          cacheRoot: cacheRoot,
+          sha256: asset.sha256,
+        ),
+      ),
       File(p.join(cacheRoot, '${asset.sha256}.duration')),
     ];
     final before = [for (final file in files) await file.lastModified()];

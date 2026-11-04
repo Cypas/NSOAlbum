@@ -7,8 +7,9 @@ import '../rust/models.dart';
 
 /// Business execution only. Widgets own players and editable UI drafts.
 class MediaEditController {
-  MediaEditController(this.backend);
+  MediaEditController(this.backend, {this.onMediaCreated});
   final AppBackend backend;
+  final ValueChanged<MediaAsset>? onMediaCreated;
   String? previewPath;
   bool busy = false;
   bool disposed = false;
@@ -42,15 +43,26 @@ class MediaEditController {
     Duration start,
     Duration end, {
     required bool overwrite,
-  }) => execute(
-    () => backend.trimVideo(source, start, end, overwrite: overwrite),
-  );
+  }) => execute(() async {
+    final result = await backend.trimVideo(
+      source,
+      start,
+      end,
+      overwrite: overwrite,
+    );
+    onMediaCreated?.call(result);
+    return result;
+  });
 
   Future<MediaAsset> frame(
     MediaAsset source,
     Uint8List bytes, {
     String extension = 'jpg',
-  }) => execute(() => backend.saveVideoFrame(source, bytes, extension));
+  }) => execute(() async {
+    final result = await backend.saveVideoFrame(source, bytes, extension);
+    onMediaCreated?.call(result);
+    return result;
+  });
 
   Future<String> preview(List<MediaAsset> videos) => execute(() async {
     await discardPreview();
@@ -68,7 +80,12 @@ class MediaEditController {
         // The backend consumes and cleans the prepared path on either outcome.
         final path = preparedPath ?? previewPath;
         previewPath = null;
-        return backend.saveMergedVideo(videos, preparedPath: path);
+        final result = await backend.saveMergedVideo(
+          videos,
+          preparedPath: path,
+        );
+        onMediaCreated?.call(result);
+        return result;
       });
 
   Future<void> discardPreview() {

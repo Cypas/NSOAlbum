@@ -100,13 +100,13 @@ void main() {
     expect(image.gaplessPlayback, isTrue);
   });
 
-  testWidgets('detail page changes briefly fade without replacing the pager', (
+  testWidgets('detail page changes briefly fade without replacing the media', (
     tester,
   ) async {
     await tester.pumpWidget(_app([_image(1), _image(2)]));
     await tester.pump();
     final media = find.byKey(const Key('android-detail-media'));
-    final pager = tester.widget<PageView>(find.byType(PageView));
+    final mediaElement = tester.element(media);
 
     await tester.drag(media, const Offset(-250, 0));
     await tester.pump();
@@ -117,10 +117,7 @@ void main() {
     final fade = tester.widget<FadeTransition>(fadeFinder);
     expect(fade.opacity.value, greaterThan(0));
     expect(fade.opacity.value, lessThan(1));
-    expect(
-      tester.widget<PageView>(find.byType(PageView)).controller,
-      same(pager.controller),
-    );
+    expect(tester.element(media), same(mediaElement));
 
     await tester.pumpAndSettle();
     expect(
@@ -196,6 +193,101 @@ void main() {
       isTrue,
     );
     expect(tester.getRect(preview), previewRectBefore);
+  });
+
+  testWidgets('filmstrip keeps the navigated media visible near the end', (
+    tester,
+  ) async {
+    await useLayoutTestViewport(tester, const Size(360, 800));
+    await tester.pumpWidget(
+      _app([for (var id = 1; id <= 24; id++) _image(id)], initialIndex: 20),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('android-detail-active-media-21')),
+      findsOneWidget,
+    );
+
+    await tester.drag(
+      find.byKey(const Key('android-detail-media')),
+      const Offset(-250, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('android-detail-active-media-22')),
+      findsOneWidget,
+    );
+
+    final filmstrip = tester.getRect(
+      find.byKey(const Key('android-detail-filmstrip')),
+    );
+    final current = find.byKey(const ValueKey('android-filmstrip-item-22'));
+    expect(current, findsOneWidget);
+    final rect = tester.getRect(current);
+    expect(rect.left, greaterThanOrEqualTo(filmstrip.left));
+    expect(rect.right, lessThanOrEqualTo(filmstrip.right));
+  });
+
+  testWidgets('media viewer keeps a five-item stable preview window', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _app([for (var id = 1; id <= 7; id++) _image(id)], initialIndex: 3),
+    );
+    await tester.pumpAndSettle();
+
+    for (var id = 1; id <= 7; id++) {
+      final cached = find.byKey(
+        ValueKey(('android-detail-cached-media', id, 'image-$id')),
+        skipOffstage: false,
+      );
+      expect(cached, id >= 2 && id <= 6 ? findsOneWidget : findsNothing);
+    }
+  });
+
+  testWidgets('filmstrip highlight follows horizontal drag progress', (
+    tester,
+  ) async {
+    await useLayoutTestViewport(tester, const Size(360, 800));
+    await tester.pumpWidget(
+      _app([for (var id = 1; id <= 5; id++) _image(id)], initialIndex: 2),
+    );
+    await tester.pumpAndSettle();
+    final media = find.byKey(const Key('android-detail-media'));
+    final rect = tester.getRect(media);
+    final gesture = await tester.startGesture(rect.center);
+    await gesture.moveBy(const Offset(-100, 0));
+    await tester.pump();
+
+    final thumbnail = tester.widget<AnimatedContainer>(
+      find.byKey(const ValueKey('android-filmstrip-item-3')),
+    );
+    final decoration = thumbnail.decoration! as BoxDecoration;
+    expect(decoration.border!.top.width, greaterThan(2));
+
+    await gesture.up();
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('immersive uses the media reached after paging', (tester) async {
+    await useLayoutTestViewport(tester, const Size(360, 800));
+    await tester.pumpWidget(_app([_image(1), _image(2), _image(3)]));
+    await tester.pump();
+    final media = find.byKey(const Key('android-detail-media'));
+
+    await tester.drag(media, const Offset(-250, 0));
+    await tester.pumpAndSettle();
+    await tester.tap(media);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const Key('android-detail-immersive')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('android-detail-active-media-2')),
+      findsOneWidget,
+    );
   });
 
   testWidgets(
@@ -436,6 +528,7 @@ Widget _app(
   double scale = 1,
   FakeBackend? backend,
   EdgeInsets padding = EdgeInsets.zero,
+  int initialIndex = 0,
 }) => MaterialApp(
   locale: Locale(locale),
   supportedLocales: AppLocalizations.supportedLocales,
@@ -454,6 +547,7 @@ Widget _app(
   home: AndroidMediaViewer(
     backend: backend ?? _ViewerBackend(items),
     items: items,
+    initialIndex: initialIndex,
   ),
 );
 

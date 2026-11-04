@@ -75,6 +75,33 @@ void main() {
     },
   );
 
+  test(
+    'applied-media page Busy retries then returns the completed cache page',
+    () async {
+      var calls = 0;
+      final result = await readDeviceProjection(
+        () async {
+          calls++;
+          if (calls == 1) {
+            return const AppliedMediaCachePageRead(error: ReadError.busy);
+          }
+          return AppliedMediaCachePageRead(
+            page: AppliedMediaCachePage(
+              items: const [],
+              nextOffset: BigInt.from(60),
+            ),
+          );
+        },
+        errorOf: (value) => value.error,
+        cancelled: () => false,
+      );
+
+      expect(calls, 2);
+      expect(result.error, isNull);
+      expect(result.page?.nextOffset, BigInt.from(60));
+    },
+  );
+
   test('projection Busy is finite and does not reinterpret genuine changed binding', () async {
     var calls = 0;
     await expectLater(

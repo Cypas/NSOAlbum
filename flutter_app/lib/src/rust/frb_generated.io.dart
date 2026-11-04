@@ -27,6 +27,7 @@ import 'nso/provider.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart';
 
 import 'settings.dart';
+import 'switch_import.dart';
 
 abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RustLibApiImplPlatform({
@@ -58,6 +59,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ApplicationBuild dco_decode_application_build(dynamic raw);
 
   @protected
+  AppliedMediaCacheEntry dco_decode_applied_media_cache_entry(dynamic raw);
+
+  @protected
+  AppliedMediaCachePage dco_decode_applied_media_cache_page(dynamic raw);
+
+  @protected
+  AppliedMediaCachePageRead dco_decode_applied_media_cache_page_read(
+    dynamic raw,
+  );
+
+  @protected
+  ApplyProgressPhase dco_decode_apply_progress_phase(dynamic raw);
+
+  @protected
   BackupMetadata dco_decode_backup_metadata(dynamic raw);
 
   @protected
@@ -83,6 +98,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ApplicationBuild dco_decode_box_autoadd_application_build(dynamic raw);
+
+  @protected
+  AppliedMediaCachePage dco_decode_box_autoadd_applied_media_cache_page(
+    dynamic raw,
+  );
+
+  @protected
+  ApplyProgressPhase dco_decode_box_autoadd_apply_progress_phase(dynamic raw);
 
   @protected
   BackupPage dco_decode_box_autoadd_backup_page(dynamic raw);
@@ -129,6 +152,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   OperationProgress dco_decode_box_autoadd_operation_progress(dynamic raw);
 
   @protected
+  PreparationStage dco_decode_box_autoadd_preparation_stage(dynamic raw);
+
+  @protected
   PreviewSummary dco_decode_box_autoadd_preview_summary(dynamic raw);
 
   @protected
@@ -144,6 +170,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SourceDescription dco_decode_box_autoadd_source_description(dynamic raw);
 
   @protected
+  SwitchMtpStageStatus dco_decode_box_autoadd_switch_mtp_stage_status(
+    dynamic raw,
+  );
+
+  @protected
   SyncAttemptSummary dco_decode_box_autoadd_sync_attempt_summary(dynamic raw);
 
   @protected
@@ -154,6 +185,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   TcpView dco_decode_box_autoadd_tcp_view(dynamic raw);
+
+  @protected
+  int dco_decode_box_autoadd_u_16(dynamic raw);
 
   @protected
   int dco_decode_box_autoadd_u_32(dynamic raw);
@@ -279,6 +313,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<AlbumSummary> dco_decode_list_album_summary(dynamic raw);
 
   @protected
+  List<AppliedMediaCacheEntry> dco_decode_list_applied_media_cache_entry(
+    dynamic raw,
+  );
+
+  @protected
   List<BackupMetadata> dco_decode_list_backup_metadata(dynamic raw);
 
   @protected
@@ -330,6 +369,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<StorageRole> dco_decode_list_storage_role(dynamic raw);
+
+  @protected
+  List<SwitchMtpEntry> dco_decode_list_switch_mtp_entry(dynamic raw);
 
   @protected
   List<SyncItemError> dco_decode_list_sync_item_error(dynamic raw);
@@ -413,6 +455,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ApplicationBuild? dco_decode_opt_box_autoadd_application_build(dynamic raw);
 
   @protected
+  AppliedMediaCachePage? dco_decode_opt_box_autoadd_applied_media_cache_page(
+    dynamic raw,
+  );
+
+  @protected
+  ApplyProgressPhase? dco_decode_opt_box_autoadd_apply_progress_phase(
+    dynamic raw,
+  );
+
+  @protected
   BackupPage? dco_decode_opt_box_autoadd_backup_page(dynamic raw);
 
   @protected
@@ -450,6 +502,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   OperationProgress? dco_decode_opt_box_autoadd_operation_progress(dynamic raw);
 
   @protected
+  PreparationStage? dco_decode_opt_box_autoadd_preparation_stage(dynamic raw);
+
+  @protected
   PreviewSummary? dco_decode_opt_box_autoadd_preview_summary(dynamic raw);
 
   @protected
@@ -467,6 +522,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SourceDescription? dco_decode_opt_box_autoadd_source_description(dynamic raw);
 
   @protected
+  SwitchMtpStageStatus? dco_decode_opt_box_autoadd_switch_mtp_stage_status(
+    dynamic raw,
+  );
+
+  @protected
   SyncAttemptSummary? dco_decode_opt_box_autoadd_sync_attempt_summary(
     dynamic raw,
   );
@@ -476,6 +536,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   TcpView? dco_decode_opt_box_autoadd_tcp_view(dynamic raw);
+
+  @protected
+  int? dco_decode_opt_box_autoadd_u_16(dynamic raw);
 
   @protected
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
@@ -500,6 +563,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PairingStage dco_decode_pairing_stage(dynamic raw);
+
+  @protected
+  PreparationStage dco_decode_preparation_stage(dynamic raw);
 
   @protected
   PreviewRead dco_decode_preview_read(dynamic raw);
@@ -544,6 +610,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   StorageRole dco_decode_storage_role(dynamic raw);
 
   @protected
+  SwitchMtpEntry dco_decode_switch_mtp_entry(dynamic raw);
+
+  @protected
+  SwitchMtpStageStatus dco_decode_switch_mtp_stage_status(dynamic raw);
+
+  @protected
   SyncAttemptSummary dco_decode_sync_attempt_summary(dynamic raw);
 
   @protected
@@ -578,6 +650,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   TransportKind dco_decode_transport_kind(dynamic raw);
+
+  @protected
+  int dco_decode_u_16(dynamic raw);
 
   @protected
   int dco_decode_u_32(dynamic raw);
@@ -639,6 +714,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ApplicationBuild sse_decode_application_build(SseDeserializer deserializer);
 
   @protected
+  AppliedMediaCacheEntry sse_decode_applied_media_cache_entry(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  AppliedMediaCachePage sse_decode_applied_media_cache_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  AppliedMediaCachePageRead sse_decode_applied_media_cache_page_read(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ApplyProgressPhase sse_decode_apply_progress_phase(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BackupMetadata sse_decode_backup_metadata(SseDeserializer deserializer);
 
   @protected
@@ -668,6 +763,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ApplicationBuild sse_decode_box_autoadd_application_build(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  AppliedMediaCachePage sse_decode_box_autoadd_applied_media_cache_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ApplyProgressPhase sse_decode_box_autoadd_apply_progress_phase(
     SseDeserializer deserializer,
   );
 
@@ -734,6 +839,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  PreparationStage sse_decode_box_autoadd_preparation_stage(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   PreviewSummary sse_decode_box_autoadd_preview_summary(
     SseDeserializer deserializer,
   );
@@ -757,6 +867,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SwitchMtpStageStatus sse_decode_box_autoadd_switch_mtp_stage_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SyncAttemptSummary sse_decode_box_autoadd_sync_attempt_summary(
     SseDeserializer deserializer,
   );
@@ -771,6 +886,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   TcpView sse_decode_box_autoadd_tcp_view(SseDeserializer deserializer);
+
+  @protected
+  int sse_decode_box_autoadd_u_16(SseDeserializer deserializer);
 
   @protected
   int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
@@ -916,6 +1034,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<AppliedMediaCacheEntry> sse_decode_list_applied_media_cache_entry(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<BackupMetadata> sse_decode_list_backup_metadata(
     SseDeserializer deserializer,
   );
@@ -987,6 +1110,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<StorageRole> sse_decode_list_storage_role(SseDeserializer deserializer);
+
+  @protected
+  List<SwitchMtpEntry> sse_decode_list_switch_mtp_entry(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<SyncItemError> sse_decode_list_sync_item_error(
@@ -1094,6 +1222,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  AppliedMediaCachePage? sse_decode_opt_box_autoadd_applied_media_cache_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ApplyProgressPhase? sse_decode_opt_box_autoadd_apply_progress_phase(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BackupPage? sse_decode_opt_box_autoadd_backup_page(
     SseDeserializer deserializer,
   );
@@ -1145,6 +1283,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  PreparationStage? sse_decode_opt_box_autoadd_preparation_stage(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   PreviewSummary? sse_decode_opt_box_autoadd_preview_summary(
     SseDeserializer deserializer,
   );
@@ -1170,6 +1313,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SwitchMtpStageStatus? sse_decode_opt_box_autoadd_switch_mtp_stage_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SyncAttemptSummary? sse_decode_opt_box_autoadd_sync_attempt_summary(
     SseDeserializer deserializer,
   );
@@ -1181,6 +1329,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   TcpView? sse_decode_opt_box_autoadd_tcp_view(SseDeserializer deserializer);
+
+  @protected
+  int? sse_decode_opt_box_autoadd_u_16(SseDeserializer deserializer);
 
   @protected
   int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
@@ -1209,6 +1360,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PairingStage sse_decode_pairing_stage(SseDeserializer deserializer);
+
+  @protected
+  PreparationStage sse_decode_preparation_stage(SseDeserializer deserializer);
 
   @protected
   PreviewRead sse_decode_preview_read(SseDeserializer deserializer);
@@ -1261,6 +1415,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   StorageRole sse_decode_storage_role(SseDeserializer deserializer);
 
   @protected
+  SwitchMtpEntry sse_decode_switch_mtp_entry(SseDeserializer deserializer);
+
+  @protected
+  SwitchMtpStageStatus sse_decode_switch_mtp_stage_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SyncAttemptSummary sse_decode_sync_attempt_summary(
     SseDeserializer deserializer,
   );
@@ -1299,6 +1461,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   TransportKind sse_decode_transport_kind(SseDeserializer deserializer);
+
+  @protected
+  int sse_decode_u_16(SseDeserializer deserializer);
 
   @protected
   int sse_decode_u_32(SseDeserializer deserializer);
@@ -1364,6 +1529,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_applied_media_cache_entry(
+    AppliedMediaCacheEntry self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_applied_media_cache_page(
+    AppliedMediaCachePage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_applied_media_cache_page_read(
+    AppliedMediaCachePageRead self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_apply_progress_phase(
+    ApplyProgressPhase self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_backup_metadata(
     BackupMetadata self,
     SseSerializer serializer,
@@ -1408,6 +1597,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_application_build(
     ApplicationBuild self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_applied_media_cache_page(
+    AppliedMediaCachePage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_apply_progress_phase(
+    ApplyProgressPhase self,
     SseSerializer serializer,
   );
 
@@ -1493,6 +1694,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_preparation_stage(
+    PreparationStage self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_preview_summary(
     PreviewSummary self,
     SseSerializer serializer,
@@ -1523,6 +1730,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_switch_mtp_stage_status(
+    SwitchMtpStageStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_sync_attempt_summary(
     SyncAttemptSummary self,
     SseSerializer serializer,
@@ -1542,6 +1755,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_autoadd_tcp_view(TcpView self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_u_16(int self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
@@ -1730,6 +1946,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_applied_media_cache_entry(
+    List<AppliedMediaCacheEntry> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_backup_metadata(
     List<BackupMetadata> self,
     SseSerializer serializer,
@@ -1822,6 +2044,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_storage_role(
     List<StorageRole> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_switch_mtp_entry(
+    List<SwitchMtpEntry> self,
     SseSerializer serializer,
   );
 
@@ -1958,6 +2186,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_applied_media_cache_page(
+    AppliedMediaCachePage? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_apply_progress_phase(
+    ApplyProgressPhase? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_backup_page(
     BackupPage? self,
     SseSerializer serializer,
@@ -2021,6 +2261,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_preparation_stage(
+    PreparationStage? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_preview_summary(
     PreviewSummary? self,
     SseSerializer serializer,
@@ -2051,6 +2297,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_switch_mtp_stage_status(
+    SwitchMtpStageStatus? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_sync_attempt_summary(
     SyncAttemptSummary? self,
     SseSerializer serializer,
@@ -2067,6 +2319,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     TcpView? self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_opt_box_autoadd_u_16(int? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
@@ -2100,6 +2355,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_pairing_stage(PairingStage self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_preparation_stage(
+    PreparationStage self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_preview_read(PreviewRead self, SseSerializer serializer);
@@ -2165,6 +2426,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_storage_role(StorageRole self, SseSerializer serializer);
 
   @protected
+  void sse_encode_switch_mtp_entry(
+    SwitchMtpEntry self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_switch_mtp_stage_status(
+    SwitchMtpStageStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_sync_attempt_summary(
     SyncAttemptSummary self,
     SseSerializer serializer,
@@ -2211,6 +2484,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_transport_kind(TransportKind self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_u_16(int self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_32(int self, SseSerializer serializer);

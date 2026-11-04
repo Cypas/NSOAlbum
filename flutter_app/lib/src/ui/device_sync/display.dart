@@ -10,6 +10,8 @@ import '../../l10n/app_localizations.dart';
 import '../../rust/device_sync/driver.dart' as driver;
 import '../../rust/device_sync/read_model.dart' as read;
 import '../../rust/device_sync/runtime.dart' show DeviceCommandError;
+import '../../rust/device_sync/work.dart' show PreparationStage;
+import 'capacity_format.dart';
 
 String deviceSyncError(BuildContext context, Object error) {
   final code = switch (error) {
@@ -45,9 +47,17 @@ String deviceSyncError(BuildContext context, Object error) {
       '接收设备空间不足，请释放空间后重新连接。',
       'The receiving device does not have enough space. Free up space and reconnect.',
     ),
-    read.ReadError.disconnected || read.ReadError.timeout => (
-      '连接已断开或超时。请检查同一局域网、网络隔离、防火墙或 USB 连接，然后重新扫码。',
-      'The connection was lost or timed out. Check the same local network, network isolation, firewall, or USB connection, then scan a new code.',
+    read.ReadError.timeout => (
+      '连接超时。USB 文件传输请解锁手机、确认已选择文件传输并保持页面在前台；Wi-Fi 请检查同一局域网、网络隔离或防火墙，然后重试。',
+      'The connection timed out. For USB file transfer, unlock the phone, confirm file transfer is selected and keep this page in front. For Wi-Fi, check the local network, network isolation or firewall, then retry.',
+    ),
+    read.ReadError.disconnected => (
+      '连接已断开。请检查同一局域网、网络隔离、防火墙或 USB 连接，然后重新扫码。',
+      'The connection was lost. Check the same local network, network isolation, firewall, or USB connection, then scan a new code.',
+    ),
+    read.ReadError.applyFailed => (
+      '图库应用阶段未完成。已校验的暂存文件会保留。重新配对后会核对清单、目标图库和暂存文件信息；匹配的缓存可复用而不重传，缺失或不匹配的文件需要重新传输。',
+      'Applying the library did not complete. Verified staged files are retained. After re-pairing, the manifest, target library and staged file information are checked; matching cached files can be reused without retransferring, while missing or mismatched files must be sent again.',
     ),
     read.ReadError.cancelled => ('操作已取消。', 'Operation cancelled.'),
     read.ReadError.invalidInput => (
@@ -124,6 +134,63 @@ String deviceSyncStage(BuildContext context, driver.State stage) {
   return context.l10n.select(zh: zh, en: en);
 }
 
+String deviceSyncResult(
+  BuildContext context, {
+  required driver.State stage,
+  required read.ReadError? error,
+  required BigInt? transferredBytes,
+  BigInt? processedItems,
+  BigInt? totalItems,
+  BigInt? processedBytes,
+  BigInt? totalBytes,
+}) {
+  final reason =
+      stage == driver.State.cancelled || error == read.ReadError.cancelled
+      ? context.l10n.select(zh: '同步已取消', en: 'Sync cancelled')
+      : switch (error) {
+          read.ReadError.disconnected => context.l10n.select(
+            zh: '连接已断开',
+            en: 'Connection was lost',
+          ),
+          read.ReadError.timeout => context.l10n.select(
+            zh: '连接超时',
+            en: 'Connection timed out',
+          ),
+          read.ReadError.applyFailed => context.l10n.select(
+            zh: '应用阶段未完成；重新配对并核对文件信息后可复用匹配缓存',
+            en: 'Apply did not complete; matching cache can be reused after re-pairing and checking file information',
+          ),
+          read.ReadError.unavailable => context.l10n.select(
+            zh: '同步服务不可用',
+            en: 'Sync service unavailable',
+          ),
+          read.ReadError.insufficientSpace => context.l10n.select(
+            zh: '接收设备空间不足',
+            en: 'The receiving device ran out of space',
+          ),
+          _ => deviceSyncStage(context, stage),
+        };
+  final transferred = transferredBytes == null
+      ? null
+      : context.l10n.select(
+          zh: '已传输 ${formatDeviceCapacity(transferredBytes)}',
+          en: 'Transferred ${formatDeviceCapacity(transferredBytes)}',
+        );
+  final items = processedItems == null
+      ? null
+      : context.l10n.select(
+          zh: '已处理项目 $processedItems / ${totalItems ?? '…'}',
+          en: 'Items processed $processedItems / ${totalItems ?? '…'}',
+        );
+  final bytes = processedBytes == null
+      ? null
+      : context.l10n.select(
+          zh: '已校验 ${formatDeviceCapacity(processedBytes)} / ${formatDeviceCapacity(totalBytes)}',
+          en: 'Verified ${formatDeviceCapacity(processedBytes)} / ${formatDeviceCapacity(totalBytes)}',
+        );
+  return [reason, ?items, ?bytes, ?transferred].join(' · ');
+}
+
 bool deviceSyncStageShowsProgress(driver.State stage) => switch (stage) {
   driver.State.scanning ||
   driver.State.comparing ||
@@ -140,6 +207,37 @@ String deviceSyncStageProgressLabel(BuildContext context, driver.State stage) {
   );
 }
 
+PreparationStage? deviceSyncActivePreparation(
+  driver.State stage,
+  read.ProgressView? progress,
+) => switch (stage) {
+  driver.State.scanning || driver.State.comparing => progress?.preparationPhase,
+  driver.State.configuring when progress?.workActive == true =>
+    progress?.preparationPhase,
+  _ => null,
+};
+
+String deviceSyncPreparationStage(
+  BuildContext context,
+  PreparationStage phase,
+) {
+  final (zh, en) = switch (phase) {
+    PreparationStage.readingLibrary => ('正在读取图库', 'Reading library'),
+    PreparationStage.comparingRecords => ('正在比较记录', 'Comparing records'),
+    PreparationStage.checkingCache => ('正在检查已传输文件', 'Checking staged files'),
+    PreparationStage.checkingSpace => ('正在检查可用空间', 'Checking available space'),
+    PreparationStage.preparingPreview => (
+      '正在准备同步确认',
+      'Preparing sync confirmation',
+    ),
+    PreparationStage.waitingForPeer => (
+      '正在等待对端核对',
+      'Waiting for peer verification',
+    ),
+  };
+  return context.l10n.select(zh: zh, en: en);
+}
+
 /// The indicator is decorative; the full localized status is announced once.
 class DeviceSyncStatusLabel extends StatelessWidget {
   const DeviceSyncStatusLabel({
@@ -147,15 +245,19 @@ class DeviceSyncStatusLabel extends StatelessWidget {
     required this.stage,
     this.pinning = false,
     this.reviewing = false,
+    this.preparationPhase,
   });
 
   final driver.State stage;
   final bool pinning, reviewing;
+  final PreparationStage? preparationPhase;
 
   @override
   Widget build(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
-    final text = pinning
+    final text = preparationPhase != null
+        ? deviceSyncPreparationStage(context, preparationPhase!)
+        : pinning
         ? context.l10n.select(zh: '正在校验图库原件', en: 'Verifying library originals')
         : reviewing
         ? context.l10n.select(zh: '预览变更内容', en: 'Preview changes')

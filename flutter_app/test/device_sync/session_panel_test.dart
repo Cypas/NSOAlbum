@@ -16,6 +16,200 @@ import 'package:squid_album/src/ui/device_sync/session_panel.dart';
 
 void main() {
   testWidgets(
+    'busy apply observations never present internal plan checks as apply progress',
+    (tester) async {
+      final session = PanelSession();
+      for (final phase in [
+        read.ApplyProgressPhase.sql,
+        read.ApplyProgressPhase.publishing,
+        null,
+      ]) {
+        session.liveProgress = read.ProgressView(
+          workStage: WorkStage.comparing,
+          preparationPhase: PreparationStage.comparingRecords,
+          workActive: true,
+          scannedItems: BigInt.from(897),
+          processedItems: BigInt.from(897),
+          totalItems: BigInt.from(897),
+          comparedItems: BigInt.from(897),
+          totalComparedItems: BigInt.from(897),
+          ratePerSecond: BigInt.from(45),
+          etaMs: BigInt.from(60000),
+          applyPhase: phase,
+          applyPublicationBytes: BigInt.from(1024),
+          applySqlSteps: BigInt.from(8),
+        );
+        session.update(endpoint(driver.State.applying, source: false));
+        await tester.pumpWidget(panelApp(session));
+        await tester.pump();
+
+        expect(find.text('Applying changes'), findsOneWidget);
+        expect(find.textContaining('Comparing records'), findsNothing);
+        expect(find.byKey(const Key('device-item-count')), findsNothing);
+        expect(find.byKey(const Key('device-item-rate')), findsNothing);
+        expect(find.text('Remaining: 1 min'), findsNothing);
+        if (phase != null) {
+          expect(find.text('Remaining: Estimating'), findsOneWidget);
+        } else {
+          expect(find.byKey(const Key('device-apply-eta')), findsNothing);
+        }
+        expect(tester.takeException(), isNull);
+      }
+
+      session.update(endpoint(driver.State.verifying, source: false));
+      await tester.pump();
+      expect(find.byKey(const Key('device-item-count')), findsNothing);
+      expect(find.byKey(const Key('device-stage-eta')), findsNothing);
+      expect(
+        tester
+            .widget<LinearProgressIndicator>(
+              find.byKey(const Key('device-stage-progress-bar')),
+            )
+            .value,
+        isNull,
+      );
+
+      session.liveProgress = read.ProgressView(
+        workStage: WorkStage.comparing,
+        preparationPhase: PreparationStage.comparingRecords,
+        workActive: true,
+        scannedItems: BigInt.from(897),
+        etaMs: BigInt.from(60000),
+        transferredBytes: BigInt.from(20),
+        transferTotalBytes: BigInt.from(100),
+        transferBytesPerSecond: BigInt.from(10),
+      );
+      session.update(endpoint(driver.State.transferring));
+      await tester.pump();
+      expect(find.text('Remaining: Less than 1 min'), findsOneWidget);
+      expect(find.text('Remaining: 1 min'), findsNothing);
+      expect(find.byKey(const Key('device-item-progress')), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+  testWidgets(
+    'preparation switches real stages without retaining completed comparison progress',
+    (tester) async {
+      for (final language in ['zh', 'en']) {
+        final session = PanelSession()
+          ..state = endpoint(
+            driver.State.comparing,
+            transferProgress: read.ProgressView(
+              workStage: WorkStage.comparing,
+              workActive: true,
+              scannedItems: BigInt.from(897),
+              preparationPhase: PreparationStage.comparingRecords,
+              comparedItems: BigInt.from(897),
+              totalComparedItems: BigInt.from(897),
+              processedItems: BigInt.from(897),
+              totalItems: BigInt.from(897),
+              etaMs: BigInt.zero,
+            ),
+          );
+        await tester.pumpWidget(panelApp(session, language: language));
+        expect(
+          find.text(language == 'zh' ? '正在比较记录' : 'Comparing records'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('不到 1 分钟'), findsNothing);
+        expect(find.textContaining('Less than 1 min'), findsNothing);
+
+        session.update(
+          endpoint(
+            driver.State.comparing,
+            transferProgress: read.ProgressView(
+              workStage: WorkStage.comparing,
+              workActive: true,
+              scannedItems: BigInt.from(897),
+              preparationPhase: PreparationStage.checkingCache,
+              comparedItems: BigInt.from(897),
+              totalComparedItems: BigInt.from(897),
+              processedItems: BigInt.from(3),
+              totalItems: BigInt.from(10),
+              ratePerSecond: BigInt.from(2),
+              etaMs: BigInt.from(3500),
+            ),
+          ),
+        );
+        await tester.pump();
+        expect(
+          find.text(language == 'zh' ? '正在检查已传输文件' : 'Checking staged files'),
+          findsOneWidget,
+        );
+        expect(
+          find.text(
+            language == 'zh' ? '已处理项目 3 / 10' : 'Items processed 3 / 10',
+          ),
+          findsOneWidget,
+        );
+        expect(find.textContaining('897 / 897'), findsNothing);
+        expect(
+          tester
+              .widget<LinearProgressIndicator>(
+                find.byKey(const Key('device-item-progress')),
+              )
+              .value,
+          closeTo(.3, .001),
+        );
+        expect(
+          find.text(
+            language == 'zh'
+                ? '平均处理速度：2 项/秒'
+                : 'Average processing speed: 2 items/s',
+          ),
+          findsOneWidget,
+        );
+
+        for (final sample in [
+          (
+            PreparationStage.checkingSpace,
+            '正在检查可用空间',
+            'Checking available space',
+            true,
+          ),
+          (
+            PreparationStage.waitingForPeer,
+            '正在等待对端核对',
+            'Waiting for peer verification',
+            false,
+          ),
+        ]) {
+          session.update(
+            endpoint(
+              driver.State.comparing,
+              transferProgress: read.ProgressView(
+                workStage: WorkStage.comparing,
+                workActive: sample.$4,
+                scannedItems: BigInt.from(897),
+                preparationPhase: sample.$1,
+                comparedItems: BigInt.from(897),
+                totalComparedItems: BigInt.from(897),
+              ),
+            ),
+          );
+          await tester.pump();
+          expect(
+            find.text(language == 'zh' ? sample.$2 : sample.$3),
+            findsOneWidget,
+          );
+          expect(find.byKey(const Key('device-item-count')), findsNothing);
+          expect(find.byKey(const Key('device-item-rate')), findsNothing);
+          expect(find.byKey(const Key('device-stage-eta')), findsNothing);
+          expect(
+            tester
+                .widget<LinearProgressIndicator>(
+                  find.byKey(const Key('device-item-progress')),
+                )
+                .value,
+            isNull,
+          );
+          expect(tester.takeException(), isNull);
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+    },
+  );
+  testWidgets(
     'live original pinning replaces stale configuration without granting controls',
     (tester) async {
       for (final language in ['zh', 'en']) {
@@ -492,6 +686,171 @@ void main() {
     },
   );
   testWidgets(
+    'receiver terminal failure is not mislabeled as a transport timeout',
+    (tester) async {
+      final sample = endpoint(driver.State.failed, source: false);
+      final session = PanelSession()
+        ..state = read.EndpointRead(
+          value: sample.value,
+          progress: sample.progress,
+          tcp: const runtime.TcpView(
+            phase: runtime.TcpPhase.closed,
+            error: read.ReadError.disconnected,
+          ),
+        );
+      await tester.pumpWidget(panelApp(session));
+
+      expect(find.byKey(const Key('device-session-error')), findsOneWidget);
+      expect(find.textContaining('connection was lost'), findsOneWidget);
+      expect(
+        find.byKey(const Key('device-sync-terminal-failure')),
+        findsNothing,
+      );
+    },
+  );
+  testWidgets(
+    'comparison progress uses compare totals and native ETA in both languages',
+    (tester) async {
+      for (final language in ['zh', 'en']) {
+        final session = PanelSession()
+          ..state = endpoint(
+            driver.State.comparing,
+            transferProgress: read.ProgressView(
+              workStage: WorkStage.comparing,
+              workActive: true,
+              scannedItems: BigInt.zero,
+              comparedItems: BigInt.from(3),
+              totalComparedItems: BigInt.from(10),
+              processedItems: BigInt.from(3),
+              currentItem: '4/10',
+              ratePerSecond: BigInt.from(2),
+              etaMs: BigInt.from(const Duration(minutes: 65).inMilliseconds),
+              isEstimate: true,
+            ),
+          );
+        await tester.pumpWidget(panelApp(session, language: language));
+        expect(
+          find.text(
+            language == 'zh' ? '已处理项目 3 / 10' : 'Items processed 3 / 10',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.text(
+            language == 'zh' ? '当前比较项 4 / 10' : 'Comparing item 4 / 10',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.text(
+            language == 'zh' ? '预计剩余：1 小时 5 分钟' : 'Remaining: 1 hr 5 min',
+          ),
+          findsOneWidget,
+        );
+        final progress = tester.widget<LinearProgressIndicator>(
+          find.byKey(const Key('device-item-progress')),
+        );
+        expect(progress.value, closeTo(.3, .001));
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+    },
+  );
+  testWidgets(
+    'receiving verification shows byte, file, safe-item and ETA progress in both languages',
+    (tester) async {
+      for (final language in ['zh', 'en']) {
+        final session = PanelSession()
+          ..state = endpoint(
+            driver.State.verifying,
+            source: false,
+            transferProgress: read.ProgressView(
+              workStage: WorkStage.validating,
+              workActive: true,
+              scannedItems: BigInt.zero,
+              processedItems: BigInt.one,
+              totalItems: BigInt.from(4),
+              currentItem: '2/4',
+              processedBytes: BigInt.from(5 * 1024 * 1024),
+              totalBytes: BigInt.from(10 * 1024 * 1024),
+              etaMs: BigInt.from(const Duration(minutes: 65).inMilliseconds),
+              isEstimate: true,
+            ),
+          );
+        await tester.pumpWidget(panelApp(session, language: language));
+        final bar = tester.widget<LinearProgressIndicator>(
+          find.byKey(const Key('device-verify-byte-progress')),
+        );
+        expect(bar.value, closeTo(.5, .001));
+        expect(
+          find.text(
+            language == 'zh'
+                ? '已校验 5 MB / 10 MB · 文件 1 / 4'
+                : 'Verified 5 MB / 10 MB · Files 1 / 4',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.text(language == 'zh' ? '正在校验文件 2/4' : 'Verifying file 2/4'),
+          findsOneWidget,
+        );
+        expect(
+          find.text(
+            language == 'zh' ? '预计剩余：1 小时 5 分钟' : 'Remaining: 1 hr 5 min',
+          ),
+          findsOneWidget,
+        );
+        expect(find.textContaining('B/s'), findsNothing);
+        expect(tester.takeException(), isNull);
+
+        session.update(
+          endpoint(
+            driver.State.verifying,
+            source: false,
+            transferProgress: read.ProgressView(
+              workStage: WorkStage.validating,
+              workActive: true,
+              scannedItems: BigInt.zero,
+              processedItems: BigInt.one,
+              totalItems: BigInt.from(4),
+              currentItem: r'C:\private\media.jpg',
+              processedBytes: BigInt.from(5 * 1024 * 1024),
+              totalBytes: BigInt.from(10 * 1024 * 1024),
+            ),
+          ),
+        );
+        await tester.pump();
+        expect(
+          find.byKey(const Key('device-verify-current-item')),
+          findsNothing,
+          reason: 'A path-like hint must never be rendered.',
+        );
+
+        session.update(
+          endpoint(
+            driver.State.verifying,
+            source: true,
+            transferProgress: read.ProgressView(
+              workStage: WorkStage.validating,
+              workActive: false,
+              scannedItems: BigInt.zero,
+            ),
+          ),
+        );
+        await tester.pump();
+        expect(
+          find.byKey(const Key('device-verify-byte-progress')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const Key('device-stage-progress-bar')),
+          findsOneWidget,
+        );
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+    },
+  );
+  testWidgets(
     'transfer progress stays mounted and retains the last sample during a transient read gap',
     (tester) async {
       final session = PanelSession()
@@ -618,6 +977,36 @@ void main() {
     },
   );
   testWidgets(
+    'application progress shows its real phase, bounded counters and explicit ETA state',
+    (tester) async {
+      final session = PanelSession()
+        ..state = endpoint(
+          driver.State.applying,
+          transferProgress: read.ProgressView(
+            workStage: WorkStage.idle,
+            workActive: false,
+            scannedItems: BigInt.zero,
+            applyPhase: read.ApplyProgressPhase.sql,
+            applyPublicationBytes: BigInt.from(1024),
+            applySqlSteps: BigInt.from(4096),
+            applyAccountSteps: 2,
+          ),
+        );
+      await tester.pumpWidget(panelApp(session));
+
+      expect(find.text('Updating library data'), findsOneWidget);
+      expect(find.text('Published media data 1 KB'), findsOneWidget);
+      expect(find.text('Database work units 4096'), findsOneWidget);
+      expect(find.byKey(const Key('device-apply-eta')), findsOneWidget);
+      expect(find.text('Remaining: Estimating'), findsOneWidget);
+      final bar = tester.widget<LinearProgressIndicator>(
+        find.byKey(const Key('device-apply-progress-bar')),
+      );
+      expect(bar.value, isNull);
+      expect(tester.takeException(), isNull);
+    },
+  );
+  testWidgets(
     'background checkpoints do not move the transfer bar or rebuild the session heading',
     (tester) async {
       addTearDown(tester.view.resetPhysicalSize);
@@ -697,6 +1086,52 @@ void main() {
     },
   );
   testWidgets(
+    'scan and compare rates are shown as items per second, not bytes per second',
+    (tester) async {
+      for (final stage in [driver.State.scanning, driver.State.comparing]) {
+        final session = PanelSession()
+          ..state = endpoint(
+            stage,
+            source: stage == driver.State.comparing ? true : false,
+            transferProgress: read.ProgressView(
+              workStage: stage == driver.State.comparing
+                  ? WorkStage.comparing
+                  : WorkStage.scanning,
+              workActive: true,
+              scannedItems: BigInt.from(4),
+              totalItems: BigInt.from(20),
+              comparedItems: BigInt.from(4),
+              totalComparedItems: BigInt.from(20),
+              processedItems: BigInt.from(4),
+              currentItem: '5/20',
+              ratePerSecond: BigInt.from(2),
+              etaMs: BigInt.from(8000),
+              isEstimate: true,
+            ),
+          );
+        await tester.pumpWidget(panelApp(session));
+
+        expect(
+          find.text('Average processing speed: 2 items/s'),
+          findsOneWidget,
+        );
+        expect(find.text('Current speed: 2 B/s'), findsNothing);
+        expect(find.byKey(const Key('device-stage-eta')), findsOneWidget);
+        expect(
+          find.text(
+            stage == driver.State.scanning
+                ? 'Scanning item 5 / 20'
+                : 'Comparing item 5 / 20',
+          ),
+          findsOneWidget,
+          reason: 'The active phase should expose its safe ordinal hint.',
+        );
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+    },
+  );
+  testWidgets(
     'closed disconnected TCP cannot contradict a confirmed durable completion',
     (tester) async {
       for (final source in [false, true]) {
@@ -707,6 +1142,9 @@ void main() {
         ]) {
           final sample = endpoint(stage, source: source);
           final session = PanelSession()
+            ..failure = stage == driver.State.failed
+                ? read.ReadError.applyFailed
+                : null
             ..state = read.EndpointRead(
               value: sample.value,
               progress: sample.progress,

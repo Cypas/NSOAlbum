@@ -11,7 +11,7 @@ use super::{
     library_guard::ExclusiveLease,
     local_apply::{Identity as ApplyIdentity, LifecycleControl, LocalApplyAuthority},
     metrics::{IoKind, Metrics, Phase},
-    planner::{build_plan_controlled, SyncMode, SyncPlan},
+    planner::{build_plan_controlled, Action, SyncMode, SyncPlan},
     receiver::{
         ApplyBoundary, ApplyReceipt, ApplyState, CommitGuard, LocalAuthorization, ReceiveOperation,
         RetainedSourceSnapshot, Snapshot,
@@ -89,6 +89,8 @@ pub enum DriverError {
     Library,
     #[error("device-sync operation timed out")]
     Timeout,
+    #[error("device-sync library apply failed")]
+    ApplyFailed,
     #[error("accounts are not supported in this transfer stage")]
     AccountsUnsupported,
     #[error("device-sync operation was cancelled")]
@@ -116,8 +118,30 @@ fn receiver_work_error(error: super::receiver::ReceiverError) -> DriverError {
         super::receiver::ReceiverError::Staging(
             super::staging::StagingError::InsufficientSpace,
         ) => DriverError::InsufficientSpace,
+        super::receiver::ReceiverError::Staging(super::staging::StagingError::UnsafePath) => {
+            DriverError::ApplyFailed
+        }
         super::receiver::ReceiverError::Core(error) => work_error(error),
         _ => DriverError::Library,
+    }
+}
+
+fn receiver_apply_error(error: super::receiver::ReceiverError, cancelled: bool) -> DriverError {
+    use super::receiver::ReceiverError;
+    match error {
+        ReceiverError::Core(CoreError::Cancelled)
+        | ReceiverError::Staging(super::staging::StagingError::Cancelled)
+            if cancelled =>
+        {
+            DriverError::Cancelled
+        }
+        ReceiverError::Staging(super::staging::StagingError::InsufficientSpace) => {
+            DriverError::InsufficientSpace
+        }
+        ReceiverError::PlanChanged
+        | ReceiverError::AuthorizationRequired
+        | ReceiverError::AuthorizationMismatch => DriverError::Library,
+        _ => DriverError::ApplyFailed,
     }
 }
 
@@ -267,6 +291,7 @@ struct Permit {
     active: AtomicBool,
     until: AtomicU64,
     work: AtomicU64,
+    published_bytes: AtomicU64,
     boundary: AtomicU8,
     budget: AtomicU64,
     sql_work: AtomicU64,
@@ -438,6 +463,7 @@ impl Driver {
             active: AtomicBool::new(false),
             until: AtomicU64::new(0),
             work: AtomicU64::new(0),
+            published_bytes: AtomicU64::new(0),
             boundary: AtomicU8::new(0),
             budget: AtomicU64::new(0),
             sql_work: AtomicU64::new(0),
@@ -577,6 +603,62 @@ impl Driver {
     pub fn plan(&self) -> Option<&SyncPlan> {
         self.plan.as_ref()
     }
+    /// Read the exact media additions/replacements from this completed local
+    /// receive plan so callers can warm disposable caches without guessing from
+    /// imported timestamps. This projection is not available to senders or
+    /// unfinished operations.
+    pub fn applied_media_cache_page(
+        &self,
+        offset: u64,
+    ) -> std::result::Result<super::read_model::AppliedMediaCachePage, super::read_model::ReadError>
+    {
+        const PAGE_SIZE: usize = 60;
+        if self.state != State::Completed || self.source_side() || !self.local_apply_installed() {
+            return Err(super::read_model::ReadError::PreviewChanged);
+        }
+
+        let plan = self
+            .plan
+            .as_ref()
+            .ok_or(super::read_model::ReadError::Unavailable)?;
+        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+        let candidates = plan
+            .media
+            .iter()
+            .filter(|decision| {
+                matches!(decision.action, Action::Add | Action::Replace)
+                    && decision.final_record.is_some()
+            })
+            .skip(start)
+            .take(PAGE_SIZE + 1)
+            .map(|decision| decision.sha256.clone())
+            .collect::<Vec<_>>();
+        let has_more = candidates.len() > PAGE_SIZE;
+        let hashes = &candidates[..candidates.len().min(PAGE_SIZE)];
+        let mut local = self
+            .database
+            .media_storage_entries_by_sha256(hashes)
+            .map_err(|_| super::read_model::ReadError::Internal)?
+            .into_iter()
+            .map(|entry| (entry.sha256.clone(), entry))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let items = hashes
+            .iter()
+            .filter_map(|sha256| local.remove(sha256))
+            .map(|entry| super::read_model::AppliedMediaCacheEntry {
+                sha256: entry.sha256,
+                storage_path: entry.storage_path,
+                kind: entry.kind,
+            })
+            .collect();
+        let next_offset = if has_more {
+            offset.checked_add(PAGE_SIZE as u64)
+        } else {
+            None
+        };
+
+        Ok(super::read_model::AppliedMediaCachePage { items, next_offset })
+    }
     pub fn preview_summary(&self) -> Option<&super::read_model::PreviewSummary> {
         self.preview_summary.as_ref()
     }
@@ -604,15 +686,158 @@ impl Driver {
     pub fn read_view(&self) -> super::read_model::EndpointView {
         use super::read_model::*;
         let mut progress = ProgressView::observing(&self.work);
+        // Applying can revalidate a metadata plan using the preparation worker.
+        // Those counters/estimates do not measure transfer, verification or SQL.
+        if !matches!(self.state, State::Scanning | State::Comparing)
+            && progress.preparation_phase.take().is_some()
+        {
+            progress.scanned_items = 0;
+            progress.compared_items = None;
+            progress.total_compared_items = None;
+            progress.processed_items = None;
+            progress.total_items = None;
+            progress.current_item = None;
+            progress.rate_per_second = None;
+            progress.eta_ms = None;
+            progress.is_estimate = Some(false);
+        }
+        if matches!(self.state, State::Applying | State::AwaitingExternal)
+            || (!self.session.phone_controlled()
+                && self.source_side()
+                && self.source_lease.is_some())
+        {
+            progress.work_active = true;
+            let remote_apply_progress =
+                self.session.phone_controlled() && self.source_side() && self.source_grant_issued();
+            if !remote_apply_progress {
+                let work = if !self.session.phone_controlled()
+                    && self.source_side()
+                    && !self.local_apply_installed()
+                {
+                    self.lease_work
+                } else {
+                    self.current_work()
+                };
+                progress.apply_phase = Some(match work.phase {
+                    ApplyPhase::Preparing => ApplyProgressPhase::Preparing,
+                    ApplyPhase::Publishing => ApplyProgressPhase::Publishing,
+                    ApplyPhase::Sql => ApplyProgressPhase::Sql,
+                    ApplyPhase::Finalizing => ApplyProgressPhase::Finalizing,
+                    ApplyPhase::Accounts => ApplyProgressPhase::Accounts,
+                });
+                progress.apply_publication_bytes = Some(work.publication_bytes);
+                progress.apply_sql_steps = Some(work.sql_steps);
+                progress.apply_account_steps = Some(work.account_steps);
+            }
+        }
+        match self.state {
+            State::Scanning => {
+                let observation = self.work.observe();
+                progress.scanned_items = observation.phase_scanned_items;
+                progress.total_items = observation.total_scanned_items;
+                progress.processed_items = Some(observation.phase_scanned_items);
+                progress.current_item = observation
+                    .total_scanned_items
+                    .filter(|total| observation.phase_scanned_items < *total)
+                    .map(|total| format!("{}/{}", observation.phase_scanned_items + 1, total));
+                if let Some(total) = observation.total_scanned_items {
+                    if let Some((rate, eta)) = self.work.estimate_progress(
+                        super::work::WorkStage::Scanning,
+                        observation.phase_scanned_items,
+                        total,
+                    ) {
+                        progress.rate_per_second = Some(rate);
+                        progress.eta_ms = Some(eta);
+                        progress.is_estimate = Some(true);
+                    }
+                }
+            }
+            State::Comparing => {
+                let observation = self.work.observe();
+                if matches!(
+                    observation.preparation_phase,
+                    None | Some(super::work::PreparationStage::ComparingRecords)
+                ) {
+                    progress.scanned_items = observation.phase_compared_items;
+                    progress.total_items = observation.total_compared_items;
+                    progress.compared_items = Some(observation.phase_compared_items);
+                    progress.total_compared_items = observation.total_compared_items;
+                    progress.processed_items = Some(observation.phase_compared_items);
+                    progress.current_item = observation
+                        .total_compared_items
+                        .filter(|total| observation.phase_compared_items < *total)
+                        .map(|total| format!("{}/{}", observation.phase_compared_items + 1, total));
+                    if let Some(total) = observation.total_compared_items {
+                        if let Some((rate, eta)) = self.work.estimate_progress(
+                            super::work::WorkStage::Comparing,
+                            observation.phase_compared_items,
+                            total,
+                        ) {
+                            progress.rate_per_second = Some(rate);
+                            progress.eta_ms = Some(eta);
+                            progress.is_estimate = Some(true);
+                        }
+                    }
+                }
+            }
+            State::Verifying => {
+                let observation = self.work.observe();
+                if let (Some(total_bytes), Some(total_files)) = (
+                    observation.total_verified_bytes,
+                    observation.total_verified_files,
+                ) {
+                    progress.processed_items = Some(observation.verified_files);
+                    progress.total_items = Some(total_files);
+                    progress.processed_bytes = Some(observation.verified_bytes);
+                    progress.total_bytes = Some(total_bytes);
+                    progress.current_item = observation
+                        .current_verify_file
+                        .map(|index| format!("{index}/{total_files}"));
+                    if let Some((rate, eta)) = self.work.estimate_verification() {
+                        progress.rate_per_second = Some(rate);
+                        progress.eta_ms = Some(eta);
+                        progress.is_estimate = Some(true);
+                    }
+                }
+            }
+            _ => {}
+        }
         progress.transferred_bytes = Some(self.progress.transferred_bytes);
         if self.state == State::Transferring {
             progress.transfer_total_bytes = Some(self.progress.transfer_total_bytes);
-            progress.transfer_bytes_per_second =
-                Some(self.throughput.rate(self.clock.monotonic_ms()));
+            let rate = self.throughput.rate(self.clock.monotonic_ms());
+            progress.transfer_bytes_per_second = Some(rate);
+            progress.rate_per_second = Some(rate);
+            if rate > 0 {
+                let remaining = self
+                    .progress
+                    .transfer_total_bytes
+                    .saturating_sub(self.progress.transferred_bytes);
+                progress.eta_ms =
+                    u64::try_from(u128::from(remaining).saturating_mul(1000) / u128::from(rate))
+                        .ok();
+                progress.is_estimate = Some(progress.eta_ms.is_some());
+            }
         }
         if self.state.terminal() {
             progress.work_stage = super::work::WorkStage::Idle;
+            progress.preparation_phase = None;
             progress.work_active = false;
+            progress.scanned_items = 0;
+            progress.total_items = None;
+            progress.compared_items = None;
+            progress.total_compared_items = None;
+            progress.processed_items = None;
+            progress.current_item = None;
+            progress.processed_bytes = None;
+            progress.total_bytes = None;
+            progress.rate_per_second = None;
+            progress.eta_ms = None;
+            progress.is_estimate = Some(false);
+            progress.apply_phase = None;
+            progress.apply_publication_bytes = None;
+            progress.apply_sql_steps = None;
+            progress.apply_account_steps = None;
         }
         let agreed = self.sample.is_some()
             && (self.session.phone_controlled()
@@ -1590,9 +1815,19 @@ impl Driver {
             .ok_or(DriverError::Bounds)
     }
     fn current_work(&self) -> ApplyWork {
-        let publication_bytes = self.permit.work.load(Ordering::SeqCst);
-        let sql_steps = self.permit.sql_work.load(Ordering::SeqCst);
-        let sql = self.permit.sql_started.load(Ordering::SeqCst);
+        let local_counts = self
+            .local_authority
+            .as_ref()
+            .map(|authority| authority.progress_counts());
+        // The budget counts all I/O work, including repeated checks. The UI
+        // instead counts each media byte once while copying or reusing it.
+        let publication_bytes = self.permit.published_bytes.load(Ordering::SeqCst);
+        let sql_steps = local_counts.map_or_else(
+            || self.permit.sql_work.load(Ordering::SeqCst),
+            |counts| counts.1,
+        );
+        let sql = self.permit.sql_started.load(Ordering::SeqCst)
+            || local_counts.is_some_and(|counts| counts.3);
         let boundary = self.permit.boundary.load(Ordering::SeqCst);
         let phase = if self.state == State::AwaitingExternal {
             ApplyPhase::Accounts
@@ -1609,7 +1844,7 @@ impl Driver {
             phase,
             publication_bytes,
             sql_steps,
-            account_steps: self.account_steps,
+            account_steps: local_counts.map_or(self.account_steps, |counts| counts.2),
         }
     }
     fn start_apply(&mut self) -> Result<()> {
@@ -1634,7 +1869,6 @@ impl Driver {
         let observer = self.apply_observer.clone();
         let external = self.external_reference;
         let guard = self.apply_guard();
-        let verify_reused_originals = self.local_apply_installed();
         self.worker = Some(
             std::thread::Builder::new()
                 .name("device-sync-apply".into())
@@ -1642,6 +1876,7 @@ impl Driver {
                     let boundary_permit = permit.clone();
                     let file_permit = permit.clone();
                     let mut previous = None;
+                    let mut displayed_file_bytes = 0_u64;
                     receive
                         .apply_guarded(
                             Some(&mut auth),
@@ -1659,6 +1894,27 @@ impl Driver {
                                 }
                             },
                             &mut |progress| {
+                                if previous
+                                    .as_ref()
+                                    .is_some_and(|p: &super::staging::Progress| {
+                                        p.phase == super::staging::Phase::Published
+                                    })
+                                {
+                                    displayed_file_bytes = 0;
+                                }
+                                if matches!(
+                                    progress.phase,
+                                    super::staging::Phase::Copying
+                                        | super::staging::Phase::Published
+                                ) {
+                                    let completed =
+                                        displayed_file_bytes.max(progress.completed_bytes);
+                                    file_permit.published_bytes.fetch_add(
+                                        completed - displayed_file_bytes,
+                                        Ordering::SeqCst,
+                                    );
+                                    displayed_file_bytes = completed;
+                                }
                                 let delta = previous
                                     .as_ref()
                                     .filter(|p: &&super::staging::Progress| {
@@ -1672,7 +1928,6 @@ impl Driver {
                                 previous = Some(progress);
                             },
                             Some(guard),
-                            verify_reused_originals,
                         )
                         .inspect_err(|error| {
                             diagnostics::receiver(DiagnosticBoundary::ApplyWorkerResult, error)
@@ -1698,6 +1953,8 @@ impl Driver {
             self.target_digest = Some(digest);
             self.target = Some(snapshot);
             let config = self.config.ok_or(DriverError::Protocol)?;
+            self.work
+                .set_preparation_phase(super::work::PreparationStage::ComparingRecords, None);
             let plan = build_plan_controlled(
                 &self.source.as_ref().ok_or(DriverError::Protocol)?.manifest,
                 &self.target.as_ref().ok_or(DriverError::Protocol)?.manifest,
@@ -1707,9 +1964,13 @@ impl Driver {
             )
             .map_err(work_error)?;
             self.progress.transfer_total_bytes = plan.space.new_staging_bytes;
+            self.work
+                .set_preparation_phase(super::work::PreparationStage::PreparingPreview, None);
             self.binding = Some(self.compute_binding(&plan)?);
             self.plan = Some(plan);
             self.cache_preview_summary()?;
+            self.work
+                .set_preparation_phase(super::work::PreparationStage::WaitingForPeer, None);
             self.step = Step::Preview;
             self.state = State::Comparing;
         } else {
@@ -1744,6 +2005,8 @@ impl Driver {
         Ok(())
     }
     fn prepared_target(&mut self, mut receive: ReceiveOperation) -> Result<()> {
+        self.work
+            .set_preparation_phase(super::work::PreparationStage::PreparingPreview, None);
         let (source_digest, target_digest) = receive.snapshot_digests();
         self.source_digest = Some(source_digest.into());
         self.target_digest = Some(target_digest.into());
@@ -2203,6 +2466,7 @@ impl Driver {
                     self.verification_bytes.store(0, Ordering::SeqCst);
                     self.verification_sent = 0;
                     let verified = self.verification_bytes.clone();
+                    let work = self.work.clone();
                     self.verification = Some(std::thread::spawn(move || {
                         let result =
                             receive
@@ -2212,20 +2476,25 @@ impl Driver {
                                     if !final_file {
                                         return Ok(());
                                     }
-                                    receive.staging_mut().verify_received(&cancel, &mut |p| {
-                                        // Existing wire progress is bounded by the last file.
-                                        // Scale the true batch progress, never pretend it is done.
-                                        let total = p.total_bytes.unwrap_or(0);
-                                        let scaled = if total == 0 {
-                                            0
-                                        } else {
-                                            (u128::from(p.completed_bytes)
-                                                * u128::from(last_length)
-                                                / u128::from(total))
-                                                as u64
-                                        };
-                                        verified.fetch_max(scaled, Ordering::SeqCst);
-                                    })
+                                    receive.staging_mut().verify_received_with_progress(
+                                        &work,
+                                        &cancel,
+                                        &mut |p, _, _| {
+                                            // Existing wire progress is bounded by the last file.
+                                            // Local read_model uses exact batch counters maintained
+                                            // by `work`, while the wire receipt remains per-file.
+                                            let total = p.total_bytes.unwrap_or(0);
+                                            let scaled = if total == 0 {
+                                                0
+                                            } else {
+                                                (u128::from(p.completed_bytes)
+                                                    * u128::from(last_length)
+                                                    / u128::from(total))
+                                                    as u64
+                                            };
+                                            verified.fetch_max(scaled, Ordering::SeqCst);
+                                        },
+                                    )
                                 });
                         (receive, result)
                     }));
@@ -2429,6 +2698,7 @@ impl Driver {
                 }
                 self.lease_id = id;
                 self.lease_work = work;
+                self.state = State::Applying;
                 if work.phase >= ApplyPhase::Sql && self.source_sql_until.is_none() {
                     self.source_sql_until = Some(self.clock.monotonic_ms().saturating_add(SQL_MS));
                 }
@@ -2744,7 +3014,9 @@ impl Driver {
                         self.complete_target()?;
                     }
                 }
-                Err(error) => return Err(receiver_work_error(error)),
+                Err(error) => {
+                    return Err(receiver_apply_error(error, self.cancel.check().is_err()));
+                }
             }
         } else if self.step == Step::Apply && !self.local_apply_installed() {
             let work = self.current_work();
@@ -3136,7 +3408,10 @@ impl Driver {
                 .ok_or(DriverError::Library)?
                 .join()
                 .map_err(|_| DriverError::Library)
-                .and_then(|outcome| outcome.map_err(receiver_work_error));
+                .and_then(|outcome| {
+                    outcome
+                        .map_err(|error| receiver_apply_error(error, self.cancel.check().is_err()))
+                });
             return self.reconcile_local_worker(outcome, true);
         }
         Ok(())
@@ -3219,7 +3494,10 @@ impl Driver {
             let outcome = worker
                 .join()
                 .map_err(|_| DriverError::Library)
-                .and_then(|outcome| outcome.map_err(receiver_work_error));
+                .and_then(|outcome| {
+                    outcome
+                        .map_err(|error| receiver_apply_error(error, self.cancel.check().is_err()))
+                });
             if self.local_apply_installed() {
                 let _ = self.reconcile_local_worker(outcome, false);
             } else if let Ok(receipt) = outcome {

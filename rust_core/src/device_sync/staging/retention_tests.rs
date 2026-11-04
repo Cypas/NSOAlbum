@@ -142,8 +142,8 @@ fn cache_key_binds_length_sha_kind_and_extension_without_borrowing_other_keys() 
 }
 
 #[test]
-fn corrupted_cache_is_rehashed_rejected_and_never_deleted_or_overwritten() {
-    for bytes in [b"abd".as_slice(), b"ab".as_slice()] {
+fn wrong_length_cache_is_rejected_without_hashing_deleting_or_overwriting() {
+    for bytes in [b"ab".as_slice(), b"abcd".as_slice()] {
         let (root, db, source, target, plan) = fixture();
         let mut first = prepare(&db, &source, &target);
         receive(&mut first);
@@ -151,12 +151,43 @@ fn corrupted_cache_is_rehashed_rejected_and_never_deleted_or_overwritten() {
         let path = cache_path(root.path());
         std::fs::write(&path, bytes).unwrap();
         let result = StagingOperation::prepare(db, &source, &target, &plan);
-        assert!(matches!(
-            result,
-            Err(StagingError::ChecksumMismatch | StagingError::LengthMismatch)
-        ));
+        assert!(matches!(result, Err(StagingError::LengthMismatch)));
         assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
+}
+
+#[test]
+fn cache_modified_after_prepare_cannot_be_published_without_a_hash_pass() {
+    let (root, db, source, target, _) = fixture();
+    let mut first = prepare(&db, &source, &target);
+    receive(&mut first);
+    drop(first);
+    let mut retry = prepare(&db, &source, &target);
+    let path = cache_path(root.path());
+    std::fs::write(&path, b"abd").unwrap();
+    File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new().set_modified(
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100),
+            ),
+        )
+        .unwrap();
+    let lease = db.device_sync_exclusive().unwrap();
+    assert!(matches!(
+        retry.publish(
+            &lease,
+            retry.id,
+            ABC_SHA,
+            &CancellationToken::default(),
+            &mut |_| {},
+        ),
+        Err(StagingError::UnsafePath)
+    ));
+    assert!(db.device_sync_original_path(ABC_SHA).unwrap().is_none());
+    assert_eq!(std::fs::read(path).unwrap(), b"abd");
 }
 
 #[test]
@@ -419,38 +450,25 @@ fn bounded_cache_lookup_does_not_scan_old_operations_or_unrequested_corruption()
 }
 
 #[test]
-fn cache_reverification_obeys_cancellation_during_streaming_and_preserves_the_object() {
+fn cache_lookup_obeys_cancellation_without_hash_reads_and_preserves_the_object() {
     use crate::device_sync::work::WorkControl;
-    let (root, db, mut source, target, _) = fixture();
-    let bytes = vec![0x5a; 64 * 1024 * 1024];
-    let ManifestRecord::Media(record) = &mut source.records[0] else {
+    let (root, db, source, target, _) = fixture();
+    let mut first = prepare(&db, &source, &target);
+    receive(&mut first);
+    drop(first);
+    let ManifestRecord::Media(record) = &source.records[0] else {
         unreachable!()
     };
-    record.sha256 = hex::encode(Sha256::digest(&bytes));
-    record.length = bytes.len() as u64;
-    let record = record.clone();
     let runtime = root.path().join("temporary/device-sync");
-    paths::ensure_directory(&runtime).unwrap();
     let cache = CacheRoot::open(&runtime, Default::default()).unwrap();
-    let path = runtime
-        .join("verified-v1")
-        .join(format!("{}-67108864-image.jpg", record.sha256));
-    std::fs::write(&path, &bytes).unwrap();
     let work = WorkControl::default();
-    std::thread::scope(|scope| {
-        let task = scope.spawn(|| cache.lookup(&record, &work));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while work.observe().work_items < 2 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "no streamed validation observed"
-            );
-            std::thread::yield_now();
-        }
-        work.cancellation().cancel();
-        assert!(matches!(task.join().unwrap(), Err(StagingError::Cancelled)));
-    });
-    assert_eq!(std::fs::metadata(&path).unwrap().len(), 67108864);
+    work.cancellation().cancel();
+    assert!(matches!(
+        cache.lookup(record, &work),
+        Err(StagingError::Cancelled)
+    ));
+    assert_eq!(work.validation_metrics().checksum_read_bytes, 0);
+    assert_eq!(std::fs::read(cache_path(root.path())).unwrap(), b"abc");
     let retry = prepare(&db, &source, &target);
     assert!(!retry.requires_transfer(&record.sha256).unwrap());
 }

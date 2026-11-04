@@ -4,9 +4,14 @@ use super::native_io::*;
 use futures::{Stream, StreamExt};
 use mtp_rs::mtp::{
     Backend, ListingItem, MtpDevice, NewObjectInfo, ObjectHandle, ObjectInfo, Storage, StorageId,
+    UtcOffset,
 };
 use std::collections::HashSet;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+const EXCHANGE_PRUNE_AGE_SECONDS: i64 = 24 * 60 * 60;
+const EXCHANGE_PRUNE_LIMIT: usize = 8;
+const EXCHANGE_PRUNE_BUDGET: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 pub struct MtpWorker {
@@ -15,6 +20,7 @@ pub struct MtpWorker {
     storage: Option<Storage>,
     operation: Option<(String, String)>,
     folders: Option<[ObjectHandle; 2]>,
+    session_folder: Option<ObjectHandle>,
     receipts: BlockReceipts,
     indexes: [Option<Vec<ObjectInfo>>; 2],
     timings: IoMetrics,
@@ -31,6 +37,113 @@ fn builder() -> mtp_rs::mtp::MtpDeviceBuilder {
 }
 fn io<T>(value: Result<T, impl std::fmt::Debug>) -> Result<T, NativeError> {
     value.map_err(|_| NativeError::Unavailable)
+}
+
+fn exchange_session_name(name: &str) -> bool {
+    let Some(id) = name.strip_prefix("s-") else {
+        return false;
+    };
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn exchange_direction_name(name: &str) -> bool {
+    name == "desktop" || name == "mobile"
+}
+
+fn exchange_session_stale(
+    modified: Option<mtp_rs::mtp::DateTime>,
+    now_unix: i64,
+    offset: UtcOffset,
+) -> bool {
+    let modified = modified
+        .and_then(|value| value.to_unix_seconds_with_fallback(offset))
+        .filter(|modified| *modified > 946_684_800);
+    match modified {
+        Some(modified) => now_unix.saturating_sub(modified) >= EXCHANGE_PRUNE_AGE_SECONDS,
+        // WPD omits folder timestamps on several Android phones. Legacy
+        // session folders remain eligible only after the strict content
+        // allowlist below proves they contain nothing but app-created blocks.
+        None => true,
+    }
+}
+
+fn local_offset() -> UtcOffset {
+    let minutes = (chrono::Local::now().offset().local_minus_utc() / 60).clamp(-1439, 1439);
+    UtcOffset::from_minutes(minutes as i16).unwrap_or(UtcOffset::UTC)
+}
+
+/// Deletes one app-created exchange session only when every entry matches the
+/// fixed block/direction allowlist. Best-effort: unknown content is preserved.
+async fn cleanup_exchange_session(
+    storage: &Storage,
+    folder: ObjectHandle,
+    started: Instant,
+) -> bool {
+    let Ok(entries) = children(storage, folder).await else {
+        return false;
+    };
+    if entries
+        .iter()
+        .any(|entry| !entry.is_folder() || !exchange_direction_name(&entry.filename))
+    {
+        return false;
+    }
+    let mut directions = Vec::new();
+    for entry in entries {
+        if started.elapsed() >= EXCHANGE_PRUNE_BUDGET {
+            return false;
+        }
+        let Ok(blocks) = children(storage, entry.handle).await else {
+            return false;
+        };
+        if blocks
+            .iter()
+            .any(|block| block.is_folder() || !block_name(&block.filename))
+        {
+            return false;
+        }
+        for block in &blocks {
+            if io(storage.delete(block.handle).await).is_err() {
+                return false;
+            }
+        }
+        directions.push(entry.handle);
+    }
+    for direction in directions {
+        if io(storage.delete(direction).await).is_err() {
+            return false;
+        }
+    }
+    io(storage.delete(folder).await).is_ok()
+}
+
+async fn prune_exchange_sessions(storage: &Storage, root: ObjectHandle, keep: &str) -> usize {
+    let started = Instant::now();
+    let now_unix = chrono::Utc::now().timestamp();
+    let offset = local_offset();
+    let Ok(entries) = children(storage, root).await else {
+        return 0;
+    };
+    let mut pruned = 0;
+    for entry in entries {
+        if pruned >= EXCHANGE_PRUNE_LIMIT || started.elapsed() >= EXCHANGE_PRUNE_BUDGET {
+            break;
+        }
+        if !entry.is_folder()
+            || entry.filename == keep
+            || !exchange_session_name(&entry.filename)
+            || !exchange_session_stale(entry.modified, now_unix, offset)
+        {
+            continue;
+        }
+        if cleanup_exchange_session(storage, entry.handle, started).await {
+            pruned += 1;
+        }
+    }
+    pruned
 }
 async fn children(storage: &Storage, parent: ObjectHandle) -> Result<Vec<ObjectInfo>, NativeError> {
     stable_children(|| read_children(storage, parent)).await
@@ -355,15 +468,20 @@ impl MtpWorker {
                 )
                 .await?;
                 eprintln!("MTP_WORKER exchange root found");
+                eprintln!("MTP_WORKER cleanup start");
+                let pruned = prune_exchange_sessions(&selected, root, &session_name).await;
+                eprintln!("MTP_WORKER cleanup complete pruned={pruned}");
                 let folder =
                     directory(&selected, root, &session_name, true, &mut self.timings).await?;
                 let desktop =
                     directory(&selected, folder, "desktop", true, &mut self.timings).await?;
                 let mobile =
                     directory(&selected, folder, "mobile", true, &mut self.timings).await?;
+                eprintln!("MTP_WORKER exchange dirs created");
                 self.device = Some(device);
                 self.storage = Some(selected);
                 self.folders = Some([desktop, mobile]);
+                self.session_folder = Some(folder);
                 self.operation = Some((operation, session));
                 Ok(serde_json::Value::Null)
             }
@@ -513,6 +631,16 @@ impl MtpWorker {
                 Ok(serde_json::Value::Null)
             }
             NativeRequest::Close => {
+                if let Some(session_folder) = self.session_folder.take() {
+                    if let Some(storage) = self.storage.take() {
+                        eprintln!("MTP_WORKER cleanup start");
+                        let cleaned =
+                            cleanup_exchange_session(&storage, session_folder, Instant::now())
+                                .await;
+                        eprintln!("MTP_WORKER cleanup complete success={cleaned}");
+                        self.storage = Some(storage);
+                    }
+                }
                 self.operation = None;
                 self.folders = None;
                 self.indexes = Default::default();
@@ -657,15 +785,15 @@ impl MtpWorker {
                     directory(&storage, folder, "desktop", true, &mut self.timings).await?;
                 let mobile = directory(&storage, folder, "mobile", true, &mut self.timings).await?;
                 eprintln!("device_sync boundary=UsbDiscovery category=SessionMatch reason=matched");
-                matched = Some((storage, [desktop, mobile]));
+                matched = Some((storage, [desktop, mobile], folder));
             }
-            if let Some((storage, folders)) = matched {
-                found = Some((device, storage, folders));
+            if let Some((storage, folders, session_folder)) = matched {
+                found = Some((device, storage, folders, session_folder));
             } else {
                 io(device.close().await)?;
             }
         }
-        let Some((device, storage, folders)) = found else {
+        let Some((device, storage, folders, session_folder)) = found else {
             return if candidate_count != 0 && opened == 0 {
                 Err(NativeError::Unavailable)
             } else {
@@ -677,6 +805,7 @@ impl MtpWorker {
         self.device = Some(device);
         self.storage = Some(storage);
         self.folders = Some(folders);
+        self.session_folder = Some(session_folder);
         self.operation = Some((operation, session));
         Ok(serde_json::json!(true))
     }
@@ -735,6 +864,31 @@ mod tests {
         child.filename = name.into();
         child.size = size;
         child
+    }
+
+    #[test]
+    fn exchange_session_names_require_lowercase_hex_suffix() {
+        assert!(exchange_session_name(&format!("s-{}", "a1".repeat(16))));
+        assert!(!exchange_session_name("s-ABC"));
+        assert!(!exchange_session_name(&format!("x-{}", "a1".repeat(16))));
+        assert!(!exchange_session_name(&format!("s-{}", "A1".repeat(16))));
+        assert!(!exchange_session_name("probe-a2fd"));
+    }
+
+    #[test]
+    fn exchange_prune_requires_a_reported_modification_time_older_than_a_day() {
+        let now = 2_000_000_000_i64;
+        let recent = mtp_rs::mtp::DateTime::from_unix_seconds(now - 3_600, UtcOffset::UTC);
+        let stale = mtp_rs::mtp::DateTime::from_unix_seconds(
+            now - EXCHANGE_PRUNE_AGE_SECONDS,
+            UtcOffset::UTC,
+        );
+        assert!(!exchange_session_stale(recent, now, UtcOffset::UTC));
+        assert!(exchange_session_stale(stale, now, UtcOffset::UTC));
+        assert!(
+            exchange_session_stale(None, now, UtcOffset::UTC),
+            "WPD sessions without timestamps are legacy leftovers; the strict content allowlist still applies"
+        );
     }
     #[test]
     #[cfg(windows)]

@@ -39,6 +39,8 @@ import 'src/ui/device_sync/startup_page.dart';
 import 'src/ui/ci_smoke_page.dart';
 import 'src/ui/home_shell.dart';
 import 'src/ui/android/android_update_dialog.dart';
+import 'src/ui/image_thumbnail.dart';
+import 'src/ui/gallery_perf.dart';
 import 'src/release_update.dart';
 import 'src/ui/font_families.dart';
 import 'src/ui/video_runtime.dart';
@@ -54,6 +56,11 @@ Future<void> main(List<String> arguments) async {
     exit(64);
   }
   WidgetsFlutterBinding.ensureInitialized();
+  configureGalleryDecodedImageCache(
+    PaintingBinding.instance.imageCache,
+    desktop: Platform.isWindows || Platform.isMacOS,
+  );
+  GalleryPerf.instance.register();
   DesktopSingleInstance? desktopInstance;
   // Windows elects before constructing Flutter/plugins in its native runner.
   if (Platform.isMacOS && !startupOptions.ciSmoke) {
@@ -473,6 +480,12 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
       settings = SettingsController(backend)..addListener(_settingsChanged);
       sync = SyncController(
         backend,
+        onMediaImported: (count, since) =>
+            ImageThumbnailCache.prefetchImportedImages(
+              backend,
+              count,
+              importedSince: since,
+            ),
         // Nintendo synchronization is an account queue on every platform.
         // Keeping this shared prevents desktop from falling back to the
         // legacy selected-account path while Android runs all accounts.

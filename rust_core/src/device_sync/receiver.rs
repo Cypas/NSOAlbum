@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use super::diagnostics::{self, Boundary};
 use super::manifest::{Manifest, ManifestCollector, ManifestHeader};
-use super::planner::{Action, SyncMode, SyncPlan};
+use super::planner::{SyncMode, SyncPlan};
 use super::source_names::{SourceDescription, SourceDescriptions};
 use super::staging::{Progress, StagingError, StagingOperation};
 use super::validation::ApplyTimingPhase as Timing;
@@ -137,6 +137,8 @@ impl Snapshot {
     ) -> CoreResult<Self> {
         let _scope = work.begin(super::work::WorkStage::Scanning)?;
         work.checkpoint(super::work::WorkStage::Scanning, 0)?;
+        let total = database.device_sync_manifest_work_total(&header)?;
+        work.set_total(super::work::WorkStage::Scanning, total);
         let mut collector = ManifestCollector::with_control(header.clone(), work.clone())
             .inspect_err(|error| diagnostics::core(Boundary::SnapshotCollector, error))?;
         let mut cursor = None;
@@ -286,12 +288,14 @@ impl ReceiveOperation {
         clock: Option<super::clock::ClockTrust>,
         work: &super::work::WorkControl,
     ) -> ReceiverResult<Self> {
+        work.set_preparation_phase(super::work::PreparationStage::ReadingLibrary, None);
         source
             .sources
             .validate_controlled(&source.manifest, work)
             .inspect_err(|error| diagnostics::core(Boundary::ReceiverSourceValidation, error))?;
         let target = Snapshot::read_controlled(&database, local_name, work)
             .inspect_err(|error| diagnostics::core(Boundary::TargetSnapshot, error))?;
+        work.set_preparation_phase(super::work::PreparationStage::ComparingRecords, None);
         let plan = super::planner::build_plan_controlled(
             &source.manifest,
             &target.manifest,
@@ -310,6 +314,7 @@ impl ReceiveOperation {
         .inspect_err(|error| {
             diagnostics::receiver(Boundary::ReceiverStaging, &ReceiverError::Staging(*error))
         })?;
+        work.set_preparation_phase(super::work::PreparationStage::CheckingSpace, None);
         let strict_noop = plan.is_strict_noop(
             &source.manifest,
             &target.manifest,
@@ -325,6 +330,7 @@ impl ReceiveOperation {
             })?;
         work.check()
             .inspect_err(|error| diagnostics::core(Boundary::ReceiverFinalCheck, error))?;
+        work.set_preparation_phase(super::work::PreparationStage::PreparingPreview, None);
         let source_digest = source.digest_controlled(work)?;
         let target_digest = target.digest_controlled(work)?;
         work.validation.binding_digest();
@@ -457,11 +463,9 @@ impl ReceiveOperation {
             observer,
             file_observer,
             None,
-            false,
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn apply_guarded(
         &mut self,
         authorization: Option<&mut LocalAuthorization>,
@@ -470,7 +474,6 @@ impl ReceiveOperation {
         observer: &mut impl FnMut(ApplyBoundary),
         file_observer: &mut impl FnMut(Progress),
         guard: Option<Arc<dyn CommitGuard>>,
-        verify_reused_originals: bool,
     ) -> ReceiverResult<ApplyReceipt> {
         let authorization = authorization.ok_or(ReceiverError::AuthorizationRequired)?;
         let binding_timing = self.work.validation.time_apply(Timing::Binding);
@@ -581,23 +584,6 @@ impl ReceiveOperation {
         diagnostics::checkpoint(Boundary::ApplyReceiverPrepareEnd);
         self.finished = true;
         observer(ApplyBoundary::Prepared);
-        let catalog_noop = self.plan.conflicts.is_empty()
-            && self
-                .plan
-                .media
-                .iter()
-                .all(|decision| decision.action == Action::Keep)
-            && self
-                .plan
-                .albums
-                .iter()
-                .all(|decision| decision.action == Action::Keep)
-            && match (self.source.manifest.validate(), current.manifest.validate()) {
-                (Ok(source), Ok(current)) => {
-                    source.tags == current.tags && source.mappings == current.mappings
-                }
-                _ => false,
-            };
         let mut publications = Vec::new();
         let result = (|| -> ReceiverResult<()> {
             cancel.check()?;
@@ -606,14 +592,9 @@ impl ReceiveOperation {
                     continue;
                 };
                 if decision.reuse_original {
-                    if verify_reused_originals && !catalog_noop {
-                        self.staging.verify_reused_original(
-                            operation,
-                            &decision.sha256,
-                            cancel,
-                            &mut |_| {},
-                        )?;
-                    }
+                    // receiver_prepare already checked controlled paths and
+                    // indexed lengths. A changed plan does not justify
+                    // hashing every retained original again.
                     continue;
                 }
                 if let Some(guard) = &guard {
@@ -682,6 +663,8 @@ impl ReceiveOperation {
 
 #[cfg(test)]
 mod digest_cache_tests;
+#[cfg(test)]
+mod hash_policy_tests;
 #[cfg(test)]
 #[path = "../../tests/fixtures/receiver_process.rs"]
 mod process_tests;

@@ -59,6 +59,24 @@ final class DeviceSyncSession extends DeviceSyncSessionController {
   read.ProgressView? get presentationProgress =>
       _presentationProgress ?? _snapshot?.progress;
   @override
+  Future<read.AppliedMediaCachePage> appliedMediaPage({
+    required BigInt offset,
+  }) async {
+    final result = await _project(
+      () => native.deviceSyncAppliedMediaPage(
+        endpoint: _endpoint,
+        offset: offset,
+      ),
+      (value) => value.error,
+    );
+    if (result.error case final error?) {
+      throw DeviceSyncReadFailure(error);
+    }
+    return result.page ??
+        (throw const DeviceSyncReadFailure(read.ReadError.unavailable));
+  }
+
+  @override
   String? get confirmationCode => _confirmationCode;
   @override
   bool get accountsAuthorized => _accountConsent == true;

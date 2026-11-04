@@ -32,6 +32,7 @@ pub struct CoreApi {
     database: Arc<Database>,
     disable_app_proxy: AtomicBool,
     import_progress: Mutex<ImportProgressStore>,
+    import_cancellations: Mutex<std::collections::HashSet<String>>,
     account_tools: crate::nso::account_tools::AccountTools,
     transport_pool: Mutex<Option<TransportPoolEntry>>,
 }
@@ -100,6 +101,7 @@ impl CoreApi {
             database,
             disable_app_proxy: AtomicBool::new(false),
             import_progress: Mutex::new(ImportProgressStore::default()),
+            import_cancellations: Mutex::new(std::collections::HashSet::new()),
             account_tools: Default::default(),
             transport_pool: Mutex::new(None),
         };
@@ -544,6 +546,10 @@ impl CoreApi {
         self.database.list_media(&query)
     }
 
+    pub fn count_media(&self, query: GalleryQuery) -> CoreResult<u64> {
+        self.database.count_media(&query)
+    }
+
     pub fn list_media_page(
         &self,
         request: crate::models::GalleryPageRequest,
@@ -894,6 +900,49 @@ impl CoreApi {
             .await
     }
 
+    pub async fn import_mtp_files_with_progress(
+        &self,
+        paths: Vec<String>,
+        device_name: String,
+        operation_id: String,
+    ) -> CoreResult<ImportSummary> {
+        let device_name = device_name.trim();
+        if !matches!(device_name, "Nintendo Switch" | "Nintendo Switch 2") {
+            return Err(CoreError::InvalidConfig(
+                "unsupported Nintendo media device".into(),
+            ));
+        }
+        if operation_id.trim().is_empty() {
+            return Err(CoreError::InvalidConfig(
+                "operation ID must not be empty".into(),
+            ));
+        }
+        if let Ok(mut cancellations) = self.import_cancellations.lock() {
+            cancellations.remove(&operation_id);
+        }
+        self.import_local_paths(
+            paths,
+            SourceType::Mtp,
+            Some(device_name),
+            None,
+            Some(&operation_id),
+        )
+        .await
+    }
+
+    pub fn cancel_import(&self, operation_id: String) -> CoreResult<bool> {
+        if operation_id.trim().is_empty() {
+            return Err(CoreError::InvalidConfig(
+                "operation ID must not be empty".into(),
+            ));
+        }
+        self.import_cancellations
+            .lock()
+            .map_err(|_| CoreError::Provider("import cancellation mutex poisoned".into()))?
+            .insert(operation_id);
+        Ok(true)
+    }
+
     pub async fn export_media(
         &self,
         media_ids: Vec<i64>,
@@ -1193,7 +1242,17 @@ impl CoreApi {
             })?;
         }
         let mut processed_bytes = 0_u64;
+        let mut cancelled = false;
         for (index, path) in files.into_iter().enumerate() {
+            if operation_id.is_some_and(|id| {
+                self.import_cancellations
+                    .lock()
+                    .map(|cancellations| cancellations.contains(id))
+                    .unwrap_or(false)
+            }) {
+                cancelled = true;
+                break;
+            }
             let file_size = std::fs::metadata(&path)
                 .map(|value| value.len())
                 .unwrap_or(0);
@@ -1272,12 +1331,17 @@ impl CoreApi {
         if let Some(operation_id) = operation_id {
             self.update_import_progress(operation_id, |progress| {
                 progress.phase = "finished".into();
-                progress.status = if summary.failed == 0 {
+                progress.status = if cancelled {
+                    "cancelled".into()
+                } else if summary.failed == 0 {
                     "completed".into()
                 } else {
                     "completed_with_errors".into()
                 };
             })?;
+            if let Ok(mut cancellations) = self.import_cancellations.lock() {
+                cancellations.remove(operation_id);
+            }
         }
         Ok(summary)
     }

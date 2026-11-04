@@ -34,6 +34,8 @@ void main() {
                     pinned: favorites,
                     systemKey: favorites ? 'favorites' : null,
                     mediaCount: BigInt.zero,
+                    imageCount: BigInt.zero,
+                    videoCount: BigInt.zero,
                   ),
                 ],
               uiPlatform: AppUiPlatform.android,

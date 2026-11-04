@@ -166,7 +166,8 @@ bool FlutterWindow::OnCreate() {
   sync_notification_channel_->SetMethodCallHandler(
       [this](const flutter::MethodCall<flutter::EncodableValue>& call,
          std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-        if (call.method_name() != "syncCompleted") {
+        if (call.method_name() != "syncCompleted" &&
+            call.method_name() != "importFinished") {
           result->NotImplemented();
           return;
         }
@@ -413,7 +414,7 @@ void FlutterWindow::SetTextClientActive(bool active) {
 }
 
 void FlutterWindow::AttachImeContext() {
-  if (!text_client_active_ || ime_context_ != nullptr ||
+  if (!text_client_active_ || ime_context_association_.active() ||
       ime_window_ == nullptr || ::IsWindow(ime_window_) == FALSE ||
       ::GetFocus() != ime_window_) {
     return;
@@ -434,21 +435,17 @@ void FlutterWindow::AttachImeContext() {
   ::ImmSetOpenStatus(created, ime_open_status_);
   ::ImmSetConversionStatus(created, ime_conversion_mode_,
                            ime_sentence_mode_);
-  ::ImmAssociateContext(ime_window_, created);
-  ime_context_ = created;
+  if (!ime_context_association_.Associate(ime_window_, created)) {
+    ::ImmDestroyContext(created);
+  }
 }
 
 void FlutterWindow::DetachImeContext() {
-  if (ime_context_ == nullptr) {
-    return;
-  }
-  HIMC owned = ime_context_;
-  ime_context_ = nullptr;
+  const HIMC owned = ime_context_association_.owned_context();
+  if (owned == nullptr) return;
   ime_open_status_ = ::ImmGetOpenStatus(owned);
   ::ImmGetConversionStatus(owned, &ime_conversion_mode_,
                            &ime_sentence_mode_);
-  if (ime_window_ != nullptr && ::IsWindow(ime_window_) != FALSE) {
-    ::ImmAssociateContext(ime_window_, nullptr);
-  }
-  ::ImmDestroyContext(owned);
+  ime_context_association_.Restore(
+      ime_window_ != nullptr && ::IsWindow(ime_window_) != FALSE);
 }

@@ -49,9 +49,11 @@ void registerAndroidBatchFeatureTests() {
             );
             await tester.pumpAndSettle();
             final filter = find.byKey(const Key('android-library-filter'));
+            final filterButton = tester.widget<IconButton>(filter);
             expect(
-              (tester.widget<IconButton>(filter).icon as Icon).color,
-              Theme.of(tester.element(filter)).colorScheme.primary,
+              filterButton.style?.backgroundColor?.resolve(<WidgetState>{}),
+              Colors.transparent,
+              reason: 'Media-kind selection is a view, not a filter item.',
             );
             expect(
               tester
@@ -59,11 +61,11 @@ void registerAndroidBatchFeatureTests() {
                   .flagsCollection
                   .isSelected
                   .toBoolOrNull(),
-              isTrue,
+              isFalse,
             );
             expect(
               find.text(locale == 'zh' ? '已应用筛选' : 'Filters applied'),
-              findsOneWidget,
+              findsNothing,
             );
             expect(tester.takeException(), isNull);
           } finally {
@@ -122,8 +124,8 @@ void registerAndroidBatchFeatureTests() {
             await tester.ensureVisible(apply);
             await tester.tap(apply);
             await tester.pumpAndSettle();
-            expect(library.kind, GalleryKindFilter.all);
-            expect(backend.lastKind, GalleryKindFilter.all);
+            expect(library.kind, kind);
+            expect(backend.lastKind, kind);
             expect(library.favoriteOnly, isFalse);
             expect(backend.lastFavoriteOnly, isFalse);
             expect(library.gameNames, isEmpty);
@@ -366,7 +368,10 @@ void registerAndroidBatchFeatureTests() {
       final filter = tester.widget<IconButton>(
         find.byKey(const Key('android-library-filter')),
       );
-      expect((filter.icon as Icon).color, isNotNull);
+      expect(
+        filter.style?.backgroundColor?.resolve(<WidgetState>{}),
+        isNot(Colors.transparent),
+      );
       await tester.tap(find.byKey(const Key('android-library-filter')));
       await tester.pumpAndSettle();
       await tester.tap(find.byIcon(Icons.date_range));
@@ -412,7 +417,10 @@ void registerAndroidBatchFeatureTests() {
     final filter = tester.widget<IconButton>(
       find.byKey(const Key('android-library-filter')),
     );
-    expect((filter.icon as Icon).color, isNotNull);
+    expect(
+      filter.style?.backgroundColor?.resolve(<WidgetState>{}),
+      isNot(Colors.transparent),
+    );
   });
 }
 

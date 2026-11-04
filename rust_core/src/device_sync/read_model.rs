@@ -14,7 +14,7 @@ use super::{
     receiver::ReceiverError,
     source_names::SourceDescription,
     staging::StagingError,
-    work::{WorkControl, WorkStage},
+    work::{PreparationStage, WorkControl, WorkStage},
     SessionError,
 };
 use crate::error::CoreError;
@@ -29,6 +29,7 @@ pub enum ReadError {
     Unavailable,
     Disconnected,
     Timeout,
+    ApplyFailed,
     InvalidInput,
     VersionMismatch,
     Internal,
@@ -90,6 +91,7 @@ impl ReadError {
             DriverError::Channel(error) => Self::session(error),
             DriverError::Library => Self::PreviewChanged,
             DriverError::Timeout => Self::Timeout,
+            DriverError::ApplyFailed => Self::ApplyFailed,
             DriverError::Cancelled => Self::Cancelled,
             DriverError::InsufficientSpace => Self::InsufficientSpace,
             DriverError::AccountsUnsupported => Self::PermissionDenied,
@@ -146,30 +148,226 @@ pub struct AgreedConfiguration {
     pub mode: SyncMode,
     pub include_accounts: bool,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplyProgressPhase {
+    Preparing,
+    Publishing,
+    Sql,
+    Finalizing,
+    Accounts,
+}
 #[derive(Debug, Clone, Serialize)]
 pub struct ProgressView {
     pub work_stage: WorkStage,
+    pub preparation_phase: Option<PreparationStage>,
     pub work_active: bool,
     pub scanned_items: u64,
     pub total_items: Option<u64>,
+    pub compared_items: Option<u64>,
+    pub total_compared_items: Option<u64>,
+    pub processed_items: Option<u64>,
+    /// Safe display hint only (for example "1/4"), never a media identifier.
+    pub current_item: Option<String>,
+    pub processed_bytes: Option<u64>,
+    pub total_bytes: Option<u64>,
     pub transferred_bytes: Option<u64>,
     pub transfer_total_bytes: Option<u64>,
     pub transfer_bytes_per_second: Option<u64>,
+    pub rate_per_second: Option<u64>,
+    pub eta_ms: Option<u64>,
+    pub is_estimate: Option<bool>,
+    pub apply_phase: Option<ApplyProgressPhase>,
+    pub apply_publication_bytes: Option<u64>,
+    pub apply_sql_steps: Option<u64>,
+    pub apply_account_steps: Option<u16>,
 }
-impl ProgressView {
-    pub fn observing(work: &WorkControl) -> Self {
-        let observation = work.observe();
-        Self {
-            work_stage: observation.stage,
-            work_active: observation.active,
-            scanned_items: observation.scanned_items,
-            total_items: None,
-            transferred_bytes: None,
-            transfer_total_bytes: None,
-            transfer_bytes_per_second: None,
+
+/// Minimal local-cache input for media successfully added or replaced by a
+/// completed receive operation. The storage path is an in-process bridge value
+/// only; it must never be written to device-sync logs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AppliedMediaCacheEntry {
+    pub sha256: String,
+    pub storage_path: String,
+    pub kind: crate::models::MediaKind,
+}
+
+/// Bounded page from the immutable plan retained by a successful receiver.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AppliedMediaCachePage {
+    pub items: Vec<AppliedMediaCacheEntry>,
+    pub next_offset: Option<u64>,
+}
+
+/// Typed projection so transient endpoint contention can be retried by readers
+/// without turning a read-only result into an executed command failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AppliedMediaCachePageRead {
+    pub page: Option<AppliedMediaCachePage>,
+    pub error: Option<ReadError>,
+}
+
+impl From<Result<AppliedMediaCachePage, ReadError>> for AppliedMediaCachePageRead {
+    fn from(result: Result<AppliedMediaCachePage, ReadError>) -> Self {
+        match result {
+            Ok(page) => Self {
+                page: Some(page),
+                error: None,
+            },
+            Err(error) => Self {
+                page: None,
+                error: Some(error),
+            },
         }
     }
 }
+
+impl ProgressView {
+    pub fn observing(work: &WorkControl) -> Self {
+        let observation = work.observe();
+        let comparing = observation.stage == WorkStage::Comparing;
+        let processed_items = match observation.stage {
+            WorkStage::Scanning => Some(observation.phase_scanned_items),
+            WorkStage::Comparing => Some(observation.phase_compared_items),
+            _ => None,
+        };
+        let total_items = if comparing {
+            observation.total_compared_items
+        } else if observation.stage == WorkStage::Scanning {
+            observation.total_scanned_items
+        } else {
+            None
+        };
+        let progress_stage = if comparing {
+            WorkStage::Comparing
+        } else {
+            WorkStage::Scanning
+        };
+        let estimate = total_items.and_then(|total| {
+            work.estimate_progress(progress_stage, processed_items.unwrap_or_default(), total)
+        });
+        let current_item = processed_items
+            .zip(total_items)
+            .filter(|(processed, total)| processed < total)
+            .map(|(processed, total)| format!("{}/{}", processed + 1, total));
+        let mut result = Self {
+            preparation_phase: observation.preparation_phase,
+            work_stage: observation.stage,
+            work_active: observation.active,
+            scanned_items: if comparing {
+                observation.phase_compared_items
+            } else {
+                observation.phase_scanned_items
+            },
+            total_items: if comparing {
+                observation.total_compared_items
+            } else {
+                observation.total_scanned_items
+            },
+            compared_items: comparing.then_some(observation.phase_compared_items),
+            total_compared_items: observation.total_compared_items,
+            processed_items,
+            current_item,
+            processed_bytes: None,
+            total_bytes: None,
+            transferred_bytes: None,
+            transfer_total_bytes: None,
+            transfer_bytes_per_second: None,
+            rate_per_second: estimate.map(|(rate, _)| rate),
+            eta_ms: estimate.map(|(_, eta)| eta),
+            is_estimate: Some(estimate.is_some()),
+            apply_phase: None,
+            apply_publication_bytes: None,
+            apply_sql_steps: None,
+            apply_account_steps: None,
+        };
+        if observation.preparation_phase.is_some() {
+            result.processed_items = observation
+                .preparation_total_items
+                .map(|_| observation.preparation_processed_items);
+            result.total_items = observation.preparation_total_items;
+            result.current_item = observation
+                .preparation_total_items
+                .filter(|total| observation.preparation_processed_items < *total)
+                .map(|total| format!("{}/{}", observation.preparation_processed_items + 1, total));
+            result.rate_per_second = observation.preparation_rate;
+            result.eta_ms = observation.preparation_eta_ms;
+            result.is_estimate = Some(result.eta_ms.is_some());
+            if observation.preparation_phase != Some(PreparationStage::ComparingRecords) {
+                result.compared_items = None;
+                result.total_compared_items = None;
+                result.scanned_items = observation.preparation_processed_items;
+            }
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preparation_projection_does_not_show_completed_comparison_during_space_or_peer_wait() {
+        let work = WorkControl::default();
+        let _scope = work.begin(WorkStage::Comparing).unwrap();
+        work.set_preparation_phase(PreparationStage::ComparingRecords, Some(897));
+        work.checkpoint(WorkStage::Comparing, 897).unwrap();
+        work.set_preparation_phase(PreparationStage::CheckingCache, Some(10));
+        work.preparation_item_completed();
+        let cache = ProgressView::observing(&work);
+        assert_eq!(
+            cache.preparation_phase,
+            Some(PreparationStage::CheckingCache)
+        );
+        assert_eq!(cache.processed_items, Some(1));
+        assert_eq!(cache.total_items, Some(10));
+        assert_eq!(cache.compared_items, None);
+        for phase in [
+            PreparationStage::CheckingSpace,
+            PreparationStage::WaitingForPeer,
+        ] {
+            work.set_preparation_phase(phase, None);
+            let progress = ProgressView::observing(&work);
+            assert_eq!(progress.preparation_phase, Some(phase));
+            assert_eq!(progress.processed_items, None);
+            assert_eq!(progress.total_items, None);
+            assert_eq!(progress.compared_items, None);
+            assert_eq!(progress.current_item, None);
+            assert_eq!(progress.rate_per_second, None);
+            assert_eq!(progress.eta_ms, None);
+        }
+    }
+
+    #[test]
+    fn busy_read_progress_keeps_scan_and_compare_counts_rate_and_safe_ordinal() {
+        for (stage, work_stage, processed, total) in [
+            (WorkStage::Scanning, WorkStage::Scanning, 3_u64, 10_u64),
+            (WorkStage::Comparing, WorkStage::Comparing, 4_u64, 12_u64),
+        ] {
+            let work = WorkControl::default();
+            let _scope = work.begin(work_stage).unwrap();
+            work.set_total(work_stage, total);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            work.checkpoint(work_stage, processed as usize).unwrap();
+
+            let progress = ProgressView::observing(&work);
+
+            assert_eq!(progress.work_stage, stage);
+            assert_eq!(progress.processed_items, Some(processed));
+            assert_eq!(progress.total_items, Some(total));
+            assert_eq!(
+                progress.current_item,
+                Some(format!("{}/{}", processed + 1, total))
+            );
+            assert!(progress.rate_per_second.is_some_and(|rate| rate > 0));
+            assert!(progress.eta_ms.is_some());
+            assert_eq!(progress.is_estimate, Some(true));
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct EndpointView {
     pub pairing: PairingStage,

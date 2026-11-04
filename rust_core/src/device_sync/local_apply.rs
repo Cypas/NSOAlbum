@@ -201,6 +201,15 @@ impl LocalApplyAuthority {
     pub(super) fn sql_work(&self) -> u64 {
         self.work.lock().unwrap_or_else(|e| e.into_inner()).sql
     }
+    pub(super) fn progress_counts(&self) -> (u64, u64, u16, bool) {
+        let work = self.work.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            work.publication,
+            work.sql,
+            work.accounts,
+            work.sql_until.is_some(),
+        )
+    }
 }
 
 impl CommitGuard for LocalApplyAuthority {

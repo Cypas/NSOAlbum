@@ -1,5 +1,8 @@
 #[cfg(any(windows, target_os = "macos"))]
 fn main() {
+    if std::env::args().any(|value| value == "--switch-import") {
+        squid_album_core::switch_import::worker_main();
+    }
     use squid_album_core::device_sync::{
         native_io::{read_packet, response_packet, write_packet, NativeError, NativeRequest},
         native_mtp::MtpWorker,

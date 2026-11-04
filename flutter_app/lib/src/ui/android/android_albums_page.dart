@@ -11,7 +11,7 @@ import 'android_layout.dart';
 import 'android_media_card.dart';
 import 'android_page_frame.dart';
 import 'android_fluid_scroll_physics.dart';
-import '../device_sync/album_source_label.dart';
+import '../album_media_counts.dart';
 
 class AndroidAlbumsPage extends StatefulWidget {
   const AndroidAlbumsPage({
@@ -179,12 +179,7 @@ class _AndroidAlbumsPageState extends State<AndroidAlbumsPage> {
                             subtitle: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  context.l10n.select(
-                                    zh: '${album.mediaCount} 个媒体',
-                                    en: '${album.mediaCount} media',
-                                  ),
-                                ),
+                                Text(albumMediaCountText(context, album)),
                                 Text(
                                   context.l10n.select(
                                     zh: album.albumType == 'smart'
@@ -198,10 +193,6 @@ class _AndroidAlbumsPageState extends State<AndroidAlbumsPage> {
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: Theme.of(context).textTheme.bodySmall,
-                                ),
-                                AlbumSourceLabel(
-                                  name: album.sourceDeviceName,
-                                  systemKey: album.systemKey,
                                 ),
                               ],
                             ),

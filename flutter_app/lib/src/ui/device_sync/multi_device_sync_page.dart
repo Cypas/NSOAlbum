@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../backend/app_backend.dart';
+import '../../backend/device_sync/service_contract.dart';
 import '../../l10n/app_localizations.dart';
 import 'backup_page.dart';
 import 'device_sync_page.dart';
@@ -12,11 +13,14 @@ class MultiDeviceSyncPage extends StatelessWidget {
     super.key,
     required this.backend,
     required this.onLibraryChanged,
+    this.onAppliedMediaCache,
     this.embedded = false,
   });
 
   final AppBackend backend;
   final Future<void> Function() onLibraryChanged;
+  final Future<void> Function(DeviceSyncSessionController session)?
+  onAppliedMediaCache;
   final bool embedded;
 
   Future<void> _openDeviceSync(BuildContext context) async {
@@ -28,6 +32,7 @@ class MultiDeviceSyncPage extends StatelessWidget {
             access: access,
             mobile: false,
             onLibraryChanged: onLibraryChanged,
+            onAppliedMediaCache: onAppliedMediaCache,
           ),
         ),
       );

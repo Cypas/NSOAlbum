@@ -7,19 +7,27 @@ import '../../backend/app_backend.dart';
 import '../../app_branding.dart';
 import '../../l10n/app_localizations.dart';
 import '../../rust/models.dart';
+import '../../search/search_normalizer.dart';
 import '../../state/library_controller.dart';
 import '../../state/settings_controller.dart';
 import 'android_action_bar.dart';
 import '../app_brand_title.dart';
 import 'android_layout.dart';
+import 'android_game_name_tooltip.dart';
 import 'android_media_card.dart';
+import 'android_deferred_media_card.dart';
+import '../gallery_drag_loading.dart';
 import 'android_media_viewer.dart';
 import 'android_fluid_scroll_physics.dart';
 import 'android_metadata_editor.dart';
 import 'android_page_frame.dart';
 import 'android_video_merge_page.dart';
 import 'android_text_prompt.dart';
-import '../device_sync/album_source_label.dart';
+import '../album_media_counts.dart';
+import '../image_thumbnail.dart';
+import '../gallery_perf.dart';
+import '../gallery_return_layout.dart';
+import '../game_filter_order.dart';
 import '../../platform/android_media_share.dart';
 
 PageRoute<void> _androidMediaViewerRoute(WidgetBuilder builder) =>
@@ -54,27 +62,40 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
   final search = TextEditingController();
   final searchFocus = FocusNode();
   final scroll = ScrollController();
+  late final VoidCallback _unbindReturnLayout;
+  int _returnLayoutGeneration = 0;
   final selected = <int>{};
   final selectedAssets = <int, MediaAsset>{};
   List<MediaAsset>? selectedSource;
+  List<MediaAsset>? _lastThumbnailPrefetchSource;
   final Set<int> favoriteBusy = {};
   final Map<int, bool> favoriteOverrides = {};
   bool selecting = false;
   bool searchExpanded = false;
   bool busy = false;
+  bool selectionScanning = false;
   bool groupByImportedDate = false;
   bool _nearEndLoadArmed = true;
+  final _perfClock = Stopwatch()..start();
+  double? _perfLastOffset;
+  int _perfLastMicros = 0;
+  int _perfGeneration = -1;
+  int _perfLoaded = 0, _perfImages = 0, _perfVideos = 0, _perfColumns = 0;
   AppBackend get backend => widget.controller.backend;
 
   @override
   void initState() {
     super.initState();
+    _unbindReturnLayout = GalleryReturnLayout.bind(scroll, () {
+      if (mounted) setState(() => _returnLayoutGeneration++);
+    });
     search.text = widget.controller.search;
     unawaited(widget.controller.reload());
     scroll.addListener(_loadWhenNearEnd);
   }
 
   void _loadWhenNearEnd() {
+    _recordPerfScroll();
     if (!scroll.hasClients) return;
     if (scroll.position.extentAfter > 640) {
       _nearEndLoadArmed = true;
@@ -96,10 +117,83 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
     );
   }
 
+  void _recordPerfScroll({bool measureMovement = true}) {
+    if (!GalleryPerf.compiled || !scroll.hasClients) return;
+    final position = scroll.position;
+    final perf = GalleryPerf.instance;
+    perf.gallery(
+      loaded: _perfLoaded,
+      images: _perfImages,
+      videos: _perfVideos,
+      columns: _perfColumns,
+      viewport: position.viewportDimension,
+      offset: position.pixels,
+      extent: position.maxScrollExtent,
+      total: widget.controller.pages.totalMatching,
+    );
+    if (!measureMovement) return;
+    final now = _perfClock.elapsedMicroseconds;
+    final previous = _perfLastOffset;
+    final elapsed = now - _perfLastMicros;
+    if (perf.recording &&
+        _perfGeneration == perf.generation &&
+        previous != null &&
+        elapsed > 0) {
+      final delta = (position.pixels - previous).abs();
+      if (delta > 0) {
+        perf
+          ..sample(GalleryMetric.scrollDelta, delta)
+          ..sample(GalleryMetric.scrollSpeed, delta * 1000000 / elapsed);
+      }
+    }
+    _perfLastOffset = perf.recording ? position.pixels : null;
+    _perfLastMicros = now;
+    _perfGeneration = perf.generation;
+  }
+
   void applySearch() {
     FocusManager.instance.primaryFocus?.unfocus();
     _nearEndLoadArmed = true;
     widget.controller.searchFor(search.text);
+  }
+
+  bool _matchesSearch(MediaAsset item) => normalizedTextContains(
+    [item.originalName, item.gameName, item.note ?? '', ...item.tags].join(' '),
+    widget.controller.search,
+  );
+
+  Future<void> _selectAllMatching({required bool invert}) async {
+    if (busy || selectionScanning) return;
+    setState(() => selectionScanning = true);
+    try {
+      final all = await widget.controller.pages.loadAllMatching(
+        filter: _matchesSearch,
+      );
+      if (!mounted) return;
+      setState(() {
+        if (invert) {
+          for (final item in all) {
+            if (!selected.remove(item.id)) selected.add(item.id);
+          }
+          for (final item in all) {
+            if (selected.contains(item.id)) {
+              selectedAssets[item.id] = item;
+            } else {
+              selectedAssets.remove(item.id);
+            }
+          }
+        } else {
+          selected.addAll(all.map((item) => item.id));
+          for (final item in all) {
+            selectedAssets[item.id] = item;
+          }
+        }
+      });
+    } catch (error) {
+      if (mounted) androidMessage(context, error);
+    } finally {
+      if (mounted) setState(() => selectionScanning = false);
+    }
   }
 
   void toggleSearch() {
@@ -125,6 +219,7 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
 
   @override
   void dispose() {
+    _unbindReturnLayout();
     search.dispose();
     searchFocus.dispose();
     scroll.dispose();
@@ -267,10 +362,7 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(album.name),
-                  AlbumSourceLabel(
-                    name: album.sourceDeviceName,
-                    systemKey: album.systemKey,
-                  ),
+                  Text(albumMediaCountText(context, album)),
                 ],
               ),
             ),
@@ -496,15 +588,6 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                               style: Theme.of(context).textTheme.titleSmall,
                             ),
                           ),
-                          const Spacer(),
-                          if (state.gameNames.isNotEmpty)
-                            TextButton(
-                              onPressed: () =>
-                                  update(() => state.gameNames = []),
-                              child: Text(
-                                context.l10n.select(zh: '清除', en: 'Clear'),
-                              ),
-                            ),
                         ],
                       ),
                       const SizedBox(height: 8),
@@ -626,13 +709,11 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
               ),
               TextButton(
                 onPressed: () => update(() {
-                  state.kind = GalleryKindFilter.all;
                   state.favoriteOnly = false;
                   state.gameNames = [];
                   state.importedFrom = null;
                   state.importedUntil = null;
                   state.capturedOnThisDay = null;
-                  draftGroupByDate = false;
                 }),
                 child: Text(
                   context.l10n.select(zh: '清除筛选', en: 'Clear filters'),
@@ -712,15 +793,26 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
     animation: Listenable.merge([widget.controller, widget.settings]),
     builder: (context, _) {
       final state = widget.controller;
-      final items = state.visible
-          .map(_withFavoriteOverride)
-          .where(
-            (item) =>
-                (!state.favoriteOnly &&
-                    widget.album?.systemKey != 'favorites') ||
-                item.favorite,
-          )
-          .toList(growable: false);
+      final thumbnailSource = GalleryPerf.instance.sync(
+        GalleryMetric.filter,
+        () => state.visible,
+      );
+      if (!identical(_lastThumbnailPrefetchSource, thumbnailSource)) {
+        _lastThumbnailPrefetchSource = thumbnailSource;
+        unawaited(ImageThumbnailCache.prefetch(thumbnailSource));
+      }
+      final items = GalleryPerf.instance.sync(
+        GalleryMetric.filter,
+        () => thumbnailSource
+            .map(_withFavoriteOverride)
+            .where(
+              (item) =>
+                  (!state.favoriteOnly &&
+                      widget.album?.systemKey != 'favorites') ||
+                  item.favorite,
+            )
+            .toList(growable: false),
+      );
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && !state.loading) _loadWhenNearEnd();
       });
@@ -744,10 +836,15 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
       final searchMode = searchExpanded && !selecting;
       final secondary = selecting || searchExpanded || widget.onBack != null;
       final pageTitle = selecting
-          ? context.l10n.select(
-              zh: '已选择 ${selected.length} 项',
-              en: '${selected.length} selected',
-            )
+          ? selectionScanning
+                ? context.l10n.select(
+                    zh: '正在选择全部媒体…',
+                    en: 'Selecting all media…',
+                  )
+                : context.l10n.select(
+                    zh: '已选择 ${selected.length} 项',
+                    en: '${selected.length} selected',
+                  )
           : widget.album?.name ??
                 context.l10n.select(zh: appChineseName, en: appEnglishName);
       final searchHeight = math.max(
@@ -843,6 +940,9 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
               : null,
           toolbarHeight: searchMode ? searchHeight : 48,
           scrollController: scroll,
+          scrollTotalCount: state.pages.totalMatching,
+          scrollLoadedCount: items.length,
+          scrollCounting: state.pages.countingTotal,
           scrollToTopTooltip: context.l10n.select(
             zh: '回到顶部',
             en: 'Back to top',
@@ -884,17 +984,21 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
             if (!selecting) ...[
               MergeSemantics(
                 child: Semantics(
-                  selected: state.hasFilters,
+                  selected: state.hasActiveFilterItems,
                   child: IconButton(
                     key: const Key('android-library-filter'),
                     tooltip: context.l10n.select(zh: '筛选', en: 'Filter'),
                     onPressed: filters,
-                    icon: Icon(
-                      Icons.filter_list,
-                      color: state.hasFilters
-                          ? Theme.of(context).colorScheme.primary
+                    style: IconButton.styleFrom(
+                      backgroundColor: state.hasActiveFilterItems
+                          ? Theme.of(context).colorScheme.primaryContainer
+                          : Colors.transparent,
+                      foregroundColor: state.hasActiveFilterItems
+                          ? Theme.of(context).colorScheme.onPrimaryContainer
                           : null,
+                      shape: const CircleBorder(),
                     ),
+                    icon: const Icon(Icons.filter_list),
                   ),
                 ),
               ),
@@ -909,29 +1013,28 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                 label: context.l10n.select(zh: '更多操作', en: 'More actions'),
                 actions: [
                   AndroidAction(
-                    label: context.l10n.select(zh: '全选', en: 'Select all'),
+                    label: selectionScanning
+                        ? context.l10n.select(
+                            zh: '正在加载全部媒体',
+                            en: 'Loading all media',
+                          )
+                        : context.l10n.select(zh: '全选', en: 'Select all'),
                     icon: Icons.select_all,
-                    onPressed: busy
+                    onPressed: busy || selectionScanning
                         ? null
-                        : () => setState(() {
-                            selected.addAll(items.map((item) => item.id));
-                          }),
+                        : () => unawaited(_selectAllMatching(invert: false)),
                   ),
                   AndroidAction(
-                    label: context.l10n.select(
-                      zh: '反选',
-                      en: 'Invert selection',
-                    ),
+                    label: selectionScanning
+                        ? context.l10n.select(
+                            zh: '正在加载全部媒体',
+                            en: 'Loading all media',
+                          )
+                        : context.l10n.select(zh: '反选', en: 'Invert selection'),
                     icon: Icons.flip,
-                    onPressed: busy
+                    onPressed: busy || selectionScanning
                         ? null
-                        : () => setState(() {
-                            for (final item in items) {
-                              if (!selected.remove(item.id)) {
-                                selected.add(item.id);
-                              }
-                            }
-                          }),
+                        : () => unawaited(_selectAllMatching(invert: true)),
                   ),
                   ...actions(chosen),
                 ],
@@ -947,229 +1050,272 @@ class _AndroidLibraryPageState extends State<AndroidLibraryPage> {
                 textScaler: MediaQuery.textScalerOf(context),
                 spacing: spacing,
               );
-              final rows = _galleryRows(
-                items,
-                columns: columns,
-                grouped: groupByImportedDate,
-                english: context.l10n.locale.languageCode == 'en',
-              );
-              return CustomScrollView(
-                controller: scroll,
-                physics: const AndroidFluidScrollPhysics(),
-                key: PageStorageKey(
-                  'android-library-${widget.album?.id ?? 'all'}',
+              if (GalleryPerf.compiled) {
+                _perfLoaded = items.length;
+                _perfImages = items
+                    .where((item) => item.kind == MediaKind.image)
+                    .length;
+                _perfVideos = items.length - _perfImages;
+                _perfColumns = columns;
+                _recordPerfScroll(measureMovement: false);
+              }
+              final rows = GalleryPerf.instance.sync(
+                GalleryMetric.group,
+                () => _galleryRows(
+                  items,
+                  columns: columns,
+                  grouped: groupByImportedDate,
+                  english: context.l10n.locale.languageCode == 'en',
                 ),
-                slivers: [
-                  SliverPadding(
-                    padding: EdgeInsets.all(padding),
-                    sliver: SliverToBoxAdapter(
-                      child: Column(
-                        children: [
-                          if (widget.album case final album?
-                              when album.systemKey != 'favorites') ...[
-                            Align(
-                              alignment: Alignment.centerLeft,
-                              child: AlbumSourceLabel(
-                                name: album.sourceDeviceName,
-                                systemKey: album.systemKey,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                          ],
-                          SegmentedButton<GalleryKindFilter>(
-                            key: const Key('android-kind-filter'),
-                            showSelectedIcon: false,
-                            style: ButtonStyle(
-                              visualDensity: VisualDensity.compact,
-                              minimumSize: const WidgetStatePropertyAll(
-                                Size(0, 32),
-                              ),
-                              padding: const WidgetStatePropertyAll(
-                                EdgeInsets.symmetric(horizontal: 12),
-                              ),
-                            ),
-                            selected: {state.kind},
-                            onSelectionChanged: (values) {
-                              state.kind = values.single;
-                              state.reload();
-                            },
-                            segments: [
-                              for (final entry in {
-                                GalleryKindFilter.all: context.l10n.select(
-                                  zh: '全部',
-                                  en: 'All',
-                                ),
-                                GalleryKindFilter.image: context.l10n.select(
-                                  zh: '图片',
-                                  en: 'Photos',
-                                ),
-                                GalleryKindFilter.video: context.l10n.select(
-                                  zh: '视频',
-                                  en: 'Videos',
-                                ),
-                              }.entries)
-                                ButtonSegment(
-                                  value: entry.key,
-                                  label: Text(entry.value),
-                                ),
-                            ],
-                          ),
-                          if (state.hasFilters)
-                            Text(
-                              context.l10n.select(
-                                zh: '已应用筛选',
-                                en: 'Filters applied',
-                              ),
-                            ),
-                          if (state.loading) const LinearProgressIndicator(),
-                          if (state.error != null)
-                            Text(androidReadableError(context, state.error!)),
-                          if (!state.loading && items.isEmpty)
-                            Padding(
-                              padding: const EdgeInsets.all(24),
-                              child: Text(
-                                context.l10n.select(
-                                  zh: '当前条件下没有媒体',
-                                  en: 'No matching media',
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
+              );
+              return GalleryDragLoadRegion(
+                controller: scroll,
+                touchDragging: true,
+                cardsPerFrame: 2,
+                showScrollbar: false,
+                child: CustomScrollView(
+                  controller: scroll,
+                  physics: const AndroidFluidScrollPhysics(),
+                  key: PageStorageKey(
+                    'android-library-${widget.album?.id ?? 'all'}',
                   ),
-                  SliverPadding(
-                    padding: EdgeInsets.fromLTRB(padding, 0, padding, padding),
-                    sliver: SliverList.builder(
-                      itemCount: rows.length,
-                      itemBuilder: (context, row) {
-                        final galleryRow = rows[row];
-                        if (galleryRow.header != null) {
-                          return Padding(
-                            padding: EdgeInsets.only(
-                              top: row == 0 ? 0 : spacing,
-                              bottom: spacing / 2,
-                            ),
-                            child: Text(
-                              galleryRow.header!,
-                              style: Theme.of(context).textTheme.titleSmall
-                                  ?.copyWith(fontWeight: FontWeight.w700),
-                            ),
-                          );
-                        }
-                        return Padding(
-                          padding: EdgeInsets.only(bottom: spacing),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              for (
-                                var column = 0;
-                                column < columns;
-                                column++
-                              ) ...[
-                                if (column > 0) SizedBox(width: spacing),
-                                Expanded(
-                                  child: column >= galleryRow.items.length
-                                      ? const SizedBox.shrink()
-                                      : Builder(
-                                          builder: (context) {
-                                            final indexed =
-                                                galleryRow.items[column];
-                                            final item = indexed.$1;
-                                            return AndroidMediaCard(
-                                              key: ValueKey(
-                                                'android-media-${item.id}',
-                                              ),
-                                              asset: item,
-                                              settings: widget.settings.value,
-                                              selecting: selecting,
-                                              selected: selected.contains(
-                                                item.id,
-                                              ),
-                                              onOpen: () async {
-                                                if (selecting) {
-                                                  setState(() {
-                                                    selected.contains(item.id)
-                                                        ? selected.remove(
-                                                            item.id,
-                                                          )
-                                                        : selected.add(item.id);
-                                                  });
-                                                  return;
-                                                }
-                                                if (item.kind ==
-                                                    MediaKind.image) {
-                                                  unawaited(
-                                                    precacheImage(
-                                                      androidDetailImageProvider(
-                                                        context,
-                                                        item.storagePath,
-                                                      ),
-                                                      context,
-                                                      onError: (_, _) {},
-                                                    ),
-                                                  );
-                                                }
-                                                if (!context.mounted) return;
-                                                await Navigator.of(
-                                                  context,
-                                                ).push(
-                                                  _androidMediaViewerRoute(
-                                                    (_) => AndroidMediaViewer(
-                                                      backend: backend,
-                                                      settings:
-                                                          widget.settings.value,
-                                                      items: items,
-                                                      initialIndex: indexed.$2,
-                                                      galleryQuery:
-                                                          state.galleryQuery,
-                                                      initialPage:
-                                                          state.pages.snapshot,
-                                                      mediaFilter:
-                                                          state.pages.accept,
-                                                      sourceAlbum: widget.album,
-                                                    ),
-                                                  ),
-                                                );
-                                                if (mounted) {
-                                                  await state.reload();
-                                                }
-                                              },
-                                              onMenu: () => menu(item),
-                                              onFavorite: () =>
-                                                  _toggleFavorite(item),
-                                            );
-                                          },
-                                        ),
+                  slivers: [
+                    SliverPadding(
+                      padding: EdgeInsets.all(padding),
+                      sliver: SliverToBoxAdapter(
+                        child: Column(
+                          children: [
+                            SegmentedButton<GalleryKindFilter>(
+                              key: const Key('android-kind-filter'),
+                              showSelectedIcon: false,
+                              style: ButtonStyle(
+                                visualDensity: VisualDensity.compact,
+                                minimumSize: const WidgetStatePropertyAll(
+                                  Size(0, 32),
                                 ),
+                                padding: const WidgetStatePropertyAll(
+                                  EdgeInsets.symmetric(horizontal: 12),
+                                ),
+                              ),
+                              selected: {state.kind},
+                              onSelectionChanged: (values) {
+                                state.kind = values.single;
+                                state.reload();
+                              },
+                              segments: [
+                                for (final entry in {
+                                  GalleryKindFilter.all: context.l10n.select(
+                                    zh: '全部',
+                                    en: 'All',
+                                  ),
+                                  GalleryKindFilter.image: context.l10n.select(
+                                    zh: '图片',
+                                    en: 'Photos',
+                                  ),
+                                  GalleryKindFilter.video: context.l10n.select(
+                                    zh: '视频',
+                                    en: 'Videos',
+                                  ),
+                                }.entries)
+                                  ButtonSegment(
+                                    value: entry.key,
+                                    label: Text(entry.value),
+                                  ),
                               ],
-                            ],
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                  if (state.loadingMore)
-                    const SliverToBoxAdapter(
-                      child: Padding(
-                        padding: EdgeInsets.all(16),
-                        child: LinearProgressIndicator(),
-                      ),
-                    ),
-                  if (!state.loading && state.error != null && state.hasAfter)
-                    SliverToBoxAdapter(
-                      child: TextButton.icon(
-                        onPressed: state.loadNextPage,
-                        icon: const Icon(Icons.refresh),
-                        label: Text(
-                          context.l10n.select(
-                            zh: '加载失败，重试',
-                            en: 'Loading failed. Retry',
-                          ),
+                            ),
+                            if (state.loading) const LinearProgressIndicator(),
+                            if (state.error != null)
+                              Text(androidReadableError(context, state.error!)),
+                            if (!state.loading && items.isEmpty)
+                              Padding(
+                                padding: const EdgeInsets.all(24),
+                                child: Text(
+                                  context.l10n.select(
+                                    zh: '当前条件下没有媒体',
+                                    en: 'No matching media',
+                                  ),
+                                ),
+                              ),
+                          ],
                         ),
                       ),
                     ),
-                ],
+                    SliverPadding(
+                      padding: EdgeInsets.fromLTRB(
+                        padding,
+                        0,
+                        padding,
+                        padding,
+                      ),
+                      sliver: SliverList.builder(
+                        key: ValueKey((
+                          'android-gallery-rows',
+                          _returnLayoutGeneration,
+                        )),
+                        itemCount: rows.length,
+                        itemBuilder: (context, row) {
+                          final galleryRow = rows[row];
+                          if (galleryRow.header != null) {
+                            return Padding(
+                              padding: EdgeInsets.only(
+                                top: row == 0 ? 0 : spacing,
+                                bottom: spacing / 2,
+                              ),
+                              child: Text(
+                                galleryRow.header!,
+                                style: Theme.of(context).textTheme.titleSmall
+                                    ?.copyWith(fontWeight: FontWeight.w700),
+                              ),
+                            );
+                          }
+                          return Padding(
+                            padding: EdgeInsets.only(bottom: spacing),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                for (
+                                  var column = 0;
+                                  column < columns;
+                                  column++
+                                ) ...[
+                                  if (column > 0) SizedBox(width: spacing),
+                                  Expanded(
+                                    child: column >= galleryRow.items.length
+                                        ? const SizedBox.shrink()
+                                        : Builder(
+                                            builder: (context) {
+                                              final indexed =
+                                                  galleryRow.items[column];
+                                              final item = indexed.$1;
+                                              return AndroidDeferredMediaCard(
+                                                key: ValueKey((
+                                                  'android-deferred-media',
+                                                  item.id,
+                                                )),
+                                                asset: item,
+                                                settings: widget.settings.value,
+                                                enabled: !selecting,
+                                                builder: (context) {
+                                                  final card = AndroidMediaCard(
+                                                    key: ValueKey(
+                                                      'android-media-${item.id}',
+                                                    ),
+                                                    asset: item,
+                                                    settings:
+                                                        widget.settings.value,
+                                                    selecting: selecting,
+                                                    selected: selected.contains(
+                                                      item.id,
+                                                    ),
+                                                    onOpen: () async {
+                                                      if (selecting) {
+                                                        setState(() {
+                                                          selected.contains(
+                                                                item.id,
+                                                              )
+                                                              ? selected.remove(
+                                                                  item.id,
+                                                                )
+                                                              : selected.add(
+                                                                  item.id,
+                                                                );
+                                                        });
+                                                        return;
+                                                      }
+                                                      if (item.kind ==
+                                                          MediaKind.image) {
+                                                        unawaited(
+                                                          precacheImage(
+                                                            androidDetailImageProvider(
+                                                              context,
+                                                              item.storagePath,
+                                                            ),
+                                                            context,
+                                                            onError: (_, _) {},
+                                                          ),
+                                                        );
+                                                      }
+                                                      if (!context.mounted) {
+                                                        return;
+                                                      }
+                                                      await Navigator.of(
+                                                        context,
+                                                      ).push(
+                                                        _androidMediaViewerRoute(
+                                                          (
+                                                            _,
+                                                          ) => AndroidMediaViewer(
+                                                            backend: backend,
+                                                            settings: widget
+                                                                .settings
+                                                                .value,
+                                                            items: items,
+                                                            initialIndex:
+                                                                indexed.$2,
+                                                            galleryQuery: state
+                                                                .galleryQuery,
+                                                            initialPage: state
+                                                                .pages
+                                                                .snapshot,
+                                                            mediaFilter: state
+                                                                .pages
+                                                                .accept,
+                                                            sourceAlbum:
+                                                                widget.album,
+                                                          ),
+                                                        ),
+                                                      );
+                                                      if (mounted) {
+                                                        await state.reload();
+                                                      }
+                                                    },
+                                                    onMenu: () => menu(item),
+                                                    onFavorite: () =>
+                                                        _toggleFavorite(item),
+                                                  );
+                                                  return GalleryPerf.compiled
+                                                      ? GalleryPerfTile(
+                                                          key: ValueKey((
+                                                            'android-media-perf',
+                                                            item.id,
+                                                          )),
+                                                          child: card,
+                                                        )
+                                                      : card;
+                                                },
+                                              );
+                                            },
+                                          ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    if (state.loadingMore)
+                      const SliverToBoxAdapter(
+                        child: Padding(
+                          padding: EdgeInsets.all(16),
+                          child: LinearProgressIndicator(),
+                        ),
+                      ),
+                    if (!state.loading && state.error != null && state.hasAfter)
+                      SliverToBoxAdapter(
+                        child: TextButton.icon(
+                          onPressed: state.loadNextPage,
+                          icon: const Icon(Icons.refresh),
+                          label: Text(
+                            context.l10n.select(
+                              zh: '加载失败，重试',
+                              en: 'Loading failed. Retry',
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               );
             },
           ),
@@ -1214,19 +1360,20 @@ class _AndroidGameTagFilterSelectorState
     final filtered = query.isEmpty
         ? List<GameTagSummary>.of(widget.games)
         : widget.games
-              .where((game) => game.name.toLowerCase().contains(query))
+              .where(
+                (game) =>
+                    widget.selected.contains(game.name) ||
+                    game.name.toLowerCase().contains(query),
+              )
               .toList(growable: false);
-    final selected = widget.games.where(
-      (game) =>
-          widget.selected.contains(game.name) &&
-          !filtered.any((item) => item.name == game.name),
-    );
-    return [...filtered, ...selected];
+    return filtered;
   }
 
   List<GameTagSummary> get _visible {
     final values = _filtered;
-    if (expanded || values.length <= _collapsedLimit) return values;
+    if (expanded || values.length <= _collapsedLimit) {
+      return selectedGameTagsFirst(values, widget.selected);
+    }
     final result = values.take(_collapsedLimit).toList();
     for (final game in values) {
       if (widget.selected.contains(game.name) &&
@@ -1234,7 +1381,24 @@ class _AndroidGameTagFilterSelectorState
         result.add(game);
       }
     }
-    return result;
+    return selectedGameTagsFirst(result, widget.selected);
+  }
+
+  void _toggleExpanded() {
+    final collapsing = expanded;
+    setState(() => expanded = !expanded);
+    if (!collapsing) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || expanded) return;
+      unawaited(
+        Scrollable.ensureVisible(
+          context,
+          alignment: 0,
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+        ),
+      );
+    });
   }
 
   @override
@@ -1289,20 +1453,13 @@ class _AndroidGameTagFilterSelectorState
           ],
         ),
         const SizedBox(height: 4),
-        ConstrainedBox(
-          constraints: BoxConstraints(
-            maxHeight: expanded ? 220 : double.infinity,
-          ),
-          child: expanded
-              ? SingleChildScrollView(child: _chips(values))
-              : _chips(values),
-        ),
+        _chips(values),
         if (canExpand)
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton.icon(
               key: const Key('android-filter-expand-games'),
-              onPressed: () => setState(() => expanded = !expanded),
+              onPressed: _toggleExpanded,
               icon: AnimatedRotation(
                 turns: expanded ? .5 : 0,
                 duration: const Duration(milliseconds: 180),
@@ -1322,18 +1479,41 @@ class _AndroidGameTagFilterSelectorState
     );
   }
 
-  Widget _chips(List<GameTagSummary> games) => Wrap(
-    spacing: 8,
-    runSpacing: 8,
-    children: [
-      for (final game in games)
-        FilterChip(
-          key: ValueKey('android-filter-game-${game.name}'),
-          label: Text(game.name),
-          selected: widget.selected.contains(game.name),
-          onSelected: (value) => widget.onChanged(game.name, value),
-        ),
-    ],
+  Widget _chips(List<GameTagSummary> games) => LayoutBuilder(
+    builder: (context, constraints) {
+      const spacing = 8.0;
+      // Two touch targets fit even on phones; wider sheets gain columns
+      // instead of allowing one long game name to consume the entire row.
+      final columns = math.max(
+        2,
+        ((constraints.maxWidth + spacing) / (160 + spacing)).floor(),
+      );
+      final width = (constraints.maxWidth - spacing * (columns - 1)) / columns;
+      return Wrap(
+        spacing: spacing,
+        runSpacing: spacing,
+        children: [
+          for (final game in games)
+            SizedBox(
+              key: ValueKey(('android-filter-game-slot', game.name)),
+              width: width,
+              child: AndroidGameNameTooltip(
+                message: game.name,
+                child: FilterChip(
+                  key: ValueKey('android-filter-game-${game.name}'),
+                  label: Text(
+                    game.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  selected: widget.selected.contains(game.name),
+                  onSelected: (value) => widget.onChanged(game.name, value),
+                ),
+              ),
+            ),
+        ],
+      );
+    },
   );
 }
 

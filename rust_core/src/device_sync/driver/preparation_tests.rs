@@ -1,102 +1,28 @@
 use super::*;
 use crate::device_sync::manifest::ManifestRecord;
-use crate::device_sync::work::test_observer::pause_cache_reads;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-enum Command {
-    Poll(Vec<u8>),
-    Approve,
-    Stop,
+/// Hold a real preparation result until the protocol fixture releases it.
+/// Byte advances are explicit protocol-test inputs, never product cache reads.
+struct PausedPreparation {
+    release: mpsc::SyncSender<()>,
+    work: crate::device_sync::work::WorkControl,
 }
 
-struct Reply {
-    result: Result<Vec<u8>>,
-    state: State,
-    needed: usize,
-    transferred: u64,
-}
-
-fn target_loop(
-    target: &mut Driver,
-    commands: mpsc::Receiver<Command>,
-    replies: mpsc::Sender<Reply>,
-) {
-    while let Ok(command) = commands.recv() {
-        let result = match command {
-            Command::Poll(bytes) => (|| {
-                if !bytes.is_empty() {
-                    target.ingest_ciphertext(&bytes)?;
-                }
-                target.poll()?;
-                let output = target.drain_ciphertext()?;
-                if !output.is_empty() {
-                    target.ciphertext_written(output.len())?;
-                }
-                Ok(output)
-            })(),
-            Command::Approve => target.approve_preview().map(|_| vec![]),
-            Command::Stop => break,
-        };
-        if replies
-            .send(Reply {
-                result,
-                state: target.state(),
-                needed: target.needed.len(),
-                transferred: target.progress.transferred_bytes,
-            })
-            .is_err()
-        {
-            break;
-        }
+impl PausedPreparation {
+    fn advance(&self, bytes: u64) {
+        self.work.preparation_read(bytes).unwrap();
     }
-    target.cancel();
-    target.finish_shutdown();
+
+    fn release_all(&self) {
+        let _ = self.release.try_send(());
+    }
 }
 
-struct Remote {
-    commands: mpsc::Sender<Command>,
-    replies: mpsc::Receiver<Reply>,
-    pending: bool,
-    last_state: State,
-    last_needed: usize,
-    last_transferred: u64,
-}
-
-struct StopRemote<'a> {
-    pause: &'a crate::device_sync::work::test_observer::CacheReadPause,
-    commands: mpsc::Sender<Command>,
-}
-
-impl Drop for StopRemote<'_> {
+impl Drop for PausedPreparation {
     fn drop(&mut self) {
-        self.pause.release_all();
-        let _ = self.commands.send(Command::Stop);
-    }
-}
-
-impl Remote {
-    fn cycle(&mut self, source: &mut Driver) -> Result<()> {
-        source.poll()?;
-        if !self.pending {
-            let bytes = source.drain_ciphertext()?;
-            if !bytes.is_empty() {
-                source.ciphertext_written(bytes.len())?;
-            }
-            self.commands.send(Command::Poll(bytes)).unwrap();
-            self.pending = true;
-        }
-        if let Ok(reply) = self.replies.recv_timeout(Duration::from_millis(5)) {
-            self.pending = false;
-            self.last_state = reply.state;
-            self.last_needed = reply.needed;
-            self.last_transferred = reply.transferred;
-            let bytes = reply.result?;
-            if !bytes.is_empty() {
-                source.ingest_ciphertext(&bytes)?;
-            }
-        }
-        Ok(())
+        self.release_all();
     }
 }
 
@@ -161,131 +87,147 @@ async fn cached_pair() -> Pair {
 }
 
 #[tokio::test]
-async fn preparation_real_tls_continues_actual_cache_reads_past_sixty_seconds_then_reconfirms() {
+async fn preparation_reuses_verified_cache_without_hash_reads_and_transfers_only_missing_media() {
     let mut pair = cached_pair().await;
-    let pause = pause_cache_reads(&pair.phone.work_control());
-    let (commands, receive_commands) = mpsc::channel();
-    let (send_replies, replies) = mpsc::channel();
-    let mut remote = Remote {
-        commands,
-        replies,
-        pending: false,
-        last_state: State::Pairing,
-        last_needed: 0,
-        last_transferred: 0,
-    };
-    pair.host
-        .configure(Direction::DesktopToPhone, SyncMode::Merge, false)
-        .unwrap();
-    let outcome = std::thread::scope(|scope| -> Result<()> {
-        let target = &mut pair.phone;
-        scope.spawn(move || target_loop(target, receive_commands, send_replies));
-        let _cleanup = StopRemote {
-            pause: &pause,
-            commands: remote.commands.clone(),
-        };
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let mut first_read = None;
-        while first_read.is_none() && Instant::now() < deadline {
-            remote.cycle(&mut pair.host)?;
-            first_read = pause.try_wait().ok();
-        }
-        assert_eq!(first_read, Some(65536), "no actual cache SHA read");
-        for index in 0..6 {
-            if index > 0 {
-                assert_eq!(pause.wait().unwrap(), ((index % 3) + 1) * 65536);
-            }
-            pair.hc.advance(20000);
-            pair.pc.advance(20000);
-            for _ in 0..8 {
-                remote.cycle(&mut pair.host)?;
-            }
-            assert_eq!(
-                pair.host.preparation_allowance.as_ref().unwrap().completed,
-                (index + 1) * 65536
-            );
-            assert!(pair
-                .b
-                .list_media(GalleryQuery::default())
-                .unwrap()
-                .is_empty());
-            pause.release_one();
-        }
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while (pair.host.state() != State::AwaitingApproval
-            || remote.last_state != State::AwaitingApproval)
-            && Instant::now() < deadline
-        {
-            remote.cycle(&mut pair.host)?;
-        }
-        assert_eq!(pair.host.state(), State::AwaitingApproval);
-        assert_eq!(remote.last_state, State::AwaitingApproval);
-        assert_eq!(remote.last_needed, 1);
-        assert_eq!(pair.hc.monotonic_ms(), 120000);
-        assert_eq!(remote.last_transferred, 0);
-        assert!(pair
-            .b
-            .list_media(GalleryQuery::default())
-            .unwrap()
-            .is_empty());
-        while remote.pending {
-            remote.cycle(&mut pair.host)?;
-        }
-        remote.commands.send(Command::Approve).unwrap();
-        remote
-            .replies
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap()
-            .result?;
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while (pair.host.state() != State::Completed || remote.last_state != State::Completed)
-            && Instant::now() < deadline
-        {
-            remote.cycle(&mut pair.host)?;
-        }
-        assert_eq!(pair.host.state(), State::Completed);
-        assert_eq!(remote.last_state, State::Completed);
-        assert_eq!(pair.host.progress.transferred_bytes, 131072);
-        assert_eq!(remote.last_transferred, 131072);
-        assert_eq!(pair.b.list_media(GalleryQuery::default()).unwrap().len(), 3);
-        Ok(())
-    });
-    assert!(
-        outcome.is_ok(),
-        "real cache reads lost their live TLS session: {outcome:?}"
+    pair.preview(Direction::DesktopToPhone, SyncMode::Merge);
+    assert_eq!(pair.phone.needed.len(), 1);
+    assert_eq!(pair.phone.work.validation_metrics().checksum_read_bytes, 0);
+    assert_eq!(pair.phone.progress.transferred_bytes, 0);
+    pair.complete(Direction::DesktopToPhone);
+    assert_eq!(pair.host.progress.transferred_bytes, 131072);
+    assert_eq!(pair.phone.progress.transferred_bytes, 131072);
+    assert_eq!(
+        pair.phone.work.validation_metrics().checksum_read_bytes,
+        131072
+    );
+    assert_eq!(pair.b.list_media(GalleryQuery::default()).unwrap().len(), 3);
+    assert_eq!(
+        pair.phone.permit.published_bytes.load(Ordering::SeqCst),
+        524288,
+        "copying and publishing must not count the same media bytes twice"
     );
 }
 
-async fn paused_pair() -> (
-    Pair,
-    crate::device_sync::work::test_observer::CacheReadPause,
-) {
+#[tokio::test]
+async fn media_transfer_with_progress_over_five_minutes_still_reaches_apply() {
+    let mut pair = Pair::new();
+    let input = tempfile::tempdir().unwrap();
+    let path = input.path().join("long-transfer.jpg");
+    let media = vec![73; 34 * 1024 * 1024];
+    std::fs::write(&path, &media).unwrap();
+    pair.a
+        .import_local_files(vec![path.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+
+    pair.preview(Direction::DesktopToPhone, SyncMode::Merge);
+    pair.phone.approve_preview().unwrap();
+
+    let start = pair.hc.monotonic_ms();
+    let mut received = pair.phone.progress.transferred_bytes;
+    let mut saw_apply = false;
+    // The synthetic clock advances through a >5 minute transfer; keep enough
+    // wall-clock budget for real chunk I/O and filesystem work on CI workers.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while Instant::now() < deadline {
+        cycle(&mut pair.host, &mut pair.phone);
+        saw_apply |= matches!(
+            pair.phone.state(),
+            State::Applying | State::AwaitingExternal | State::Completed
+        );
+        let current = pair.phone.progress.transferred_bytes;
+        if current > received {
+            let transferred = current - received;
+            let chunks = transferred.div_ceil(crate::device_sync::wire::MEDIA_CHUNK as u64);
+            // Simulate three seconds per real received chunk. A 4 MiB ACK
+            // cadence then stays below the 60-second no-progress deadline,
+            // while the full transfer takes more than five minutes.
+            let elapsed = chunks * 3_000;
+            pair.hc.advance(elapsed);
+            pair.pc.advance(elapsed);
+            received = current;
+        }
+        if pair.host.state() == State::Completed && pair.phone.state() == State::Completed {
+            break;
+        }
+    }
+
+    let elapsed = pair.hc.monotonic_ms().saturating_sub(start);
+    assert!(
+        elapsed > 300_000,
+        "the synthetic transfer must model more than five minutes, got {elapsed}ms"
+    );
+    assert_eq!(pair.host.progress.transferred_bytes, media.len() as u64);
+    assert_eq!(pair.phone.progress.transferred_bytes, media.len() as u64);
+    assert!(saw_apply, "the receiver never entered its apply phase");
+    assert_eq!(pair.host.state(), State::Completed);
+    assert_eq!(pair.phone.state(), State::Completed);
+    let imported = pair.b.list_media(GalleryQuery::default()).unwrap();
+    assert_eq!(imported.len(), 1);
+    assert_eq!(std::fs::read(&imported[0].storage_path).unwrap(), media);
+}
+
+async fn paused_pair() -> (Pair, PausedPreparation) {
     let (pair, pause, _) = paused_pair_snapshot().await;
     (pair, pause)
 }
 
-async fn paused_pair_snapshot() -> (
-    Pair,
-    crate::device_sync::work::test_observer::CacheReadPause,
-    Snapshot,
-) {
+async fn paused_pair_snapshot() -> (Pair, PausedPreparation, Snapshot) {
     let mut pair = cached_pair().await;
     let target_snapshot = Snapshot::read(&pair.b.database(), "Phone").unwrap();
-    let pause = pause_cache_reads(&pair.phone.work_control());
-    pair.host
-        .configure(Direction::DesktopToPhone, SyncMode::Merge, false)
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        cycle(&mut pair.host, &mut pair.phone);
-        if pause.try_wait().is_ok() {
-            break;
-        }
-        assert!(Instant::now() < deadline);
+    let source = Snapshot::read(&pair.a.database(), "Desktop").unwrap();
+    let source_digest = source.digest_controlled(&pair.phone.work).unwrap();
+    let limit = preparation_limit(&source).unwrap();
+    let bytes = crate::device_sync::work::PreparationBytes::new(limit);
+    let work = pair.phone.work.with_preparation(bytes.clone());
+    // Exercise protocol bounds without making metadata-only cache lookup
+    // manufacture progress bytes in product code.
+    work.preparation_read(65536).unwrap();
+    let (release, released) = mpsc::sync_channel(1);
+    let worker_work = work.clone();
+    let database = pair.b.database();
+    let worker_source = source.clone();
+    let worker = std::thread::spawn(move || {
+        let _ = released.recv_timeout(Duration::from_secs(30));
+        ReceiveOperation::prepare_controlled(
+            database,
+            worker_source,
+            "Phone",
+            SyncMode::Merge,
+            None,
+            &worker_work,
+        )
+    });
+    for endpoint in [&mut pair.host, &mut pair.phone] {
+        endpoint.config = Some(Config {
+            direction: Direction::DesktopToPhone,
+            mode: SyncMode::Merge,
+            accounts: false,
+        });
+        endpoint.state = State::Comparing;
+        endpoint.deadline = DATA_MS;
+        endpoint.source = Some(source.clone());
+        endpoint.source_digest = Some(source_digest.clone());
     }
-    for _ in 0..10 {
-        cycle(&mut pair.host, &mut pair.phone);
-    }
+    pair.host.step = Step::ReceiveTarget;
+    pair.host.preparation_allowance = Some(PreparationAllowance {
+        source_digest: source_digest.clone(),
+        limit,
+        completed: 65536,
+        open: true,
+    });
+    pair.phone.step = Step::PreparingTarget;
+    pair.phone.preparation = Some(Preparation {
+        session: pair.phone.session.session_id().into(),
+        operation: pair.phone.session.operation_id().into(),
+        source_digest,
+        bytes,
+        last_observed: 65536,
+        last_enqueued: 65536,
+        active: true,
+        worker,
+    });
+    let pause = PausedPreparation { release, work };
     assert_eq!(
         pair.host.preparation_allowance.as_ref().unwrap().completed,
         65536
@@ -450,7 +392,7 @@ async fn preparation_progress_after_real_preview_cannot_reopen_the_preparation_w
 }
 
 #[tokio::test]
-async fn preparation_paused_read_does_not_renew_either_endpoint_deadline() {
+async fn preparation_without_new_work_does_not_renew_either_endpoint_deadline() {
     for source in [true, false] {
         let (mut pair, pause) = paused_pair().await;
         let result = if source {
@@ -472,13 +414,11 @@ async fn preparation_paused_read_does_not_renew_either_endpoint_deadline() {
 }
 
 #[tokio::test]
-async fn preparation_real_multi_file_progress_respects_fifo_backpressure_without_renewing_old_bytes(
-) {
+async fn preparation_accounted_work_respects_fifo_backpressure_without_renewing_old_bytes() {
     let (mut pair, pause) = paused_pair().await;
     pair.phone.flush_required = true;
-    for index in 1..6 {
-        pause.release_one();
-        assert_eq!(pause.wait().unwrap(), ((index % 3) + 1) * 65536);
+    for _ in 1..6 {
+        pause.advance(65536);
         pair.pc.advance(1000);
         pair.phone.poll().unwrap();
         assert!(pair.phone.outbox.len() <= 4);
@@ -558,7 +498,9 @@ async fn preparation_completed_worker_loses_to_cancel_or_stale_owner_and_shutdow
     for action in 0..3 {
         let (mut pair, pause) = paused_pair().await;
         pause.release_all();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // This waits only for the preparation test worker to finish; it is not
+        // a virtual-clock or product timeout and may need slack under load.
+        let deadline = Instant::now() + Duration::from_secs(30);
         while !pair
             .phone
             .preparation

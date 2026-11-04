@@ -13,6 +13,7 @@ import 'android_media_viewer.dart';
 import 'android_page_frame.dart';
 import 'android_video_surface.dart';
 import 'android_operation_progress.dart';
+import '../image_thumbnail.dart';
 
 class AndroidVideoMergePage extends StatefulWidget {
   const AndroidVideoMergePage({
@@ -28,7 +29,10 @@ class AndroidVideoMergePage extends StatefulWidget {
 
 class _AndroidVideoMergePageState extends State<AndroidVideoMergePage> {
   late final videos = List.of(widget.videos);
-  late final editor = MediaEditController(widget.backend);
+  late final editor = MediaEditController(
+    widget.backend,
+    onMediaCreated: (asset) => unawaited(ImageThumbnailCache.prefetch([asset])),
+  );
   GlobalKey<AndroidVideoSurfaceState> preview = GlobalKey();
   bool busy = false;
   Object? error;

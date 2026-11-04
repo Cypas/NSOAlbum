@@ -194,6 +194,8 @@ void main() {
             albumType: 'manual',
             pinned: false,
             mediaCount: BigInt.zero,
+            imageCount: BigInt.zero,
+            videoCount: BigInt.zero,
           ),
       ],
     );
