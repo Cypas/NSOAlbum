@@ -9,13 +9,18 @@
 
 #include <memory>
 
+#include "ime_context_association.h"
 #include "win32_window.h"
+#include "native_single_instance.h"
+
+class SyncNotificationRegistration;
 
 // A window that does nothing but host a Flutter view.
 class FlutterWindow : public Win32Window {
  public:
   // Creates a new FlutterWindow hosting a Flutter view running |project|.
-  explicit FlutterWindow(const flutter::DartProject& project);
+  explicit FlutterWindow(const flutter::DartProject& project,
+                         NativeSingleInstance* instance = nullptr);
   virtual ~FlutterWindow();
 
  protected:
@@ -38,17 +43,26 @@ class FlutterWindow : public Win32Window {
 
   // The project to run.
   flutter::DartProject project_;
+  NativeSingleInstance* instance_ = nullptr;
 
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       ime_context_channel_;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      sync_notification_channel_;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      system_font_channel_;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      desktop_media_clipboard_channel_;
+  std::unique_ptr<SyncNotificationRegistration> sync_notifications_;
   HWND flutter_view_ = nullptr;
 
   // Third-party TSF/IMM32 IMEs such as Sogou need an IME context whose lifetime
   // follows Flutter's active text client instead of arbitrary pointer events.
   HWND ime_window_ = nullptr;
-  HIMC ime_context_ = nullptr;
+  nsoalbum::ImeContextAssociation<nsoalbum::WindowsImeContextApi>
+      ime_context_association_;
   bool text_client_active_ = false;
   BOOL ime_open_status_ = FALSE;
   DWORD ime_conversion_mode_ = 0;

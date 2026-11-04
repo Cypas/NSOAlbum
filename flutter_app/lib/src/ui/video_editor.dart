@@ -1,4 +1,7 @@
 import 'dart:async';
+
+import '../state/media_edit_controller.dart';
+
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
@@ -10,8 +13,11 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../backend/app_backend.dart';
 import '../l10n/app_localizations.dart';
 import '../rust/models.dart';
+import 'image_thumbnail.dart';
 import 'desktop_window_drag_area.dart';
 import 'video_runtime.dart';
+import 'video_preview.dart';
+import 'video_thumbnail.dart';
 import 'font_families.dart';
 
 class VideoEditorResult {
@@ -69,6 +75,10 @@ class VideoEditorPage extends StatefulWidget {
 }
 
 class _VideoEditorPageState extends State<VideoEditorPage> {
+  late final MediaEditController mediaEditor = MediaEditController(
+    widget.backend,
+    onMediaCreated: (asset) => unawaited(ImageThumbnailCache.prefetch([asset])),
+  );
   late final Player player = _createPlayer();
   late final VideoController controller = VideoController(player);
 
@@ -139,6 +149,7 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
     playingSubscription?.cancel();
     keyboardFocus.dispose();
     player.dispose();
+    unawaited(mediaEditor.dispose());
     super.dispose();
   }
 
@@ -247,7 +258,7 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
     setState(() => busy = true);
     await player.pause();
     try {
-      final asset = await widget.backend.trimVideo(
+      final asset = await mediaEditor.trim(
         widget.source,
         selectionStart,
         selectionEnd,
@@ -284,7 +295,7 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
         extension = 'jpg';
       }
       if (bytes == null) throw StateError('The current frame is not available');
-      await widget.backend.saveVideoFrame(widget.source, bytes, extension);
+      await mediaEditor.frame(widget.source, bytes, extension: extension);
       widget.onMediaCreated?.call();
       if (!mounted) return;
       setState(() => busy = false);
@@ -339,9 +350,13 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
                         ? Center(
                             child: AspectRatio(
                               aspectRatio: 16 / 9,
-                              child: Video(
+                              child: VideoPreview(
                                 controller: controller,
+                                cover: widget.source,
                                 controls: NoVideoControls,
+                                initialThumbnail: VideoThumbnailCache.peekCover(
+                                  widget.source,
+                                ),
                               ),
                             ),
                           )
@@ -433,7 +448,10 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               IconButton.filled(
                 key: const Key('video-editor-play-selection'),
@@ -448,13 +466,11 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
                   playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
                 ),
               ),
-              const SizedBox(width: 12),
               Text(
                 '${_formatDuration(selectionStart)} – ${_formatDuration(selectionEnd)}',
                 key: const Key('video-editor-selection-label'),
                 style: const TextStyle(color: Colors.white70),
               ),
-              const SizedBox(width: 12),
               Container(
                 key: const Key('video-editor-selection-duration'),
                 padding: const EdgeInsets.symmetric(
@@ -477,7 +493,6 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
                   ),
                 ),
               ),
-              const SizedBox(width: 12),
               FilterChip(
                 key: const Key('video-editor-auto-play-selection'),
                 labelStyle: TextStyle(
@@ -501,15 +516,25 @@ class _VideoEditorPageState extends State<VideoEditorPage> {
                   ),
                 ),
               ),
-              const Spacer(),
-              const Icon(Icons.mouse_rounded, size: 18, color: Colors.white54),
-              const SizedBox(width: 6),
-              Text(
-                context.l10n.select(
-                  zh: '滚轮缩放时间轴 · ${timelineZoom.toStringAsFixed(1)}×',
-                  en: 'Scroll to zoom timeline · ${timelineZoom.toStringAsFixed(1)}×',
-                ),
-                style: const TextStyle(color: Colors.white54),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.mouse_rounded,
+                    size: 18,
+                    color: Colors.white54,
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      context.l10n.select(
+                        zh: '滚轮缩放时间轴 · ${timelineZoom.toStringAsFixed(1)}×',
+                        en: 'Scroll to zoom timeline · ${timelineZoom.toStringAsFixed(1)}×',
+                      ),
+                      style: const TextStyle(color: Colors.white54),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -770,6 +795,8 @@ class _VideoTimelineState extends State<VideoTimeline> {
               ),
               thickness: const WidgetStatePropertyAll(10),
               radius: const Radius.circular(999),
+              crossAxisMargin: 8,
+              mainAxisMargin: 8,
             ),
             child: Scrollbar(
               key: const Key('video-editor-horizontal-scrollbar'),
@@ -895,10 +922,19 @@ class _TimelineHandle extends StatelessWidget {
               left: 0,
               right: 0,
               top: 2,
-              child: Text(
-                label,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white, fontSize: 11),
+              child: SizedBox(
+                width: handleWidth,
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.center,
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    softWrap: false,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white, fontSize: 11),
+                  ),
+                ),
               ),
             ),
             Positioned(

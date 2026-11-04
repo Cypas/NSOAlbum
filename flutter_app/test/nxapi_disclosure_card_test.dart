@@ -6,22 +6,27 @@ import 'package:squid_album/src/l10n/app_localizations.dart';
 import 'package:squid_album/src/ui/nxapi_disclosure_card.dart';
 
 void main() {
-  Future<void> showCard(WidgetTester tester, String language) =>
-      tester.pumpWidget(
-        MaterialApp(
-          locale: Locale(language),
-          supportedLocales: AppLocalizations.supportedLocales,
-          localizationsDelegates: const [
-            AppLocalizations.delegate,
-            GlobalMaterialLocalizations.delegate,
-            GlobalWidgetsLocalizations.delegate,
-            GlobalCupertinoLocalizations.delegate,
-          ],
-          home: const Scaffold(
-            body: SingleChildScrollView(child: NxapiDisclosureCard()),
-          ),
+  Future<void> showCard(WidgetTester tester, String language) async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: Locale(language),
+        supportedLocales: AppLocalizations.supportedLocales,
+        localizationsDelegates: const [
+          AppLocalizations.delegate,
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        home: const Scaffold(
+          body: SingleChildScrollView(child: NxapiDisclosureCard()),
         ),
-      );
+      ),
+    );
+    expect(find.byType(SelectableText), findsNothing);
+    await tester.tap(find.byKey(const Key('nxapi-disclosure-toggle')));
+    await tester.pumpAndSettle();
+  }
 
   testWidgets(
     'Chinese disclosure is selectable and has a separate tinted card',

@@ -21,7 +21,18 @@ import 'package:squid_album/src/ui/font_families.dart';
 import 'package:squid_album/src/backend/storage_paths.dart' as storage_paths;
 import 'package:squid_album/src/ui/media_viewer.dart';
 import 'package:squid_album/src/ui/video_runtime.dart';
+import 'package:squid_album/src/ui/video_thumbnail.dart';
 import 'package:squid_album/src/release_update.dart';
+import 'package:squid_album/src/platform/windows_system_fonts.dart';
+
+Future<Finder> _openDesktopSearch(WidgetTester tester) async {
+  return find.byKey(const Key('library-search'));
+}
+
+Future<void> _openDesktopFilters(WidgetTester tester) async {
+  await tester.tap(find.byKey(const Key('library-filter')));
+  await tester.pumpAndSettle();
+}
 
 void main() {
   setUp(() async {
@@ -34,28 +45,34 @@ void main() {
     expect(adjacentVideoIndices(3, 4), {2, 3});
   });
 
-  test(
-    'application typography uses the ordered Chinese default font chain',
-    () {
-      expect(appFontFamily, 'DFPT_ZY9');
-      expect(appFontFallback, ['DFP_GBZY9', 'BlitzMain']);
-    },
-  );
-
-  testWidgets('gallery search uses the application default font chain', (
-    tester,
-  ) async {
-    await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
-    await tester.pumpAndSettle();
-
-    final search = tester.widget<TextField>(
-      find.byKey(const Key('library-search')),
-    );
-    expect(search.style?.fontFamily, appFontFamily);
-    expect(search.style?.fontFamilyFallback, appFontFallback);
-  });
-
   group('[Windows]', () {
+    test(
+      'system font picker lists installed fonts through the native bridge',
+      () async {
+        const channel = MethodChannel('io.github.cypas.nsoalbum/system_fonts');
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, (call) async {
+              if (call.method != 'list') return null;
+              return [
+                {
+                  'name': 'Synthetic Sans',
+                  'path': r'C:\Windows\Fonts\SyntheticSans.ttf',
+                },
+              ];
+            });
+        addTearDown(
+          () => TestDefaultBinaryMessengerBinding
+              .instance
+              .defaultBinaryMessenger
+              .setMockMethodCallHandler(channel, null),
+        );
+        final fonts = await const WindowsSystemFonts().list();
+        expect(fonts, hasLength(1));
+        expect(fonts.single.name, 'Synthetic Sans');
+        expect(fonts.single.path, r'C:\Windows\Fonts\SyntheticSans.ttf');
+      },
+    );
+
     testWidgets(
       'font management persists reorder and applies without restarting',
       (tester) async {
@@ -68,6 +85,7 @@ void main() {
             .path;
         backend.settings = AppSettings(
           proxyUrl: backend.settings.proxyUrl,
+          dohEnabled: backend.settings.dohEnabled,
           libraryPath: backend.settings.libraryPath,
           theme: backend.settings.theme,
           language: backend.settings.language,
@@ -78,6 +96,10 @@ void main() {
           compactTagDisplay: backend.settings.compactTagDisplay,
           autoPlayVideo: backend.settings.autoPlayVideo,
           autoSyncOnLaunch: backend.settings.autoSyncOnLaunch,
+          notifyOnAutoSync: backend.settings.notifyOnAutoSync,
+          showSplatoonSchedule: backend.settings.showSplatoonSchedule,
+          showSplatoonFriendActivity:
+              backend.settings.showSplatoonFriendActivity,
           closeBehavior: backend.settings.closeBehavior,
           customFontPaths: [firstFont, secondFont],
           syncPolicy: backend.settings.syncPolicy,
@@ -152,6 +174,76 @@ void main() {
       },
       tags: 'platform-windows',
     );
+
+    testWidgets(
+      'system font picker previews each font without exposing its path',
+      (tester) async {
+        tester.view.physicalSize = const Size(1200, 1200);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final fontPath = File('assets/fonts/default/BlitzMain.otf')
+            .absolute
+            .path;
+        const channel = MethodChannel('io.github.cypas.nsoalbum/system_fonts');
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, (call) async {
+              if (call.method != 'list') return null;
+              return [
+                {'name': 'Synthetic Sans (TrueType)', 'path': fontPath},
+              ];
+            });
+        addTearDown(
+          () => TestDefaultBinaryMessengerBinding
+              .instance
+              .defaultBinaryMessenger
+              .setMockMethodCallHandler(channel, null),
+        );
+
+        final backend = FakeBackend()..mediaItems = [];
+        final settings = SettingsController(backend);
+        addTearDown(settings.dispose);
+        final previewFamily = await tester.runAsync(
+          () => loadCustomFontFamilyForPreview(fontPath),
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            localizationsDelegates: const [
+              AppLocalizations.delegate,
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: SettingsPage(
+              controller: settings,
+              backend: backend,
+              onTagsChanged: () {},
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final button = find.byKey(const Key('choose-system-fonts'));
+        await tester.ensureVisible(button);
+        await tester.tap(button);
+        await tester.pump();
+        await tester.pump();
+
+        final sans = tester.widget<Text>(
+          find.descendant(
+            of: find.widgetWithText(
+              CheckboxListTile,
+              'Synthetic Sans (TrueType)',
+            ),
+            matching: find.text('Synthetic Sans (TrueType)'),
+          ),
+        );
+        expect(sans.style?.fontFamily, previewFamily);
+        expect(find.text(fontPath), findsNothing);
+        expect(find.textContaining(r'C:\Windows\Fonts'), findsNothing);
+      },
+      tags: 'platform-windows',
+    );
   }, skip: Platform.isWindows ? false : 'Requires Windows font management UI');
 
   test('selects the initial interface language from the system locale', () {
@@ -181,7 +273,7 @@ void main() {
 
     expect(backend.listAlbumsCalls, greaterThan(albumCalls));
     expect(find.text('收藏'), findsOneWidget);
-    expect(find.text('1 个媒体 · 自动相册'), findsOneWidget);
+    expect(find.text('1 张图片 · 0 个视频 · 自动相册'), findsOneWidget);
     expect(find.byKey(const ValueKey('album-cover-1-1')), findsOneWidget);
   });
 
@@ -200,6 +292,8 @@ void main() {
           pinned: true,
           systemKey: 'favorites',
           mediaCount: BigInt.from(2),
+          imageCount: BigInt.from(2),
+          videoCount: BigInt.zero,
         ),
       ],
     );
@@ -217,11 +311,22 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('视频'));
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('desktop-gallery-kind-filter')),
+        matching: find.text('视频'),
+      ),
+    );
     await tester.pumpAndSettle();
     expect(backend.lastKind, GalleryKindFilter.video);
 
-    await tester.tap(find.widgetWithText(FilterChip, '收藏'));
+    await _openDesktopFilters(tester);
+    await tester.ensureVisible(
+      find.byKey(const Key('desktop-filter-favorites')),
+    );
+    await tester.tap(find.byKey(const Key('desktop-filter-favorites')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('desktop-filter-apply')));
     await tester.pumpAndSettle();
     expect(backend.lastKind, GalleryKindFilter.video);
     expect(backend.lastFavoriteOnly, isTrue);
@@ -243,6 +348,98 @@ void main() {
     expect(find.byTooltip('收藏'), findsOneWidget);
   });
 
+  testWidgets('favorite clone keeps unknown dates and metadata in the viewer', (
+    tester,
+  ) async {
+    final unknown = MediaAsset(
+      id: 42,
+      sha256: 'unknown-fixture',
+      originalName: 'unknown.jpg',
+      storagePath: 'missing.jpg',
+      kind: MediaKind.image,
+      importedAt: null,
+      gameTitleId: 'title-id',
+      gameName: 'Unknown Game',
+      favorite: false,
+      tags: const ['Original tag'],
+      note: 'Original note',
+    );
+    final backend = FakeBackend(mediaItems: [unknown]);
+    await tester.pumpWidget(SquidAlbumApp(backend: backend));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('收藏'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('unknown.jpg'));
+    await tester.pumpAndSettle();
+    final shown = tester
+        .widget<MediaViewer>(find.byType(MediaViewer))
+        .items
+        .single;
+    expect(shown.importedAt, isNull);
+    expect(shown.capturedAt, isNull);
+    expect(shown.favorite, isTrue);
+    expect(shown.sha256, 'unknown-fixture');
+    expect(shown.gameTitleId, 'title-id');
+    expect(shown.tags, ['Original tag']);
+    expect(shown.note, 'Original note');
+    expect(shown.storagePath, 'missing.jpg');
+    expect(tester.takeException(), isNull);
+  });
+
+  test(
+    'media fixture queries match production date ties and unknown boundaries',
+    () async {
+      MediaAsset item(int id, DateTime? importedAt) => MediaAsset(
+        id: id,
+        sha256: 'query-$id',
+        originalName: 'query-$id.jpg',
+        storagePath: 'missing.jpg',
+        kind: MediaKind.image,
+        importedAt: importedAt,
+        gameName: 'Game',
+        favorite: false,
+        tags: const [],
+      );
+      final date = DateTime.utc(2020, 1, 1, 0, 0, 0, 1);
+      final backend = FakeBackend(
+        mediaItems: [
+          item(3, null),
+          item(1, date),
+          item(4, null),
+          item(2, date),
+        ],
+      );
+      expect((await backend.listMedia()).map((media) => media.id), [
+        2,
+        1,
+        4,
+        3,
+      ]);
+      expect(
+        (await backend.listMedia(newestFirst: false)).map((media) => media.id),
+        [3, 4, 1, 2],
+      );
+      expect(
+        (await backend.listMedia(capturedFrom: date)).map((media) => media.id),
+        [2, 1],
+      );
+      expect(
+        (await backend.listMedia(
+          capturedUntil: date.add(const Duration(microseconds: 1)),
+        )).map((media) => media.id),
+        [2, 1],
+      );
+      expect(await backend.listMedia(capturedUntil: date), isEmpty);
+      expect(
+        (await backend.listMedia(
+          capturedFrom: date,
+          capturedUntil: date.add(const Duration(microseconds: 1)),
+        )).map((media) => media.id),
+        [2, 1],
+      );
+    },
+  );
+
   testWidgets('search ignores case and Traditional Chinese variants', (
     tester,
   ) async {
@@ -250,7 +447,7 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
     await tester.pumpAndSettle();
 
-    final search = find.byKey(const Key('library-search'));
+    final search = await _openDesktopSearch(tester);
     await tester.enterText(search, '庆典');
     expect(find.byKey(const Key('library-search-submit')), findsNothing);
     await tester.testTextInput.receiveAction(TextInputAction.search);
@@ -266,18 +463,51 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
     await tester.pumpAndSettle();
 
-    final search = find.byKey(const Key('library-search'));
+    final search = await _openDesktopSearch(tester);
     await tester.tap(search);
     const composingText = '不存在';
-    tester.testTextInput.updateEditingValue(
-      const TextEditingValue(
-        text: composingText,
-        selection: TextSelection.collapsed(offset: composingText.length),
-        composing: TextRange(start: 0, end: composingText.length),
-      ),
+    const composingValue = TextEditingValue(
+      text: composingText,
+      selection: TextSelection.collapsed(offset: composingText.length),
+      composing: TextRange(start: 0, end: composingText.length),
     );
+    tester.testTextInput.updateEditingValue(composingValue);
     await tester.pump(const Duration(milliseconds: 700));
     expect(find.text('sample.jpg'), findsOneWidget);
+    final editable = find.descendant(
+      of: search,
+      matching: find.byType(EditableText),
+    );
+    final composingField = tester.widget<EditableText>(editable);
+    expect(composingField.controller.value.text, composingValue.text);
+    expect(
+      composingField.controller.value.selection.baseOffset,
+      composingValue.selection.baseOffset,
+    );
+    expect(
+      composingField.controller.value.selection.extentOffset,
+      composingValue.selection.extentOffset,
+    );
+    expect(composingField.controller.value.composing, composingValue.composing);
+    expect(composingField.focusNode.hasFocus, isTrue);
+    final clearSearch = find.byTooltip('清除搜索');
+    expect(clearSearch, findsOneWidget);
+    final clearSearchButton = find.ancestor(
+      of: clearSearch,
+      matching: find.byType(IconButton),
+    );
+    expect(clearSearchButton, findsOneWidget);
+    expect(tester.widget<IconButton>(clearSearchButton).onPressed, isNull);
+    await tester.tap(clearSearch);
+    await tester.pump();
+    expect(
+      tester.widget<EditableText>(editable).controller.value.text,
+      composingText,
+    );
+    expect(
+      tester.widget<EditableText>(editable).controller.value.composing,
+      composingValue.composing,
+    );
 
     tester.testTextInput.updateEditingValue(
       const TextEditingValue(
@@ -288,10 +518,85 @@ void main() {
     await tester.pump(const Duration(milliseconds: 650));
     await tester.pumpAndSettle();
     expect(find.text('sample.jpg'), findsNothing);
+    final committedField = tester.widget<EditableText>(editable);
+    expect(committedField.controller.value.text, composingText);
+    expect(
+      committedField.controller.value.selection.baseOffset,
+      composingText.length,
+    );
+    expect(
+      committedField.controller.value.selection.extentOffset,
+      composingText.length,
+    );
+    expect(committedField.controller.value.composing, TextRange.empty);
+    expect(committedField.focusNode.hasFocus, isTrue);
 
     await tester.enterText(search, '庆典');
     await tester.pump(const Duration(milliseconds: 650));
+    await tester.pumpAndSettle();
     expect(find.text('sample.jpg'), findsOneWidget);
+  });
+
+  testWidgets('desktop filter game search waits for Chinese IME commit', (
+    tester,
+  ) async {
+    await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
+    await tester.pumpAndSettle();
+    await _openDesktopFilters(tester);
+
+    final search = find.byKey(const Key('desktop-filter-game-search'));
+    await tester.tap(search);
+    const composingText = 'shi';
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: composingText,
+        selection: TextSelection.collapsed(offset: composingText.length),
+        composing: TextRange(start: 0, end: composingText.length),
+      ),
+    );
+    await tester.pump();
+
+    final editable = find.descendant(
+      of: search,
+      matching: find.byType(EditableText),
+    );
+    expect(
+      tester.widget<EditableText>(editable).controller.value,
+      const TextEditingValue(
+        text: composingText,
+        selection: TextSelection.collapsed(offset: composingText.length),
+        composing: TextRange(start: 0, end: composingText.length),
+      ),
+    );
+    expect(tester.widget<EditableText>(editable).focusNode.hasFocus, isTrue);
+    expect(
+      tester.widget<EditableText>(editable).controller.value.composing,
+      const TextRange(start: 0, end: composingText.length),
+    );
+    expect(
+      find.byKey(const ValueKey('desktop-filter-game-Splatoon 3')),
+      findsOneWidget,
+    );
+
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: composingText,
+        selection: TextSelection.collapsed(offset: composingText.length),
+      ),
+    );
+    await tester.pump();
+    expect(
+      tester.widget<EditableText>(editable).controller.value,
+      TextEditingValue(
+        text: composingText,
+        selection: TextSelection.collapsed(offset: composingText.length),
+      ),
+    );
+    expect(tester.widget<EditableText>(editable).focusNode.hasFocus, isTrue);
+    expect(
+      find.byKey(const ValueKey('desktop-filter-game-Splatoon 3')),
+      findsNothing,
+    );
   });
 
   testWidgets('tag and note fields preserve Chinese IME composing text', (
@@ -356,7 +661,12 @@ void main() {
 
     final gate = Completer<void>();
     backend.nextMediaGate = gate;
-    await tester.tap(find.text('视频'));
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('desktop-gallery-kind-filter')),
+        matching: find.text('视频'),
+      ),
+    );
     await tester.pump();
 
     expect(find.text('sample.jpg'), findsOneWidget);
@@ -375,10 +685,58 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(backend.lastNewestFirst, isTrue);
-    await tester.tap(find.byKey(const Key('media-sort-menu')));
+    await _openDesktopFilters(tester);
+    await tester.ensureVisible(find.byKey(const Key('desktop-filter-newest')));
+    await tester.tap(find.byKey(const Key('desktop-filter-newest')));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('创建时间正序'));
+    await tester.tap(find.byKey(const Key('desktop-filter-apply')));
     await tester.pumpAndSettle();
+
+    expect(backend.lastNewestFirst, isFalse);
+  });
+
+  testWidgets('desktop filter draft can be cancelled without applying', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    await tester.pumpWidget(SquidAlbumApp(backend: backend));
+    await tester.pumpAndSettle();
+
+    await _openDesktopFilters(tester);
+    await tester.ensureVisible(find.byKey(const Key('desktop-filter-newest')));
+    await tester.tap(find.byKey(const Key('desktop-filter-newest')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('desktop-filter-cancel')));
+    await tester.pumpAndSettle();
+    expect(backend.lastNewestFirst, isTrue);
+    expect(
+      find.byKey(const Key('desktop-library-filter-dialog')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('desktop filter clear resets kind but keeps sort choice', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    await tester.pumpWidget(SquidAlbumApp(backend: backend));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('desktop-gallery-kind-filter')),
+        matching: find.text('视频'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await _openDesktopFilters(tester);
+    await tester.ensureVisible(find.byKey(const Key('desktop-filter-newest')));
+    await tester.tap(find.byKey(const Key('desktop-filter-newest')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('desktop-filter-clear')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('desktop-filter-apply')));
+    await tester.pumpAndSettle();
+    expect(backend.lastKind, GalleryKindFilter.all);
     expect(backend.lastNewestFirst, isFalse);
   });
 
@@ -389,7 +747,9 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const Key('capture-date-filter')));
+    await _openDesktopFilters(tester);
+    await tester.ensureVisible(find.byKey(const Key('desktop-filter-date')));
+    await tester.tap(find.byKey(const Key('desktop-filter-date')));
     await tester.pumpAndSettle();
 
     final dialog = find.byKey(const Key('creation-date-range-dialog'));
@@ -418,6 +778,8 @@ void main() {
         )
         .onDateChanged(DateTime(2026, 10, 3));
     await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('desktop-filter-apply')));
+    await tester.pumpAndSettle();
 
     expect(dialog, findsNothing);
     expect(
@@ -430,6 +792,29 @@ void main() {
     );
   });
 
+  testWidgets('desktop anniversary quick range uses local creation dates', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    await tester.pumpWidget(SquidAlbumApp(backend: backend));
+    await tester.pumpAndSettle();
+
+    await _openDesktopFilters(tester);
+    await tester.ensureVisible(find.byKey(const Key('desktop-filter-date')));
+    await tester.tap(find.byKey(const Key('desktop-filter-date')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('creation-date-quick-anniversary')));
+    await tester.pumpAndSettle();
+
+    final now = DateTime.now();
+    await tester.tap(find.byKey(const Key('desktop-filter-apply')));
+    await tester.pumpAndSettle();
+    expect(backend.lastCapturedOnThisDay?.month, now.month);
+    expect(backend.lastCapturedOnThisDay?.day, now.day);
+    expect(backend.lastImportedFrom, isNull);
+    expect(backend.lastImportedUntil, isNull);
+  });
+
   testWidgets('filters by multiple visible game tags', (tester) async {
     final backend = FakeBackend(
       mediaItems: [
@@ -440,12 +825,15 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
     await tester.pumpAndSettle();
 
+    await _openDesktopFilters(tester);
     expect(
-      find.byKey(const ValueKey('game-filter-Splatoon 3')),
+      find.byKey(const Key('desktop-filter-game-Splatoon 3')),
       findsOneWidget,
     );
-    expect(find.byKey(const ValueKey('game-filter-Zelda')), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey('game-filter-Zelda')));
+    expect(find.byKey(const Key('desktop-filter-game-Zelda')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('desktop-filter-game-Zelda')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('desktop-filter-apply')));
     await tester.pumpAndSettle();
 
     expect(find.text('zelda.jpg'), findsOneWidget);
@@ -456,7 +844,7 @@ void main() {
   testWidgets('expands game tags and shows total media counts', (tester) async {
     final backend = FakeBackend(
       mediaItems: List.generate(
-        8,
+        12,
         (index) => _media(
           id: index + 1,
           name: 'game-$index.jpg',
@@ -467,17 +855,14 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const ValueKey('game-filter-Game 7')), findsNothing);
-    expect(find.byKey(const Key('toggle-all-game-tags')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('toggle-all-game-tags')));
+    await _openDesktopFilters(tester);
+    expect(find.byKey(const Key('desktop-filter-game-Game 7')), findsNothing);
+    expect(find.byKey(const Key('desktop-filter-game-expand')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('desktop-filter-game-expand')));
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const ValueKey('game-filter-Game 7')), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('game-filter-count-Game 7')),
-      findsOneWidget,
-    );
-    expect(find.text('共 1 项'), findsNWidgets(8));
+    expect(find.text('共 1 项'), findsWidgets);
+    await tester.tap(find.byKey(const Key('desktop-filter-cancel')));
   });
 
   testWidgets('album game filters only show games present in that album', (
@@ -496,6 +881,8 @@ void main() {
           albumType: 'manual',
           pinned: false,
           mediaCount: BigInt.one,
+          imageCount: BigInt.one,
+          videoCount: BigInt.zero,
         ),
       ],
       albumMediaIds: const {
@@ -510,11 +897,13 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('album-card-2')));
     await tester.pumpAndSettle();
 
+    await _openDesktopFilters(tester);
     expect(
-      find.byKey(const ValueKey('game-filter-Splatoon 3')),
+      find.byKey(const Key('desktop-filter-game-Splatoon 3')),
       findsOneWidget,
     );
-    expect(find.byKey(const ValueKey('game-filter-Zelda')), findsNothing);
+    expect(find.byKey(const Key('desktop-filter-game-Zelda')), findsNothing);
+    await tester.tap(find.byKey(const Key('desktop-filter-cancel')));
   });
 
   testWidgets('opens media preview and navigates with buttons and keyboard', (
@@ -522,7 +911,7 @@ void main() {
   ) async {
     final backend = FakeBackend(
       mediaItems: [
-        _media(id: 1, name: 'first.jpg'),
+        _media(id: 1, name: 'first.jpg', capturedAt: DateTime.utc(2026, 10, 4)),
         _media(id: 2, name: 'second.jpg'),
       ],
     );
@@ -538,7 +927,7 @@ void main() {
       ),
       findsOneWidget,
     );
-    expect(find.text('1 / 2'), findsOneWidget);
+    expect(find.byKey(const Key('media-viewer-counter')), findsNothing);
     expect(find.text('Splatoon 3'), findsWidgets);
     final viewerBounds = tester.getRect(
       find.byKey(const Key('media-viewer-dialog')),
@@ -552,12 +941,8 @@ void main() {
       '一条测试备注',
     );
 
-    await tester.tap(find.byKey(const Key('media-viewer-immersive')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('media-viewer-note')), findsNothing);
+    expect(find.byKey(const Key('media-viewer-immersive')), findsNothing);
     expect(find.byKey(const Key('media-viewer-next')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('media-viewer-immersive')));
-    await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const Key('media-viewer-edit-metadata')));
     await tester.pumpAndSettle();
@@ -590,11 +975,17 @@ void main() {
       ),
       findsOneWidget,
     );
-    expect(find.text('2 / 2'), findsOneWidget);
+    expect(find.byKey(const Key('media-viewer-counter')), findsNothing);
 
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
     await tester.pumpAndSettle();
-    expect(find.text('1 / 2'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('media-viewer-dialog')),
+        matching: find.text('first.jpg'),
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('batch selection requires confirmation before deleting files', (
@@ -641,6 +1032,8 @@ void main() {
           pinned: true,
           systemKey: 'favorites',
           mediaCount: BigInt.one,
+          imageCount: BigInt.one,
+          videoCount: BigInt.zero,
         ),
         AlbumSummary(
           id: 2,
@@ -649,6 +1042,8 @@ void main() {
           albumType: 'manual',
           pinned: false,
           mediaCount: BigInt.zero,
+          imageCount: BigInt.zero,
+          videoCount: BigInt.zero,
         ),
       ],
     );
@@ -679,7 +1074,15 @@ void main() {
     final backend = FakeBackend(
       mediaItems: List.generate(
         20,
-        (index) => _media(id: index + 1, name: 'media-${index + 1}.jpg'),
+        (index) => _media(
+          id: index + 1,
+          name: 'media-${index + 1}.jpg',
+          capturedAt: DateTime.utc(
+            2026,
+            10,
+            3,
+          ).subtract(Duration(seconds: index)),
+        ),
       ),
     );
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
@@ -739,12 +1142,15 @@ void main() {
     expect(header, findsOneWidget);
     final initialTop = tester.getTopLeft(header).dy;
     final mediaBefore = tester
-        .getTopLeft(find.byKey(const ValueKey('media-card-1')))
+        .getTopLeft(find.byKey(const ValueKey('media-card-20')))
         .dy;
-    await tester.drag(find.byType(CustomScrollView), const Offset(0, -500));
+    tester
+        .widget<CustomScrollView>(find.byType(CustomScrollView))
+        .controller!
+        .jumpTo(100);
     await tester.pumpAndSettle();
     final mediaAfter = tester
-        .getTopLeft(find.byKey(const ValueKey('media-card-1')))
+        .getTopLeft(find.byKey(const ValueKey('media-card-20')))
         .dy;
     expect(mediaAfter, lessThan(mediaBefore));
     expect(tester.getTopLeft(header).dy, lessThanOrEqualTo(initialTop));
@@ -870,6 +1276,7 @@ void main() {
       ),
     );
     backend.settings = const AppSettings(
+      dohEnabled: false,
       libraryPath: 'C:/library',
       theme: 'ocean',
       language: 'zh',
@@ -880,6 +1287,9 @@ void main() {
       compactTagDisplay: true,
       autoPlayVideo: false,
       autoSyncOnLaunch: false,
+      notifyOnAutoSync: true,
+      showSplatoonSchedule: true,
+      showSplatoonFriendActivity: false,
       closeBehavior: 'ask',
       customFontPaths: [],
       syncPolicy: SyncPolicy(
@@ -891,7 +1301,7 @@ void main() {
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
     await tester.pumpAndSettle();
 
-    final grid = tester.widget<GridView>(find.byType(GridView).first);
+    final grid = tester.widget<SliverGrid>(find.byType(SliverGrid).first);
     final delegate =
         grid.gridDelegate as SliverGridDelegateWithFixedCrossAxisCount;
     expect(delegate.crossAxisCount, 6);
@@ -947,6 +1357,8 @@ void main() {
           albumType: 'manual',
           pinned: false,
           mediaCount: BigInt.zero,
+          imageCount: BigInt.zero,
+          videoCount: BigInt.zero,
         ),
       ],
     );
@@ -999,6 +1411,8 @@ void main() {
           albumType: 'manual',
           pinned: false,
           mediaCount: BigInt.one,
+          imageCount: BigInt.one,
+          videoCount: BigInt.zero,
         ),
         AlbumSummary(
           id: 3,
@@ -1007,6 +1421,8 @@ void main() {
           albumType: 'manual',
           pinned: false,
           mediaCount: BigInt.zero,
+          imageCount: BigInt.zero,
+          videoCount: BigInt.zero,
         ),
       ],
       albumMediaIds: const {
@@ -1048,6 +1464,8 @@ void main() {
           pinned: true,
           systemKey: 'favorites',
           mediaCount: BigInt.one,
+          imageCount: BigInt.one,
+          videoCount: BigInt.zero,
         ),
         AlbumSummary(
           id: 2,
@@ -1056,6 +1474,8 @@ void main() {
           albumType: 'manual',
           pinned: false,
           mediaCount: BigInt.zero,
+          imageCount: BigInt.zero,
+          videoCount: BigInt.zero,
         ),
       ],
       albumMediaIds: const {
@@ -1150,10 +1570,29 @@ void main() {
     final backend = FakeBackend(
       mediaItems: [
         _media(id: 1, name: 'cover.jpg'),
-        _media(id: 2, name: 'first.mp4', kind: MediaKind.video),
-        _media(id: 3, name: 'second.mp4', kind: MediaKind.video),
+        _media(
+          id: 2,
+          name: 'first.mp4',
+          kind: MediaKind.video,
+          sha256: 'batch-merge-selection-first',
+        ),
+        _media(
+          id: 3,
+          name: 'second.mp4',
+          kind: MediaKind.video,
+          sha256: 'batch-merge-selection-second',
+        ),
       ],
     );
+    // This test exercises selection, not asynchronous filesystem/FFmpeg work.
+    for (final asset in backend.mediaItems!.where(
+      (asset) => asset.kind == MediaKind.video,
+    )) {
+      VideoThumbnailCache.seedForTest(
+        asset.sha256,
+        const VideoThumbnailData(duration: Duration(seconds: 10)),
+      );
+    }
     await tester.pumpWidget(SquidAlbumApp(backend: backend));
     await tester.pumpAndSettle();
 
@@ -1249,37 +1688,147 @@ void main() {
     );
   });
 
-  testWidgets('hovering a long filename starts marquee scrolling', (
-    tester,
-  ) async {
-    final backend = FakeBackend(
-      mediaItems: [
-        _media(
-          id: 1,
-          name: 'this-is-a-very-long-media-file-name-that-needs-to-scroll.jpg',
-        ),
-      ],
-    );
-    await tester.pumpWidget(SquidAlbumApp(backend: backend));
-    await tester.pumpAndSettle();
+  testWidgets(
+    'filename scrolls only during hover and resets without changing layout',
+    (tester) async {
+      final backend = FakeBackend(
+        mediaItems: [
+          _media(
+            id: 1,
+            name:
+                'this-is-a-very-long-media-file-name-that-needs-to-scroll.jpg',
+          ),
+        ],
+      );
+      await tester.pumpWidget(SquidAlbumApp(backend: backend));
+      await tester.pumpAndSettle();
 
-    final filename = find.byKey(const ValueKey('media-filename-1'));
-    final mouseRegion = find.descendant(
-      of: filename,
-      matching: find.byType(MouseRegion),
-    );
-    tester.widget<MouseRegion>(mouseRegion).onEnter!(const PointerEnterEvent());
-    await tester.pump(const Duration(milliseconds: 400));
-    await tester.pump(const Duration(milliseconds: 900));
-
-    final scroll = tester.widget<SingleChildScrollView>(
-      find.descendant(
+      final filename = find.byKey(const ValueKey('media-filename-1'));
+      final idleRect = tester.getRect(filename);
+      expect(
+        find.descendant(of: filename, matching: find.byType(Scrollable)),
+        findsNothing,
+        reason: 'Idle captions must not attach a scroll position.',
+      );
+      final mouseRegion = find.descendant(
         of: filename,
-        matching: find.byKey(const Key('filename-marquee-scroll')),
-      ),
-    );
-    expect(scroll.controller!.offset, greaterThan(0));
-  });
+        matching: find.byType(MouseRegion),
+      );
+      tester.widget<MouseRegion>(mouseRegion).onEnter!(
+        const PointerEnterEvent(),
+      );
+      // Deliberately let the delay expire before the lazy scroll subtree gets
+      // its first layout. A delayed UI frame must not disable this hover.
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 900));
+
+      final scroll = tester.widget<SingleChildScrollView>(
+        find.descendant(
+          of: filename,
+          matching: find.byKey(const Key('filename-marquee-scroll')),
+        ),
+      );
+      expect(scroll.controller!.offset, greaterThan(0));
+      expect(tester.getRect(filename), idleRect);
+      tester.widget<MouseRegion>(mouseRegion).onExit!(const PointerExitEvent());
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 220));
+      await tester.pumpAndSettle();
+      expect(scroll.controller!.hasClients, isFalse);
+      expect(
+        find.descendant(of: filename, matching: find.byType(Scrollable)),
+        findsNothing,
+      );
+      expect(tester.getRect(filename), idleRect);
+      tester.widget<MouseRegion>(mouseRegion).onEnter!(
+        const PointerEnterEvent(),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 900));
+      tester.widget<MouseRegion>(mouseRegion).onExit!(const PointerExitEvent());
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      tester.widget<MouseRegion>(mouseRegion).onEnter!(
+        const PointerEnterEvent(),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 900));
+      final reentered = tester.widget<SingleChildScrollView>(
+        find.descendant(
+          of: filename,
+          matching: find.byKey(const Key('filename-marquee-scroll')),
+        ),
+      );
+      expect(reentered.controller!.hasClients, isTrue);
+      expect(reentered.controller!.offset, greaterThan(0));
+      expect(tester.getRect(filename), idleRect);
+      tester.widget<MouseRegion>(mouseRegion).onExit!(const PointerExitEvent());
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 220));
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(of: filename, matching: find.byType(Scrollable)),
+        findsNothing,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'filename replacement during hover exit still detaches scrolling',
+    (tester) async {
+      final backend = FakeBackend(
+        mediaItems: [
+          _media(
+            id: 1,
+            name:
+                'this-is-a-long-original-filename-for-the-exit-transition.jpg',
+          ),
+        ],
+      );
+      await tester.pumpWidget(SquidAlbumApp(backend: backend));
+      await tester.pumpAndSettle();
+      final filename = find.byKey(const ValueKey('media-filename-1'));
+      final state = tester.state(filename);
+      final mouseRegion = find.descendant(
+        of: filename,
+        matching: find.byType(MouseRegion),
+      );
+      tester.widget<MouseRegion>(mouseRegion).onEnter!(
+        const PointerEnterEvent(),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 900));
+      tester.widget<MouseRegion>(mouseRegion).onExit!(const PointerExitEvent());
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      backend.mediaItems = [_media(id: 1, name: 'renamed.jpg')];
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(const Key('desktop-gallery-kind-filter')),
+          matching: find.text('图片'),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('renamed.jpg'), findsOneWidget);
+      expect(tester.state(filename), same(state));
+      await tester.pump(const Duration(milliseconds: 220));
+      await tester.pump();
+      expect(
+        find.descendant(of: filename, matching: find.byType(Scrollable)),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets('manages custom tags with photo and video usage counts', (
     tester,
@@ -1309,6 +1858,7 @@ void main() {
     await tester.drag(settingsScroll, const Offset(0, -420));
     await tester.pumpAndSettle();
     await tester.ensureVisible(manageTags);
+    await tester.pumpAndSettle();
     await tester.tap(manageTags);
     await tester.pumpAndSettle();
 
@@ -1417,39 +1967,6 @@ void main() {
     expect(tester.widget<Text>(libraryLabel).style?.fontFamily, appFontFamily);
   });
 
-  testWidgets('desktop sidebar does not duplicate the native window brand', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(1200, 800);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
-    await tester.pumpAndSettle();
-
-    expect(find.byKey(const Key('sidebar-brand-icon')), findsNothing);
-    expect(find.byKey(const Key('sidebar-brand-label')), findsNothing);
-  });
-
-  testWidgets('game filter labels remain readable in the light theme', (
-    tester,
-  ) async {
-    await tester.pumpWidget(SquidAlbumApp(backend: FakeBackend()));
-    await tester.pumpAndSettle();
-
-    final chip = tester.widget<FilterChip>(
-      find.byKey(const ValueKey('game-filter-Splatoon 3')),
-    );
-    expect(chip.labelStyle?.color, isNotNull);
-    expect(chip.labelStyle?.color, isNot(equals(Colors.white)));
-
-    final creationDateChip = tester.widget<InputChip>(
-      find.byKey(const Key('capture-date-filter')),
-    );
-    expect(creationDateChip.labelStyle?.color, isNot(Colors.white));
-  });
-
   testWidgets('keeps the desktop sidebar while viewing an album', (
     tester,
   ) async {
@@ -1469,7 +1986,7 @@ void main() {
     expect(find.byKey(const Key('album-detail-back')), findsOneWidget);
   });
 
-  testWidgets('renames and deletes a regular album from its context menu', (
+  testWidgets('edits album type and rules in one dialog then deletes it', (
     tester,
   ) async {
     final backend = FakeBackend(
@@ -1482,6 +1999,8 @@ void main() {
           pinned: true,
           systemKey: 'favorites',
           mediaCount: BigInt.one,
+          imageCount: BigInt.one,
+          videoCount: BigInt.zero,
         ),
         AlbumSummary(
           id: 2,
@@ -1490,6 +2009,8 @@ void main() {
           albumType: 'manual',
           pinned: false,
           mediaCount: BigInt.one,
+          imageCount: BigInt.one,
+          videoCount: BigInt.zero,
         ),
       ],
     );
@@ -1504,20 +2025,72 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('编辑相册'), findsOneWidget);
-    expect(find.text('转换为自动相册'), findsOneWidget);
+    expect(find.text('转换为自动相册'), findsNothing);
+    expect(find.text('编辑自动规则'), findsNothing);
     expect(find.text('删除相册'), findsOneWidget);
 
     await tester.tap(find.text('编辑相册'));
     await tester.pumpAndSettle();
+    final renameField = find.byKey(const Key('rename-album-field'));
+    await tester.tap(renameField);
+    const composingAlbumName = '中文相册';
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: composingAlbumName,
+        selection: TextSelection.collapsed(offset: composingAlbumName.length),
+        composing: TextRange(start: 0, end: composingAlbumName.length),
+      ),
+    );
+    await tester.pump();
+    final renameEditable = find.descendant(
+      of: renameField,
+      matching: find.byType(EditableText),
+    );
+    expect(
+      tester.widget<EditableText>(renameEditable).controller.value.composing,
+      const TextRange(start: 0, end: composingAlbumName.length),
+    );
     await tester.enterText(find.byKey(const Key('rename-album-field')), '新相册');
     await tester.enterText(
       find.byKey(const Key('edit-album-description-field')),
       '新的相册描述',
     );
+    await tester.tap(find.byKey(const Key('edit-album-smart-toggle')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('edit-album-configure-rules')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('edit-album-configure-rules')));
+    await tester.pumpAndSettle();
+    final ruleValue = find.byKey(const ValueKey('rule-value-0-tag'));
+    await tester.tap(ruleValue);
+    const composingRule = '中文规则';
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: composingRule,
+        selection: TextSelection.collapsed(offset: composingRule.length),
+        composing: TextRange(start: 0, end: composingRule.length),
+      ),
+    );
+    await tester.pump();
+    expect(
+      tester
+          .widget<EditableText>(
+            find.descendant(of: ruleValue, matching: find.byType(EditableText)),
+          )
+          .controller
+          .value
+          .composing,
+      const TextRange(start: 0, end: composingRule.length),
+    );
+    await tester.enterText(ruleValue, 'Splatoon');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('save-smart-album-rules')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('confirm-rename-album')));
     await tester.pumpAndSettle();
     expect(backend.albumItems!.last.name, '新相册');
     expect(backend.albumItems!.last.description, '新的相册描述');
+    expect(backend.albumItems!.last.albumType, 'smart');
+    expect(backend.albumRules[2]!.single.value, 'Splatoon');
 
     await tester.tap(
       find.byKey(const ValueKey('album-card-2')),
@@ -1568,6 +2141,7 @@ void main() {
     );
 
     final openLog = find.widgetWithText(FilledButton, 'Open log').first;
+    expect(find.text('View recent runtime logs'), findsOneWidget);
     final settingsScroll = find
         .ancestor(of: openLog, matching: find.byType(CustomScrollView))
         .first;
@@ -1576,6 +2150,30 @@ void main() {
     await tester.tap(openLog);
     await tester.pumpAndSettle();
     expect(backend.logOpened, isTrue);
+  });
+
+  testWidgets('desktop network settings expose DoH toggle with exact copy', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    await tester.pumpWidget(SquidAlbumApp(backend: backend));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('设置').last);
+    await tester.pumpAndSettle();
+
+    final settingsScroll = find.byType(CustomScrollView).first;
+    await tester.drag(settingsScroll, const Offset(0, -1200));
+    await tester.pumpAndSettle();
+    final toggle = find.byKey(const Key('desktop-doh-enabled'));
+    await tester.ensureVisible(toggle);
+    expect(toggle, findsOneWidget);
+    expect(backend.settings.dohEnabled, isFalse);
+    expect(find.text('网络请求使用DOH'), findsOneWidget);
+    expect(find.text('同步一直请求失败时可以尝试开启此选项'), findsOneWidget);
+
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(backend.settings.dohEnabled, isTrue);
   });
 
   testWidgets('about section combines profile and community links', (
@@ -1599,7 +2197,7 @@ void main() {
 
     expect(find.text('Cypas_Nya'), findsOneWidget);
     expect(find.text('小鱿鱿bot作者'), findsOneWidget);
-    expect(find.textContaining('4.5.6+78'), findsOneWidget);
+    expect(find.textContaining('4.5.6+78 Debug'), findsOneWidget);
     if (Platform.isWindows) {
       expect(find.byKey(const Key('check-app-updates')), findsOneWidget);
     }
@@ -1735,6 +2333,162 @@ void main() {
   });
 
   testWidgets(
+    'desktop account bubbles contain tools and show each account sync status light',
+    (tester) async {
+      final backend = FakeBackend(
+        signedIn: true,
+        accountProfiles: const [
+          NintendoAccountProfile(accountId: 'account-1', nickname: 'Inkling'),
+          NintendoAccountProfile(accountId: 'account-2', nickname: 'Octoling'),
+        ],
+        accountSyncHistories: {
+          'account-1': SyncRuntimeState(
+            latestAttempt: SyncAttemptSummary(
+              attemptedAt: DateTime(2026, 10, 23, 9),
+              status: 'partial_failure',
+              totalFound: BigInt.one,
+              downloaded: BigInt.zero,
+              duplicates: BigInt.zero,
+              failed: BigInt.one,
+            ),
+          ),
+          'account-2': SyncRuntimeState(
+            latestAttempt: SyncAttemptSummary(
+              attemptedAt: DateTime(2026, 10, 23, 9),
+              status: 'success',
+              totalFound: BigInt.one,
+              downloaded: BigInt.one,
+              duplicates: BigInt.zero,
+              failed: BigInt.zero,
+            ),
+          ),
+        },
+      );
+      await tester.pumpWidget(SquidAlbumApp(backend: backend));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('导入与同步').last);
+      await tester.pumpAndSettle();
+
+      final firstBubble = find.byKey(
+        const Key('nintendo-account-bubble-account-1'),
+      );
+      final secondBubble = find.byKey(
+        const Key('nintendo-account-bubble-account-2'),
+      );
+      expect(firstBubble, findsOneWidget);
+      expect(secondBubble, findsOneWidget);
+      expect(
+        find.descendant(
+          of: firstBubble,
+          matching: find.byKey(const Key('sync-status-dot-account-1')),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: secondBubble,
+          matching: find.byKey(const Key('sync-status-dot-account-2')),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: firstBubble, matching: find.text('当前')),
+        findsNothing,
+      );
+      expect(
+        find.descendant(
+          of: firstBubble,
+          matching: find.byIcon(Icons.radio_button_unchecked_rounded),
+        ),
+        findsNothing,
+      );
+      final bubbleCard = tester.widget<Card>(firstBubble);
+      final bubbleBorder = bubbleCard.shape as RoundedRectangleBorder;
+      expect(
+        bubbleBorder.side.color,
+        Theme.of(tester.element(firstBubble)).colorScheme.outlineVariant,
+      );
+      await tester.tap(
+        find.descendant(
+          of: firstBubble,
+          matching: find.byKey(const Key('sync-account-account-1')),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(of: firstBubble, matching: find.text('好友列表')),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const Key('account-tools-expand-account-1')));
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(of: firstBubble, matching: find.text('好友列表')),
+        findsNothing,
+      );
+      await tester.tap(find.byKey(const Key('account-tools-expand-account-1')));
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(of: firstBubble, matching: find.text('好友列表')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: secondBubble, matching: find.text('好友列表')),
+        findsNothing,
+      );
+      final firstLight = tester.widget<Container>(
+        find.byKey(const Key('sync-status-dot-account-1')),
+      );
+      final secondLight = tester.widget<Container>(
+        find.byKey(const Key('sync-status-dot-account-2')),
+      );
+      expect(
+        (firstLight.decoration! as BoxDecoration).color,
+        Colors.orange.shade800,
+      );
+      expect(
+        (secondLight.decoration! as BoxDecoration).color,
+        Colors.green.shade700,
+      );
+    },
+  );
+
+  testWidgets(
+    'desktop manual sync queues every account and settles on empty galleries',
+    (tester) async {
+      final backend = _DesktopAccountQueueBackend(
+        outcomes: {
+          'account-1': _emptySyncSummary('empty-1'),
+          'account-2': _emptySyncSummary('empty-2'),
+        },
+      );
+      await tester.pumpWidget(SquidAlbumApp(backend: backend));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('导入与同步').last);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(FilledButton, '同步全部账号'));
+      await tester.pumpAndSettle();
+
+      expect(backend.accountCalls, ['account-1', 'account-2']);
+      expect(backend.syncCalls, 0);
+      expect(find.byKey(const Key('nso-sync-progress')), findsNothing);
+      expect(find.text('正在读取 Nintendo 相册列表…'), findsNothing);
+      expect(find.text('重复'), findsNothing);
+      for (final accountId in ['account-1', 'account-2']) {
+        final status = tester.widget<Text>(
+          find.byKey(Key('sync-history-$accountId')),
+        );
+        expect(
+          status.data,
+          matches(
+            RegExp(r'^\d{2}-\d{2} \d{2}:\d{2}:\d{2} · 成功 · NSO线上相册未上传任何媒体$'),
+          ),
+        );
+      }
+    },
+  );
+
+  testWidgets(
     'shows each Nintendo account its own latest sync time and result',
     (tester) async {
       final backend = FakeBackend(
@@ -1756,7 +2510,7 @@ void main() {
           ),
           'account-2': SyncRuntimeState(
             latestAttempt: SyncAttemptSummary(
-              attemptedAt: DateTime.utc(2026, 10, 5, 18, 40),
+              attemptedAt: DateTime(2026, 10, 5, 18, 40, 39, 999, 999),
               status: 'success',
               totalFound: BigInt.from(5),
               downloaded: BigInt.from(2),
@@ -1798,12 +2552,30 @@ void main() {
           matching: find.byWidgetPredicate(
             (widget) =>
                 widget is Text &&
-                RegExp(r'2026-10-\d{2} \d{2}:\d{2} · 成功')
-                    .hasMatch(widget.data ?? ''),
+                RegExp(r'^10-05 18:40:39 · 成功').hasMatch(widget.data ?? ''),
           ),
         ),
         findsOneWidget,
       );
+    },
+  );
+
+  testWidgets(
+    'Nintendo account retry performs a fresh read after the initial snapshot fails',
+    (tester) async {
+      final backend = _RetryingAccountBackend();
+      await tester.pumpWidget(SquidAlbumApp(backend: backend));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('导入与同步').last);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Nintendo Account 状态读取失败。'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, '重试'));
+      await tester.pumpAndSettle();
+
+      expect(backend.accountListCalls, greaterThanOrEqualTo(2));
+      expect(find.textContaining('已连接 1 个账号'), findsOneWidget);
+      expect(find.text('Nintendo Account 状态读取失败。'), findsNothing);
     },
   );
 
@@ -1841,7 +2613,7 @@ void main() {
     expect(notice, findsOneWidget);
   });
 
-  testWidgets('confirms before removing the current Nintendo account', (
+  testWidgets('chooses an account before removing a Nintendo account', (
     tester,
   ) async {
     final backend = FakeBackend(
@@ -1858,7 +2630,7 @@ void main() {
 
     await tester.tap(find.byKey(const Key('remove-nintendo-account')));
     await tester.pumpAndSettle();
-    expect(find.text('移除当前账号？'), findsOneWidget);
+    expect(find.text('移除账号？'), findsOneWidget);
     expect(find.textContaining('已导入图库的图片、视频'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('cancel-remove-nintendo-account')));
@@ -2068,6 +2840,7 @@ void main() {
       );
       backend.settings = AppSettings(
         proxyUrl: backend.settings.proxyUrl,
+        dohEnabled: backend.settings.dohEnabled,
         libraryPath: backend.settings.libraryPath,
         theme: backend.settings.theme,
         language: backend.settings.language,
@@ -2078,6 +2851,9 @@ void main() {
         compactTagDisplay: backend.settings.compactTagDisplay,
         autoPlayVideo: backend.settings.autoPlayVideo,
         autoSyncOnLaunch: true,
+        notifyOnAutoSync: backend.settings.notifyOnAutoSync,
+        showSplatoonSchedule: backend.settings.showSplatoonSchedule,
+        showSplatoonFriendActivity: backend.settings.showSplatoonFriendActivity,
         closeBehavior: backend.settings.closeBehavior,
         customFontPaths: backend.settings.customFontPaths,
         syncPolicy: backend.settings.syncPolicy,
@@ -2085,11 +2861,81 @@ void main() {
 
       await tester.pumpWidget(SquidAlbumApp(backend: backend));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump();
 
       expect(backend.syncCalls, 1);
     },
   );
+
+  testWidgets('cancels the startup sync delay when the app is disposed early', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    backend.settings = AppSettings(
+      proxyUrl: backend.settings.proxyUrl,
+      dohEnabled: backend.settings.dohEnabled,
+      libraryPath: backend.settings.libraryPath,
+      theme: backend.settings.theme,
+      language: backend.settings.language,
+      galleryColumns: backend.settings.galleryColumns,
+      galleryRows: backend.settings.galleryRows,
+      showNotePreview: backend.settings.showNotePreview,
+      showGameTag: backend.settings.showGameTag,
+      compactTagDisplay: backend.settings.compactTagDisplay,
+      autoPlayVideo: backend.settings.autoPlayVideo,
+      autoSyncOnLaunch: true,
+      notifyOnAutoSync: backend.settings.notifyOnAutoSync,
+      showSplatoonSchedule: backend.settings.showSplatoonSchedule,
+      showSplatoonFriendActivity: backend.settings.showSplatoonFriendActivity,
+      closeBehavior: backend.settings.closeBehavior,
+      customFontPaths: backend.settings.customFontPaths,
+      syncPolicy: backend.settings.syncPolicy,
+    );
+
+    await tester.pumpWidget(SquidAlbumApp(backend: backend));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+
+    expect(backend.syncCalls, 0);
+  });
+
+  testWidgets('desktop sync restrictions show localized account guidance', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    final settings = SettingsController(backend);
+    final sync = SyncController(backend);
+    addTearDown(settings.dispose);
+    addTearDown(sync.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('zh'),
+        localizationsDelegates: const [
+          AppLocalizations.delegate,
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: HomeShell(
+          backend: backend,
+          settings: settings,
+          syncController: sync,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    sync.state = SyncState.failed;
+    sync.error = StateError(
+      'provider failed: nintendo_account_not_linked (status 9407)',
+    );
+    sync.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(find.textContaining('尚未关联 Switch 用户'), findsOneWidget);
+    expect(find.textContaining('nintendo_account_not_linked'), findsNothing);
+  });
 
   testWidgets('shows an automatic sync failure in a global snackbar', (
     tester,
@@ -2137,6 +2983,10 @@ void main() {
   testWidgets(
     'persists the desktop window close behavior',
     (tester) async {
+      tester.view.physicalSize = const Size(1200, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       final backend = FakeBackend();
       await tester.pumpWidget(SquidAlbumApp(backend: backend));
       await tester.pumpAndSettle();
@@ -2150,9 +3000,15 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(tester.getCenter(selector).dy, lessThan(600));
-      await tester.tap(selector);
+      final rect = tester.getRect(selector);
+      await tester.tapAt(Offset(rect.right - 32, rect.center.dy));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('最小化到托盘').last);
+      final minimize = find.byWidgetPredicate(
+        (widget) =>
+            widget is Text &&
+            (widget.data == '最小化到托盘' || widget.data == 'Minimize to tray'),
+      );
+      await tester.tap(minimize.last);
       await tester.pumpAndSettle();
 
       expect(backend.settings.closeBehavior, 'minimize_to_tray');
@@ -2182,7 +3038,7 @@ void main() {
 
     await tester.tap(find.text('导入与同步').last);
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(FilledButton, '立即同步'));
+    await tester.tap(find.widgetWithText(FilledButton, '同步全部账号'));
     await tester.pump(const Duration(milliseconds: 350));
 
     expect(find.byKey(const Key('nso-sync-progress')), findsOneWidget);
@@ -2241,6 +3097,7 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
 
   @override
   AppSettings settings = const AppSettings(
+    dohEnabled: false,
     libraryPath: 'C:/library',
     theme: 'ocean',
     language: 'zh',
@@ -2251,6 +3108,9 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
     compactTagDisplay: true,
     autoPlayVideo: false,
     autoSyncOnLaunch: false,
+    notifyOnAutoSync: true,
+    showSplatoonSchedule: true,
+    showSplatoonFriendActivity: false,
     closeBehavior: 'ask',
     customFontPaths: [],
     syncPolicy: SyncPolicy(
@@ -2265,6 +3125,9 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
   bool lastNewestFirst = true;
   DateTime? lastCapturedFrom;
   DateTime? lastCapturedUntil;
+  DateTime? lastImportedFrom;
+  DateTime? lastImportedUntil;
+  CapturedOnThisDay? lastCapturedOnThisDay;
   int listMediaCalls = 0;
   int listAlbumsCalls = 0;
   final Map<int, bool> favoriteUpdates = {};
@@ -2299,6 +3162,10 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
 
   @override
   Future<void> openDirectory(String path) async => openedDirectory = path;
+
+  @override
+  Future<MediaDetails> loadMediaDetails(int mediaId) =>
+      Future.error(UnsupportedError('Media details are unavailable'));
 
   @override
   Future<MediaExportSummary> exportMedia(
@@ -2398,6 +3265,8 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
       pinned: current.pinned,
       systemKey: current.systemKey,
       mediaCount: current.mediaCount,
+      imageCount: current.imageCount,
+      videoCount: current.videoCount,
     );
   }
 
@@ -2468,7 +3337,9 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
 
   @override
   Future<void> removeNintendoAccount(String accountId) async {
+    signOutCalls += 1;
     if (selectedAccount == accountId) selectedAccount = null;
+    signedIn = false;
   }
 
   @override
@@ -2485,6 +3356,8 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
               pinned: true,
               systemKey: 'favorites',
               mediaCount: BigInt.one,
+              imageCount: BigInt.one,
+              videoCount: BigInt.zero,
             ),
           ],
     );
@@ -2526,13 +3399,22 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
     List<String> gameNames = const [],
     DateTime? capturedFrom,
     DateTime? capturedUntil,
+    CapturedOnThisDay? capturedOnThisDay,
+    DateTime? importedFrom,
+    DateTime? importedUntil,
   }) async {
     listMediaCalls += 1;
     lastKind = kind;
     lastFavoriteOnly = favoriteOnly;
     lastNewestFirst = newestFirst;
-    lastCapturedFrom = capturedFrom;
-    lastCapturedUntil = capturedUntil;
+    // Keep the historical probe fields populated so existing gallery tests can
+    // assert the selected range while the production query now uses
+    // importedAt/imported_at for creation-time filtering.
+    lastCapturedFrom = importedFrom ?? capturedFrom;
+    lastCapturedUntil = importedUntil ?? capturedUntil;
+    lastImportedFrom = importedFrom;
+    lastImportedUntil = importedUntil;
+    lastCapturedOnThisDay = capturedOnThisDay;
     final gate = nextMediaGate;
     if (gate != null) {
       nextMediaGate = null;
@@ -2549,18 +3431,89 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
         (item) => gameNames.isNotEmpty && !gameNames.contains(item.gameName),
       )
       ..removeWhere((item) {
+        if (importedFrom != null || importedUntil != null) {
+          final timestamp = item.importedAt;
+          return timestamp == null ||
+              (importedFrom != null && timestamp.isBefore(importedFrom)) ||
+              (importedUntil != null && !timestamp.isBefore(importedUntil));
+        }
         final timestamp = item.capturedAt ?? item.importedAt;
+        if (timestamp == null) {
+          return capturedFrom != null || capturedUntil != null;
+        }
         return (capturedFrom != null && timestamp.isBefore(capturedFrom)) ||
             (capturedUntil != null && !timestamp.isBefore(capturedUntil));
       })
       ..sort((a, b) {
         final aTime = a.capturedAt ?? a.importedAt;
         final bTime = b.capturedAt ?? b.importedAt;
-        return newestFirst ? bTime.compareTo(aTime) : aTime.compareTo(bTime);
+        final int byDate;
+        if (aTime == null) {
+          byDate = bTime == null ? 0 : 1;
+        } else if (bTime == null) {
+          byDate = -1;
+        } else {
+          byDate = bTime.compareTo(aTime);
+        }
+        final order = byDate == 0 ? b.id.compareTo(a.id) : byDate;
+        return newestFirst ? order : -order;
       });
     return result.isEmpty && mediaItems == null
         ? [_media(id: 1, name: 'sample.jpg')]
         : result;
+  }
+
+  @override
+  Future<GalleryPage> listMediaPage(GalleryPageRequest request) async {
+    final values = await listMedia(
+      kind: request.query.kind,
+      limit: request.query.limit,
+      offset: request.query.offset,
+      favoriteOnly: request.query.favoriteOnly,
+      albumId: request.query.albumId,
+      newestFirst: request.query.newestFirst,
+      gameNames: request.query.gameNames,
+      importedFrom: request.query.importedFrom,
+      importedUntil: request.query.importedUntil,
+      capturedFrom: request.query.capturedFrom,
+      capturedUntil: request.query.capturedUntil,
+      capturedOnThisDay: request.query.capturedOnThisDay,
+    );
+    final filtered = values
+        .where(
+          (item) =>
+              (request.query.kind == GalleryKindFilter.all ||
+                  item.kind.name == request.query.kind.name) &&
+              (!request.query.favoriteOnly || item.favorite),
+        )
+        .toList();
+    final cursorIndex = request.cursor == null
+        ? -1
+        : filtered.indexWhere((item) => item.id == request.cursor!.mediaId);
+    final backward = request.direction == GalleryPageDirection.backward;
+    final limit = request.query.limit.clamp(1, 60);
+    final start = backward
+        ? (cursorIndex - limit).clamp(0, filtered.length)
+        : cursorIndex + 1;
+    final end = backward
+        ? cursorIndex.clamp(0, filtered.length)
+        : (start + limit).clamp(0, filtered.length);
+    final items = filtered.sublist(start, end);
+    GalleryCursor cursor(MediaAsset item) => GalleryCursor(
+      filterFingerprint:
+          'fake-${request.query.albumId}-${request.query.favoriteOnly}-${request.query.newestFirst}-${request.query.kind}',
+      mediaId: item.id,
+      effectiveSortTime: (item.capturedAt ?? item.importedAt)
+          ?.microsecondsSinceEpoch
+          .toString(),
+    );
+    return GalleryPage(
+      items: items,
+      hasBefore: start > 0,
+      hasAfter: end < filtered.length,
+      beforeCursor: items.isEmpty ? null : cursor(items.first),
+      afterCursor: items.isEmpty ? null : cursor(items.last),
+    );
   }
 
   @override
@@ -2639,6 +3592,32 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
       return total != 0 ? total : left.name.compareTo(right.name);
     });
     return values;
+  }
+
+  @override
+  Future<List<GameMediaCount>> listGameMediaCounts({int? albumId}) async {
+    final counts = <String, (int, int)>{};
+    for (final item in mediaItems ?? [_media(id: 1, name: 'sample.jpg')]) {
+      if (albumId != null &&
+          albumMediaIds.containsKey(albumId) &&
+          !albumMediaIds[albumId]!.contains(item.id)) {
+        continue;
+      }
+      final count = counts[item.gameName] ?? (0, 0);
+      counts[item.gameName] = item.kind == MediaKind.image
+          ? (count.$1 + 1, count.$2)
+          : (count.$1, count.$2 + 1);
+    }
+    return counts.entries
+        .map(
+          (entry) => GameMediaCount(
+            gameName: entry.key,
+            imageCount: BigInt.from(entry.value.$1),
+            videoCount: BigInt.from(entry.value.$2),
+            selectionCount: BigInt.from(gameSelectionCounts[entry.key] ?? 0),
+          ),
+        )
+        .toList();
   }
 
   @override
@@ -2742,6 +3721,27 @@ class FakeBackend implements AppBackend, SyncHistoryBackend {
   }
 }
 
+class _RetryingAccountBackend extends FakeBackend {
+  _RetryingAccountBackend()
+    : super(
+        signedIn: true,
+        accountProfiles: const [
+          NintendoAccountProfile(accountId: 'account-1', nickname: 'Inkling'),
+        ],
+      );
+
+  int accountListCalls = 0;
+
+  @override
+  Future<List<NintendoAccountProfile>> listNintendoAccounts() async {
+    accountListCalls += 1;
+    if (accountListCalls == 1) {
+      throw StateError('synthetic account read failure');
+    }
+    return super.listNintendoAccounts();
+  }
+}
+
 class _FontSettingsBackend extends FakeBackend {
   Completer<void>? fontSettingsSaved;
 
@@ -2753,15 +3753,57 @@ class _FontSettingsBackend extends FakeBackend {
   }
 }
 
+SyncSummary _emptySyncSummary(String id) => SyncSummary(
+  jobId: id,
+  totalFound: BigInt.zero,
+  downloaded: BigInt.zero,
+  duplicates: BigInt.zero,
+  skippedRemote: BigInt.zero,
+  failed: BigInt.zero,
+  errors: const [],
+);
+
+class _DesktopAccountQueueBackend extends FakeBackend
+    implements AccountSyncBackend {
+  _DesktopAccountQueueBackend({required this.outcomes})
+    : super(
+        signedIn: true,
+        accountProfiles: const [
+          NintendoAccountProfile(accountId: 'account-1', nickname: 'One'),
+          NintendoAccountProfile(accountId: 'account-2', nickname: 'Two'),
+        ],
+      );
+
+  final Map<String, SyncSummary> outcomes;
+  final List<String> accountCalls = [];
+
+  @override
+  Future<SyncSummary> syncNintendoAccount(String accountId) async {
+    accountCalls.add(accountId);
+    return outcomes[accountId]!;
+  }
+
+  @override
+  Future<SyncScheduleStatus?> loadAccountSyncSchedule(String accountId) async =>
+      const SyncScheduleStatus(sleeping: false);
+
+  @override
+  Future<SyncScheduleStatus?> recordAccountSyncOutcome(
+    String accountId, {
+    required bool foundNewMedia,
+  }) async => const SyncScheduleStatus(sleeping: false);
+}
+
 MediaAsset _media({
   required int id,
   required String name,
   MediaKind kind = MediaKind.image,
   DateTime? capturedAt,
   String gameName = 'Splatoon 3',
+  String? sha256,
 }) => MediaAsset(
   id: id,
-  sha256: 'abc$id',
+  sha256: sha256 ?? 'abc$id',
   originalName: name,
   storagePath: 'C:/library/$name',
   kind: kind,

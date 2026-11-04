@@ -1,0 +1,411 @@
+name: Android ARM64 validation
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact immutable commit SHA to validate
+        required: true
+        type: string
+      release_tag:
+        description: Optional stable tag checked against source versions
+        type: string
+        default: ""
+      sign_release:
+        description: Sign the verified APK with the configured release key on trusted workflows
+        type: boolean
+        default: false
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        required: false
+      ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Optional exact commit or branch to validate (no Release publication)
+        required: false
+        type: string
+      sign_release:
+        description: Sign after verification (trusted main/dev only; no Release publication)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  ANDROID_BUILD_TOOLS: "36.0.0"
+  ANDROID_NDK_VERSION: "28.2.13676358"
+
+jobs:
+  resolve:
+    name: Pin Android validation commit
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
+      signing: ${{ steps.policy.outputs.signing }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+      - id: commit
+        shell: bash
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          if [[ "$EVENT_NAME" != workflow_dispatch ]]; then
+            [[ "$REQUESTED_REF" =~ ^[0-9a-f]{40}$ ]]
+            test "$sha" = "$REQUESTED_REF"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Enforce signing trust boundary before any secret is used
+        id: policy
+        shell: pwsh
+        env:
+          SIGN_REQUESTED: ${{ inputs.sign_release }}
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if ($env:SIGN_REQUESTED -eq 'true') {
+            if ($env:REPOSITORY -ne 'Cypas/NSOAlbum' -or
+                $env:EVENT_NAME -notin @('push', 'workflow_dispatch') -or
+                ($env:WORKFLOW_REF -notin @('refs/heads/main', 'refs/heads/dev') -and
+                 $env:WORKFLOW_REF -notmatch '^refs/tags/v\d+\.\d+\.\d+$')) {
+              throw 'Release signing must originate from a trusted workflow, never a PR.'
+            }
+            $trusted = $false
+            foreach ($branch in @('main', 'dev')) {
+              git merge-base --is-ancestor HEAD "refs/remotes/origin/$branch"
+              if ($LASTEXITCODE -eq 0) { $trusted = $true }
+            }
+            if (-not $trusted) { throw 'Release signing target must be a commit in trusted main/dev history.' }
+          }
+          # Only execute target-commit policy code after verifying signing ancestry.
+          . ./flutter_app/tool/android_apk_contract.ps1
+          $mode = Get-AndroidSigningMode -Requested ($env:SIGN_REQUESTED -eq 'true') -EventName $env:EVENT_NAME -WorkflowRef $env:WORKFLOW_REF -Repository $env:REPOSITORY
+          "signing=$mode" >> $env:GITHUB_OUTPUT
+          exit 0
+      - name: Validate source versions
+        id: version
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          $manifest = Get-Content -LiteralPath flutter_app/pubspec.yaml -Raw
+          if ($manifest -notmatch '(?m)^version:\s*(\d+\.\d+\.\d+)\+(\d+)\s*$') {
+            throw 'pubspec.yaml must declare stable SemVer+build.'
+          }
+          $version = $Matches[1]
+          $build = $Matches[2]
+          ./flutter_app/tool/validate_release_version.ps1 -Version $version -ReleaseTag $env:RELEASE_TAG
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "build=$build" >> $env:GITHUB_OUTPUT
+
+  build:
+    name: Test and build Android ARM64
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - name: Assert exact build commit
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install pinned Android SDK and NDK
+        run: |
+          set -euo pipefail
+          sdkmanager "platforms;android-36" "build-tools;$ANDROID_BUILD_TOOLS" "ndk;$ANDROID_NDK_VERSION"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+          components: clippy, rustfmt
+      - uses: ./.github/actions/ci-dependencies
+        with:
+          platform: android-arm64
+          codegen: "true"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.6
+          channel: stable
+          cache: true
+      - name: Cache Android Gradle dependencies only
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: nso-android-deps-v1-${{ runner.os }}-arm64-jdk17-flutter3.47.6-ndk${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('flutter_app/pubspec.lock', 'rust_core/Cargo.lock', 'flutter_app/android/**/*.gradle.kts', 'flutter_app/android/gradle/wrapper/gradle-wrapper.properties', 'flutter_app/android/gradle.properties') }}
+      - name: Resolve dependencies and select JDK
+        working-directory: flutter_app
+        run: |
+          set -euo pipefail
+          flutter config --jdk-dir "$JAVA_HOME"
+          flutter pub get
+      - name: Regenerate bridge
+        working-directory: flutter_app
+        shell: pwsh
+        run: ./tool/generate_bridge.ps1
+      - name: Rust formatting, Clippy, and unit tests
+        working-directory: rust_core
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --lib 2>&1 | tee "$RUNNER_TEMP/rust-tests.log"
+      - name: Dart analysis
+        working-directory: flutter_app
+        run: dart analyze
+      - name: Build ARM64 Release-mode test APK
+        working-directory: flutter_app
+        run: flutter build apk --release --target-platform android-arm64 --no-pub
+      - name: Full Flutter suite including opt-in Android native tests
+        working-directory: flutter_app
+        env:
+          NSO_VERIFY_ANDROID_BUILD: "1"
+        run: |
+          set -euo pipefail
+          flutter test --machine --no-pub > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests-stderr.log"
+      - name: Exercise signing with a disposable fixture key, never production Secrets
+        shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ needs.resolve.outputs.version }}
+          PACKAGE_BUILD: ${{ needs.resolve.outputs.build }}
+        run: |
+          $tools = Join-Path $env:ANDROID_HOME "build-tools/$env:ANDROID_BUILD_TOOLS"
+          ./flutter_app/test/fixtures/android/signing_test.ps1 -Apk flutter_app/build/app/outputs/flutter-apk/app-release.apk -BuildToolsDirectory $tools -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD
+      - name: Verify and summarize actual test totals
+        if: always()
+        shell: pwsh
+        run: |
+          ./flutter_app/tool/ci_native.ps1 -RustLog (Join-Path $env:RUNNER_TEMP 'rust-tests.log') -FlutterMachineLog (Join-Path $env:RUNNER_TEMP 'flutter-tests.jsonl') -ReportsDirectory android-reports
+      - name: Seal the exact Android test build
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+          PACKAGE_VERSION: ${{ needs.resolve.outputs.version }}
+          PACKAGE_BUILD: ${{ needs.resolve.outputs.build }}
+        run: |
+          $directory = 'dist/ci-build/android-arm64'
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          Copy-Item -LiteralPath flutter_app/build/app/outputs/flutter-apk/app-release.apk -Destination "$directory/NSOAlbum-Android-arm64-CI-Test.apk"
+          $apk = Join-Path $directory 'NSOAlbum-Android-arm64-CI-Test.apk'
+          $hash = (Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path $directory 'SHA256SUMS.txt'), "$hash  $(Split-Path -Leaf $apk)`n", [Text.UTF8Encoding]::new($false))
+          ./flutter_app/tool/ci_bundle.ps1 -Mode Seal -Directory $directory -Commit $env:EXPECTED_SHA -Platform android-arm64 -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD
+      - name: Upload same-run intermediate Android build
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-android-arm64-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.build }}-${{ needs.resolve.outputs.sha }}
+          path: |
+            dist/ci-build/android-arm64/NSOAlbum-Android-arm64-CI-Test.apk
+            dist/ci-build/android-arm64/.nso-ci-bundle.json
+            dist/ci-build/android-arm64/SHA256SUMS.txt
+          retention-days: 3
+          compression-level: 0
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Upload Android build test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-android-arm64
+          retention-days: 14
+          if-no-files-found: ignore
+          path: |
+            android-reports/test-counts.json
+            ${{ runner.temp }}/rust-tests.log
+            ${{ runner.temp }}/flutter-tests.jsonl
+            ${{ runner.temp }}/flutter-tests-stderr.log
+
+  verify:
+    name: Verify same-run Android APK (not device smoke)
+    needs:
+      - resolve
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install pinned APK inspection tools
+        run: sdkmanager "build-tools;$ANDROID_BUILD_TOOLS"
+      - uses: actions/download-artifact@v4
+        with:
+          name: built-android-arm64-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.build }}-${{ needs.resolve.outputs.sha }}
+          path: dist/ci-transfer
+      - name: Verify commit, metadata, hashes, APK identity, ELF and signature
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+          PACKAGE_VERSION: ${{ needs.resolve.outputs.version }}
+          PACKAGE_BUILD: ${{ needs.resolve.outputs.build }}
+        run: |
+          if ((git rev-parse HEAD) -ne $env:EXPECTED_SHA) { throw 'Verification source commit differs.' }
+          $directory = 'dist/ci-verify/android-arm64'
+          if (Test-Path -LiteralPath $directory) { throw 'Android verification directory must be new.' }
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          Copy-Item -LiteralPath dist/ci-transfer/NSOAlbum-Android-arm64-CI-Test.apk -Destination $directory
+          Copy-Item -LiteralPath dist/ci-transfer/.nso-ci-bundle.json -Destination $directory
+          Copy-Item -LiteralPath dist/ci-transfer/SHA256SUMS.txt -Destination $directory
+          ./flutter_app/tool/ci_bundle.ps1 -Mode Verify -Directory $directory -Commit $env:EXPECTED_SHA -Platform android-arm64 -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD
+          $tools = Join-Path $env:ANDROID_HOME "build-tools/$env:ANDROID_BUILD_TOOLS"
+          ./flutter_app/tool/verify_android_apk.ps1 -Apk "$directory/NSOAlbum-Android-arm64-CI-Test.apk" -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD -BuildToolsDirectory $tools -ReportsDirectory android-reports
+      - name: Upload static APK verification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-android-arm64
+          path: android-reports/apk-verification.json
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Upload verified test APK, never a Release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-arm64-ci-test-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.build }}
+          path: |
+            dist/ci-verify/android-arm64/NSOAlbum-Android-arm64-CI-Test.apk
+            dist/ci-verify/android-arm64/.nso-ci-bundle.json
+            dist/ci-verify/android-arm64/SHA256SUMS.txt
+          retention-days: 7
+          compression-level: 0
+          include-hidden-files: true
+          if-no-files-found: error
+
+  sign:
+    name: Sign verified APK with the release key (not device smoke)
+    if: inputs.sign_release && needs.resolve.outputs.signing == 'Release' && github.repository == 'Cypas/NSOAlbum' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' || startsWith(github.ref, 'refs/tags/v'))
+    needs:
+      - resolve
+      - build
+      - verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install pinned signing and inspection tools
+        run: sdkmanager "build-tools;$ANDROID_BUILD_TOOLS"
+      - uses: actions/download-artifact@v4
+        with:
+          name: built-android-arm64-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.build }}-${{ needs.resolve.outputs.sha }}
+          path: dist/ci-transfer
+      - name: Reverify the exact same-run input without rebuilding
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+          PACKAGE_VERSION: ${{ needs.resolve.outputs.version }}
+          PACKAGE_BUILD: ${{ needs.resolve.outputs.build }}
+        run: |
+          if ((git rev-parse HEAD) -ne $env:EXPECTED_SHA) { throw 'Signing source commit differs.' }
+          $directory = 'dist/ci-sign-input/android-arm64'
+          if (Test-Path -LiteralPath $directory) { throw 'Signing input directory must be new.' }
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          Copy-Item -LiteralPath dist/ci-transfer/NSOAlbum-Android-arm64-CI-Test.apk -Destination $directory
+          Copy-Item -LiteralPath dist/ci-transfer/.nso-ci-bundle.json -Destination $directory
+          Copy-Item -LiteralPath dist/ci-transfer/SHA256SUMS.txt -Destination $directory
+          ./flutter_app/tool/ci_bundle.ps1 -Mode Verify -Directory $directory -Commit $env:EXPECTED_SHA -Platform android-arm64 -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD
+      - name: Sign, verify release certificate, and clean private temporary material
+        shell: pwsh
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          PACKAGE_VERSION: ${{ needs.resolve.outputs.version }}
+          PACKAGE_BUILD: ${{ needs.resolve.outputs.build }}
+        run: |
+          $tools = Join-Path $env:ANDROID_HOME "build-tools/$env:ANDROID_BUILD_TOOLS"
+          $output = "dist/android-signed/NSOAlbum-Android-arm64-$env:PACKAGE_VERSION.apk"
+          ./flutter_app/tool/sign_android_apk.ps1 -Apk dist/ci-sign-input/android-arm64/NSOAlbum-Android-arm64-CI-Test.apk -OutputApk $output -BuildToolsDirectory $tools -Version $env:PACKAGE_VERSION -BuildNumber $env:PACKAGE_BUILD -ReportsDirectory android-signing-reports -TemporaryRoot $env:RUNNER_TEMP
+          $hash = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $output) 'SHA256SUMS.txt'), "$hash  $(Split-Path -Leaf $output)`n", [Text.UTF8Encoding]::new($false))
+      - name: Upload public signing verification only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: signing-android-arm64
+          path: android-signing-reports/apk-verification.json
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Upload release-key-signed APK as an artifact only
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-arm64-signed
+          path: |
+            dist/android-signed/*.apk
+            dist/android-signed/SHA256SUMS.txt
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+
+  complete:
+    name: Require Android build and static verification
+    if: always()
+    needs:
+      - resolve
+      - build
+      - verify
+      - sign
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject failed, cancelled or skipped Android gates
+        env:
+          RESOLVE_RESULT: ${{ needs.resolve.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+          SIGN_RESULT: ${{ needs.sign.result }}
+          SIGNING_MODE: ${{ needs.resolve.outputs.signing }}
+        run: |
+          set -euo pipefail
+          test "$RESOLVE_RESULT" = success
+          test "$BUILD_RESULT" = success
+          test "$VERIFY_RESULT" = success
+          if [[ "$SIGNING_MODE" == Release ]]; then
+            test "$SIGN_RESULT" = success
+          else
+            test "$SIGNING_MODE" = Test
+            test "$SIGN_RESULT" = skipped
+          fi

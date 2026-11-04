@@ -93,4 +93,42 @@ void main() {
       lessThanOrEqualTo(scrollable.position.maxScrollExtent),
     );
   });
+
+  testWidgets('timeline handle timestamps stay on one line with milliseconds', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 320,
+            height: 126,
+            child: VideoTimeline(
+              duration: const Duration(seconds: 30, milliseconds: 666),
+              position: Duration.zero,
+              selectionStart: Duration.zero,
+              selectionEnd: const Duration(seconds: 29, milliseconds: 666),
+              zoom: 1,
+              playing: false,
+              onZoomChanged: (_) {},
+              onSelectionChanged: (_) {},
+              onSelectionChangeEnd: (_) {},
+              onSeek: (_) {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final labels = find.byType(Text).evaluate().where((element) {
+      final text = (element.widget as Text).data;
+      return text == '00:00.000' || text == '00:29.666';
+    });
+    expect(labels, hasLength(2));
+    for (final element in labels) {
+      final text = element.widget as Text;
+      expect(text.maxLines, 1);
+      expect(text.softWrap, isFalse);
+    }
+  });
 }

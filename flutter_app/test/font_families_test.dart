@@ -43,9 +43,11 @@ void main() {
   test('renamed WOFF2 cannot be accepted as a custom TTF font', () async {
     final directory = await Directory.systemTemp.createTemp('font-format-');
     addTearDown(() => directory.delete(recursive: true));
+    // Only the signature matters for rejection; no third-party webfont is
+    // needed as a fixture.
     final renamed = await File(
-      'assets/fonts/splatoon_web/Splatoon2-common-2LVXcHij.woff2',
-    ).copy('${directory.path}${Platform.pathSeparator}renamed.ttf');
+      '${directory.path}${Platform.pathSeparator}renamed.ttf',
+    ).writeAsBytes([0x77, 0x4f, 0x46, 0x32, 0, 0, 0, 0]); // wOF2
 
     await expectLater(
       prepareCustomFontFamilies([renamed.path]),
@@ -53,6 +55,68 @@ void main() {
     );
     expect(appFontFamily, 'DFPT_ZY9');
   });
+
+  test(
+    'TrueType collections are accepted while bitmap fonts are rejected',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'font-collection-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final collection =
+          await File('${directory.path}${Platform.pathSeparator}collection.ttc')
+              .writeAsBytes([
+                0x74, 0x74, 0x63, 0x66, // ttcf
+                0, 1, 0, 0,
+              ]);
+      final openTypeCollection =
+          await File('${directory.path}${Platform.pathSeparator}collection.otc')
+              .writeAsBytes([
+                0x74, 0x74, 0x63, 0x66, // ttcf
+                0, 1, 0, 0,
+              ]);
+      final bitmap = await File(
+        '${directory.path}${Platform.pathSeparator}bitmap.fon',
+      ).writeAsBytes([0x4d, 0x5a, 0, 0]);
+
+      await expectLater(
+        CustomFontStore.validateFiles([collection.path]),
+        completes,
+      );
+      await expectLater(
+        CustomFontStore.validateFiles([openTypeCollection.path]),
+        completes,
+      );
+      await expectLater(
+        CustomFontStore.validateFiles([bitmap.path]),
+        throwsA(isA<FormatException>()),
+      );
+    },
+  );
+
+  test(
+    'an installed Windows TrueType collection can be loaded by the runtime',
+    () async {
+      if (!Platform.isWindows) return;
+      final directory = Directory(r'C:\Windows\Fonts');
+      if (!await directory.exists()) return;
+      final installedCollection = directory
+          .listSync()
+          .whereType<File>()
+          .where(
+            (file) =>
+                file.path.toLowerCase().endsWith('.ttc') ||
+                file.path.toLowerCase().endsWith('.otc'),
+          )
+          .firstOrNull;
+      if (installedCollection == null) return;
+
+      final report = await loadCustomFontFamilies([installedCollection.path]);
+
+      expect(report.loadedFamilies, hasLength(1));
+      expect(report.failedPaths, isEmpty);
+    },
+  );
 
   test('uses the configured default priority for simplified Chinese', () {
     selectAppFontLanguage('zh');
@@ -208,6 +272,7 @@ AppSettings _withFonts(FakeBackend backend, List<String> paths) {
   final value = backend.settings;
   return AppSettings(
     proxyUrl: value.proxyUrl,
+    dohEnabled: value.dohEnabled,
     libraryPath: value.libraryPath,
     theme: value.theme,
     language: value.language,
@@ -218,6 +283,9 @@ AppSettings _withFonts(FakeBackend backend, List<String> paths) {
     compactTagDisplay: value.compactTagDisplay,
     autoPlayVideo: value.autoPlayVideo,
     autoSyncOnLaunch: value.autoSyncOnLaunch,
+    notifyOnAutoSync: value.notifyOnAutoSync,
+    showSplatoonSchedule: value.showSplatoonSchedule,
+    showSplatoonFriendActivity: value.showSplatoonFriendActivity,
     closeBehavior: value.closeBehavior,
     customFontPaths: paths,
     syncPolicy: value.syncPolicy,

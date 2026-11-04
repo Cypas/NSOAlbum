@@ -1,18 +1,26 @@
 # 鱿型相册项目文档
 
-仓库根目录只保留工程入口与仓库级约束，项目文档统一存放在本目录。
+本目录集中保存项目设计、测试、许可与开发指南。按主题阅读对应文档；
+不要将计划、历史验收报告或内部诊断材料视为当前产品行为或发布证据。
 
-- [第三方声明](legal/THIRD-PARTY-NOTICES.md)
-- [项目素材授权说明](legal/ASSET-ATTRIBUTION.md)
-- [测试分类与三平台原生 Release 门禁](TESTING.md)
+- [测试、构建、CI 触发和原生验收](TESTING.md)
+- [仓库目录与忽略规则](REPOSITORY-LAYOUT.md)
+- [完整文档树、职责和公开/本地边界](DOCUMENTATION-MAP.md)
+- [第三方依赖与字体声明](legal/THIRD-PARTY-NOTICES.md)
+- [图片、图标和其他素材授权](legal/ASSET-ATTRIBUTION.md)
+- [Flutter 子工程与本机开发流程](../flutter_app/README.md)
+- [贡献指南](../CONTRIBUTING.md)
+- [安全漏洞报告](../SECURITY.md)
 
-正式运行时代码位于 `flutter_app/` 与 `rust_core/`。内部设计文档、原型和本地变更记录不随公开快照提交。
+目录规范说明文件放置与忽略边界；文档树说明每份文档的职责及公开/本地属性。
+内层 README 负责相应子工程或夹具的具体操作，法律声明保留其原始来源和许可。
 
-当前 Windows 开发环境已启用 Developer Mode，Flutter 插件可以直接创建符号链接；其他开发机若未启用，可使用 Windows 打包脚本的 CMake/目录联接回退流程。
+正式运行时代码位于 `flutter_app/` 与 `rust_core/`。当前工作流触发条件、门禁、
+包体和验收范围以 [测试文档](TESTING.md) 及 `.github/workflows/` 为准；
+本页不复制易过期的 CI 触发清单，也不记录某次构建或设备验收状态。
 
-应用版本和构建号以 `flutter_app/pubspec.yaml` 为准，Rust crate 使用相同 SemVer，正式发布标签使用 `v<SemVer>`。升级时会优先使用 `NSOAlbum` 应用支持目录；若新目录没有有效数据，则继续使用 `Fresh Album`、`FreshAlbum` 或 `squid_album` 中检测到的旧库。Windows 默认图库目录按 `Pictures\NSOAlbum`、`Pictures\FreshAlbum` 的顺序探测，已有设置中的手动路径始终优先。Rust 会在单个 SQLite 事务中显式补齐历史缺失列并回滚失败迁移。
-
-当前公开开发流程为 `dev → main` pull request；`dev` push 仅运行 Ubuntu 快速检查和历史扫描，目标为 `main` 的 PR、`main` push、手动打包和稳定 tag 才运行完整 Windows/macOS 原生门禁。正式 Windows 发布只生成 NSOAlbum 目录版和 Inno Setup 安装器，不生成 ZIP。
+应用版本以 `flutter_app/pubspec.yaml` 为准，Rust crate 使用一致的 SemVer，
+稳定发布 tag 为 `v<SemVer>`。数据迁移与旧库兼容行为以当前实现及测试为准。
 
 ## Windows 打包
 
@@ -23,6 +31,10 @@
 ```
 
 发布目录中的说明文档位于 `docs\`，第三方声明和字体许可证位于 `licenses\`。
+脚本只创建全新目录，已有同版本目录不会被删除；本地隔离输出可用
+`-PackageDirectory "..\dist\<专题>\<新目录>"`，必须位于本仓库 `dist\`
+内且不能经目录联接越界。桌面 helper 的正常构建、同次产物来源和独立
+验包规则见 [测试文档](TESTING.md#桌面-mtp-helper)。
 
 安装 Inno Setup 6 后，可基于已经生成的目录版创建安装器：
 

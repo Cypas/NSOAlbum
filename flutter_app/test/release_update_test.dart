@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:squid_album/src/app_branding.dart';
 import 'package:squid_album/src/release_update.dart';
 
@@ -13,6 +14,16 @@ Uri _serverUri(HttpServer server) => Uri(
 );
 
 void main() {
+  setUp(() {
+    PackageInfo.setMockInitialValues(
+      appName: 'NSOAlbum',
+      packageName: 'io.squidalbum',
+      version: '0.2.14',
+      buildNumber: '47',
+      buildSignature: '',
+    );
+  });
+
   test('installer release asset name follows NSOAlbum branding', () {
     expect(windowsInstallerName('0.2.0'), 'NSOAlbum-0.2.0-Setup.exe');
   });
@@ -217,17 +228,21 @@ void main() {
       var mirrorRequests = 0;
       var githubRequests = 0;
       var proxyRequests = 0;
+      final userAgents = <String?>[];
       mirror.listen((request) async {
+        userAgents.add(request.headers.value(HttpHeaders.userAgentHeader));
         mirrorRequests++;
         request.response.statusCode = HttpStatus.serviceUnavailable;
         await request.response.close();
       });
       github.listen((request) async {
+        userAgents.add(request.headers.value(HttpHeaders.userAgentHeader));
         githubRequests++;
         request.response.statusCode = HttpStatus.serviceUnavailable;
         await request.response.close();
       });
       customProxy.listen((request) async {
+        userAgents.add(request.headers.value(HttpHeaders.userAgentHeader));
         proxyRequests++;
         request.response.headers.contentType = ContentType.json;
         request.response.write(
@@ -252,6 +267,7 @@ void main() {
       expect(mirrorRequests, 1);
       expect(githubRequests, 1);
       expect(proxyRequests, 1);
+      expect(userAgents, List.filled(3, 'Cypas-NSOAlbum/0.2.14'));
     },
   );
 
@@ -271,18 +287,29 @@ void main() {
     var mirrorRequests = 0;
     var githubRequests = 0;
     var proxyRequests = 0;
+    final userAgents = <String?>[];
+    PackageInfo.setMockInitialValues(
+      appName: 'NSOAlbum',
+      packageName: 'io.squidalbum',
+      version: '2.4.6',
+      buildNumber: '135',
+      buildSignature: '',
+    );
     mirror.listen((request) async {
+      userAgents.add(request.headers.value(HttpHeaders.userAgentHeader));
       mirrorRequests++;
       request.response.statusCode = HttpStatus.serviceUnavailable;
       await request.response.close();
     });
     github.listen((request) async {
+      userAgents.add(request.headers.value(HttpHeaders.userAgentHeader));
       githubRequests++;
       request.response.statusCode = HttpStatus.serviceUnavailable;
       await request.response.close();
     });
     final bytes = 'installer through custom proxy'.codeUnits;
     customProxy.listen((request) async {
+      userAgents.add(request.headers.value(HttpHeaders.userAgentHeader));
       proxyRequests++;
       request.response.add(bytes);
       await request.response.close();
@@ -310,6 +337,7 @@ void main() {
     expect(mirrorRequests, 1);
     expect(githubRequests, 1);
     expect(proxyRequests, 1);
+    expect(userAgents, List.filled(3, 'Cypas-NSOAlbum/2.4.6'));
   });
 
   test('automatic checks are limited to once in a 24 hour window', () {

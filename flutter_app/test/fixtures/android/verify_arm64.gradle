@@ -1,0 +1,248 @@
+import groovy.xml.XmlSlurper
+
+gradle.projectsEvaluated {
+    def root = gradle.rootProject
+    root.tasks.register("verifyAndroidWebViewOptimizationRules") {
+        doLast {
+            def webview = root.project(":flutter_inappwebview_android")
+            for (def mode in ["debug", "release"]) {
+                def rules = webview.android.buildTypes.getByName(mode).proguardFiles
+                println("WebView ${mode} rule files: ${rules*.name}")
+                // AGP appends its version to extracted default rule filenames.
+                if (!rules.any { it.name.startsWith("proguard-android-optimize.txt") } ||
+                    rules.any { it.name ==~ /proguard-android\.txt(-.*)?/ } ||
+                    rules.any { file -> file.exists() && file.readLines().any { it.trim() == "-dontoptimize" } }) {
+                    throw new GradleException("WebView ${mode} must use AGP-supported optimized default rules")
+                }
+            }
+            println("Verified WebView AGP optimized rules")
+        }
+    }
+    root.tasks.register("verifyAndroidReleaseApkPermissions") {
+        def app = root.project(":app")
+        dependsOn(app.tasks.getByName("assembleRelease"))
+        doLast {
+            def apks = app.layout.buildDirectory.dir("outputs/apk/release").get().asFileTree.matching {
+                include("*.apk")
+            }.files
+            if (apks.isEmpty()) throw new GradleException("Final Release APK is missing")
+            def executable = System.getProperty("os.name").toLowerCase().contains("windows") ? "aapt2.exe" : "aapt2"
+            def aapt = new File(app.android.sdkDirectory, "build-tools/${app.android.buildToolsVersion}/${executable}")
+            apks.each { apk ->
+                def dump = root.providers.exec {
+                    commandLine(aapt.absolutePath, "dump", "badging", apk.absolutePath)
+                }
+                def badging = new String(dump.standardOutput.asBytes.get(), java.nio.charset.StandardCharsets.UTF_8)
+                for (def required in ["INTERNET", "POST_NOTIFICATIONS", "REQUEST_INSTALL_PACKAGES", "MANAGE_EXTERNAL_STORAGE"]) {
+                    if (!badging.contains("uses-permission: name='android.permission.${required}'")) {
+                        throw new GradleException("Final Release APK is missing ${required}")
+                    }
+                }
+                for (def denied in ["FOREGROUND_SERVICE"]) {
+                    if (badging.contains("uses-permission: name='android.permission.${denied}'")) {
+                        throw new GradleException("Final Release APK must not request ${denied}")
+                    }
+                }
+                println("Verified final Release APK network and limited permissions")
+            }
+        }
+    }
+    root.tasks.register("verifyAndroidUpdatePolicy", JavaExec) {
+        def app = root.project(":app")
+        def production = app.tasks.getByName("compileDebugKotlin")
+        def regression = app.tasks.getByName("compileDebugUnitTestKotlin")
+        dependsOn(production, regression, "verifyAndroidUpdateJobLifecycle")
+        mainClass.set("io.github.cypas.nsoalbum.AndroidUpdatePolicyTest")
+        classpath = root.files(production.outputs.files, regression.outputs.files,
+            app.configurations.getByName("kotlinCompilerClasspath").resolve())
+    }
+    def jobLifecycleOutput = root.layout.buildDirectory.dir("update-job-lifecycle-test")
+    def jobLifecycleCompiler = root.tasks.register("compileAndroidUpdateJobLifecycle", JavaExec) {
+        def app = root.project(":app")
+        def compiler = app.configurations.getByName("kotlinCompilerClasspath")
+        def service = app.file("src/main/kotlin/io/github/cypas/nsoalbum/AndroidUpdateJobService.kt")
+        def fixtures = root.fileTree("../test/fixtures/android/update_job_lifecycle") {
+            include("*.kt")
+        }
+        inputs.file(service)
+        inputs.files(fixtures)
+        outputs.dir(jobLifecycleOutput)
+        mainClass.set("org.jetbrains.kotlin.cli.jvm.K2JVMCompiler")
+        classpath = compiler
+        doFirst {
+            jobLifecycleOutput.get().asFile.mkdirs()
+            args = ["-no-stdlib", "-no-reflect", "-classpath", compiler.asPath,
+                "-d", jobLifecycleOutput.get().asFile.absolutePath, service.absolutePath] +
+                fixtures.files.collect { it.absolutePath }.sort()
+        }
+    }
+    root.tasks.register("verifyAndroidUpdateJobLifecycle", JavaExec) {
+        def app = root.project(":app")
+        dependsOn(jobLifecycleCompiler)
+        mainClass.set("io.github.cypas.nsoalbum.AndroidUpdateJobServiceLifecycleTest")
+        classpath = root.files(jobLifecycleOutput,
+            app.configurations.getByName("kotlinCompilerClasspath").resolve())
+    }
+    root.tasks.register("verifyAndroidReleaseNetworkPermission") {
+        def app = root.project(":app")
+        def manifestTask = app.tasks.getByName("processReleaseMainManifest")
+        dependsOn(manifestTask)
+        doLast {
+            def manifests = manifestTask.outputs.files.asFileTree.matching {
+                include("**/AndroidManifest.xml")
+            }.files
+            if (manifests.isEmpty()) throw new GradleException("Release manifest is missing")
+            manifests.each { file ->
+                def manifest = new XmlSlurper(false, false).parse(file)
+                def permissions = manifest."uses-permission".collect {
+                    it.@"android:name".toString()
+                }
+                if (!permissions.contains("android.permission.INTERNET")) {
+                    throw new GradleException("Release must declare INTERNET for Nintendo/NXAPI/media requests")
+                }
+            }
+            println("Verified Release INTERNET permission")
+        }
+    }
+    root.tasks.register("verifyArm64BuildConfiguration") {
+        doLast {
+            def app = root.project(":app")
+            def filters = app.android.defaultConfig.ndk.abiFilters.toSet()
+            def core = root.project(":squid_album_core")
+            println("APK ABI filters: ${filters}")
+            if (filters != ["arm64-v8a"].toSet()) {
+                throw new GradleException("APK must package ARM64 only, found ${filters}")
+            }
+            for (def mode in ["Debug", "Profile", "Release"]) {
+                def cargo = core.tasks.getByName("cargokitCargoBuildSquid_album_core${mode}")
+                def platforms = cargo.targetPlatforms.toSet()
+                println("Rust ${mode} targets: ${platforms}")
+                if (platforms != ["android-arm64"].toSet()) {
+                    throw new GradleException("Rust ${mode} build must target ARM64 only, found ${platforms}")
+                }
+            }
+        }
+    }
+    root.tasks.register("verifyAndroidApplicationIdentity") {
+        def app = root.project(":app")
+        def manifestTask = app.tasks.getByName("processDebugMainManifest")
+        def kotlinTask = app.tasks.getByName("compileDebugKotlin")
+        dependsOn(manifestTask, kotlinTask)
+        doLast {
+            def expectedId = "io.github.cypas.nsoalbum"
+            if (app.android.namespace != expectedId) {
+                throw new GradleException("Android namespace must be ${expectedId}, found ${app.android.namespace}")
+            }
+            app.android.applicationVariants.each { variant ->
+                if (variant.applicationId != expectedId) {
+                    throw new GradleException("${variant.name} application ID must be ${expectedId}, found ${variant.applicationId}")
+                }
+            }
+            def manifests = manifestTask.outputs.files.asFileTree.matching {
+                include("**/AndroidManifest.xml")
+            }.files
+            if (manifests.isEmpty()) {
+                throw new GradleException("The merged Android launch manifest is missing")
+            }
+            manifests.each { file ->
+                def manifest = new XmlSlurper(false, false).parse(file)
+                if (manifest.@package.toString() != expectedId) {
+                    throw new GradleException("Merged manifest has a different application ID: ${manifest.@package}")
+                }
+                def launcher = manifest.application.activity.find { activity ->
+                    activity."intent-filter".any { filter ->
+                        filter.action.any { it.@"android:name".toString() == "android.intent.action.MAIN" } &&
+                            filter.category.any { it.@"android:name".toString() == "android.intent.category.LAUNCHER" }
+                    }
+                }
+                if (launcher.@"android:name".toString() != "${expectedId}.MainActivity") {
+                    throw new GradleException("Launcher does not resolve to ${expectedId}.MainActivity")
+                }
+            }
+            def entryPoints = kotlinTask.outputs.files.asFileTree.matching {
+                include("**/io/github/cypas/nsoalbum/MainActivity.class")
+            }.files
+            if (entryPoints.size() != 1) {
+                throw new GradleException("Expected exactly one compiled NSOAlbum MainActivity, found ${entryPoints.size()}")
+            }
+            println("Verified Android identity and compiled launcher: ${expectedId}")
+        }
+    }
+    root.tasks.register("verifyAndroidLocalizedBranding") {
+        def app = root.project(":app")
+        def resourceTask = app.tasks.getByName("processDebugResources")
+        dependsOn(resourceTask)
+        doLast {
+            def packages = resourceTask.outputs.files.asFileTree.matching {
+                include("**/*.ap_")
+            }.files
+            if (packages.size() != 1) {
+                throw new GradleException("Expected one linked Android resource package, found ${packages.size()}")
+            }
+            def executable = System.getProperty("os.name").toLowerCase().contains("windows") ? "aapt2.exe" : "aapt2"
+            def aapt = new File(app.android.sdkDirectory, "build-tools/${app.android.buildToolsVersion}/${executable}")
+            def dump = root.providers.exec {
+                commandLine(aapt.absolutePath, "dump", "badging", packages.first().absolutePath)
+            }
+            // AAPT emits UTF-8 even when Windows/JDK 17 defaults to GBK.
+            def badging = new String(dump.standardOutput.asBytes.get(), java.nio.charset.StandardCharsets.UTF_8)
+            for (def label in [
+                "application-label:'NSOAlbum'",
+                "application-label-zh:'鱿型相册'",
+                "application-label-zh-CN:'鱿型相册'",
+                "application-label-zh-HK:'鱿型相册'",
+                "application-label-zh-TW:'鱿型相册'"
+            ]) {
+                if (!badging.readLines().contains(label)) {
+                    throw new GradleException("Compiled APK resources are missing localized label: ${label}")
+                }
+            }
+            if (!badging.contains("application-icon-")) {
+                throw new GradleException("Compiled Android launcher icon is missing")
+            }
+            def resourceDump = root.providers.exec {
+                commandLine(aapt.absolutePath, "dump", "resources", packages.first().absolutePath)
+            }
+            def resourceLines = new String(resourceDump.standardOutput.asBytes.get(),
+                java.nio.charset.StandardCharsets.UTF_8).readLines()
+            def launcherLines = resourceLines.dropWhile {
+                !it.trim().endsWith(" mipmap/ic_launcher")
+            }.drop(1).takeWhile {
+                !it.trim().startsWith("resource ") && !it.trim().startsWith("type ")
+            }.findAll { !it.trim().isEmpty() }
+            if (launcherLines.size() != 5 ||
+                launcherLines.any { !it.trim().endsWith("ic_launcher.png type=PNG") }) {
+                throw new GradleException("Launcher must resolve to five transparent PNGs without an adaptive background: ${launcherLines}")
+            }
+            def expectedSizes = [mdpi: 48, hdpi: 72, xhdpi: 96, xxhdpi: 144, xxxhdpi: 192]
+            def archive = new java.util.zip.ZipFile(packages.first())
+            try {
+                launcherLines.each { line ->
+                    def match = line.trim() =~ /^\(([^)]+)\) \(file\) (\S+) type=PNG$/
+                    if (!match.matches() || !expectedSizes.containsKey(match[0][1])) {
+                        throw new GradleException("Unexpected launcher resource variant: ${line}")
+                    }
+                    def size = expectedSizes[match[0][1]]
+                    def entry = archive.getEntry(match[0][2])
+                    if (entry == null) throw new GradleException("Packaged launcher PNG is missing")
+                    archive.getInputStream(entry).withCloseable { stream ->
+                        def image = javax.imageio.ImageIO.read(stream)
+                        if (image == null || image.width != size || image.height != size ||
+                            !image.colorModel.hasAlpha()) {
+                            throw new GradleException("Launcher PNG must retain its dimensions and alpha: ${line}")
+                        }
+                        for (def corner in [[0, 0], [size - 1, 0], [0, size - 1], [size - 1, size - 1]]) {
+                            if ((image.getRGB(corner[0], corner[1]) >>> 24) != 0) {
+                                throw new GradleException("Launcher PNG has an opaque corner: ${line}")
+                            }
+                        }
+                    }
+                }
+            } finally {
+                archive.close()
+            }
+            println("Verified compiled default/Chinese application labels and launcher icon")
+            println("Verified five packaged PNG launcher icons with transparent corners and no adaptive background")
+        }
+    }
+}

@@ -40,6 +40,8 @@ pub struct SyncAttemptSummary {
     pub total_found: usize,
     pub downloaded: usize,
     pub duplicates: usize,
+    #[serde(default)]
+    pub skipped_remote: Option<usize>,
     pub failed: usize,
 }
 
@@ -108,11 +110,33 @@ impl SyncPolicy {
         now: DateTime<Utc>,
     ) -> SyncScheduleStatus {
         let interval_minutes = self.effective_interval_minutes(runtime.last_new_media_at, now);
-        let next_sync_at = interval_minutes.map(|minutes| {
-            let candidate = runtime.last_successful_sync_at.unwrap_or(now)
-                + Duration::minutes(i64::from(minutes));
-            candidate.max(now)
-        });
+        let latest_status = runtime
+            .latest_attempt
+            .as_ref()
+            .map(|attempt| attempt.status.as_str());
+        let next_sync_at = if interval_minutes.is_none()
+            || matches!(latest_status, Some("authentication_failure"))
+        {
+            None
+        } else if let Some(attempt) = runtime
+            .latest_attempt
+            .as_ref()
+            .filter(|attempt| attempt.status == "rate_limited")
+        {
+            Some((attempt.attempted_at + Duration::minutes(1)).max(now))
+        } else {
+            interval_minutes.map(|minutes| {
+                let interval = Duration::minutes(i64::from(minutes));
+                let anchor = runtime
+                    .latest_attempt
+                    .as_ref()
+                    .filter(|attempt| matches!(attempt.status.as_str(), "failure" | "cancelled"))
+                    .map(|attempt| attempt.attempted_at)
+                    .or(runtime.last_successful_sync_at)
+                    .unwrap_or(now);
+                (anchor + interval).max(now)
+            })
+        };
         SyncScheduleStatus {
             last_successful_sync_at: runtime.last_successful_sync_at,
             last_new_media_at: runtime.last_new_media_at,
@@ -126,6 +150,8 @@ impl SyncPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub proxy_url: Option<String>,
+    #[serde(default)]
+    pub doh_enabled: bool,
     pub library_path: String,
     pub theme: String,
     #[serde(default = "default_language")]
@@ -140,6 +166,12 @@ pub struct AppSettings {
     pub auto_play_video: bool,
     #[serde(default = "default_true")]
     pub auto_sync_on_launch: bool,
+    #[serde(default = "default_true")]
+    pub notify_on_auto_sync: bool,
+    #[serde(default = "default_true")]
+    pub show_splatoon_schedule: bool,
+    #[serde(default)]
+    pub show_splatoon_friend_activity: bool,
     #[serde(default = "default_close_behavior")]
     pub close_behavior: String,
     #[serde(default)]
@@ -196,6 +228,26 @@ mod tests {
     }
 
     #[test]
+    fn app_settings_default_feature_flags_are_enabled() {
+        let settings: AppSettings = serde_json::from_str(
+            r#"{
+              "proxy_url":null,"library_path":"library","theme":"ocean",
+              "language":"zh","gallery_columns":4,"gallery_rows":3,
+              "show_note_preview":true,"show_game_tag":true,
+              "compact_tag_display":true,"auto_play_video":false,
+              "auto_sync_on_launch":true,"close_behavior":"ask",
+              "custom_font_paths":[],
+              "sync_policy":{"enabled":false,"active_interval_minutes":30,"sleep_after_hours":24}
+            }"#,
+        )
+        .unwrap();
+        assert!(settings.notify_on_auto_sync);
+        assert!(settings.show_splatoon_schedule);
+        assert!(!settings.show_splatoon_friend_activity);
+        assert!(!settings.doh_enabled);
+    }
+
+    #[test]
     fn schedule_uses_remaining_time_after_restart() {
         let policy = SyncPolicy {
             enabled: true,
@@ -211,6 +263,178 @@ mod tests {
         let status = policy.schedule_status(&runtime, now);
         assert_eq!(status.interval_minutes, Some(30));
         assert_eq!(status.next_sync_at, Some(now + Duration::minutes(26)));
+    }
+
+    #[test]
+    fn sync_attempt_keeps_remote_items_skipped_separate_from_duplicates() {
+        let library = tempfile::tempdir().unwrap();
+        let api = crate::api::CoreApi::open(library.path()).unwrap();
+        let state = api
+            .record_sync_attempt_with_skipped_remote("account-a", "success", 9, 0, 0, Some(5), 4)
+            .unwrap();
+        let attempt = state.latest_attempt.unwrap();
+        assert_eq!(attempt.downloaded, 0);
+        assert_eq!(attempt.duplicates, 0);
+        assert_eq!(attempt.skipped_remote, Some(5));
+        assert_eq!(attempt.failed, 4);
+    }
+
+    #[test]
+    fn failed_attempt_anchors_retry_to_attempt_time_when_success_due_is_past() {
+        let policy = SyncPolicy {
+            enabled: true,
+            active_interval_minutes: 30,
+            sleep_after_hours: 24,
+        };
+        let now = Utc::now();
+        let runtime = SyncRuntimeState {
+            last_successful_sync_at: Some(now - Duration::hours(2)),
+            last_new_media_at: Some(now),
+            latest_attempt: Some(SyncAttemptSummary {
+                attempted_at: now - Duration::minutes(5),
+                status: "failure".into(),
+                total_found: 0,
+                downloaded: 0,
+                duplicates: 0,
+                skipped_remote: None,
+                failed: 0,
+            }),
+        };
+
+        let status = policy.schedule_status(&runtime, now);
+
+        assert_eq!(status.next_sync_at, Some(now + Duration::minutes(25)));
+        assert_eq!(
+            status.last_successful_sync_at,
+            runtime.last_successful_sync_at
+        );
+    }
+
+    #[test]
+    fn cancelled_attempt_anchors_retry_without_changing_success_history() {
+        let policy = SyncPolicy {
+            enabled: true,
+            active_interval_minutes: 45,
+            sleep_after_hours: 24,
+        };
+        let now = Utc::now();
+        let runtime = SyncRuntimeState {
+            last_successful_sync_at: Some(now - Duration::hours(3)),
+            last_new_media_at: Some(now),
+            latest_attempt: Some(SyncAttemptSummary {
+                attempted_at: now - Duration::minutes(10),
+                status: "cancelled".into(),
+                total_found: 3,
+                downloaded: 1,
+                duplicates: 0,
+                skipped_remote: None,
+                failed: 0,
+            }),
+        };
+
+        let status = policy.schedule_status(&runtime, now);
+
+        assert_eq!(status.next_sync_at, Some(now + Duration::minutes(35)));
+        assert_eq!(
+            status.last_successful_sync_at,
+            runtime.last_successful_sync_at
+        );
+    }
+
+    #[test]
+    fn first_failed_attempt_anchors_retry_without_success_history() {
+        let policy = SyncPolicy {
+            enabled: true,
+            active_interval_minutes: 30,
+            sleep_after_hours: 24,
+        };
+        let now = Utc::now();
+        let runtime = SyncRuntimeState {
+            last_successful_sync_at: None,
+            last_new_media_at: None,
+            latest_attempt: Some(SyncAttemptSummary {
+                attempted_at: now - Duration::minutes(5),
+                status: "failure".into(),
+                total_found: 0,
+                downloaded: 0,
+                duplicates: 0,
+                skipped_remote: None,
+                failed: 0,
+            }),
+        };
+
+        assert_eq!(
+            policy.schedule_status(&runtime, now).next_sync_at,
+            Some(now + Duration::minutes(25))
+        );
+    }
+
+    #[test]
+    fn rate_limit_retries_one_minute_after_attempt() {
+        let policy = SyncPolicy {
+            enabled: true,
+            active_interval_minutes: 30,
+            sleep_after_hours: 24,
+        };
+        let now = Utc::now();
+        let attempted_at = now - Duration::seconds(20);
+        let runtime = SyncRuntimeState {
+            last_successful_sync_at: Some(now - Duration::minutes(10)),
+            last_new_media_at: Some(now),
+            latest_attempt: Some(SyncAttemptSummary {
+                attempted_at,
+                status: "rate_limited".into(),
+                total_found: 0,
+                downloaded: 0,
+                duplicates: 0,
+                skipped_remote: None,
+                failed: 0,
+            }),
+        };
+
+        assert_eq!(
+            policy.schedule_status(&runtime, now).next_sync_at,
+            Some(attempted_at + Duration::minutes(1))
+        );
+    }
+
+    #[test]
+    fn authentication_failure_pauses_until_a_later_attempt_clears_status() {
+        let policy = SyncPolicy {
+            enabled: true,
+            active_interval_minutes: 30,
+            sleep_after_hours: 24,
+        };
+        let now = Utc::now();
+        let mut runtime = SyncRuntimeState {
+            last_successful_sync_at: Some(now - Duration::minutes(10)),
+            last_new_media_at: Some(now),
+            latest_attempt: Some(SyncAttemptSummary {
+                attempted_at: now,
+                status: "authentication_failure".into(),
+                total_found: 0,
+                downloaded: 0,
+                duplicates: 0,
+                skipped_remote: None,
+                failed: 0,
+            }),
+        };
+
+        assert_eq!(policy.schedule_status(&runtime, now).next_sync_at, None);
+
+        runtime.latest_attempt = Some(SyncAttemptSummary {
+            attempted_at: now + Duration::minutes(1),
+            status: "success".into(),
+            total_found: 0,
+            downloaded: 0,
+            duplicates: 0,
+            skipped_remote: None,
+            failed: 0,
+        });
+        assert!(policy
+            .schedule_status(&runtime, now + Duration::minutes(1))
+            .next_sync_at
+            .is_some());
     }
 
     #[test]
@@ -237,6 +461,7 @@ mod tests {
         assert!(settings.auto_sync_on_launch);
         assert_eq!(settings.close_behavior, "ask");
         assert!(settings.custom_font_paths.is_empty());
+        assert!(!settings.doh_enabled);
     }
 
     #[test]

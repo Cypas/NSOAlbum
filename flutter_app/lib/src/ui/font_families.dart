@@ -10,6 +10,7 @@ String _language = 'zh';
 List<String> _customFamilies = const [];
 final appFontRevision = ValueNotifier<int>(0);
 final _loadedFamilies = <String, Future<void>>{};
+final _previewFamiliesByPath = <String, String>{};
 
 String get appFontFamily => _customFamilies.isEmpty
     ? (_language == 'zh' ? 'DFPT_ZY9' : 'BlitzMain')
@@ -17,6 +18,17 @@ String get appFontFamily => _customFamilies.isEmpty
 List<String> get appFontFallback => _customFamilies.isEmpty
     ? builtInFontFallbackForLanguage(_language)
     : List<String>.unmodifiable(_customFamilies.skip(1));
+
+// The bundled primary Chinese UI font does not contain every glyph in the
+// product name, so fallback would mix font metrics within “鱿型相册”. Keep
+// the brand title on one complete bundled CJK family for a stable cap height.
+String get appBrandFontFamily =>
+    _customFamilies.isEmpty && _language == 'zh' ? 'DFP_GBZY9' : appFontFamily;
+
+List<String> get appBrandFontFallback =>
+    _customFamilies.isEmpty && _language == 'zh'
+    ? const ['DFPT_ZY9', 'BlitzMain']
+    : appFontFallback;
 
 List<String> builtInFontFallbackForLanguage(String language) => language == 'zh'
     ? const ['DFP_GBZY9', 'BlitzMain']
@@ -47,6 +59,10 @@ class FontLoadReport {
 Future<void> validateCustomFontFiles(List<String> paths) async {
   await prepareCustomFontFamilies(paths);
 }
+
+Future<String> loadCustomFontFamilyForPreview(String path) => _loadFont(path);
+
+String? customFontFamilyForPath(String path) => _previewFamiliesByPath[path];
 
 /// Registers fonts without changing the visible chain. Used before persistence
 /// so failed loads or settings writes cannot replace the current typography.
@@ -85,6 +101,7 @@ Future<String> _loadFont(String path) async {
   final bytes = await file.readAsBytes();
   // Only the runtime family uses a content ID. Stored files keep original names.
   final family = 'NSOAlbumCustomFont_${sha256.convert(bytes)}';
+  _previewFamiliesByPath[path] = family;
   final registration = _loadedFamilies.putIfAbsent(family, () {
     final loader = FontLoader(family);
     loader.addFont(Future.value(ByteData.sublistView(bytes)));

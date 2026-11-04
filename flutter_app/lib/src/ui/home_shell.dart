@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show OverflowBoxFit;
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -16,17 +17,38 @@ import '../rust/models.dart';
 import '../rust/settings.dart';
 import '../search/search_normalizer.dart';
 import '../state/settings_controller.dart';
+import '../state/gallery_page_controller.dart';
+import '../platform/gallery_notification_navigation.dart';
+import '../state/transfer_controller.dart';
 import '../state/sync_controller.dart';
 import '../startup/startup_diagnostics.dart';
 import 'media_metadata_editor.dart';
 import 'media_viewer.dart';
 import 'app_image_viewer.dart';
+import 'image_thumbnail.dart';
+import 'gallery_perf.dart';
+import 'gallery_drag_loading.dart';
+import 'gallery_deferred_card.dart';
+import 'gallery_return_layout.dart';
+import 'scroll_position_indicator.dart';
 import 'video_merge_page.dart';
 import 'video_thumbnail.dart';
+import 'video_preview_cache.dart';
 import 'active_page_host.dart';
+import 'scroll_to_top_button.dart';
+import 'desktop_fluid_scroll_physics.dart';
 import 'font_families.dart';
+import 'gallery_date_groups.dart';
+import 'game_filter_order.dart';
+import 'display_time.dart';
+import 'account_tools/account_tools_expander.dart';
+import 'account_tools/account_tool_errors.dart';
 import 'nxapi_disclosure_card.dart';
 import 'macos_update_dialog.dart';
+import '../platform/windows_system_fonts.dart';
+import 'album_media_counts.dart';
+import 'device_sync/applied_media_prefetch.dart';
+import 'device_sync/multi_device_sync_page.dart';
 
 Future<void> showLatestReleaseUpdate(
   BuildContext context, {
@@ -332,6 +354,7 @@ class HomeShell extends StatefulWidget {
     this.latestReleaseVersion,
     this.updateStatus,
     this.updateStatusError,
+    this.notificationNavigation,
   });
 
   final AppBackend backend;
@@ -347,9 +370,22 @@ class HomeShell extends StatefulWidget {
   final String? latestReleaseVersion;
   final UpdateStatusKind? updateStatus;
   final Object? updateStatusError;
+  final GalleryNotificationNavigation? notificationNavigation;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
+}
+
+class NintendoAccountSnapshot {
+  const NintendoAccountSnapshot({
+    required this.accounts,
+    required this.selectedAccountId,
+    this.error,
+  });
+
+  final List<NintendoAccountProfile> accounts;
+  final String? selectedAccountId;
+  final Object? error;
 }
 
 class _HomeShellState extends State<HomeShell> {
@@ -362,17 +398,62 @@ class _HomeShellState extends State<HomeShell> {
   late final bool ownsSyncController;
   SyncState? _lastSyncState;
   String? _syncFailureMessage;
+  late Future<NintendoAccountSnapshot> _accountSnapshot;
 
   @override
   void initState() {
     super.initState();
+    widget.notificationNavigation?.addListener(_openGalleryFromNotification);
     ownsSyncController = widget.syncController == null;
     sync = widget.syncController ?? SyncController(widget.backend);
+    GalleryPerf.instance.background(syncBusy: sync.running, importBusy: false);
     _lastSyncState = sync.state;
     sync.addListener(_handleSyncStateChanged);
+    _accountSnapshot = _readAccountSnapshot();
+  }
+
+  Future<NintendoAccountSnapshot> _readAccountSnapshot() async {
+    try {
+      final accounts = await widget.backend.listNintendoAccounts();
+      final selected = await widget.backend.selectedNintendoAccountId;
+      return NintendoAccountSnapshot(
+        accounts: List.unmodifiable(accounts),
+        selectedAccountId: selected,
+      );
+    } catch (error, stackTrace) {
+      await widget.backend.logError(
+        'Failed to preload Nintendo accounts',
+        error,
+        stackTrace,
+      );
+      return NintendoAccountSnapshot(
+        accounts: const [],
+        selectedAccountId: null,
+        error: error,
+      );
+    }
+  }
+
+  void _reloadAccountSnapshot() {
+    if (!mounted) return;
+    final pending = _readAccountSnapshot();
+    setState(() {
+      _accountSnapshot = pending;
+    });
+  }
+
+  void _openGalleryFromNotification() {
+    if (!mounted) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    libraryKey.currentState?._reload();
+    setState(() {
+      openedAlbum = null;
+      index = 0;
+    });
   }
 
   void _handleSyncStateChanged() {
+    GalleryPerf.instance.background(syncBusy: sync.running);
     final next = sync.state;
     if (next == SyncState.running && mounted) {
       setState(() => _syncFailureMessage = null);
@@ -384,10 +465,11 @@ class _HomeShellState extends State<HomeShell> {
     if (next == SyncState.failed && _lastSyncState != SyncState.failed) {
       final failure = sync.error;
       if (failure != null && mounted) {
+        final message = nintendoConditionText(context.l10n, failure) ?? failure;
         setState(
           () => _syncFailureMessage = context.l10n.select(
-            zh: 'Nintendo 同步失败：$failure',
-            en: 'Nintendo synchronization failed: $failure',
+            zh: 'Nintendo 同步失败：$message',
+            en: 'Nintendo synchronization failed: $message',
           ),
         );
       }
@@ -420,6 +502,7 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   void dispose() {
+    widget.notificationNavigation?.removeListener(_openGalleryFromNotification);
     sync.removeListener(_handleSyncStateChanged);
     if (ownsSyncController) sync.dispose();
     super.dispose();
@@ -493,10 +576,18 @@ class _HomeShellState extends State<HomeShell> {
         backend: widget.backend,
         sync: sync,
         settings: widget.settings,
+        accountSnapshot: _accountSnapshot,
         enableVideoFeatures: widget.enableVideoFeatures,
         enableMtpDetection: widget.enableMtpDetection,
         onImportComplete: () => libraryKey.currentState?._reload(),
-        onNintendoAccountChanged: widget.onNintendoAccountChanged,
+        onDeviceSyncChanged: () async {
+          libraryKey.currentState?._reload();
+          if (mounted) setState(() => albumPageRevision++);
+        },
+        onNintendoAccountChanged: () async {
+          _reloadAccountSnapshot();
+          await widget.onNintendoAccountChanged?.call();
+        },
       ),
       SettingsPage(
         controller: widget.settings,
@@ -776,7 +867,19 @@ class _PageFrame extends StatelessWidget {
     required this.child,
     this.leading,
     this.action,
+    this.centerAction,
     this.fixedHeader = false,
+    this.compactGalleryHeader = false,
+    this.controller,
+    this.physics,
+    this.hideTitle = false,
+    this.bodySliver,
+    this.onPointerMove,
+    this.onPointerUp,
+    this.scrollTotalCount,
+    this.scrollLoadedCount,
+    this.scrollCounting = false,
+    this.galleryLoadExperiment = false,
   });
 
   final String title;
@@ -784,17 +887,26 @@ class _PageFrame extends StatelessWidget {
   final Widget child;
   final Widget? leading;
   final Widget? action;
+  final Widget? centerAction;
   final bool fixedHeader;
+  final bool compactGalleryHeader;
+  final ScrollController? controller;
+  final ScrollPhysics? physics;
+  final bool hideTitle;
+  final Widget? bodySliver;
+  final PointerMoveEventListener? onPointerMove;
+  final PointerUpEventListener? onPointerUp;
+  final int? scrollTotalCount;
+  final int? scrollLoadedCount;
+  final bool scrollCounting;
+  final bool galleryLoadExperiment;
 
-  Widget _header(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(24, 6, 24, 4),
-    child: Row(
-      key: const Key('page-header'),
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        if (leading != null) ...[
-          Padding(padding: const EdgeInsets.only(right: 10), child: leading),
-        ],
+  Widget _titleContent(BuildContext context) => Row(
+    children: [
+      if (leading != null) ...[
+        Padding(padding: const EdgeInsets.only(right: 10), child: leading),
+      ],
+      if (!hideTitle)
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -822,41 +934,213 @@ class _PageFrame extends StatelessWidget {
             ],
           ),
         ),
-        if (action != null)
-          ConstrainedBox(
-            constraints: const BoxConstraints(
-              minWidth: 120,
-              maxWidth: 620,
-              minHeight: 40,
-              maxHeight: 40,
-            ),
-            child: ClipRect(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                reverse: true,
-                child: Align(alignment: Alignment.centerRight, child: action),
+    ],
+  );
+
+  Widget _actionContent() {
+    final value = action;
+    if (value == null) return const SizedBox.shrink();
+    return ConstrainedBox(
+      constraints: const BoxConstraints(
+        minWidth: 120,
+        maxWidth: 620,
+        minHeight: 40,
+        maxHeight: 40,
+      ),
+      child: ClipRect(
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          reverse: true,
+          child: Align(alignment: Alignment.centerRight, child: value),
+        ),
+      ),
+    );
+  }
+
+  /// The compact wide header keeps 64dp for title-only pages. Pages with an
+  /// album subtitle need the measured line heights so a fractional font metric
+  /// cannot overflow the pinned header by a pixel.
+  double _compactWideExtent(BuildContext context) {
+    final theme = Theme.of(context);
+    final scaler = MediaQuery.textScalerOf(context);
+    double lineHeight(String text, TextStyle? style) {
+      final painter = TextPainter(
+        text: TextSpan(text: text, style: style),
+        textDirection: TextDirection.ltr,
+        textScaler: scaler,
+        maxLines: 1,
+      )..layout();
+      return painter.height;
+    }
+
+    var measured =
+        4 +
+        lineHeight(
+          title,
+          theme.textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w700),
+        );
+    if (subtitle != null && subtitle!.isNotEmpty) {
+      measured +=
+          4 +
+          lineHeight(
+            subtitle!,
+            DefaultTextStyle.of(context).style
+                .copyWith(color: theme.colorScheme.onSurfaceVariant),
+          );
+    }
+    final rounded = measured.ceilToDouble();
+    return rounded < 64 ? 64 : rounded;
+  }
+
+  Widget _header(BuildContext context) => Padding(
+    padding: compactGalleryHeader
+        ? const EdgeInsets.fromLTRB(24, 2, 24, 2)
+        : const EdgeInsets.fromLTRB(24, 6, 24, 4),
+    child: LayoutBuilder(
+      builder: (context, constraints) {
+        final centered = centerAction;
+        if (centered == null) {
+          return Row(
+            key: const Key('page-header'),
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              if (leading != null || !hideTitle)
+                Expanded(child: _titleContent(context)),
+              if (action != null) _actionContent(),
+            ],
+          );
+        }
+        if (constraints.maxWidth >= 960) {
+          return Row(
+            key: const Key('page-header'),
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(child: _titleContent(context)),
+              const SizedBox(width: 12),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 460),
+                child: centered,
               ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: _actionContent(),
+                ),
+              ),
+            ],
+          );
+        }
+        return Column(
+          key: const Key('page-header'),
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(child: _titleContent(context)),
+                if (action != null) _actionContent(),
+              ],
             ),
-          ),
-      ],
+            const SizedBox(height: 4),
+            Align(alignment: Alignment.center, child: centered),
+          ],
+        );
+      },
     ),
   );
 
   @override
   Widget build(BuildContext context) {
-    final content = CustomScrollView(
-      slivers: [
-        SliverPersistentHeader(
-          pinned: fixedHeader,
-          delegate: _PageHeaderDelegate(child: _header(context), extent: 72),
-        ),
-        SliverPadding(
-          padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
-          sliver: SliverToBoxAdapter(child: child),
-        ),
-      ],
+    return SafeArea(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final wideGalleryHeader = constraints.maxWidth - 48 >= 960;
+          final extent = compactGalleryHeader
+              ? wideGalleryHeader
+                    ? _compactWideExtent(context)
+                    : 112.0
+              : 72.0;
+          final content = CustomScrollView(
+            controller: controller,
+            physics: physics,
+            slivers: [
+              if (fixedHeader)
+                SliverPersistentHeader(
+                  pinned: true,
+                  delegate: _PageHeaderDelegate(
+                    child: _header(context),
+                    extent: extent,
+                  ),
+                )
+              else
+                SliverToBoxAdapter(
+                  child: Material(
+                    color: Theme.of(context).colorScheme.surface,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(minHeight: extent),
+                      child: _header(context),
+                    ),
+                  ),
+                ),
+              SliverPadding(
+                padding: EdgeInsets.fromLTRB(
+                  24,
+                  0,
+                  24,
+                  bodySliver == null ? 32 : 0,
+                ),
+                sliver: SliverToBoxAdapter(child: child),
+              ),
+              if (bodySliver != null)
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
+                  sliver: bodySliver,
+                ),
+            ],
+          );
+          return Listener(
+            onPointerMove: onPointerMove,
+            onPointerUp: onPointerUp,
+            child: Stack(
+              children: [
+                if (galleryLoadExperiment && controller != null)
+                  DesktopSmoothScroll(
+                    controller: controller!,
+                    child: GalleryDragLoadRegion(
+                      controller: controller!,
+                      child: content,
+                    ),
+                  )
+                else
+                  content,
+                if (controller != null && scrollLoadedCount != null)
+                  ScrollPositionIndicator(
+                    controller: controller!,
+                    loadedCount: scrollLoadedCount!,
+                    totalCount: scrollTotalCount,
+                    counting: scrollCounting,
+                    right: 28,
+                    bottom: 72,
+                  ),
+                if (controller != null)
+                  Positioned(
+                    right: 28,
+                    bottom: 24,
+                    child: ScrollToTopButton(
+                      controller: controller!,
+                      tooltip: context.l10n.select(
+                        zh: '回到顶部',
+                        en: 'Back to top',
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          );
+        },
+      ),
     );
-    return SafeArea(child: content);
   }
 }
 
@@ -880,7 +1164,11 @@ class _PageHeaderDelegate extends SliverPersistentHeaderDelegate {
   ) => Material(
     color: Theme.of(context).colorScheme.surface,
     elevation: overlapsContent ? 2 : 0,
-    child: SizedBox(height: extent, child: child),
+    child: SizedBox(
+      key: const Key('page-header-extent'),
+      height: extent,
+      child: child,
+    ),
   );
 
   @override
@@ -1081,6 +1369,455 @@ class _BatchActionLabel extends StatelessWidget {
   );
 }
 
+class _DesktopFilterDraft {
+  const _DesktopFilterDraft({
+    required this.kind,
+    required this.favoritesOnly,
+    required this.newestFirst,
+    required this.capturedRange,
+    required this.capturedOnThisDay,
+    required this.groupByImportedDate,
+    required this.selectedGameTags,
+  });
+
+  final GalleryKindFilter kind;
+  final bool favoritesOnly;
+  final bool newestFirst;
+  final DateTimeRange? capturedRange;
+  final CapturedOnThisDay? capturedOnThisDay;
+  final bool groupByImportedDate;
+  final Set<String> selectedGameTags;
+}
+
+class _DesktopLibraryFilterDialog extends StatefulWidget {
+  const _DesktopLibraryFilterDialog({
+    required this.gameTags,
+    required this.kind,
+    required this.favoritesOnly,
+    required this.newestFirst,
+    required this.capturedRange,
+    required this.capturedOnThisDay,
+    required this.groupByImportedDate,
+    required this.selectedGameTags,
+  });
+
+  final Future<List<GameTagSummary>> gameTags;
+  final GalleryKindFilter kind;
+  final bool favoritesOnly;
+  final bool newestFirst;
+  final DateTimeRange? capturedRange;
+  final CapturedOnThisDay? capturedOnThisDay;
+  final bool groupByImportedDate;
+  final Set<String> selectedGameTags;
+
+  @override
+  State<_DesktopLibraryFilterDialog> createState() =>
+      _DesktopLibraryFilterDialogState();
+}
+
+class _DesktopLibraryFilterDialogState
+    extends State<_DesktopLibraryFilterDialog> {
+  late GalleryKindFilter kind = widget.kind;
+  late bool favoritesOnly = widget.favoritesOnly;
+  late bool newestFirst = widget.newestFirst;
+  late DateTimeRange? capturedRange = widget.capturedRange;
+  late CapturedOnThisDay? capturedOnThisDay = widget.capturedOnThisDay;
+  late bool groupByImportedDate = widget.groupByImportedDate;
+  late final Set<String> selectedGameTags = {...widget.selectedGameTags};
+  final TextEditingController gameSearch = TextEditingController();
+  final ScrollController filterScroll = ScrollController();
+  final ScrollController gameScroll = ScrollController();
+  String gameQuery = '';
+  bool expanded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    gameSearch.addListener(_onGameSearchChanged);
+  }
+
+  @override
+  void dispose() {
+    gameSearch
+      ..removeListener(_onGameSearchChanged)
+      ..dispose();
+    filterScroll.dispose();
+    gameScroll.dispose();
+    super.dispose();
+  }
+
+  void _onGameSearchChanged() {
+    final value = gameSearch.value;
+    if (value.composing.isValid && !value.composing.isCollapsed) return;
+    if (gameQuery != value.text) {
+      gameQuery = value.text;
+      if (gameScroll.hasClients) gameScroll.jumpTo(0);
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _chooseDate() async {
+    final now = DateTime.now();
+    final selection = await showDialog<_CreationDateSelection>(
+      context: context,
+      builder: (context) => _CreationDateRangeDialog(
+        firstDate: DateTime(2000),
+        lastDate: DateTime(now.year + 1, 12, 31),
+        initialRange: capturedRange,
+      ),
+    );
+    if (!mounted || selection == null) return;
+    setState(() {
+      capturedRange = selection.range;
+      capturedOnThisDay = selection.anniversary;
+    });
+  }
+
+  List<GameTagSummary> _filteredGames(List<GameTagSummary> games) {
+    final value = gameSearch.value;
+    final composing = value.composing.isValid && !value.composing.isCollapsed;
+    final term = composing ? '' : value.text.trim();
+    final filtered = term.isEmpty
+        ? games
+        : games
+              .where(
+                (game) =>
+                    selectedGameTags.contains(game.name) ||
+                    normalizedTextContains(game.name, term),
+              )
+              .toList(growable: false);
+    return filtered;
+  }
+
+  List<GameTagSummary> _visibleGames(List<GameTagSummary> values) {
+    if (expanded || values.length <= 8) {
+      return selectedGameTagsFirst(values, selectedGameTags);
+    }
+    final visible = values.take(8).toList();
+    for (final game in values) {
+      if (selectedGameTags.contains(game.name) &&
+          !visible.any((item) => item.name == game.name)) {
+        visible.add(game);
+      }
+    }
+    return selectedGameTagsFirst(visible, selectedGameTags);
+  }
+
+  void _toggleGames() {
+    final collapsing = expanded;
+    if (gameScroll.hasClients) gameScroll.jumpTo(0);
+    setState(() => expanded = !expanded);
+    if (!collapsing) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || expanded || !filterScroll.hasClients) return;
+      unawaited(
+        filterScroll.animateTo(
+          0,
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+        ),
+      );
+    });
+  }
+
+  void _apply() {
+    Navigator.pop(
+      context,
+      _DesktopFilterDraft(
+        kind: kind,
+        favoritesOnly: favoritesOnly,
+        newestFirst: newestFirst,
+        capturedRange: capturedRange,
+        capturedOnThisDay: capturedOnThisDay,
+        groupByImportedDate: groupByImportedDate,
+        selectedGameTags: {...selectedGameTags},
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => ScrollConfiguration(
+    behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+    child: ScrollbarTheme(
+      data: ScrollbarTheme.of(context)
+          .copyWith(crossAxisMargin: 0, mainAxisMargin: 4),
+      child: AlertDialog(
+        key: const Key('desktop-library-filter-dialog'),
+        title: Row(
+          children: [
+            Expanded(
+              child: Text(
+                context.l10n.select(zh: '筛选图库', en: 'Filter library'),
+              ),
+            ),
+            TextButton(
+              key: const Key('desktop-filter-clear'),
+              onPressed: () => setState(() {
+                kind = GalleryKindFilter.all;
+                favoritesOnly = false;
+                capturedRange = null;
+                capturedOnThisDay = null;
+                groupByImportedDate = false;
+                selectedGameTags.clear();
+              }),
+              child: Text(context.l10n.select(zh: '清除筛选', en: 'Clear filters')),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 620,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: (MediaQuery.sizeOf(context).height - 190)
+                  .clamp(240.0, 650.0)
+                  .toDouble(),
+            ),
+            child: Scrollbar(
+              key: const Key('desktop-filter-scrollbar'),
+              controller: filterScroll,
+              thumbVisibility: true,
+              thickness: 6,
+              child: SingleChildScrollView(
+                key: const Key('desktop-filter-scroll'),
+                controller: filterScroll,
+                primary: false,
+                padding: const EdgeInsets.only(right: 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            context.l10n.select(
+                              zh: '游戏标签（可多选）',
+                              en: 'Game tags (multi-select)',
+                            ),
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                        ),
+                        if (selectedGameTags.isNotEmpty)
+                          Text(
+                            context.l10n.select(
+                              zh: '已选 ${selectedGameTags.length}',
+                              en: '${selectedGameTags.length} selected',
+                            ),
+                            style: Theme.of(context).textTheme.labelMedium,
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      key: const Key('desktop-filter-game-search'),
+                      controller: gameSearch,
+                      decoration: InputDecoration(
+                        isDense: true,
+                        prefixIcon: const Icon(Icons.search_rounded),
+                        hintText: context.l10n.select(
+                          zh: '搜索游戏标签',
+                          en: 'Search game tags',
+                        ),
+                        border: const OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    FutureBuilder<List<GameTagSummary>>(
+                      future: widget.gameTags,
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState != ConnectionState.done) {
+                          return const LinearProgressIndicator();
+                        }
+                        if (snapshot.hasError ||
+                            snapshot.data?.isEmpty != false) {
+                          return Text(
+                            context.l10n.select(
+                              zh: '暂无可用游戏标签',
+                              en: 'No game tags available',
+                            ),
+                          );
+                        }
+                        final filteredGames = _filteredGames(snapshot.data!);
+                        final games = _visibleGames(filteredGames);
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Scrollbar(
+                              key: const Key('desktop-filter-game-scrollbar'),
+                              controller: gameScroll,
+                              thumbVisibility: true,
+                              thickness: 6,
+                              child: ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  maxHeight: expanded
+                                      ? (MediaQuery.sizeOf(context).height * .5)
+                                            .clamp(280.0, 420.0)
+                                            .toDouble()
+                                      : 220,
+                                ),
+                                child: ListView.builder(
+                                  key: const Key('desktop-filter-game-list'),
+                                  controller: gameScroll,
+                                  primary: false,
+                                  padding: const EdgeInsets.only(right: 16),
+                                  shrinkWrap: true,
+                                  itemCount: games.length,
+                                  itemBuilder: (context, index) {
+                                    final game = games[index];
+                                    final total =
+                                        game.imageCount + game.videoCount;
+                                    return CheckboxListTile(
+                                      key: ValueKey(
+                                        'desktop-filter-game-${game.name}',
+                                      ),
+                                      dense: true,
+                                      contentPadding: EdgeInsets.zero,
+                                      value: selectedGameTags.contains(
+                                        game.name,
+                                      ),
+                                      title: Text(
+                                        game.name,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      subtitle: Text(
+                                        context.l10n.select(
+                                          zh: '共 $total 项',
+                                          en: '$total total',
+                                        ),
+                                      ),
+                                      onChanged: (value) => setState(() {
+                                        if (value == true) {
+                                          selectedGameTags.add(game.name);
+                                        } else {
+                                          selectedGameTags.remove(game.name);
+                                        }
+                                      }),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ),
+                            if (filteredGames.length > 8)
+                              TextButton.icon(
+                                key: const Key('desktop-filter-game-expand'),
+                                onPressed: _toggleGames,
+                                icon: AnimatedRotation(
+                                  turns: expanded ? .5 : 0,
+                                  duration: const Duration(milliseconds: 180),
+                                  child: const Icon(Icons.expand_more_rounded),
+                                ),
+                                label: Text(
+                                  expanded
+                                      ? context.l10n.select(
+                                          zh: '收起',
+                                          en: 'Show less',
+                                        )
+                                      : context.l10n.select(
+                                          zh: '展开全部（${filteredGames.length}）',
+                                          en: 'Show all (${filteredGames.length})',
+                                        ),
+                                ),
+                              ),
+                          ],
+                        );
+                      },
+                    ),
+                    const Divider(height: 28),
+                    Text(
+                      context.l10n.select(zh: '日期筛选', en: 'Date filter'),
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 4),
+                    ListTile(
+                      key: const Key('desktop-filter-date'),
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.date_range_rounded),
+                      title: Text(
+                        capturedOnThisDay != null
+                            ? context.l10n.select(
+                                zh: '那年今日 · ${capturedOnThisDay!.month}/${capturedOnThisDay!.day}',
+                                en: 'This date in history · ${capturedOnThisDay!.month}/${capturedOnThisDay!.day}',
+                              )
+                            : capturedRange == null
+                            ? context.l10n.select(
+                                zh: '未设置日期',
+                                en: 'No date range',
+                              )
+                            : '${_shortDate(capturedRange!.start)} – ${_shortDate(capturedRange!.end)}',
+                      ),
+                      trailing:
+                          capturedRange == null && capturedOnThisDay == null
+                          ? const Icon(Icons.chevron_right_rounded)
+                          : IconButton(
+                              tooltip: context.l10n.select(
+                                zh: '清除日期',
+                                en: 'Clear date',
+                              ),
+                              onPressed: () => setState(() {
+                                capturedRange = null;
+                                capturedOnThisDay = null;
+                              }),
+                              icon: const Icon(Icons.close_rounded),
+                            ),
+                      onTap: _chooseDate,
+                    ),
+                    SwitchListTile(
+                      key: const Key('desktop-filter-group-by-date'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        context.l10n.select(zh: '按日期归类', en: 'Group by date'),
+                      ),
+                      value: groupByImportedDate,
+                      onChanged: (value) =>
+                          setState(() => groupByImportedDate = value),
+                    ),
+                    const Divider(height: 28),
+                    Text(
+                      context.l10n.select(zh: '其他筛选条件', en: 'Other filters'),
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    SwitchListTile(
+                      key: const Key('desktop-filter-favorites'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        context.l10n.select(zh: '仅收藏', en: 'Favorites only'),
+                      ),
+                      value: favoritesOnly,
+                      onChanged: (value) =>
+                          setState(() => favoritesOnly = value),
+                    ),
+                    SwitchListTile(
+                      key: const Key('desktop-filter-newest'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        context.l10n.select(zh: '创建时间倒序', en: 'Newest first'),
+                      ),
+                      value: newestFirst,
+                      onChanged: (value) => setState(() => newestFirst = value),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            key: const Key('desktop-filter-cancel'),
+            onPressed: () => Navigator.pop(context),
+            child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
+          ),
+          FilledButton(
+            key: const Key('desktop-filter-apply'),
+            onPressed: _apply,
+            child: Text(context.l10n.select(zh: '应用', en: 'Apply')),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 class _GameTagFilters extends StatefulWidget {
   const _GameTagFilters({
     required this.games,
@@ -1219,6 +1956,15 @@ class _GameTagFiltersState extends State<_GameTagFilters> {
 String _shortDate(DateTime value) =>
     '${value.year.toString().padLeft(4, '0')}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
 
+class _CreationDateSelection {
+  const _CreationDateSelection.range(this.range) : anniversary = null;
+
+  const _CreationDateSelection.anniversary(this.anniversary) : range = null;
+
+  final DateTimeRange? range;
+  final CapturedOnThisDay? anniversary;
+}
+
 class _CreationDateRangeDialog extends StatefulWidget {
   const _CreationDateRangeDialog({
     required this.firstDate,
@@ -1331,6 +2077,57 @@ class _CreationDateRangeDialogState extends State<_CreationDateRangeDialog> {
               ),
             ),
             const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 10, 20, 4),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  context.l10n.select(zh: '快速时间范围', en: 'Quick date ranges'),
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final entry in _quickRanges(context).entries)
+                    OutlinedButton(
+                      key: Key('creation-date-quick-${entry.key}'),
+                      onPressed: () => Navigator.pop(
+                        context,
+                        _CreationDateSelection.range(entry.value.$1),
+                      ),
+                      child: Text(entry.value.$2),
+                    ),
+                  OutlinedButton(
+                    key: const Key('creation-date-quick-anniversary'),
+                    onPressed: () {
+                      final now = DateTime.now();
+                      Navigator.pop(
+                        context,
+                        _CreationDateSelection.anniversary(
+                          CapturedOnThisDay(
+                            month: now.month,
+                            day: now.day,
+                            beforeYear: now.year,
+                            utcOffsetSeconds: now.timeZoneOffset.inSeconds,
+                          ),
+                        ),
+                      );
+                    },
+                    child: Text(
+                      context.l10n.select(
+                        zh: '那年今日',
+                        en: 'This date in history',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
             Expanded(
               child: CalendarDatePicker(
                 key: ValueKey(
@@ -1396,9 +2193,11 @@ class _CreationDateRangeDialogState extends State<_CreationDateRangeDialog> {
     final selectedStart = start ?? selected;
     Navigator.pop(
       context,
-      selected.isBefore(selectedStart)
-          ? DateTimeRange(start: selected, end: selectedStart)
-          : DateTimeRange(start: selectedStart, end: selected),
+      _CreationDateSelection.range(
+        selected.isBefore(selectedStart)
+            ? DateTimeRange(start: selected, end: selectedStart)
+            : DateTimeRange(start: selectedStart, end: selected),
+      ),
     );
   }
 
@@ -1406,6 +2205,46 @@ class _CreationDateRangeDialogState extends State<_CreationDateRangeDialog> {
     if (value.isBefore(widget.firstDate)) return widget.firstDate;
     if (value.isAfter(widget.lastDate)) return widget.lastDate;
     return value;
+  }
+
+  Map<String, (DateTimeRange, String)> _quickRanges(BuildContext context) {
+    final today = DateUtils.dateOnly(DateTime.now());
+    final tomorrow = today.add(const Duration(days: 1));
+    final monday = today.subtract(Duration(days: today.weekday - 1));
+    final nextMonday = monday.add(const Duration(days: 7));
+    final previousMonday = monday.subtract(const Duration(days: 7));
+    final monthStart = DateTime(today.year, today.month);
+    final nextMonth = DateTime(today.year, today.month + 1);
+    return {
+      'today': (
+        DateTimeRange(
+          start: today,
+          end: tomorrow.subtract(const Duration(days: 1)),
+        ),
+        context.l10n.select(zh: '本日', en: 'Today'),
+      ),
+      'this-week': (
+        DateTimeRange(
+          start: monday,
+          end: nextMonday.subtract(const Duration(days: 1)),
+        ),
+        context.l10n.select(zh: '本周', en: 'This week'),
+      ),
+      'this-month': (
+        DateTimeRange(
+          start: monthStart,
+          end: nextMonth.subtract(const Duration(days: 1)),
+        ),
+        context.l10n.select(zh: '本月', en: 'This month'),
+      ),
+      'last-week': (
+        DateTimeRange(
+          start: previousMonday,
+          end: monday.subtract(const Duration(days: 1)),
+        ),
+        context.l10n.select(zh: '上周', en: 'Last week'),
+      ),
+    };
   }
 }
 
@@ -1447,23 +2286,38 @@ class _LibraryPageState extends State<LibraryPage> {
   bool get _isDesktop =>
       Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 
+  bool get _hasActiveFilters =>
+      favoritesOnly ||
+      capturedRange != null ||
+      capturedOnThisDay != null ||
+      selectedGameTags.isNotEmpty;
+
   GalleryKindFilter kind = GalleryKindFilter.all;
   bool favoritesOnly = false;
   bool newestFirst = true;
   bool selecting = false;
+  bool groupByImportedDate = false;
   final Set<int> selectedMediaIds = {};
+  final Map<int, MediaAsset> selectedMediaAssets = {};
   final Set<int> favoriteBusy = {};
   final Map<int, bool> favoriteOverrides = {};
-  final Set<String> _preloadedImagePaths = {};
   final TextEditingController searchController = TextEditingController();
+  final FocusNode searchFocusNode = FocusNode(
+    debugLabel: 'desktop-gallery-search',
+  );
   Timer? searchDebounce;
   String search = '';
   DateTimeRange? capturedRange;
+  CapturedOnThisDay? capturedOnThisDay;
   final Set<String> selectedGameTags = {};
   List<MediaAsset> latestMedia = const [];
   List<MediaAsset>? cachedMedia;
+  List<MediaAsset>? _lastThumbnailPrefetchSource;
+  List<MediaAsset>? _lastVideoThumbnailPrefetchSource;
+  bool? _lastVideoThumbnailPrefetchEnabled;
   int loadGeneration = 0;
   bool batchBusy = false;
+  bool selectionScanning = false;
   bool startupGalleryQueryLogged = false;
   List<int> visibleMediaIds = const [];
   bool _selectionPointerActive = false;
@@ -1473,6 +2327,16 @@ class _LibraryPageState extends State<LibraryPage> {
   final Set<int> _selectionDragVisited = {};
   Timer? _selectionAutoScrollTimer;
   double _selectionAutoScrollVelocity = 0;
+  final ScrollController _galleryScroll = DesktopGalleryScrollController();
+  late final VoidCallback _unbindReturnLayout;
+  int _returnLayoutGeneration = 0;
+  final _perfClock = Stopwatch()..start();
+  double? _perfLastOffset;
+  int _perfLastMicros = 0;
+  int _perfGeneration = -1;
+  int _perfLoaded = 0, _perfImages = 0, _perfVideos = 0, _perfColumns = 0;
+  VoidCallback? _unbindPerfScroll;
+  late final _pages = GalleryPageController(widget.backend);
   late Future<List<MediaAsset>> media = _load();
   late Future<List<GameTagSummary>> gameTags = _loadGameTags();
 
@@ -1481,6 +2345,64 @@ class _LibraryPageState extends State<LibraryPage> {
     super.initState();
     widget.settings.addListener(_handleSettingsChanged);
     searchController.addListener(_onSearchControllerChanged);
+    _galleryScroll.addListener(_loadMoreWhenNearEnd);
+    _unbindReturnLayout = GalleryReturnLayout.bind(_galleryScroll, () {
+      if (mounted && _isDesktop && groupByImportedDate) {
+        setState(() => _returnLayoutGeneration++);
+      }
+    });
+    if (GalleryPerf.compiled) {
+      _unbindPerfScroll = GalleryPerf.instance.bindScroll(
+        _galleryScroll,
+        returnToTop: () => scrollGalleryToTop(_galleryScroll),
+      );
+    }
+  }
+
+  void _loadMoreWhenNearEnd() {
+    _recordPerfScroll();
+    if (!_galleryScroll.hasClients ||
+        _galleryScroll.position.extentAfter > 900 ||
+        _pages.loadingNext ||
+        _pages.error != null ||
+        !_pages.hasAfter) {
+      return;
+    }
+    unawaited(_loadNextMediaPage());
+  }
+
+  void _recordPerfScroll({bool measureMovement = true}) {
+    if (!GalleryPerf.compiled || !_galleryScroll.hasClients) return;
+    final position = _galleryScroll.position;
+    final perf = GalleryPerf.instance;
+    perf.gallery(
+      loaded: _perfLoaded,
+      images: _perfImages,
+      videos: _perfVideos,
+      columns: _perfColumns,
+      viewport: position.viewportDimension,
+      offset: position.pixels,
+      extent: position.maxScrollExtent,
+      total: _pages.totalMatching,
+    );
+    if (!measureMovement) return;
+    final now = _perfClock.elapsedMicroseconds;
+    final previous = _perfLastOffset;
+    final elapsed = now - _perfLastMicros;
+    if (perf.recording &&
+        _perfGeneration == perf.generation &&
+        previous != null &&
+        elapsed > 0) {
+      final delta = (position.pixels - previous).abs();
+      if (delta > 0) {
+        perf
+          ..sample(GalleryMetric.scrollDelta, delta)
+          ..sample(GalleryMetric.scrollSpeed, delta * 1000000 / elapsed);
+      }
+    }
+    _perfLastOffset = perf.recording ? position.pixels : null;
+    _perfLastMicros = now;
+    _perfGeneration = perf.generation;
   }
 
   void _handleSettingsChanged() {
@@ -1489,37 +2411,19 @@ class _LibraryPageState extends State<LibraryPage> {
 
   Future<List<GameTagSummary>> _loadGameTags() async {
     if (widget.albumId == null) return widget.backend.listGameTags();
-    final results = await Future.wait([
-      widget.backend.listGameTags(),
-      widget.backend.listMedia(albumId: widget.albumId, limit: 100000),
-    ]);
-    final global = results[0] as List<GameTagSummary>;
-    final albumMedia = results[1] as List<MediaAsset>;
-    final counts = <String, (int, int)>{};
-    for (final item in albumMedia) {
-      final current = counts[item.gameName] ?? (0, 0);
-      counts[item.gameName] = item.kind == MediaKind.image
-          ? (current.$1 + 1, current.$2)
-          : (current.$1, current.$2 + 1);
-    }
-    final usage = {for (final item in global) item.name: item.selectionCount};
-    final values = counts.entries
+    final counts = await widget.backend.listGameMediaCounts(
+      albumId: widget.albumId,
+    );
+    final values = counts
         .map(
-          (entry) => GameTagSummary(
-            name: entry.key,
-            imageCount: BigInt.from(entry.value.$1),
-            videoCount: BigInt.from(entry.value.$2),
-            selectionCount: usage[entry.key] ?? BigInt.zero,
+          (item) => GameTagSummary(
+            name: item.gameName,
+            imageCount: item.imageCount,
+            videoCount: item.videoCount,
+            selectionCount: item.selectionCount,
           ),
         )
         .toList(growable: false);
-    values.sort((left, right) {
-      final byUsage = right.selectionCount.compareTo(left.selectionCount);
-      if (byUsage != 0) return byUsage;
-      return (right.imageCount + right.videoCount).compareTo(
-        left.imageCount + left.videoCount,
-      );
-    });
     return values;
   }
 
@@ -1527,24 +2431,24 @@ class _LibraryPageState extends State<LibraryPage> {
     final generation = ++loadGeneration;
     late final List<MediaAsset> items;
     try {
-      items = await widget.backend
-          .listMedia(
-            kind: kind,
-            favoriteOnly: favoritesOnly,
-            albumId: widget.albumId,
-            newestFirst: newestFirst,
-            gameNames: selectedGameTags.toList(growable: false),
-            capturedFrom: capturedRange == null
-                ? null
-                : DateUtils.dateOnly(capturedRange!.start).toUtc(),
-            capturedUntil: capturedRange == null
-                ? null
-                : DateUtils.dateOnly(capturedRange!.end)
-                      .add(const Duration(days: 1))
-                      .toUtc(),
-            limit: 500,
-          )
-          .timeout(const Duration(seconds: 25));
+      final term = search;
+      await _pages.reload(
+        _galleryQuery(pageSize: 60),
+        filter: term.isEmpty
+            ? null
+            : (item) => normalizedTextContains(
+                [
+                  item.originalName,
+                  item.gameName,
+                  item.note ?? '',
+                  ...item.tags,
+                ].join(' '),
+                term,
+              ),
+      );
+      if (generation != loadGeneration || !mounted) return const [];
+      if (_pages.error case final error?) throw error;
+      items = _pages.items;
     } catch (error, stackTrace) {
       if (!startupGalleryQueryLogged) {
         startupGalleryQueryLogged = true;
@@ -1565,8 +2469,30 @@ class _LibraryPageState extends State<LibraryPage> {
       );
     }
     if (generation == loadGeneration) cachedMedia = items;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && generation == loadGeneration) _loadMoreWhenNearEnd();
+    });
     return items;
   }
+
+  GalleryQuery _galleryQuery({required int pageSize}) => GalleryQuery(
+    kind: kind,
+    limit: pageSize,
+    offset: 0,
+    favoriteOnly: favoritesOnly,
+    albumId: widget.albumId,
+    newestFirst: newestFirst,
+    gameNames: selectedGameTags.toList(growable: false),
+    importedFrom: capturedRange == null
+        ? null
+        : DateUtils.dateOnly(capturedRange!.start).toUtc(),
+    importedUntil: capturedRange == null
+        ? null
+        : DateUtils.dateOnly(capturedRange!.end)
+              .add(const Duration(days: 1))
+              .toUtc(),
+    capturedOnThisDay: capturedOnThisDay,
+  );
 
   void _reload() => setState(() {
     media = _load();
@@ -1610,10 +2536,31 @@ class _LibraryPageState extends State<LibraryPage> {
     widget.settings.removeListener(_handleSettingsChanged);
     searchDebounce?.cancel();
     _selectionAutoScrollTimer?.cancel();
+    _unbindPerfScroll?.call();
+    _unbindReturnLayout();
+    _galleryScroll.dispose();
+    _pages.dispose();
     searchController
       ..removeListener(_onSearchControllerChanged)
       ..dispose();
+    searchFocusNode.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadNextMediaPage() async {
+    if (_pages.loadingNext || !_pages.hasAfter) return;
+    final generation = loadGeneration;
+    final pending = _pages.loadNext();
+    setState(() {});
+    await pending;
+    if (!mounted || generation != loadGeneration) return;
+    setState(() {
+      cachedMedia = _pages.items;
+      media = Future.value(cachedMedia);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && generation == loadGeneration) _loadMoreWhenNearEnd();
+    });
   }
 
   void _onSearchControllerChanged() =>
@@ -1632,7 +2579,17 @@ class _LibraryPageState extends State<LibraryPage> {
     if (value.composing.isValid && !value.composing.isCollapsed) return;
     final submitted = value.text.trim();
     if (submitted == search || !mounted) return;
-    setState(() => search = submitted);
+    setState(() {
+      search = submitted;
+      media = _load();
+    });
+  }
+
+  void _clearSearch() {
+    final value = searchController.value;
+    if (value.composing.isValid && !value.composing.isCollapsed) return;
+    searchController.clear();
+    _commitSearch();
   }
 
   void _setKind(GalleryKindFilter value) => setState(() {
@@ -1641,32 +2598,120 @@ class _LibraryPageState extends State<LibraryPage> {
     media = _load();
   });
 
-  void _toggleSelecting() => setState(() {
-    selecting = !selecting;
-    if (!selecting) selectedMediaIds.clear();
-  });
+  void _toggleSelecting() {
+    if (selectionScanning) return;
+    setState(() {
+      selecting = !selecting;
+      if (selecting) FocusManager.instance.primaryFocus?.unfocus();
+      if (!selecting) {
+        selectedMediaIds.clear();
+        selectedMediaAssets.clear();
+      }
+    });
+  }
+
+  Future<void> _openDesktopFilterDialog() async {
+    if (!_isDesktop || selecting) return;
+    final result = await showDialog<_DesktopFilterDraft>(
+      context: context,
+      builder: (context) => _DesktopLibraryFilterDialog(
+        gameTags: gameTags,
+        kind: kind,
+        favoritesOnly: favoritesOnly,
+        newestFirst: newestFirst,
+        capturedRange: capturedRange,
+        capturedOnThisDay: capturedOnThisDay,
+        groupByImportedDate: groupByImportedDate,
+        selectedGameTags: selectedGameTags,
+      ),
+    );
+    if (result == null || !mounted) return;
+    final addedGameTags = result.selectedGameTags.difference(selectedGameTags);
+    setState(() {
+      kind = result.kind;
+      favoritesOnly = result.favoritesOnly;
+      newestFirst = result.newestFirst;
+      capturedRange = result.capturedRange;
+      capturedOnThisDay = result.capturedOnThisDay;
+      groupByImportedDate = result.groupByImportedDate;
+      selectedGameTags
+        ..clear()
+        ..addAll(result.selectedGameTags);
+      selectedMediaIds.clear();
+      media = _load();
+    });
+    for (final game in addedGameTags) {
+      try {
+        await widget.backend.recordGameTagSelection(game);
+      } catch (error, stackTrace) {
+        await widget.backend.logError(
+          'Failed to record game tag selection',
+          error,
+          stackTrace,
+        );
+      }
+    }
+    if (addedGameTags.isNotEmpty && mounted) {
+      final updated = _loadGameTags();
+      setState(() {
+        gameTags = updated;
+      });
+    }
+  }
 
   void _toggleSelected(int mediaId) => setState(() {
     selecting = true;
     if (!selectedMediaIds.add(mediaId)) selectedMediaIds.remove(mediaId);
   });
 
-  void _selectAllVisibleMedia() {
-    if (batchBusy || visibleMediaIds.isEmpty) return;
-    setState(() {
-      selecting = true;
-      selectedMediaIds.addAll(visibleMediaIds);
-    });
-  }
+  bool _matchesSearch(MediaAsset item) => normalizedTextContains(
+    [item.originalName, item.gameName, item.note ?? '', ...item.tags].join(' '),
+    searchController.text,
+  );
 
-  void _invertVisibleMediaSelection() {
-    if (batchBusy || visibleMediaIds.isEmpty) return;
-    setState(() {
-      selecting = true;
-      for (final id in visibleMediaIds) {
-        if (!selectedMediaIds.add(id)) selectedMediaIds.remove(id);
-      }
-    });
+  Future<void> _selectAllMatchingMedia({required bool invert}) async {
+    if (batchBusy || selectionScanning) return;
+    setState(() => selectionScanning = true);
+    try {
+      final all = await _pages.loadAllMatching(filter: _matchesSearch);
+      if (!mounted) return;
+      setState(() {
+        selecting = true;
+        if (invert) {
+          for (final item in all) {
+            if (!selectedMediaIds.add(item.id)) {
+              selectedMediaIds.remove(item.id);
+              selectedMediaAssets.remove(item.id);
+            } else {
+              selectedMediaAssets[item.id] = item;
+            }
+          }
+        } else {
+          selectedMediaIds.addAll(all.map((item) => item.id));
+          selectedMediaAssets.addEntries(
+            all.map((item) => MapEntry(item.id, item)),
+          );
+        }
+      });
+    } catch (error, stackTrace) {
+      await widget.backend.logError(
+        'Failed to select all matching media',
+        error,
+        stackTrace,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        _messageSnackBar(
+          context.l10n.select(
+            zh: '选择全部媒体失败：$error',
+            en: 'Failed to select all media: $error',
+          ),
+          error: true,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => selectionScanning = false);
+    }
   }
 
   void _handleSelectionTap(int mediaId) {
@@ -1760,7 +2805,7 @@ class _LibraryPageState extends State<LibraryPage> {
 
   Future<void> _selectCapturedRange() async {
     final now = DateTime.now();
-    final selected = await showDialog<DateTimeRange>(
+    final selected = await showDialog<_CreationDateSelection>(
       context: context,
       builder: (context) => _CreationDateRangeDialog(
         firstDate: DateTime(2000),
@@ -1768,9 +2813,16 @@ class _LibraryPageState extends State<LibraryPage> {
         initialRange: capturedRange,
       ),
     );
-    if (selected != null && mounted) {
+    if (selected?.anniversary != null && mounted) {
       setState(() {
-        capturedRange = selected;
+        capturedRange = null;
+        capturedOnThisDay = selected!.anniversary;
+        media = _load();
+      });
+    } else if (selected?.range != null && mounted) {
+      setState(() {
+        capturedRange = selected!.range;
+        capturedOnThisDay = null;
         media = _load();
       });
     }
@@ -1830,12 +2882,8 @@ class _LibraryPageState extends State<LibraryPage> {
       );
       return;
     }
-    final videos = latestMedia
-        .where(
-          (asset) =>
-              selectedMediaIds.contains(asset.id) &&
-              asset.kind == MediaKind.video,
-        )
+    final videos = selectedMediaAssets.values
+        .where((asset) => asset.kind == MediaKind.video)
         .toList(growable: false);
     if (videos.length < 2) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1994,11 +3042,9 @@ class _LibraryPageState extends State<LibraryPage> {
                 child: ListTile(
                   leading: const Icon(Icons.photo_album_outlined),
                   title: Text(album.name),
-                  subtitle: Text(
-                    context.l10n.select(
-                      zh: '${album.mediaCount} 个媒体',
-                      en: '${album.mediaCount} media',
-                    ),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [Text(albumMediaCountText(context, album))],
                   ),
                 ),
               ),
@@ -2088,8 +3134,9 @@ class _LibraryPageState extends State<LibraryPage> {
   Future<void> _batchTags({required bool replace}) async {
     final tags = await _showBatchTagDialog(replace: replace);
     if (tags == null || !mounted) return;
-    final selectedAssets = latestMedia
-        .where((asset) => selectedMediaIds.contains(asset.id))
+    final selectedAssets = selectedMediaIds
+        .map((id) => selectedMediaAssets[id])
+        .whereType<MediaAsset>()
         .toList(growable: false);
     await _runBatchMutation(
       () async {
@@ -2316,21 +3363,6 @@ class _LibraryPageState extends State<LibraryPage> {
     );
   }
 
-  void _preloadGalleryImages(List<MediaAsset> items, int columns) {
-    final limit = (columns * 3).clamp(6, 24);
-    for (final asset
-        in items.where((item) => item.kind == MediaKind.image).take(limit)) {
-      if (!_preloadedImagePaths.add(asset.storagePath)) continue;
-      unawaited(
-        precacheImage(
-          FileImage(File(asset.storagePath)),
-          context,
-          size: const Size(900, 600),
-        ).catchError((_) {}),
-      );
-    }
-  }
-
   Widget _buildHeaderActions(BuildContext context) => Wrap(
     spacing: 8,
     runSpacing: 8,
@@ -2339,20 +3371,31 @@ class _LibraryPageState extends State<LibraryPage> {
       if (selecting) ...[
         IconButton.filledTonal(
           key: const Key('batch-select-all'),
-          tooltip: context.l10n.select(
-            zh: '全选当前媒体',
-            en: 'Select all visible media',
-          ),
-          onPressed: batchBusy ? null : _selectAllVisibleMedia,
-          icon: const Icon(Icons.select_all_rounded),
+          tooltip: selectionScanning
+              ? context.l10n.select(zh: '正在加载全部媒体', en: 'Loading all media')
+              : context.l10n.select(
+                  zh: '全选全部匹配媒体',
+                  en: 'Select all matching media',
+                ),
+          onPressed: batchBusy || selectionScanning
+              ? null
+              : () => unawaited(_selectAllMatchingMedia(invert: false)),
+          icon: selectionScanning
+              ? const SizedBox.square(
+                  dimension: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.select_all_rounded),
         ),
         IconButton.filledTonal(
           key: const Key('batch-invert-selection'),
           tooltip: context.l10n.select(
-            zh: '反选当前媒体',
-            en: 'Invert visible selection',
+            zh: '反选全部匹配媒体',
+            en: 'Invert matching selection',
           ),
-          onPressed: batchBusy ? null : _invertVisibleMediaSelection,
+          onPressed: batchBusy || selectionScanning
+              ? null
+              : () => unawaited(_selectAllMatchingMedia(invert: true)),
           icon: const Icon(Icons.flip_to_back_rounded),
         ),
         PopupMenuButton<_BatchMediaAction>(
@@ -2409,12 +3452,8 @@ class _LibraryPageState extends State<LibraryPage> {
             PopupMenuItem(
               value: _BatchMediaAction.mergeVideos,
               enabled:
-                  latestMedia
-                      .where(
-                        (asset) =>
-                            selectedMediaIds.contains(asset.id) &&
-                            asset.kind == MediaKind.video,
-                      )
+                  selectedMediaAssets.values
+                      .where((asset) => asset.kind == MediaKind.video)
                       .length >=
                   2,
               child: _BatchActionLabel(
@@ -2465,13 +3504,100 @@ class _LibraryPageState extends State<LibraryPage> {
     ],
   );
 
+  Widget _buildSearchFilterGroup(BuildContext context) => SizedBox(
+    key: const Key('desktop-search-filter-group'),
+    width: 420,
+    height: 40,
+    child: Row(
+      children: [
+        Expanded(
+          child: TextField(
+            key: const Key('library-search'),
+            controller: searchController,
+            focusNode: searchFocusNode,
+            style: TextStyle(
+              fontFamily: appFontFamily,
+              fontFamilyFallback: appFontFallback,
+            ),
+            decoration: InputDecoration(
+              isDense: true,
+              prefixIcon: const Icon(Icons.search),
+              hintText: context.l10n.select(
+                zh: '搜索游戏名、标签、或备注内容',
+                en: 'Search game names, tags, or notes',
+              ),
+              suffixIcon: ValueListenableBuilder<TextEditingValue>(
+                valueListenable: searchController,
+                builder: (context, value, _) {
+                  if (value.text.isEmpty) return const SizedBox.shrink();
+                  final composing =
+                      value.composing.isValid && !value.composing.isCollapsed;
+                  return IconButton(
+                    tooltip: context.l10n.select(
+                      zh: '清除搜索',
+                      en: 'Clear search',
+                    ),
+                    onPressed: composing ? null : _clearSearch,
+                    icon: const Icon(Icons.close_rounded),
+                  );
+                },
+              ),
+              border: const OutlineInputBorder(),
+            ),
+            keyboardType: TextInputType.text,
+            textInputAction: TextInputAction.search,
+            autocorrect: false,
+            enableSuggestions: true,
+            onSubmitted: (_) => _commitSearch(),
+          ),
+        ),
+        const SizedBox(width: 8),
+        IconButton.filledTonal(
+          key: const Key('library-filter'),
+          tooltip: context.l10n.select(zh: '筛选', en: 'Filter'),
+          onPressed: _openDesktopFilterDialog,
+          style: IconButton.styleFrom(
+            backgroundColor: _hasActiveFilters
+                ? Theme.of(context).colorScheme.primaryContainer
+                : null,
+            foregroundColor: _hasActiveFilters
+                ? Theme.of(context).colorScheme.onPrimaryContainer
+                : null,
+            shape: const CircleBorder(),
+          ),
+          icon: const Icon(Icons.tune_rounded),
+        ),
+      ],
+    ),
+  );
+
+  Widget? _buildHeaderLeading(BuildContext context) {
+    if (selecting) {
+      return IconButton.filledTonal(
+        key: const Key('library-selection-back'),
+        tooltip: context.l10n.select(zh: '取消选择', en: 'Cancel selection'),
+        onPressed: batchBusy || selectionScanning ? null : _toggleSelecting,
+        icon: const Icon(Icons.arrow_back_rounded),
+      );
+    }
+    if (widget.onBack == null) return null;
+    return IconButton.filledTonal(
+      key: const Key('album-detail-back'),
+      tooltip: context.l10n.select(zh: '返回相册列表', en: 'Back to albums'),
+      onPressed: widget.onBack,
+      icon: const Icon(Icons.arrow_back_rounded),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => _PageFrame(
     title: selecting
-        ? context.l10n.select(
-            zh: '已选择 ${selectedMediaIds.length} 项',
-            en: '${selectedMediaIds.length} selected',
-          )
+        ? selectionScanning
+              ? context.l10n.select(zh: '正在选择全部媒体…', en: 'Selecting all media…')
+              : context.l10n.select(
+                  zh: '已选择 ${selectedMediaIds.length} 项',
+                  en: '${selectedMediaIds.length} selected',
+                )
         : widget.albumName ?? context.l10n.select(zh: '图库', en: 'Library'),
     subtitle: widget.albumId == null
         ? null
@@ -2489,64 +3615,76 @@ class _LibraryPageState extends State<LibraryPage> {
                 ? 'Media continuously organized by smart rules'
                 : 'Manually organized photos and videos',
           ),
-    leading: widget.onBack == null
-        ? null
-        : IconButton.filledTonal(
-            key: const Key('album-detail-back'),
-            tooltip: context.l10n.select(zh: '返回相册列表', en: 'Back to albums'),
-            onPressed: widget.onBack,
-            icon: const Icon(Icons.arrow_back_rounded),
-          ),
+    leading: _buildHeaderLeading(context),
     action: _buildHeaderActions(context),
+    centerAction: _isDesktop && !selecting
+        ? _buildSearchFilterGroup(context)
+        : null,
     fixedHeader: true,
+    compactGalleryHeader: _isDesktop,
+    controller: _galleryScroll,
+    galleryLoadExperiment: _isDesktop,
+    scrollTotalCount: _pages.totalMatching,
+    scrollLoadedCount: visibleMediaIds.length,
+    scrollCounting: _pages.countingTotal,
+    physics: _isDesktop ? const DesktopFluidScrollPhysics() : null,
+    hideTitle: false,
+    onPointerMove: (event) => _updateSelectionAutoScroll(event.position),
+    onPointerUp: (_) => _endSelectionPointer(),
+    bodySliver: _buildMediaSliver(),
     child: Column(
       children: [
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            SizedBox(
-              width: 310,
-              child: TextField(
-                key: const Key('library-search'),
-                controller: searchController,
-                style: TextStyle(
-                  fontFamily: appFontFamily,
-                  fontFamilyFallback: appFontFallback,
-                ),
-                decoration: InputDecoration(
-                  prefixIcon: const Icon(Icons.search),
-                  hintText: context.l10n.select(
-                    zh: '搜索游戏名、标签、或备注内容',
-                    en: 'Search game names, tags, or notes',
-                  ),
-                  suffixIcon: ValueListenableBuilder<TextEditingValue>(
-                    valueListenable: searchController,
-                    builder: (context, value, _) => value.text.isEmpty
-                        ? const SizedBox.shrink()
-                        : IconButton(
-                            tooltip: context.l10n.select(
-                              zh: '清除搜索',
-                              en: 'Clear search',
-                            ),
-                            onPressed: () {
-                              searchController.clear();
-                              _commitSearch();
-                            },
-                            icon: const Icon(Icons.close_rounded),
-                          ),
-                  ),
-                  border: const OutlineInputBorder(),
-                ),
-                keyboardType: TextInputType.text,
-                textInputAction: TextInputAction.search,
-                autocorrect: false,
-                enableSuggestions: true,
-                onSubmitted: (_) => _commitSearch(),
+        if (!_isDesktop && !selecting)
+          SizedBox(
+            width: 310,
+            child: TextField(
+              key: const Key('library-search'),
+              controller: searchController,
+              style: TextStyle(
+                fontFamily: appFontFamily,
+                fontFamilyFallback: appFontFallback,
               ),
+              decoration: InputDecoration(
+                prefixIcon: const Icon(Icons.search),
+                hintText: context.l10n.select(
+                  zh: '搜索游戏名、标签、或备注内容',
+                  en: 'Search game names, tags, or notes',
+                ),
+                suffixIcon: ValueListenableBuilder<TextEditingValue>(
+                  valueListenable: searchController,
+                  builder: (context, value, _) {
+                    if (value.text.isEmpty) return const SizedBox.shrink();
+                    final composing =
+                        value.composing.isValid && !value.composing.isCollapsed;
+                    return IconButton(
+                      tooltip: context.l10n.select(
+                        zh: '清除搜索',
+                        en: 'Clear search',
+                      ),
+                      onPressed: composing ? null : _clearSearch,
+                      icon: const Icon(Icons.close_rounded),
+                    );
+                  },
+                ),
+                border: const OutlineInputBorder(),
+              ),
+              keyboardType: TextInputType.text,
+              textInputAction: TextInputAction.search,
+              autocorrect: false,
+              enableSuggestions: true,
+              onSubmitted: (_) => _commitSearch(),
             ),
-            SegmentedButton<GalleryKindFilter>(
+          ),
+        if (_isDesktop)
+          Align(
+            alignment: Alignment.center,
+            child: SegmentedButton<GalleryKindFilter>(
+              key: const Key('desktop-gallery-kind-filter'),
+              style: const ButtonStyle(
+                visualDensity: VisualDensity.compact,
+                minimumSize: WidgetStatePropertyAll(Size(0, 36)),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
               segments: [
                 ButtonSegment(
                   value: GalleryKindFilter.all,
@@ -2565,383 +3703,516 @@ class _LibraryPageState extends State<LibraryPage> {
               showSelectedIcon: false,
               onSelectionChanged: (value) => _setKind(value.first),
             ),
-            FilterChip(
-              key: const Key('favorite-filter'),
-              labelStyle: TextStyle(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                fontFamily: appFontFamily,
-                fontFamilyFallback: appFontFallback,
-              ),
-              label: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    favoritesOnly ? Icons.favorite : Icons.favorite_border,
-                    size: 18,
-                    color: favoritesOnly
-                        ? const Color(0xffd94766)
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        if (!_isDesktop)
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              SegmentedButton<GalleryKindFilter>(
+                segments: [
+                  ButtonSegment(
+                    value: GalleryKindFilter.all,
+                    label: Text(context.l10n.select(zh: '全部', en: 'All')),
                   ),
-                  const SizedBox(width: 7),
-                  Text(context.l10n.select(zh: '收藏', en: 'Favorites')),
+                  ButtonSegment(
+                    value: GalleryKindFilter.image,
+                    label: Text(context.l10n.select(zh: '图片', en: 'Photos')),
+                  ),
+                  ButtonSegment(
+                    value: GalleryKindFilter.video,
+                    label: Text(context.l10n.select(zh: '视频', en: 'Videos')),
+                  ),
                 ],
+                selected: {kind},
+                showSelectedIcon: false,
+                onSelectionChanged: (value) => _setKind(value.first),
               ),
-              selected: favoritesOnly,
-              onSelected: (value) => setState(() {
-                favoritesOnly = value;
-                selectedMediaIds.clear();
-                media = _load();
-              }),
-            ),
-            InputChip(
-              key: const Key('capture-date-filter'),
-              labelStyle: TextStyle(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                fontFamily: appFontFamily,
-                fontFamilyFallback: appFontFallback,
-              ),
-              avatar: const Icon(Icons.date_range_rounded, size: 18),
-              label: Text(
-                capturedRange == null
-                    ? context.l10n.select(zh: '创建时间', en: 'Creation date')
-                    : '${_shortDate(capturedRange!.start)} – ${_shortDate(capturedRange!.end)}',
-              ),
-              onPressed: _selectCapturedRange,
-              onDeleted: capturedRange == null
-                  ? null
-                  : () => setState(() {
-                      capturedRange = null;
-                      media = _load();
-                    }),
-            ),
-            PopupMenuButton<bool>(
-              key: const Key('media-sort-menu'),
-              tooltip: context.l10n.select(zh: '排序方式', en: 'Sort order'),
-              initialValue: newestFirst,
-              color: Theme.of(context).colorScheme.surfaceContainerHigh,
-              elevation: 8,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(18),
-              ),
-              onSelected: (value) => setState(() {
-                newestFirst = value;
-                selectedMediaIds.clear();
-                media = _load();
-              }),
-              itemBuilder: (context) => [
-                PopupMenuItem(
-                  value: true,
-                  child: Row(
-                    children: [
-                      const Icon(Icons.arrow_downward_rounded),
-                      const SizedBox(width: 10),
-                      Text(
-                        context.l10n.select(
-                          zh: '创建时间倒序',
-                          en: 'Creation time, newest first',
-                        ),
-                      ),
-                    ],
-                  ),
+              FilterChip(
+                key: const Key('favorite-filter'),
+                labelStyle: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontFamily: appFontFamily,
+                  fontFamilyFallback: appFontFallback,
                 ),
-                PopupMenuItem(
-                  value: false,
-                  child: Row(
-                    children: [
-                      const Icon(Icons.arrow_upward_rounded),
-                      const SizedBox(width: 10),
-                      Text(
-                        context.l10n.select(
-                          zh: '创建时间正序',
-                          en: 'Creation time, oldest first',
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-              child: Container(
-                key: const Key('media-sort-control'),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 8,
-                ),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primaryContainer
-                      .withValues(alpha: .62),
-                  border: Border.all(
-                    color: Theme.of(context).colorScheme.primary
-                        .withValues(alpha: .22),
-                  ),
-                  borderRadius: BorderRadius.circular(999),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Theme.of(context).colorScheme.shadow
-                          .withValues(alpha: .06),
-                      blurRadius: 10,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
-                ),
-                child: Row(
+                label: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Icon(
-                      newestFirst ? Icons.south_rounded : Icons.north_rounded,
+                      favoritesOnly ? Icons.favorite : Icons.favorite_border,
                       size: 18,
-                      color: Theme.of(context).colorScheme.primary,
+                      color: favoritesOnly
+                          ? const Color(0xffd94766)
+                          : Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
-                    const SizedBox(width: 8),
-                    Text(
-                      newestFirst
-                          ? context.l10n.select(
-                              zh: '创建时间 · 最新优先',
-                              en: 'Created · Newest first',
-                            )
-                          : context.l10n.select(
-                              zh: '创建时间 · 最早优先',
-                              en: 'Created · Oldest first',
-                            ),
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(width: 6),
-                    Icon(
-                      Icons.expand_more_rounded,
-                      size: 18,
-                      color: Theme.of(context).colorScheme.onPrimaryContainer,
-                    ),
+                    const SizedBox(width: 7),
+                    Text(context.l10n.select(zh: '收藏', en: 'Favorites')),
                   ],
                 ),
-              ),
-            ),
-          ],
-        ),
-        FutureBuilder<List<GameTagSummary>>(
-          future: gameTags,
-          builder: (context, snapshot) {
-            final games = snapshot.data ?? const <GameTagSummary>[];
-            if (games.isEmpty) return const SizedBox.shrink();
-            return Padding(
-              padding: const EdgeInsets.only(top: 6, bottom: 8),
-              child: _GameTagFilters(
-                games: games,
-                selected: selectedGameTags,
-                onChanged: _setGameTag,
-                onClear: () => setState(() {
-                  selectedGameTags.clear();
+                selected: favoritesOnly,
+                onSelected: (value) => setState(() {
+                  favoritesOnly = value;
+                  selectedMediaIds.clear();
                   media = _load();
                 }),
               ),
-            );
-          },
-        ),
-        const SizedBox(height: 8),
-        FutureBuilder<List<MediaAsset>>(
-          future: media,
-          builder: (context, snapshot) {
-            final source = snapshot.data ?? cachedMedia;
-            if (source == null &&
-                snapshot.connectionState != ConnectionState.done) {
-              return const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(48),
-                  child: CircularProgressIndicator(),
+              InputChip(
+                key: const Key('capture-date-filter'),
+                labelStyle: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontFamily: appFontFamily,
+                  fontFamilyFallback: appFontFallback,
                 ),
-              );
-            }
-            if (source == null && snapshot.hasError) {
-              return _ErrorPanel(
-                message: context.l10n.select(
-                  zh: '图库读取失败：${snapshot.error}',
-                  en: 'Failed to load library: ${snapshot.error}',
+                avatar: const Icon(Icons.date_range_rounded, size: 18),
+                label: Text(
+                  capturedOnThisDay != null
+                      ? context.l10n.select(
+                          zh: '那年今日 · ${capturedOnThisDay!.month}/${capturedOnThisDay!.day}',
+                          en: 'This date in history · ${capturedOnThisDay!.month}/${capturedOnThisDay!.day}',
+                        )
+                      : capturedRange == null
+                      ? context.l10n.select(zh: '创建时间', en: 'Creation date')
+                      : '${_shortDate(capturedRange!.start)} – ${_shortDate(capturedRange!.end)}',
                 ),
-                onRetry: _reload,
-              );
-            }
-            final currentItems = source!
-                .map(_withFavoriteOverride)
-                .toList(growable: false);
-            latestMedia = currentItems;
-            _preloadVideoThumbnails(currentItems);
-            final rows = currentItems.where((item) {
-              if ((favoritesOnly || widget.albumSystemKey == 'favorites') &&
-                  !item.favorite) {
-                return false;
-              }
-              final text = [
-                item.originalName,
-                item.gameName,
-                item.note ?? '',
-                ...item.tags,
-              ].join(' ');
-              return normalizedTextContains(text, search);
-            }).toList();
-            final columns = widget.settings.value.galleryColumns.clamp(2, 7);
-            _preloadGalleryImages(rows, columns);
-            visibleMediaIds = rows
-                .map((item) => item.id)
-                .toList(growable: false);
-            final Widget mediaContent;
-            if (rows.isEmpty) {
-              mediaContent = _EmptyPanel(
-                icon: Icons.photo_library_outlined,
-                message: context.l10n.select(
-                  zh: '当前条件下没有媒体',
-                  en: 'No media matches the current filters',
+                onPressed: _selectCapturedRange,
+                onDeleted: capturedRange == null && capturedOnThisDay == null
+                    ? null
+                    : () => setState(() {
+                        capturedRange = null;
+                        capturedOnThisDay = null;
+                        media = _load();
+                      }),
+              ),
+              PopupMenuButton<bool>(
+                key: const Key('media-sort-menu'),
+                tooltip: context.l10n.select(zh: '排序方式', en: 'Sort order'),
+                initialValue: newestFirst,
+                color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                elevation: 8,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
                 ),
-              );
-            } else {
-              mediaContent = LayoutBuilder(
-                builder: (context, constraints) {
-                  final previewRows = _isDesktop
-                      ? 3
-                      : widget.settings.value.galleryRows.clamp(2, 8);
-                  final cardHeight = (420 / previewRows + 130).clamp(
-                    210.0,
-                    520.0,
-                  );
-                  return Listener(
-                    behavior: HitTestBehavior.translucent,
-                    onPointerMove: (event) =>
-                        _updateSelectionAutoScroll(event.position),
-                    onPointerUp: (_) => _endSelectionPointer(),
-                    child: GridView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: columns,
-                        crossAxisSpacing: 16,
-                        mainAxisSpacing: 16,
-                        mainAxisExtent: cardHeight,
-                      ),
-                      itemCount: rows.length,
-                      itemBuilder: (context, index) => _MediaCard(
-                        asset: rows[index],
-                        settings: widget.settings.value,
-                        onVideoThumbnailError: (error, stackTrace) =>
-                            widget.backend.logError(
-                              'Failed to generate video thumbnail for media ${rows[index].id}',
-                              error,
-                              stackTrace,
-                            ),
-                        selecting: selecting,
-                        enableVideoFeatures: widget.enableVideoFeatures,
-                        selected: selectedMediaIds.contains(rows[index].id),
-                        onSelect: () => _toggleSelected(rows[index].id),
-                        onSelectionPointerDown: (position) =>
-                            _beginSelectionPointer(rows[index].id, position),
-                        onSelectionPointerEnter: (position) =>
-                            _enterSelectionPointer(rows[index].id, position),
-                        onSelectionPointerUp: _endSelectionPointer,
-                        onFavorite: favoriteBusy.contains(rows[index].id)
-                            ? null
-                            : () => _toggleFavorite(rows[index]),
-                        onPreview: selecting
-                            ? () => _handleSelectionTap(rows[index].id)
-                            : rows[index].kind == MediaKind.video &&
-                                  !widget.enableVideoFeatures
-                            ? () => ScaffoldMessenger.of(context).showSnackBar(
-                                _messageSnackBar(
-                                  context.l10n.select(
-                                    zh: '安全模式已禁用视频预览。',
-                                    en: 'Video preview is disabled in safe mode.',
-                                  ),
-                                  error: true,
-                                ),
-                              )
-                            : () => MediaViewer.open(
-                                context,
-                                backend: widget.backend,
-                                items: rows,
-                                initialIndex: index,
-                                autoPlayVideo:
-                                    widget.settings.value.autoPlayVideo,
-                                compactTagDisplay:
-                                    widget.settings.value.compactTagDisplay,
-                                onMetadataChanged: _reload,
-                              ),
-                        onSecondaryTapDown: (details) =>
-                            _showSingleMediaMenu(rows[index], details),
-                        onEdit: () async {
-                          final changed =
-                              await showModalBottomSheet<MediaMetadataUpdate>(
-                                context: context,
-                                showDragHandle: true,
-                                isScrollControlled: true,
-                                constraints: const BoxConstraints(
-                                  maxWidth: 680,
-                                ),
-                                builder: (_) => MediaMetadataEditor(
-                                  backend: widget.backend,
-                                  asset: rows[index],
-                                ),
-                              );
-                          if (changed != null) _reload();
-                        },
-                      ),
-                    ),
-                  );
-                },
-              );
-            }
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SizedBox(
-                  height: 7,
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 180),
-                    child: snapshot.connectionState == ConnectionState.done
-                        ? const SizedBox.shrink(
-                            key: ValueKey('gallery-filter-idle'),
-                          )
-                        : const LinearProgressIndicator(
-                            key: Key('gallery-filter-progress'),
-                            minHeight: 3,
+                onSelected: (value) => setState(() {
+                  newestFirst = value;
+                  selectedMediaIds.clear();
+                  media = _load();
+                }),
+                itemBuilder: (context) => [
+                  PopupMenuItem(
+                    value: true,
+                    child: Row(
+                      children: [
+                        const Icon(Icons.arrow_downward_rounded),
+                        const SizedBox(width: 10),
+                        Text(
+                          context.l10n.select(
+                            zh: '创建时间倒序',
+                            en: 'Creation time, newest first',
                           ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: false,
+                    child: Row(
+                      children: [
+                        const Icon(Icons.arrow_upward_rounded),
+                        const SizedBox(width: 10),
+                        Text(
+                          context.l10n.select(
+                            zh: '创建时间正序',
+                            en: 'Creation time, oldest first',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                child: Container(
+                  key: const Key('media-sort-control'),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.primaryContainer
+                        .withValues(alpha: .62),
+                    border: Border.all(
+                      color: Theme.of(context).colorScheme.primary
+                          .withValues(alpha: .22),
+                    ),
+                    borderRadius: BorderRadius.circular(999),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Theme.of(context).colorScheme.shadow
+                            .withValues(alpha: .06),
+                        blurRadius: 10,
+                        offset: const Offset(0, 3),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        newestFirst ? Icons.south_rounded : Icons.north_rounded,
+                        size: 18,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        newestFirst
+                            ? context.l10n.select(
+                                zh: '创建时间 · 最新优先',
+                                en: 'Created · Newest first',
+                              )
+                            : context.l10n.select(
+                                zh: '创建时间 · 最早优先',
+                                en: 'Created · Oldest first',
+                              ),
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(width: 6),
+                      Icon(
+                        Icons.expand_more_rounded,
+                        size: 18,
+                        color: Theme.of(context).colorScheme.onPrimaryContainer,
+                      ),
+                    ],
                   ),
                 ),
-                if (snapshot.hasError)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: Text(
-                      context.l10n.select(
-                        zh: '筛选更新失败，正在显示上一次结果：${snapshot.error}',
-                        en: 'Filter update failed; showing the previous results: ${snapshot.error}',
-                      ),
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                    ),
-                  ),
-                AnimatedSize(
-                  duration: const Duration(milliseconds: 320),
-                  reverseDuration: const Duration(milliseconds: 240),
-                  curve: Curves.easeOutCubic,
-                  alignment: Alignment.topCenter,
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 320),
-                    reverseDuration: const Duration(milliseconds: 220),
-                    switchInCurve: Curves.easeOutCubic,
-                    switchOutCurve: Curves.easeInCubic,
-                    transitionBuilder: (child, animation) =>
-                        FadeTransition(opacity: animation, child: child),
-                    layoutBuilder: (currentChild, previousChildren) => Stack(
-                      alignment: Alignment.topCenter,
-                      children: [...previousChildren, ?currentChild],
-                    ),
-                    child: KeyedSubtree(
-                      key: ValueKey(rows.map((item) => item.id).join(',')),
-                      child: mediaContent,
-                    ),
-                  ),
+              ),
+            ],
+          ),
+        if (!_isDesktop)
+          FutureBuilder<List<GameTagSummary>>(
+            future: gameTags,
+            builder: (context, snapshot) {
+              final games = snapshot.data ?? const <GameTagSummary>[];
+              if (games.isEmpty) return const SizedBox.shrink();
+              return Padding(
+                padding: const EdgeInsets.only(top: 6, bottom: 8),
+                child: _GameTagFilters(
+                  games: games,
+                  selected: selectedGameTags,
+                  onChanged: _setGameTag,
+                  onClear: () => setState(() {
+                    selectedGameTags.clear();
+                    media = _load();
+                  }),
                 ),
-              ],
-            );
-          },
-        ),
+              );
+            },
+          ),
+        const SizedBox(height: 0),
       ],
     ),
+  );
+
+  Widget _buildMediaSliver() => FutureBuilder<List<MediaAsset>>(
+    future: media,
+    builder: (context, snapshot) {
+      // A completed append must be visible in this very frame. Keeping the
+      // preceding FutureBuilder snapshot for a frame would remove the footer
+      // before extending the sliver and clamp a bottom-edge scroll position.
+      final source = !_pages.loading && _pages.error == null
+          ? _pages.items
+          : snapshot.data ?? cachedMedia;
+      if (source == null && snapshot.connectionState != ConnectionState.done) {
+        return const SliverToBoxAdapter(
+          child: Center(
+            child: Padding(
+              padding: EdgeInsets.all(48),
+              child: CircularProgressIndicator(),
+            ),
+          ),
+        );
+      }
+      if (source == null && snapshot.hasError) {
+        return SliverToBoxAdapter(
+          child: _ErrorPanel(
+            message: context.l10n.select(
+              zh: '图库读取失败：${snapshot.error}',
+              en: 'Failed to load library: ${snapshot.error}',
+            ),
+            onRetry: _reload,
+          ),
+        );
+      }
+      final loadedSource = source!;
+      if (!identical(_lastThumbnailPrefetchSource, loadedSource)) {
+        _lastThumbnailPrefetchSource = loadedSource;
+        unawaited(ImageThumbnailCache.prefetch(loadedSource));
+      }
+      if (!identical(_lastVideoThumbnailPrefetchSource, loadedSource) ||
+          _lastVideoThumbnailPrefetchEnabled != widget.enableVideoFeatures) {
+        _lastVideoThumbnailPrefetchSource = loadedSource;
+        _lastVideoThumbnailPrefetchEnabled = widget.enableVideoFeatures;
+        _preloadVideoThumbnails(loadedSource);
+      }
+      final currentItems = GalleryPerf.instance.sync(
+        GalleryMetric.filter,
+        () => loadedSource.map(_withFavoriteOverride).toList(growable: false),
+      );
+      latestMedia = currentItems;
+      final visibleItems = GalleryPerf.instance.sync(
+        GalleryMetric.filter,
+        () => currentItems.where((item) {
+          if ((favoritesOnly || widget.albumSystemKey == 'favorites') &&
+              !item.favorite) {
+            return false;
+          }
+          final text = [
+            item.originalName,
+            item.gameName,
+            item.note ?? '',
+            ...item.tags,
+          ].join(' ');
+          return normalizedTextContains(text, search);
+        }).toList(),
+      );
+      selectedMediaAssets.removeWhere(
+        (id, _) => !selectedMediaIds.contains(id),
+      );
+      for (final item in visibleItems) {
+        if (selectedMediaIds.contains(item.id)) {
+          selectedMediaAssets[item.id] = item;
+        }
+      }
+      final columns = widget.settings.value.galleryColumns.clamp(2, 7);
+      if (GalleryPerf.compiled) {
+        _perfLoaded = visibleItems.length;
+        _perfImages = visibleItems
+            .where((item) => item.kind == MediaKind.image)
+            .length;
+        _perfVideos = visibleItems.length - _perfImages;
+        _perfColumns = columns;
+        _recordPerfScroll(measureMovement: false);
+      }
+      visibleMediaIds = visibleItems
+          .map((item) => item.id)
+          .toList(growable: false);
+      final Widget mediaContent;
+      if (visibleItems.isEmpty) {
+        mediaContent = SliverToBoxAdapter(
+          child: _EmptyPanel(
+            icon: Icons.photo_library_outlined,
+            message: context.l10n.select(
+              zh: '当前条件下没有媒体',
+              en: 'No media matches the current filters',
+            ),
+          ),
+        );
+      } else {
+        final previewRows = _isDesktop
+            ? 3
+            : widget.settings.value.galleryRows.clamp(2, 8);
+        final cardHeight = (420 / previewRows + 130).clamp(210.0, 520.0);
+        Widget card(MediaAsset asset, int index) {
+          Widget fullCard(BuildContext _) {
+            final child = _MediaCard(
+              asset: asset,
+              settings: widget.settings.value,
+              onVideoThumbnailError: (error, stackTrace) =>
+                  widget.backend.logError(
+                    'Failed to generate video thumbnail for media ${asset.id}',
+                    error,
+                    stackTrace,
+                  ),
+              selecting: selecting,
+              enableVideoFeatures: widget.enableVideoFeatures,
+              selected: selectedMediaIds.contains(asset.id),
+              onSelect: () => _toggleSelected(asset.id),
+              onSelectionPointerDown: (position) =>
+                  _beginSelectionPointer(asset.id, position),
+              onSelectionPointerEnter: (position) =>
+                  _enterSelectionPointer(asset.id, position),
+              onSelectionPointerUp: _endSelectionPointer,
+              onFavorite: favoriteBusy.contains(asset.id)
+                  ? null
+                  : () => _toggleFavorite(asset),
+              onPreview: selecting
+                  ? () => _handleSelectionTap(asset.id)
+                  : asset.kind == MediaKind.video && !widget.enableVideoFeatures
+                  ? () => ScaffoldMessenger.of(context).showSnackBar(
+                      _messageSnackBar(
+                        context.l10n.select(
+                          zh: '安全模式已禁用视频预览。',
+                          en: 'Video preview is disabled in safe mode.',
+                        ),
+                        error: true,
+                      ),
+                    )
+                  : () => MediaViewer.open(
+                      context,
+                      backend: widget.backend,
+                      items: visibleItems,
+                      initialIndex: index,
+                      autoPlayVideo: widget.settings.value.autoPlayVideo,
+                      compactTagDisplay:
+                          widget.settings.value.compactTagDisplay,
+                      onMetadataChanged: _reload,
+                      galleryQuery: _pages.query,
+                      initialPage: _pages.snapshot,
+                      mediaFilter: _pages.accept,
+                    ),
+              onSecondaryTapDown: (details) =>
+                  _showSingleMediaMenu(asset, details),
+              onEdit: () async {
+                final changed = await showModalBottomSheet<MediaMetadataUpdate>(
+                  context: context,
+                  showDragHandle: true,
+                  isScrollControlled: true,
+                  constraints: const BoxConstraints(maxWidth: 680),
+                  builder: (_) => MediaMetadataEditor(
+                    backend: widget.backend,
+                    asset: asset,
+                  ),
+                );
+                if (changed != null) _reload();
+              },
+            );
+            return GalleryPerf.compiled ? GalleryPerfTile(child: child) : child;
+          }
+
+          return _isDesktop
+              ? GalleryDeferredCard(
+                  key: ValueKey(('deferred-card', asset.id)),
+                  enabled: !selecting,
+                  builder: fullCard,
+                  placeholderBuilder: (context) =>
+                      _GalleryCardPlaceholder(asset: asset),
+                )
+              : fullCard(context);
+        }
+
+        if (_isDesktop && groupByImportedDate) {
+          final galleryRows = GalleryPerf.instance.sync(
+            GalleryMetric.group,
+            () => _desktopGalleryRows(
+              visibleItems,
+              columns: columns,
+              english: context.l10n.locale.languageCode == 'en',
+            ),
+          );
+          mediaContent = SliverList.builder(
+            key: ValueKey(('desktop-gallery-rows', _returnLayoutGeneration)),
+            itemCount: galleryRows.length,
+            itemBuilder: (context, rowIndex) {
+              final galleryRow = galleryRows[rowIndex];
+              if (galleryRow.header != null) {
+                return Padding(
+                  key: ValueKey('desktop-gallery-date-$rowIndex'),
+                  padding: EdgeInsets.only(
+                    top: rowIndex == 0 ? 0 : 8,
+                    bottom: 8,
+                  ),
+                  child: Text(
+                    galleryRow.header!,
+                    style: Theme.of(context).textTheme.titleSmall
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                );
+              }
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (var column = 0; column < columns; column++) ...[
+                      if (column > 0) const SizedBox(width: 16),
+                      Expanded(
+                        child: column >= galleryRow.items.length
+                            ? const SizedBox.shrink()
+                            : SizedBox(
+                                height: cardHeight,
+                                child: card(
+                                  galleryRow.items[column].$1,
+                                  galleryRow.items[column].$2,
+                                ),
+                              ),
+                      ),
+                    ],
+                  ],
+                ),
+              );
+            },
+          );
+        } else {
+          mediaContent = SliverGrid(
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: columns,
+              crossAxisSpacing: 16,
+              mainAxisSpacing: 16,
+              mainAxisExtent: cardHeight,
+            ),
+            delegate: SliverChildBuilderDelegate(
+              (context, index) => card(visibleItems[index], index),
+              childCount: visibleItems.length,
+            ),
+          );
+        }
+      }
+      return SliverMainAxisGroup(
+        slivers: [
+          SliverToBoxAdapter(
+            child: SizedBox(
+              height: _isDesktop ? 10 : 4,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                child: snapshot.connectionState == ConnectionState.done
+                    ? const SizedBox.shrink(
+                        key: ValueKey('gallery-filter-idle'),
+                      )
+                    : const LinearProgressIndicator(
+                        key: Key('gallery-filter-progress'),
+                        minHeight: 2,
+                      ),
+              ),
+            ),
+          ),
+          if (snapshot.hasError)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Text(
+                  context.l10n.select(
+                    zh: '筛选更新失败，正在显示上一次结果：${snapshot.error}',
+                    en: 'Filter update failed; showing the previous results: ${snapshot.error}',
+                  ),
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
+            ),
+          SliverIgnorePointer(ignoring: _pages.loading, sliver: mediaContent),
+          if (_pages.loadingNext)
+            const SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.all(12),
+                child: LinearProgressIndicator(
+                  key: Key('gallery-loading-next'),
+                ),
+              ),
+            ),
+          if (_pages.error != null && !_pages.loading)
+            SliverToBoxAdapter(
+              child: TextButton.icon(
+                key: const Key('gallery-page-retry'),
+                onPressed: _loadNextMediaPage,
+                icon: const Icon(Icons.refresh),
+                label: Text(
+                  context.l10n.select(
+                    zh: '加载失败，重试',
+                    en: 'Loading failed. Retry',
+                  ),
+                ),
+              ),
+            ),
+        ],
+      );
+    },
   );
 
   Future<void> _deleteSelectedMedia({List<int>? mediaIds}) async {
@@ -3049,6 +4320,98 @@ class _LibraryPageState extends State<LibraryPage> {
   }
 }
 
+class _DesktopGalleryRow {
+  const _DesktopGalleryRow({this.header, this.items = const []});
+
+  final String? header;
+  final List<(MediaAsset, int)> items;
+}
+
+List<_DesktopGalleryRow> _desktopGalleryRows(
+  List<MediaAsset> items, {
+  required int columns,
+  required bool english,
+}) {
+  final rows = <_DesktopGalleryRow>[];
+  var offset = 0;
+  while (offset < items.length) {
+    final first = items[offset];
+    final key = galleryDateGroupKey(first.importedAt);
+    rows.add(
+      _DesktopGalleryRow(
+        header: galleryDateGroupLabel(first.importedAt, english: english),
+      ),
+    );
+    final group = <(MediaAsset, int)>[];
+    while (offset < items.length &&
+        galleryDateGroupKey(items[offset].importedAt) == key) {
+      group.add((items[offset], offset));
+      offset++;
+      if (group.length == columns) {
+        rows.add(_DesktopGalleryRow(items: List.of(group)));
+        group.clear();
+      }
+    }
+    if (group.isNotEmpty) rows.add(_DesktopGalleryRow(items: List.of(group)));
+  }
+  return rows;
+}
+
+/// No task requests, interactive Material subtree, labels or tooltips. The
+/// parent grid still supplies the exact same outer extent as a complete card.
+class _GalleryCardPlaceholder extends StatelessWidget {
+  const _GalleryCardPlaceholder({required this.asset});
+  final MediaAsset asset;
+
+  @override
+  Widget build(BuildContext context) {
+    final bytes = asset.kind == MediaKind.image
+        ? ImageThumbnailCache.peek(asset)
+        : VideoThumbnailCache.peekCover(asset)?.bytes;
+    Widget? cover;
+    if (bytes != null && bytes.isNotEmpty) {
+      final provider = ResizeImage.resizeIfNeeded(
+        1024,
+        null,
+        MemoryImage(bytes),
+      );
+      // MemoryImage keys are synchronous; obtainKey never resolves/decodes.
+      provider.obtainKey(ImageConfiguration.empty).then((key) {
+        final status = PaintingBinding.instance.imageCache.statusForKey(key);
+        if (!status.pending && (status.keepAlive || status.live)) {
+          cover = Image(
+            image: provider,
+            fit: BoxFit.cover,
+            gaplessPlayback: true,
+            excludeFromSemantics: true,
+            errorBuilder: (_, _, _) => const SizedBox.expand(),
+          );
+        }
+      });
+    }
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      key: ValueKey('media-card-deferred-${asset.id}'),
+      padding: CardTheme.of(context).margin ?? const EdgeInsets.all(4),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: ColoredBox(
+          color: CardTheme.of(context).color ?? colors.surfaceContainerLow,
+          child: cover == null
+              ? const SizedBox.expand()
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(child: cover!),
+                    const SizedBox(height: 96),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+}
+
 class _MediaCard extends StatelessWidget {
   const _MediaCard({
     required this.asset,
@@ -3084,7 +4447,12 @@ class _MediaCard extends StatelessWidget {
   final bool enableVideoFeatures;
 
   @override
-  Widget build(BuildContext context) => MouseRegion(
+  Widget build(BuildContext context) => GalleryPerf.instance.sync(
+    GalleryMetric.cardBuild,
+    () => _buildCard(context),
+  );
+
+  Widget _buildCard(BuildContext context) => MouseRegion(
     onEnter: selecting
         ? (event) => onSelectionPointerEnter(event.position)
         : null,
@@ -3235,16 +4603,6 @@ class _MediaCard extends StatelessWidget {
                         ),
                       ],
                     ],
-                    if (settings.showNotePreview &&
-                        (asset.note?.isNotEmpty ?? false)) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        _notePreview(asset.note!),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
                   ],
                 ),
               ),
@@ -3271,12 +4629,10 @@ class _MediaPreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (asset.kind == MediaKind.image) {
-      return Image.file(
-        File(asset.storagePath),
+      return ImageThumbnail(
+        asset: asset,
         fit: BoxFit.cover,
-        cacheWidth: 900,
-        gaplessPlayback: true,
-        errorBuilder: (_, _, _) => _placeholder(context),
+        placeholder: _placeholder(context),
       );
     }
     return _VideoCardPreview(
@@ -3306,7 +4662,7 @@ class _MediaPreview extends StatelessWidget {
   );
 }
 
-class _VideoCardPreview extends StatelessWidget {
+class _VideoCardPreview extends StatefulWidget {
   const _VideoCardPreview({
     required this.asset,
     required this.onThumbnailError,
@@ -3319,8 +4675,100 @@ class _VideoCardPreview extends StatelessWidget {
   final bool enabled;
 
   @override
+  State<_VideoCardPreview> createState() => _VideoCardPreviewState();
+}
+
+class _VideoCardPreviewState extends State<_VideoCardPreview> {
+  PreviewRequest<VideoThumbnailData>? _request;
+  Future<VideoThumbnailData>? _thumbnail;
+  Future<VideoThumbnailData>? _cachedThumbnail;
+  VideoThumbnailData? _initialThumbnail;
+  GalleryDragLoadController? _drag;
+  bool _initialized = false;
+  bool _waitingForDrag = false;
+  int? _resumeTicket;
+
+  @override
+  void initState() {
+    super.initState();
+    if (GalleryPerf.compiled) {
+      GalleryPerf.instance.coverMode.addListener(_coverModeChanged);
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _drag = GalleryPreviewLoadScope.maybeOf(context);
+    if (!_initialized || (_waitingForDrag && _drag?.defer != true)) {
+      _initialized = true;
+      _load();
+    }
+  }
+
+  void _coverModeChanged() {
+    if (mounted) setState(_load);
+  }
+
+  @override
+  void didUpdateWidget(covariant _VideoCardPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.asset.sha256 != widget.asset.sha256 ||
+        oldWidget.asset.storagePath != widget.asset.storagePath ||
+        oldWidget.enabled != widget.enabled) {
+      _load();
+    }
+  }
+
+  void _load() {
+    _resumeTicket = GalleryPerf.instance.previewTicket(
+      thumbActive: _drag?.held == true && _drag?.hasMoved == true,
+      resumed: _waitingForDrag,
+    );
+    _request?.cancel();
+    _request = null;
+    _thumbnail = null;
+    _cachedThumbnail = null;
+    _initialThumbnail = widget.enabled
+        ? VideoThumbnailCache.peekCover(widget.asset)
+        : null;
+    _waitingForDrag = _drag?.defer == true;
+    if (_waitingForDrag) {
+      GalleryPerf.instance.increment(GalleryMetric.dragDeferred);
+      return;
+    }
+    if (!widget.enabled ||
+        (GalleryPerf.compiled &&
+            GalleryPerf.instance.coverMode.value ==
+                GalleryCoverMode.placeholder)) {
+      return;
+    }
+    if (_initialThumbnail == null) {
+      _cachedThumbnail = VideoThumbnailCache.readExisting(widget.asset);
+    }
+    final pending = VideoThumbnailCache.request(
+      widget.asset,
+      onError: widget.onThumbnailError,
+      urgent: true,
+    );
+    _request = pending;
+    _thumbnail = pending.future
+        .then((data) => data ?? const VideoThumbnailData())
+        .whenComplete(pending.cancel);
+  }
+
+  @override
+  void dispose() {
+    if (GalleryPerf.compiled) {
+      GalleryPerf.instance.coverMode.removeListener(_coverModeChanged);
+    }
+    _request?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (!enabled) {
+    if (!widget.enabled) {
       return const DecoratedBox(
         decoration: BoxDecoration(
           gradient: LinearGradient(
@@ -3333,70 +4781,94 @@ class _VideoCardPreview extends StatelessWidget {
       );
     }
     return FutureBuilder<VideoThumbnailData>(
-      future: VideoThumbnailCache.load(asset, onError: onThumbnailError),
-      builder: (context, snapshot) {
-        final data = snapshot.data ?? const VideoThumbnailData();
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            if (data.bytes != null)
-              Image.memory(
-                data.bytes!,
-                fit: BoxFit.cover,
-                gaplessPlayback: true,
-              )
-            else
-              const DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [Color(0xff69599d), Color(0xffc5b7e7)],
+      future: _cachedThumbnail,
+      builder: (context, cached) => FutureBuilder<VideoThumbnailData>(
+        key: ValueKey((widget.asset.sha256, widget.asset.storagePath)),
+        future: _thumbnail,
+        initialData: _initialThumbnail,
+        builder: (context, snapshot) {
+          final data =
+              snapshot.data ?? cached.data ?? const VideoThumbnailData();
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              if (data.bytes != null &&
+                  !(GalleryPerf.compiled &&
+                      GalleryPerf.instance.coverMode.value ==
+                          GalleryCoverMode.placeholder))
+                galleryPerfImageMemory(
+                  data.bytes!,
+                  fit: BoxFit.cover,
+                  cacheWidth: VideoThumbnailCache.decodeWidth,
+                  resumeTicket: _resumeTicket,
+                  placeholder: const DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [Color(0xff69599d), Color(0xffc5b7e7)],
+                      ),
+                    ),
+                    child: Icon(
+                      Icons.videocam_rounded,
+                      color: Colors.white70,
+                      size: 48,
+                    ),
+                  ),
+                )
+              else
+                const DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xff69599d), Color(0xffc5b7e7)],
+                    ),
+                  ),
+                  child: Icon(
+                    Icons.videocam_rounded,
+                    color: Colors.white70,
+                    size: 48,
                   ),
                 ),
+              const Positioned(
+                left: 10,
+                bottom: 10,
                 child: Icon(
-                  Icons.videocam_rounded,
-                  color: Colors.white70,
-                  size: 48,
+                  Icons.play_circle_fill_rounded,
+                  color: Colors.white,
+                  size: 34,
                 ),
               ),
-            const Positioned(
-              left: 10,
-              bottom: 10,
-              child: Icon(
-                Icons.play_circle_fill_rounded,
-                color: Colors.white,
-                size: 34,
-              ),
-            ),
-            Positioned(
-              right: 10,
-              bottom: 10,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: .72),
-                  borderRadius: BorderRadius.circular(5),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 7,
-                    vertical: 3,
+              Positioned(
+                right: 10,
+                bottom: 10,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: .72),
+                    borderRadius: BorderRadius.circular(5),
                   ),
-                  child: Text(
-                    _formatVideoDuration(data.duration),
-                    key: ValueKey('video-duration-${asset.id}'),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 3,
+                    ),
+                    child: Text(
+                      _formatVideoDuration(data.duration),
+                      key: ValueKey('video-duration-${widget.asset.id}'),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ],
-        );
-      },
+            ],
+          );
+        },
+      ),
     );
   }
 }
@@ -3408,9 +4880,6 @@ String _formatVideoDuration(Duration value) {
   return hours > 0 ? '$hours:$minutes:$seconds' : '$minutes:$seconds';
 }
 
-String _notePreview(String note) =>
-    note.length <= 15 ? note : '${note.substring(0, 15)}…';
-
 class _HoverMarqueeText extends StatefulWidget {
   const _HoverMarqueeText({super.key, required this.text});
 
@@ -3421,23 +4890,30 @@ class _HoverMarqueeText extends StatefulWidget {
 }
 
 class _HoverMarqueeTextState extends State<_HoverMarqueeText> {
-  final ScrollController controller = ScrollController();
+  ScrollController? controller;
   int animationGeneration = 0;
   bool hovering = false;
+  bool scrollingAttached = false;
 
   @override
   void didUpdateWidget(covariant _HoverMarqueeText oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.text != widget.text) {
       animationGeneration += 1;
-      if (controller.hasClients) controller.jumpTo(0);
+      final currentController = controller;
+      if (currentController?.hasClients == true) {
+        currentController!.jumpTo(0);
+      }
+      if (!hovering && scrollingAttached) {
+        unawaited(_releaseAfterReset(animationGeneration));
+      }
     }
   }
 
   @override
   void dispose() {
     animationGeneration += 1;
-    controller.dispose();
+    controller?.dispose();
     super.dispose();
   }
 
@@ -3447,30 +4923,76 @@ class _HoverMarqueeTextState extends State<_HoverMarqueeText> {
     onEnter: (_) => _start(),
     onExit: (_) => _stop(),
     child: ClipRect(
-      child: SingleChildScrollView(
-        key: const Key('filename-marquee-scroll'),
-        controller: controller,
-        scrollDirection: Axis.horizontal,
-        physics: const NeverScrollableScrollPhysics(),
-        child: Text(
-          widget.text,
-          maxLines: 1,
-          softWrap: false,
-          style: const TextStyle(fontWeight: FontWeight.w600),
-        ),
-      ),
+      child: scrollingAttached
+          ? SingleChildScrollView(
+              key: const Key('filename-marquee-scroll'),
+              controller: controller,
+              scrollDirection: Axis.horizontal,
+              physics: const NeverScrollableScrollPhysics(),
+              child: _filenameText(),
+            )
+          : OverflowBox(
+              alignment: AlignmentDirectional.centerStart,
+              fit: OverflowBoxFit.deferToChild,
+              minWidth: 0,
+              maxWidth: double.infinity,
+              child: _filenameText(),
+            ),
     ),
   );
 
+  Widget _filenameText() => Text(
+    widget.text,
+    maxLines: 1,
+    softWrap: false,
+    style: const TextStyle(fontWeight: FontWeight.w600),
+  );
+
+  Future<void> _releaseAfterReset(int generation) async {
+    final currentController = controller;
+    if (currentController?.hasClients == true) {
+      await currentController!.animateTo(
+        0,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+      );
+    }
+    if (!mounted || hovering || generation != animationGeneration) return;
+    setState(() => scrollingAttached = false);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          hovering ||
+          generation != animationGeneration ||
+          scrollingAttached) {
+        return;
+      }
+      final retired = controller;
+      if (retired?.hasClients == false) {
+        retired!.dispose();
+        controller = null;
+      }
+    });
+  }
+
   Future<void> _start() async {
+    if (hovering) return;
     hovering = true;
     final generation = ++animationGeneration;
+    controller ??= ScrollController();
+    if (!scrollingAttached) {
+      setState(() => scrollingAttached = true);
+    }
     await Future<void>.delayed(const Duration(milliseconds: 350));
+    if (!mounted || !hovering || generation != animationGeneration) return;
+    if (controller?.hasClients != true) {
+      await WidgetsBinding.instance.endOfFrame;
+    }
     while (mounted && hovering && generation == animationGeneration) {
-      if (!controller.hasClients) return;
-      final extent = controller.position.maxScrollExtent;
+      final currentController = controller;
+      if (currentController?.hasClients != true) return;
+      final extent = currentController!.position.maxScrollExtent;
       if (extent <= 0) return;
-      await controller.animateTo(
+      await currentController.animateTo(
         extent,
         duration: Duration(
           milliseconds: (extent * 28).round().clamp(1200, 6000).toInt(),
@@ -3480,7 +5002,7 @@ class _HoverMarqueeTextState extends State<_HoverMarqueeText> {
       if (!mounted || !hovering || generation != animationGeneration) return;
       await Future<void>.delayed(const Duration(milliseconds: 700));
       if (!mounted || !hovering || generation != animationGeneration) return;
-      await controller.animateTo(
+      await currentController.animateTo(
         0,
         duration: Duration(
           milliseconds: (extent * 18).round().clamp(800, 4000).toInt(),
@@ -3492,17 +5014,10 @@ class _HoverMarqueeTextState extends State<_HoverMarqueeText> {
   }
 
   void _stop() {
+    if (!hovering) return;
     hovering = false;
-    animationGeneration += 1;
-    if (controller.hasClients) {
-      unawaited(
-        controller.animateTo(
-          0,
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOutCubic,
-        ),
-      );
-    }
+    final generation = ++animationGeneration;
+    unawaited(_releaseAfterReset(generation));
   }
 }
 
@@ -3534,7 +5049,7 @@ class _Tag extends StatelessWidget {
   );
 }
 
-enum _AlbumAction { rename, toggleSmart, editRules, delete }
+enum _AlbumAction { edit, delete }
 
 class AlbumsPage extends StatefulWidget {
   const AlbumsPage({
@@ -3554,11 +5069,18 @@ class AlbumsPage extends StatefulWidget {
 class _AlbumsPageState extends State<AlbumsPage> {
   late Future<List<AlbumSummary>> albums = widget.backend.listAlbums();
   final Map<int, Future<List<MediaAsset>>> albumCovers = {};
+  final ScrollController _scrollController = ScrollController();
 
   void _reload() => setState(() {
     albumCovers.clear();
     albums = widget.backend.listAlbums();
   });
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
 
   Future<List<MediaAsset>> _coverFor(AlbumSummary album) =>
       albumCovers.putIfAbsent(
@@ -3578,6 +5100,8 @@ class _AlbumsPageState extends State<AlbumsPage> {
       icon: const Icon(Icons.add_rounded),
       label: Text(context.l10n.select(zh: '新建相册', en: 'New album')),
     ),
+    controller: _scrollController,
+    physics: const DesktopFluidScrollPhysics(),
     child: FutureBuilder<List<AlbumSummary>>(
       future: albums,
       builder: (context, snapshot) {
@@ -3814,7 +5338,7 @@ class _AlbumsPageState extends State<AlbumsPage> {
       ),
       items: [
         PopupMenuItem(
-          value: _AlbumAction.rename,
+          value: _AlbumAction.edit,
           child: ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
@@ -3822,41 +5346,6 @@ class _AlbumsPageState extends State<AlbumsPage> {
             title: Text(context.l10n.select(zh: '编辑相册', en: 'Edit album')),
           ),
         ),
-        PopupMenuItem(
-          value: _AlbumAction.toggleSmart,
-          child: ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(
-              album.albumType == 'smart'
-                  ? Icons.photo_album_outlined
-                  : Icons.auto_awesome_rounded,
-            ),
-            title: Text(
-              album.albumType == 'smart'
-                  ? context.l10n.select(
-                      zh: '转换为普通相册',
-                      en: 'Convert to regular album',
-                    )
-                  : context.l10n.select(
-                      zh: '转换为自动相册',
-                      en: 'Convert to smart album',
-                    ),
-            ),
-          ),
-        ),
-        if (album.albumType == 'smart')
-          PopupMenuItem(
-            value: _AlbumAction.editRules,
-            child: ListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.rule_rounded),
-              title: Text(
-                context.l10n.select(zh: '编辑自动规则', en: 'Edit smart rules'),
-              ),
-            ),
-          ),
         const PopupMenuDivider(),
         PopupMenuItem(
           value: _AlbumAction.delete,
@@ -3877,14 +5366,8 @@ class _AlbumsPageState extends State<AlbumsPage> {
     );
     if (action == null || !mounted) return;
     switch (action) {
-      case _AlbumAction.rename:
-        await _renameAlbum(album);
-        return;
-      case _AlbumAction.toggleSmart:
-        await _toggleAlbumType(album);
-        return;
-      case _AlbumAction.editRules:
-        await _editAlbumRules(album);
+      case _AlbumAction.edit:
+        await _editAlbum(album);
         return;
       case _AlbumAction.delete:
         await _deleteAlbum(album);
@@ -3892,10 +5375,12 @@ class _AlbumsPageState extends State<AlbumsPage> {
     }
   }
 
-  Future<void> _renameAlbum(AlbumSummary album) async {
+  Future<void> _editAlbum(AlbumSummary album) async {
     final draft = await _promptAlbumDetails(album);
     if (draft == null ||
-        (draft.name == album.name && draft.description == album.description)) {
+        (draft.name == album.name &&
+            draft.description == album.description &&
+            draft.smart == (album.albumType == 'smart'))) {
       return;
     }
     if (!mounted) return;
@@ -3903,92 +5388,18 @@ class _AlbumsPageState extends State<AlbumsPage> {
       zh: '相册信息已更新。',
       en: 'Album details updated.',
     );
-    await _runAlbumAction(
-      () => widget.backend.updateAlbum(
+    await _runAlbumAction(() async {
+      await widget.backend.updateAlbum(
         album.id,
         draft.name,
         description: draft.description,
-        smart: album.albumType == 'smart',
-      ),
-      success: success,
-    );
-  }
-
-  Future<void> _toggleAlbumType(AlbumSummary album) async {
-    final toSmart = album.albumType != 'smart';
-    if (toSmart) {
-      final rules = await _showRuleEditor(albumId: album.id);
-      if (rules == null || !mounted) return;
-      await _runAlbumAction(
-        () async {
-          await widget.backend.updateAlbum(
-            album.id,
-            album.name,
-            description: album.description,
-            smart: true,
-          );
-          await widget.backend.replaceAlbumRules(album.id, rules);
-        },
-        success: context.l10n.select(
-          zh: '已转换为自动相册。',
-          en: 'Converted to a smart album.',
-        ),
+        smart: draft.smart,
       );
-      return;
-    }
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(
-          context.l10n.select(
-            zh: '转换为普通相册？',
-            en: 'Convert to a regular album?',
-          ),
-        ),
-        content: Text(
-          context.l10n.select(
-            zh: '当前符合规则的媒体会固定加入普通相册，自动规则随后移除。图库中的原文件不会受到影响。',
-            en: 'Current matches will become fixed members and smart rules will be removed. Library files are not affected.',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
-          ),
-          FilledButton(
-            key: const Key('confirm-convert-regular-album'),
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(context.l10n.select(zh: '转换', en: 'Convert')),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-    await _runAlbumAction(
-      () => widget.backend.updateAlbum(
+      await widget.backend.replaceAlbumRules(
         album.id,
-        album.name,
-        description: album.description,
-        smart: false,
-      ),
-      success: context.l10n.select(
-        zh: '已转换为普通相册。',
-        en: 'Converted to a regular album.',
-      ),
-    );
-  }
-
-  Future<void> _editAlbumRules(AlbumSummary album) async {
-    final rules = await _showRuleEditor(albumId: album.id);
-    if (rules == null || !mounted) return;
-    await _runAlbumAction(
-      () => widget.backend.replaceAlbumRules(album.id, rules),
-      success: context.l10n.select(
-        zh: '自动相册规则已更新。',
-        en: 'Smart album rules updated.',
-      ),
-    );
+        draft.smart ? draft.rules : const [],
+      );
+    }, success: success);
   }
 
   Future<void> _deleteAlbum(AlbumSummary album) async {
@@ -4026,51 +5437,155 @@ class _AlbumsPageState extends State<AlbumsPage> {
     );
   }
 
-  Future<_AlbumDraft?> _promptAlbumDetails(AlbumSummary album) {
-    final name = TextEditingController(text: album.name);
-    final description = TextEditingController(text: album.description);
+  Future<_AlbumDraft?> _promptAlbumDetails(AlbumSummary album) async {
+    final albumName = TextEditingController(text: album.name);
+    final albumDescription = TextEditingController(text: album.description);
+    var rules = <AlbumRule>[];
+    Object? rulesError;
+    try {
+      rules = await widget.backend.listAlbumRules(album.id);
+    } catch (error, stackTrace) {
+      await widget.backend.logError(
+        'Failed to load album rules for editing',
+        error,
+        stackTrace,
+      );
+      rulesError = error;
+    }
+    if (!mounted) {
+      return null;
+    }
     var valid = album.name.trim().isNotEmpty;
-    return showDialog<_AlbumDraft>(
+    var smart = album.albumType == 'smart';
+    final result = await showDialog<_AlbumDraft>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: Text(context.l10n.select(zh: '编辑相册', en: 'Edit album')),
           content: SizedBox(
             width: 460,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  key: const Key('rename-album-field'),
-                  controller: name,
-                  autofocus: true,
-                  maxLength: 80,
-                  decoration: InputDecoration(
-                    labelText: context.l10n.select(
-                      zh: '相册名称',
-                      en: 'Album name',
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    key: const Key('rename-album-field'),
+                    controller: albumName,
+                    autofocus: true,
+                    maxLength: 80,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.select(
+                        zh: '相册名称',
+                        en: 'Album name',
+                      ),
+                      border: const OutlineInputBorder(),
                     ),
-                    border: const OutlineInputBorder(),
+                    onChanged: (value) =>
+                        setDialogState(() => valid = value.trim().isNotEmpty),
                   ),
-                  onChanged: (value) =>
-                      setDialogState(() => valid = value.trim().isNotEmpty),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  key: const Key('edit-album-description-field'),
-                  controller: description,
-                  maxLength: 160,
-                  maxLines: 3,
-                  decoration: InputDecoration(
-                    labelText: context.l10n.select(
-                      zh: '相册描述（可选）',
-                      en: 'Album description (optional)',
+                  const SizedBox(height: 4),
+                  TextField(
+                    key: const Key('edit-album-description-field'),
+                    controller: albumDescription,
+                    maxLength: 160,
+                    maxLines: 3,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.select(
+                        zh: '相册描述（可选）',
+                        en: 'Album description (optional)',
+                      ),
+                      alignLabelWithHint: true,
+                      border: const OutlineInputBorder(),
                     ),
-                    alignLabelWithHint: true,
-                    border: const OutlineInputBorder(),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 4),
+                  SwitchListTile(
+                    key: const Key('edit-album-smart-toggle'),
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(
+                      context.l10n.select(zh: '自动相册', en: 'Smart album'),
+                    ),
+                    subtitle: Text(
+                      context.l10n.select(
+                        zh: '自动相册持续匹配规则；关闭后会保留当前匹配媒体并转为普通相册。',
+                        en: 'Smart albums keep matching rules. Turning this off keeps current matches as regular album members.',
+                      ),
+                    ),
+                    value: smart,
+                    onChanged: (value) => setDialogState(() => smart = value),
+                  ),
+                  if (smart) ...[
+                    const SizedBox(height: 4),
+                    if (rulesError != null) ...[
+                      Text(
+                        context.l10n.select(
+                          zh: '自动相册规则读取失败：$rulesError',
+                          en: 'Failed to load smart album rules: $rulesError',
+                        ),
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                      TextButton.icon(
+                        key: const Key('retry-edit-album-rules'),
+                        onPressed: () async {
+                          try {
+                            final loaded = await widget.backend.listAlbumRules(
+                              album.id,
+                            );
+                            if (context.mounted) {
+                              setDialogState(() {
+                                rules = loaded;
+                                rulesError = null;
+                              });
+                            }
+                          } catch (error, stackTrace) {
+                            await widget.backend.logError(
+                              'Failed to reload album rules for editing',
+                              error,
+                              stackTrace,
+                            );
+                            if (context.mounted) {
+                              setDialogState(() => rulesError = error);
+                            }
+                          }
+                        },
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: Text(context.l10n.select(zh: '重试', en: 'Retry')),
+                      ),
+                    ],
+                    SizedBox(
+                      width: double.infinity,
+                      child: rulesError == null
+                          ? OutlinedButton.icon(
+                              key: const Key('edit-album-configure-rules'),
+                              onPressed: () async {
+                                final next = await _showRuleEditor(
+                                  albumId: null,
+                                  initialRules: rules,
+                                );
+                                if (next != null) {
+                                  setDialogState(() => rules = next);
+                                }
+                              },
+                              icon: const Icon(Icons.rule_rounded),
+                              label: Text(
+                                rules.isEmpty
+                                    ? context.l10n.select(
+                                        zh: '配置自动规则',
+                                        en: 'Configure smart rules',
+                                      )
+                                    : context.l10n.select(
+                                        zh: '编辑自动规则（${rules.length}）',
+                                        en: 'Edit smart rules (${rules.length})',
+                                      ),
+                              ),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                  ],
+                ],
+              ),
             ),
           ),
           actions: [
@@ -4080,15 +5595,20 @@ class _AlbumsPageState extends State<AlbumsPage> {
             ),
             FilledButton(
               key: const Key('confirm-rename-album'),
-              onPressed: !valid
+              onPressed:
+                  !valid ||
+                      (smart &&
+                          (rulesError != null ||
+                              rules.isEmpty ||
+                              rules.any((rule) => rule.value.trim().isEmpty)))
                   ? null
                   : () => Navigator.pop(
                       context,
                       _AlbumDraft(
-                        name: name.text.trim(),
-                        description: description.text.trim(),
-                        smart: album.albumType == 'smart',
-                        rules: const [],
+                        name: albumName.text.trim(),
+                        description: albumDescription.text.trim(),
+                        smart: smart,
+                        rules: smart ? List.of(rules) : const [],
                       ),
                     ),
               child: Text(context.l10n.select(zh: '保存', en: 'Save')),
@@ -4097,6 +5617,7 @@ class _AlbumsPageState extends State<AlbumsPage> {
         ),
       ),
     );
+    return result;
   }
 
   Future<List<AlbumRule>?> _showRuleEditor({
@@ -4621,10 +6142,8 @@ class _AlbumCard extends StatelessWidget {
                   const SizedBox(height: 3),
                 ],
                 Text(
-                  context.l10n.select(
-                    zh: '${album.mediaCount} 个媒体 · ${album.albumType == 'smart' ? '自动相册' : '普通相册'}',
-                    en: '${album.mediaCount} media · ${album.albumType == 'smart' ? 'Smart album' : 'Regular album'}',
-                  ),
+                  '${albumMediaCountText(context, album)} · '
+                  '${context.l10n.select(zh: album.albumType == 'smart' ? '自动相册' : '普通相册', en: album.albumType == 'smart' ? 'Smart album' : 'Regular album')}',
                   style: const TextStyle(color: Colors.white70),
                 ),
               ],
@@ -4643,7 +6162,9 @@ class TransferPage extends StatefulWidget {
     required this.sync,
     required this.settings,
     required this.onImportComplete,
+    this.onDeviceSyncChanged,
     this.onNintendoAccountChanged,
+    this.accountSnapshot,
     this.enableVideoFeatures = true,
     this.enableMtpDetection = true,
   });
@@ -4651,7 +6172,9 @@ class TransferPage extends StatefulWidget {
   final SyncController sync;
   final SettingsController settings;
   final VoidCallback onImportComplete;
+  final Future<void> Function()? onDeviceSyncChanged;
   final Future<void> Function()? onNintendoAccountChanged;
+  final Future<NintendoAccountSnapshot>? accountSnapshot;
   final bool enableVideoFeatures;
   final bool enableMtpDetection;
 
@@ -4661,7 +6184,7 @@ class TransferPage extends StatefulWidget {
 
 class _TransferPageState extends State<TransferPage>
     with SingleTickerProviderStateMixin {
-  late final TabController tabs = TabController(length: 3, vsync: this);
+  late final TabController tabs = TabController(length: 4, vsync: this);
   final TextEditingController callbackUrl = TextEditingController();
   final TextEditingController customGameName = TextEditingController();
   bool importing = false;
@@ -4669,6 +6192,8 @@ class _TransferPageState extends State<TransferPage>
   bool completingLogin = false;
   bool addingAccount = false;
   bool? signedIn;
+  bool accountLoading = true;
+  Object? accountLoadError;
   NintendoAccountProfile? accountProfile;
   List<NintendoAccountProfile> accounts = const [];
   Map<String, SyncRuntimeState> accountSyncHistories = const {};
@@ -4680,6 +6205,10 @@ class _TransferPageState extends State<TransferPage>
   bool mtpScanning = false;
   bool mtpIndexing = false;
   NintendoMtpProgress? mtpProgress;
+  String? mtpWarning;
+  bool mtpCancelling = false;
+  String? mtpStageOperationId;
+  String? mtpImportOperationId;
   _MtpSelectionStats? mtpSelectionStats;
   List<String> customImportPaths = const [];
   List<GameTagSummary> customGameTags = const [];
@@ -4710,12 +6239,15 @@ class _TransferPageState extends State<TransferPage>
 
   void _handleSyncStateChanged() {
     final next = widget.sync.state;
-    final finished = next == SyncState.completed || next == SyncState.failed;
+    final finished =
+        next == SyncState.completed ||
+        next == SyncState.failed ||
+        next == SyncState.cancelled;
     final wasRunning =
         _lastSyncState == SyncState.running ||
         _lastSyncState == SyncState.cancelling;
     if (finished && wasRunning) {
-      unawaited(_loadAccountState());
+      unawaited(_loadAccountState(force: true));
     }
     _lastSyncState = next;
   }
@@ -4776,10 +6308,19 @@ class _TransferPageState extends State<TransferPage>
       customImportSummary = null;
       customImportError = null;
     });
+    GalleryPerf.instance.background(importBusy: true);
     try {
+      final importedSince = DateTime.now().toUtc();
       final summary = await widget.backend.importCustomFiles(
         customImportPaths,
         gameName,
+      );
+      unawaited(
+        ImageThumbnailCache.prefetchImportedImages(
+          widget.backend,
+          summary.imported,
+          importedSince: importedSince,
+        ),
       );
       if (!mounted) return;
       setState(() => customImportSummary = summary);
@@ -4793,39 +6334,45 @@ class _TransferPageState extends State<TransferPage>
       );
       if (mounted) setState(() => customImportError = error);
     } finally {
+      GalleryPerf.instance.background(importBusy: importing);
       if (mounted) setState(() => customImporting = false);
     }
   }
 
-  Future<void> _loadAccountState() async {
-    List<NintendoAccountProfile> profiles = const [];
+  Future<void> _loadAccountState({bool force = false}) async {
+    List<NintendoAccountProfile> profiles;
     String? selected;
-    final histories = <String, SyncRuntimeState>{};
     try {
-      profiles = await widget.backend.listNintendoAccounts();
-      selected = await widget.backend.selectedNintendoAccountId;
+      final snapshot = force || widget.accountSnapshot == null
+          ? NintendoAccountSnapshot(
+              accounts: await widget.backend.listNintendoAccounts(),
+              selectedAccountId: await widget.backend.selectedNintendoAccountId,
+            )
+          : await widget.accountSnapshot!;
+      if (snapshot.error != null) {
+        if (mounted) {
+          setState(() {
+            accountLoading = false;
+            accountLoadError = snapshot.error;
+          });
+        }
+        return;
+      }
+      profiles = snapshot.accounts;
+      selected = snapshot.selectedAccountId;
     } catch (error, stackTrace) {
       await widget.backend.logError(
         'Failed to load Nintendo accounts',
         error,
         stackTrace,
       );
-    }
-    if (widget.backend case final SyncHistoryBackend historyBackend) {
-      await Future.wait(
-        profiles.map((profile) async {
-          try {
-            histories[profile.accountId] = await historyBackend
-                .loadSyncAccountHistory(profile.accountId);
-          } catch (error, stackTrace) {
-            await widget.backend.logError(
-              'Failed to load Nintendo sync history',
-              error,
-              stackTrace,
-            );
-          }
-        }),
-      );
+      if (mounted) {
+        setState(() {
+          accountLoading = false;
+          accountLoadError = error;
+        });
+      }
+      return;
     }
     final profile = profiles
         .where((item) => item.accountId == selected)
@@ -4833,11 +6380,34 @@ class _TransferPageState extends State<TransferPage>
     if (!mounted) return;
     setState(() {
       accounts = profiles;
-      accountSyncHistories = histories;
       selectedAccountId = selected;
       signedIn = profiles.isNotEmpty;
       accountProfile = profile ?? profiles.firstOrNull;
+      accountLoading = false;
+      accountLoadError = null;
     });
+    if (widget.backend case final SyncHistoryBackend historyBackend) {
+      for (final account in profiles) {
+        try {
+          final history = await historyBackend.loadSyncAccountHistory(
+            account.accountId,
+          );
+          if (!mounted) return;
+          setState(() {
+            accountSyncHistories = {
+              ...accountSyncHistories,
+              account.accountId: history,
+            };
+          });
+        } catch (error, stackTrace) {
+          await widget.backend.logError(
+            'Failed to load Nintendo sync history',
+            error,
+            stackTrace,
+          );
+        }
+      }
+    }
   }
 
   Future<void> _loadMtpDevices() async {
@@ -4924,45 +6494,207 @@ class _TransferPageState extends State<TransferPage>
     List<NintendoMtpMediaEntry> entries,
   ) async {
     NintendoMtpStagingResult? staged;
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    final stageOperationId = 'switch-stage-$stamp';
+    final importOperationId = 'switch-import-$stamp';
+    final importedSince = DateTime.now().toUtc();
+    var interruptedByDisconnect = false;
+    GalleryPerf.instance.background(importBusy: true);
     setState(() {
       importing = true;
+      mtpCancelling = false;
+      mtpWarning = null;
+      mtpStageOperationId = stageOperationId;
+      mtpImportOperationId = importOperationId;
       importSummary = null;
       importError = null;
-      mtpProgress = const NintendoMtpProgress(completed: 0, total: 0);
+      mtpProgress = const NintendoMtpProgress(
+        phase: 'copying',
+        completedFiles: 0,
+        totalFiles: 0,
+        completedBytes: 0,
+        totalBytes: 0,
+      );
       mtpSelectionStats = _MtpSelectionStats.fromEntries(entries);
     });
     try {
       staged = await WindowsNintendoMtp.stageAlbum(
         device,
         entries: entries,
+        operationId: stageOperationId,
         onProgress: (progress) {
           if (mounted) setState(() => mtpProgress = progress);
         },
       );
-      final summary = await widget.backend.importMtpFiles(
+      final outcome = await WindowsNintendoMtp.importWithProgress(
         staged.files,
         device.name,
+        operationId: importOperationId,
+        onProgress: (progress) {
+          if (mounted) setState(() => mtpProgress = progress);
+        },
+      );
+      unawaited(
+        ImageThumbnailCache.prefetchImportedImages(
+          widget.backend,
+          outcome.summary.imported,
+          importedSince: importedSince,
+        ),
       );
       if (!mounted) return;
-      setState(() => importSummary = summary);
+      setState(() {
+        importSummary = outcome.summary;
+        if (outcome.cancelled) {
+          mtpWarning = context.l10n.select(
+            zh: '导入已取消；已成功写入图库的媒体已保留。',
+            en: 'Import cancelled. Media already written to the library was kept.',
+          );
+        }
+      });
       widget.onImportComplete();
+      if (!outcome.cancelled) {
+        unawaited(
+          _notifyMtpImport(
+            interrupted: false,
+            summary: outcome.summary,
+            remaining: 0,
+          ),
+        );
+      }
+    } on NintendoMtpCancelled {
+      if (mounted) {
+        setState(
+          () => mtpWarning = context.l10n.select(
+            zh: '导入已取消；已成功写入图库的媒体已保留。',
+            en: 'Import cancelled. Media already written to the library was kept.',
+          ),
+        );
+      }
+    } on NintendoMtpImportException catch (error) {
+      interruptedByDisconnect = error.code == 'disconnected';
+      if (mounted) {
+        setState(() {
+          mtpWarning = context.l10n.select(
+            zh: interruptedByDisconnect
+                ? 'USB 连接已断开，导入已中止。已复制的文件不会丢失，已写入图库的媒体已保留。'
+                : 'USB 导入未完成：${error.message}',
+            en: interruptedByDisconnect
+                ? 'The USB connection was lost and the import stopped. Copied files were cleaned up and media already written to the library was kept.'
+                : 'USB import did not finish: ${error.message}',
+          );
+        });
+      }
+      unawaited(
+        _notifyMtpImport(
+          interrupted: true,
+          summary: importSummary,
+          remaining: mtpProgress == null
+              ? entries.length
+              : (mtpProgress!.totalFiles - mtpProgress!.completedFiles).clamp(
+                  0,
+                  mtpProgress!.totalFiles,
+                ),
+        ),
+      );
+      await widget.backend.logError(
+        interruptedByDisconnect
+            ? 'Switch USB import interrupted by disconnect'
+            : 'Switch USB import failed',
+        error,
+        StackTrace.current,
+      );
     } catch (error, stackTrace) {
       await widget.backend.logError(
         'Nintendo MTP import failed',
         error,
         stackTrace,
       );
-      if (mounted) setState(() => importError = error);
+      if (mounted) {
+        setState(() {
+          importError = error;
+          mtpWarning = context.l10n.select(
+            zh: 'USB 导入未完成，请检查连接后重试。',
+            en: 'USB import did not finish. Check the connection and retry.',
+          );
+        });
+      }
     } finally {
-      if (staged != null && await staged.directory.exists()) {
-        await staged.directory.delete(recursive: true);
+      try {
+        await WindowsNintendoMtp.cleanupStage(stageOperationId);
+        if (staged != null && await staged.directory.exists()) {
+          await staged.directory.delete(recursive: true);
+        }
+      } finally {
+        GalleryPerf.instance.background(importBusy: customImporting);
       }
       if (mounted) {
         setState(() {
           importing = false;
+          mtpCancelling = false;
+          mtpStageOperationId = null;
+          mtpImportOperationId = null;
           mtpProgress = null;
         });
       }
+    }
+  }
+
+  Future<void> _cancelMtpImport() async {
+    if (!importing || mtpCancelling) return;
+    setState(() => mtpCancelling = true);
+    final stage = mtpStageOperationId;
+    final import = mtpImportOperationId;
+    if (stage != null) await WindowsNintendoMtp.cancelStage(stage);
+    if (import != null) await WindowsNintendoMtp.cancelImport(import);
+  }
+
+  double? _mtpProgressValue(NintendoMtpProgress? progress) {
+    if (progress == null) return null;
+    if (progress.totalBytes > 0) {
+      return (progress.completedBytes / progress.totalBytes).clamp(0, 1);
+    }
+    if (progress.totalFiles > 0) {
+      return (progress.completedFiles / progress.totalFiles).clamp(0, 1);
+    }
+    return null;
+  }
+
+  String _mtpProgressLabel(BuildContext context, NintendoMtpProgress progress) {
+    if (progress.phase == 'importing') {
+      return context.l10n.select(
+        zh: '正在写入图库 ${progress.completedFiles} / ${progress.totalFiles}',
+        en: 'Writing to the library ${progress.completedFiles} / ${progress.totalFiles}',
+      );
+    }
+    return context.l10n.select(
+      zh: '正在从媒体设备复制 ${progress.completedFiles} / ${progress.totalFiles}',
+      en: 'Copying ${progress.completedFiles} / ${progress.totalFiles} from the media device',
+    );
+  }
+
+  Future<void> _notifyMtpImport({
+    required bool interrupted,
+    required ImportSummary? summary,
+    required int remaining,
+  }) async {
+    final language = Localizations.localeOf(context).languageCode;
+    final imported = summary?.imported ?? 0;
+    final duplicates = summary?.duplicates ?? 0;
+    final failed = summary?.failed ?? 0;
+    final title = interrupted
+        ? (language == 'zh'
+              ? 'Switch USB 导入已中断'
+              : 'Switch USB import interrupted')
+        : (language == 'zh' ? 'Switch USB 导入完成' : 'Switch USB import complete');
+    final body = language == 'zh'
+        ? '已导入 $imported，重复 $duplicates，失败 $failed${interrupted ? '，剩余 $remaining' : ''}'
+        : 'Imported $imported, duplicates $duplicates, failed $failed'
+              '${interrupted ? ', remaining $remaining' : ''}';
+    try {
+      await const MethodChannel('io.github.cypas.nsoalbum/notifications')
+          .invokeMethod<void>('importFinished', {'title': title, 'body': body});
+    } catch (_) {
+      // A missing or rejected notification must not change the import result.
     }
   }
 
@@ -4987,6 +6719,8 @@ class _TransferPageState extends State<TransferPage>
       children: [
         TabBar(
           controller: tabs,
+          isScrollable: true,
+          tabAlignment: TabAlignment.start,
           tabs: [
             Tab(
               text: context.l10n.select(zh: 'Nintendo 同步', en: 'Nintendo Sync'),
@@ -4996,6 +6730,9 @@ class _TransferPageState extends State<TransferPage>
             ),
             Tab(
               text: context.l10n.select(zh: '自定义导入', en: 'Custom Import'),
+            ),
+            Tab(
+              text: context.l10n.select(zh: '多设备同步', en: 'Multi-device sync'),
             ),
           ],
         ),
@@ -5013,7 +6750,23 @@ class _TransferPageState extends State<TransferPage>
                     child: ListView(
                       key: const Key('nintendo-sync-scroll'),
                       children: [
-                        if (accounts.isEmpty)
+                        if (accountLoading)
+                          const _NintendoAccountLoadingPlaceholder()
+                        else if (accountLoadError != null)
+                          _ErrorPanel(
+                            message: context.l10n.select(
+                              zh: 'Nintendo Account 状态读取失败。',
+                              en: 'Failed to read Nintendo Account state.',
+                            ),
+                            onRetry: () {
+                              setState(() {
+                                accountLoading = true;
+                                accountLoadError = null;
+                              });
+                              unawaited(_loadAccountState(force: true));
+                            },
+                          )
+                        else if (accounts.isEmpty)
                           Row(
                             children: [
                               const _NintendoAccountAvatar(
@@ -5042,25 +6795,47 @@ class _TransferPageState extends State<TransferPage>
                           for (final profile in accounts)
                             Padding(
                               padding: const EdgeInsets.only(bottom: 8),
-                              child: _NintendoSyncAccountTile(
-                                key: ValueKey(
-                                  'sync-account-${profile.accountId}',
-                                ),
+                              child: AccountToolsExpander(
+                                backend: widget.backend,
                                 profile: profile,
-                                history:
-                                    accountSyncHistories[profile.accountId],
                                 selected:
                                     profile.accountId == selectedAccountId,
-                                enabled:
+                                onHeaderTap:
                                     !loginBusy &&
-                                    widget.sync.state != SyncState.running &&
-                                    widget.sync.state != SyncState.cancelling,
-                                onSelect: () =>
-                                    _selectAccount(profile.accountId),
-                                onAvatarTap:
-                                    profile.avatarBytes?.isNotEmpty == true
-                                    ? () => _showAvatar(profile)
+                                        widget.sync.state !=
+                                            SyncState.running &&
+                                        widget.sync.state !=
+                                            SyncState.cancelling &&
+                                        profile.accountId != selectedAccountId
+                                    ? () => _selectAccount(profile.accountId)
                                     : null,
+                                header: _NintendoSyncAccountTile(
+                                  key: ValueKey(
+                                    'sync-account-${profile.accountId}',
+                                  ),
+                                  profile: profile,
+                                  history:
+                                      accountSyncHistories[profile.accountId],
+                                  result: widget
+                                      .sync
+                                      .accountResults[profile.accountId],
+                                  error: widget
+                                      .sync
+                                      .accountErrors[profile.accountId],
+                                  attemptedAt: widget
+                                      .sync
+                                      .accountAttemptedAt[profile.accountId],
+                                  active:
+                                      widget.sync.running &&
+                                      widget.sync.currentAccountId ==
+                                          profile.accountId,
+                                  selected:
+                                      profile.accountId == selectedAccountId,
+                                  onAvatarTap:
+                                      profile.avatarBytes?.isNotEmpty == true
+                                      ? () => _showAvatar(profile)
+                                      : null,
+                                ),
                               ),
                             ),
                         ],
@@ -5089,8 +6864,8 @@ class _TransferPageState extends State<TransferPage>
                                 icon: const Icon(Icons.person_remove_outlined),
                                 label: Text(
                                   context.l10n.select(
-                                    zh: '移除当前账号',
-                                    en: 'Remove current account',
+                                    zh: '移除账号',
+                                    en: 'Remove account',
                                   ),
                                 ),
                               ),
@@ -5098,7 +6873,9 @@ class _TransferPageState extends State<TransferPage>
                           ),
                         ],
                         const SizedBox(height: 18),
-                        if (signedIn != true || addingAccount) ...[
+                        if (!accountLoading &&
+                            accountLoadError == null &&
+                            (signedIn != true || addingAccount)) ...[
                           const NxapiDisclosureCard(),
                           const SizedBox(height: 18),
                           Text(
@@ -5196,8 +6973,7 @@ class _TransferPageState extends State<TransferPage>
                           Text(_syncText(context, widget.sync)),
                           const SizedBox(height: 18),
                           if (widget.sync.state == SyncState.running ||
-                              widget.sync.state == SyncState.cancelling ||
-                              widget.sync.state == SyncState.completed) ...[
+                              widget.sync.state == SyncState.cancelling) ...[
                             LinearProgressIndicator(
                               key: const Key('nso-sync-progress'),
                               value: _syncProgressValue(widget.sync.progress),
@@ -5233,8 +7009,8 @@ class _TransferPageState extends State<TransferPage>
                                       en: 'Cancel sync',
                                     )
                                   : context.l10n.select(
-                                      zh: '立即同步',
-                                      en: 'Sync now',
+                                      zh: '同步全部账号',
+                                      en: 'Sync all accounts',
                                     ),
                             ),
                           ),
@@ -5277,24 +7053,76 @@ class _TransferPageState extends State<TransferPage>
                       const SizedBox(height: 18),
                       if (importing) ...[
                         LinearProgressIndicator(
-                          value: mtpProgress == null || mtpProgress!.total == 0
-                              ? null
-                              : mtpProgress!.completed / mtpProgress!.total,
+                          value: _mtpProgressValue(mtpProgress),
                         ),
                         if (mtpProgress != null) ...[
                           const SizedBox(height: 8),
                           Text(
-                            mtpProgress!.total == 0
+                            _mtpProgressLabel(context, mtpProgress!),
+                            key: const Key('nintendo-mtp-progress-label'),
+                          ),
+                          if (mtpProgress!.currentFile case final current?)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                current,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ),
+                        ],
+                        const SizedBox(height: 10),
+                        OutlinedButton.icon(
+                          key: const Key('cancel-nintendo-mtp-import'),
+                          onPressed: mtpCancelling ? null : _cancelMtpImport,
+                          icon: const Icon(Icons.close_rounded),
+                          label: Text(
+                            mtpCancelling
                                 ? context.l10n.select(
-                                    zh: '正在读取 Nintendo 相册…',
-                                    en: 'Reading the Nintendo Album…',
+                                    zh: '正在取消…',
+                                    en: 'Cancelling…',
                                   )
                                 : context.l10n.select(
-                                    zh: '正在从媒体设备复制 ${mtpProgress!.completed} / ${mtpProgress!.total}',
-                                    en: 'Copying ${mtpProgress!.completed} / ${mtpProgress!.total} from the media device',
+                                    zh: '取消导入',
+                                    en: 'Cancel import',
                                   ),
                           ),
-                        ],
+                        ),
+                      ],
+                      if (mtpWarning != null) ...[
+                        const SizedBox(height: 12),
+                        Container(
+                          key: const Key('nintendo-mtp-import-warning'),
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.errorContainer,
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                Icons.warning_amber_rounded,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onErrorContainer,
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  mtpWarning!,
+                                  style: TextStyle(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onErrorContainer,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ],
                       if (Platform.isWindows) ...[
                         const SizedBox(height: 18),
@@ -5687,6 +7515,20 @@ class _TransferPageState extends State<TransferPage>
                   ),
                 ),
               ),
+              MultiDeviceSyncPage(
+                backend: widget.backend,
+                embedded: true,
+                onAppliedMediaCache: warmAppliedMediaCache,
+                onLibraryChanged: () async {
+                  await _loadAccountState();
+                  await _loadCustomGameTags();
+                  if (widget.onDeviceSyncChanged case final changed?) {
+                    await changed();
+                  } else {
+                    widget.onImportComplete();
+                  }
+                },
+              ),
             ],
           ),
         ),
@@ -5735,21 +7577,12 @@ class _TransferPageState extends State<TransferPage>
       completingLogin = true;
     });
     try {
-      await widget.backend.completeNintendoLogin(value);
-      final current = widget.settings.value;
-      if (!current.syncPolicy.enabled) {
-        await widget.settings.save(
-          _copySettings(
-            current,
-            syncPolicy: SyncPolicy(
-              enabled: true,
-              activeIntervalMinutes: current.syncPolicy.activeIntervalMinutes,
-              sleepAfterHours: current.syncPolicy.sleepAfterHours,
-            ),
-          ),
-        );
-      }
-      await _loadAccountState();
+      await completeNintendoAccountLogin(
+        backend: widget.backend,
+        settings: widget.settings,
+        callback: value,
+      );
+      await _loadAccountState(force: true);
       if (!mounted) return;
       setState(() => addingAccount = false);
       callbackUrl.clear();
@@ -5769,7 +7602,10 @@ class _TransferPageState extends State<TransferPage>
       );
       if (mounted) {
         _showMessage(
-          context.l10n.select(zh: '登录失败：$error', en: 'Sign-in failed: $error'),
+          context.l10n.select(
+            zh: '登录失败：${nintendoConditionText(context.l10n, error) ?? error}',
+            en: 'Sign-in failed: ${nintendoConditionText(context.l10n, error) ?? error}',
+          ),
           error: true,
         );
       }
@@ -5784,16 +7620,65 @@ class _TransferPageState extends State<TransferPage>
   }
 
   Future<void> _signOut() async {
-    final displayName = accountProfile?.nickname.trim();
-    final accountName = displayName?.isNotEmpty == true
-        ? displayName!
+    final available = accounts.isNotEmpty
+        ? accounts
+        : accountProfile == null
+        ? const <NintendoAccountProfile>[]
+        : [accountProfile!];
+    if (available.isEmpty) return;
+    String? accountId;
+    if (available.length == 1) {
+      accountId = available.single.accountId;
+    } else {
+      accountId = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(
+            context.l10n.select(
+              zh: '选择要移除的账号',
+              en: 'Choose an account to remove',
+            ),
+          ),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: RadioGroup<String>(
+              groupValue: null,
+              onChanged: (value) => Navigator.pop(context, value),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final profile in available)
+                    RadioListTile<String>(
+                      value: profile.accountId,
+                      title: Text(profile.nickname),
+                      secondary: _NintendoAccountAvatar(
+                        connected: true,
+                        profile: profile,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
+            ),
+          ],
+        ),
+      );
+    }
+    if (accountId == null || !mounted) return;
+    final profile = available.firstWhere((item) => item.accountId == accountId);
+    final displayName = profile.nickname.trim();
+    final accountName = displayName.isNotEmpty
+        ? displayName
         : 'Nintendo Account';
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text(
-          context.l10n.select(zh: '移除当前账号？', en: 'Remove current account?'),
-        ),
+        title: Text(context.l10n.select(zh: '移除账号？', en: 'Remove account?')),
         content: Text(
           context.l10n.select(
             zh: '将从本机移除 Nintendo Account“$accountName”的登录信息，以后如需同步此账号将需重新登录。已导入图库的图片、视频、标签、备注和相册不会被删除。',
@@ -5821,8 +7706,8 @@ class _TransferPageState extends State<TransferPage>
     if (confirmed != true || !mounted) return;
     setState(() => loginBusy = true);
     try {
-      await widget.backend.signOut();
-      await _loadAccountState();
+      await widget.backend.removeNintendoAccount(accountId);
+      await _loadAccountState(force: true);
       await widget.onNintendoAccountChanged?.call();
     } finally {
       if (mounted) setState(() => loginBusy = false);
@@ -5862,7 +7747,19 @@ class _TransferPageState extends State<TransferPage>
   }
 
   Future<void> _runSync() async {
+    final importedSince = DateTime.now().toUtc();
     await widget.sync.run();
+    final downloaded = widget.sync.summary?.downloaded;
+    if (downloaded != null && widget.sync.onMediaImported == null) {
+      unawaited(
+        ImageThumbnailCache.prefetchImportedImages(
+          widget.backend,
+          downloaded,
+          importedSince: importedSince,
+        ),
+      );
+    }
+    await _loadAccountState(force: true);
     widget.onImportComplete();
   }
 
@@ -5968,6 +7865,44 @@ String _formatByteSize(int bytes) {
   return '${(bytes / mebibyte).toStringAsFixed(bytes >= 10 * mebibyte ? 1 : 2)} MB';
 }
 
+List<MapEntry<String, List<NintendoMtpMediaEntry>>> filterAndSortMtpGames(
+  Map<String, List<NintendoMtpMediaEntry>> folders, {
+  required String query,
+  required MtpGameSortCriterion criterion,
+  required bool ascending,
+}) {
+  final term = query.trim().toLowerCase();
+  final values = folders.entries
+      .where((entry) => term.isEmpty || entry.key.toLowerCase().contains(term))
+      .toList(growable: false);
+  values.sort((left, right) {
+    final primary = switch (criterion) {
+      MtpGameSortCriterion.name => left.key.compareTo(right.key),
+      MtpGameSortCriterion.count => left.value.length.compareTo(
+        right.value.length,
+      ),
+      MtpGameSortCriterion.size =>
+        left.value
+            .fold<int>(0, (total, entry) => total + entry.sizeBytes)
+            .compareTo(
+              right.value.fold<int>(
+                0,
+                (total, entry) => total + entry.sizeBytes,
+              ),
+            ),
+    };
+    if (primary == 0) return left.key.compareTo(right.key);
+    return ascending ? primary : -primary;
+  });
+  return values;
+}
+
+String committedMtpSearchQuery(TextEditingValue value, String previous) {
+  final composing = value.composing;
+  if (composing.isValid && !composing.isCollapsed) return previous;
+  return value.text;
+}
+
 class _NintendoMtpImportDialog extends StatefulWidget {
   const _NintendoMtpImportDialog({required this.entries});
 
@@ -5990,7 +7925,57 @@ class _NintendoMtpImportDialogState extends State<_NintendoMtpImportDialog> {
     );
   }();
   late final Set<String> selectedGames = folders.keys.toSet();
+  final search = TextEditingController();
+  MtpGameSortCriterion sort = MtpGameSortCriterion.name;
+  final Map<MtpGameSortCriterion, bool> ascending = {
+    MtpGameSortCriterion.name: true,
+    MtpGameSortCriterion.count: false,
+    MtpGameSortCriterion.size: false,
+  };
   DateTimeRange? range;
+  String committedSearch = '';
+
+  @override
+  void initState() {
+    super.initState();
+    search.addListener(_onSearchChanged);
+  }
+
+  @override
+  void dispose() {
+    search
+      ..removeListener(_onSearchChanged)
+      ..dispose();
+    super.dispose();
+  }
+
+  void _onSearchChanged() {
+    final next = committedMtpSearchQuery(search.value, committedSearch);
+    if (next == committedSearch || !mounted) return;
+    setState(() => committedSearch = next);
+  }
+
+  List<MapEntry<String, List<NintendoMtpMediaEntry>>> get visibleFolders {
+    return filterAndSortMtpGames(
+      folders,
+      query: committedSearch,
+      criterion: sort,
+      ascending: ascending[sort]!,
+    );
+  }
+
+  Future<void> _pickSort() async {
+    final selection = await showDialog<_MtpSortSelection>(
+      context: context,
+      builder: (context) =>
+          _MtpSortDialog(criterion: sort, ascending: ascending[sort]!),
+    );
+    if (selection == null || !mounted) return;
+    setState(() {
+      sort = selection.criterion;
+      ascending[sort] = selection.ascending;
+    });
+  }
 
   List<NintendoMtpMediaEntry> get selectedEntries => widget.entries
       .where((entry) {
@@ -6114,12 +8099,38 @@ class _NintendoMtpImportDialogState extends State<_NintendoMtpImportDialog> {
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const Key('mtp-game-search'),
+                    controller: search,
+                    decoration: InputDecoration(
+                      isDense: true,
+                      prefixIcon: const Icon(Icons.search),
+                      hintText: context.l10n.select(
+                        zh: '搜索游戏名',
+                        en: 'Search games',
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton.filledTonal(
+                  key: const Key('mtp-sort'),
+                  tooltip: context.l10n.select(zh: '排序方式', en: 'Sort order'),
+                  onPressed: _pickSort,
+                  icon: const Icon(Icons.sort_rounded),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
             Expanded(
               child: ListView.separated(
-                itemCount: folders.length,
+                itemCount: visibleFolders.length,
                 separatorBuilder: (_, _) => const Divider(height: 1),
                 itemBuilder: (context, index) {
-                  final folder = folders.entries.elementAt(index);
+                  final folder = visibleFolders[index];
                   final folderStats = _MtpSelectionStats.fromEntries(
                     folder.value,
                   );
@@ -6164,6 +8175,99 @@ class _NintendoMtpImportDialogState extends State<_NintendoMtpImportDialog> {
       ],
     );
   }
+}
+
+enum MtpGameSortCriterion { name, count, size }
+
+class _MtpSortSelection {
+  const _MtpSortSelection(this.criterion, this.ascending);
+
+  final MtpGameSortCriterion criterion;
+  final bool ascending;
+}
+
+class _MtpSortDialog extends StatefulWidget {
+  const _MtpSortDialog({required this.criterion, required this.ascending});
+
+  final MtpGameSortCriterion criterion;
+  final bool ascending;
+
+  @override
+  State<_MtpSortDialog> createState() => _MtpSortDialogState();
+}
+
+class _MtpSortDialogState extends State<_MtpSortDialog> {
+  late MtpGameSortCriterion criterion = widget.criterion;
+  late bool ascending = widget.ascending;
+
+  String _label(BuildContext context, MtpGameSortCriterion value) =>
+      switch (value) {
+        MtpGameSortCriterion.name => context.l10n.select(zh: '名称', en: 'Name'),
+        MtpGameSortCriterion.count => context.l10n.select(
+          zh: '文件数量',
+          en: 'File count',
+        ),
+        MtpGameSortCriterion.size => context.l10n.select(
+          zh: '文件大小',
+          en: 'File size',
+        ),
+      };
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    key: const Key('mtp-sort-dialog'),
+    title: Text(context.l10n.select(zh: '排序方式', en: 'Sort order')),
+    content: SizedBox(
+      width: 340,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final value in MtpGameSortCriterion.values)
+            ListTile(
+              key: ValueKey('mtp-sort-${value.name}'),
+              leading: Icon(
+                value == criterion
+                    ? Icons.check_circle_rounded
+                    : Icons.circle_outlined,
+              ),
+              title: Text(_label(context, value)),
+              trailing: IconButton(
+                key: ValueKey('mtp-sort-direction-${value.name}'),
+                tooltip: value == criterion && ascending
+                    ? context.l10n.select(zh: '升序', en: 'Ascending')
+                    : context.l10n.select(zh: '降序', en: 'Descending'),
+                onPressed: () => setState(() {
+                  if (criterion == value) {
+                    ascending = !ascending;
+                  } else {
+                    criterion = value;
+                    ascending = value == MtpGameSortCriterion.name;
+                  }
+                }),
+                icon: Icon(
+                  value == criterion && ascending
+                      ? Icons.arrow_upward_rounded
+                      : Icons.arrow_downward_rounded,
+                ),
+              ),
+              onTap: () => setState(() => criterion = value),
+            ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
+      ),
+      FilledButton(
+        key: const Key('mtp-sort-apply'),
+        onPressed: () =>
+            Navigator.pop(context, _MtpSortSelection(criterion, ascending)),
+        child: Text(context.l10n.select(zh: '应用', en: 'Apply')),
+      ),
+    ],
+  );
 }
 
 class _ImportGuideImage extends StatelessWidget {
@@ -6447,10 +8551,10 @@ class _SyncPolicyPanelState extends State<_SyncPolicyPanel> {
                 context.l10n.select(
                   zh: status.nextSyncAt == null
                       ? '调度状态：未安排下一次检查'
-                      : '调度状态：${status.sleeping ? '休眠期' : '活跃期'} · 下次预计 ${status.nextSyncAt!.toLocal().toString().substring(0, 16)}',
+                      : '调度状态：${status.sleeping ? '休眠期' : '活跃期'} · 下次预计 ${formatUserDateTime(status.nextSyncAt!)}',
                   en: status.nextSyncAt == null
                       ? 'Schedule: no next check planned'
-                      : 'Schedule: ${status.sleeping ? 'sleeping' : 'active'} · next ${status.nextSyncAt!.toLocal().toString().substring(0, 16)}',
+                      : 'Schedule: ${status.sleeping ? 'sleeping' : 'active'} · next ${formatUserDateTime(status.nextSyncAt!)}',
                 ),
                 style: Theme.of(context).textTheme.bodySmall,
               ),
@@ -6467,107 +8571,198 @@ class _NintendoSyncAccountTile extends StatelessWidget {
     super.key,
     required this.profile,
     required this.history,
+    required this.result,
+    required this.error,
+    required this.attemptedAt,
+    required this.active,
     required this.selected,
-    required this.enabled,
-    required this.onSelect,
     required this.onAvatarTap,
   });
 
   final NintendoAccountProfile profile;
   final SyncRuntimeState? history;
+  final SyncSummary? result;
+  final Object? error;
+  final DateTime? attemptedAt;
+  final bool active;
   final bool selected;
-  final bool enabled;
-  final VoidCallback onSelect;
   final VoidCallback? onAvatarTap;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return Material(
-      color: selected
-          ? colorScheme.primaryContainer.withValues(alpha: .55)
-          : colorScheme.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        onTap: enabled && !selected ? onSelect : null,
-        borderRadius: BorderRadius.circular(14),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(
-            children: [
-              _NintendoAccountAvatar(
-                connected: true,
-                profile: profile,
-                onTap: onAvatarTap,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
+    final statusColor = _accountSyncStatusColor(
+      context,
+      active: active,
+      error: error,
+      result: result,
+      history: history?.latestAttempt,
+    );
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        children: [
+          _NintendoAccountAvatar(
+            connected: true,
+            profile: profile,
+            onTap: onAvatarTap,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  profile.nickname.trim().isEmpty
+                      ? context.l10n.select(
+                          zh: 'Nintendo 账号',
+                          en: 'Nintendo Account',
+                        )
+                      : profile.nickname,
+                  key: selected
+                      ? const Key('nintendo-account-display-name')
+                      : null,
+                  style: Theme.of(context).textTheme.titleSmall
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 2),
+                Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      profile.nickname.trim().isEmpty
-                          ? context.l10n.select(
-                              zh: 'Nintendo 账号',
-                              en: 'Nintendo Account',
-                            )
-                          : profile.nickname,
-                      key: selected
-                          ? const Key('nintendo-account-display-name')
-                          : null,
-                      style: Theme.of(context).textTheme.titleSmall
-                          ?.copyWith(fontWeight: FontWeight.w700),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4, right: 7),
+                      child: ExcludeSemantics(
+                        child: Container(
+                          key: Key('sync-status-dot-${profile.accountId}'),
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: statusColor,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ),
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      _accountSyncHistoryText(context, history),
-                      key: Key('sync-history-${profile.accountId}'),
-                      style: Theme.of(context).textTheme.bodySmall
-                          ?.copyWith(color: colorScheme.onSurfaceVariant),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+                    Expanded(
+                      child: Text(
+                        _accountSyncHistoryText(
+                          context,
+                          history,
+                          result: result,
+                          error: error,
+                          attemptedAt: attemptedAt,
+                          active: active,
+                        ),
+                        key: Key('sync-history-${profile.accountId}'),
+                        style: Theme.of(context).textTheme.bodySmall
+                            ?.copyWith(color: colorScheme.onSurfaceVariant),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   ],
                 ),
-              ),
-              const SizedBox(width: 8),
-              if (selected)
-                Chip(
-                  avatar: const Icon(Icons.check_rounded, size: 16),
-                  label: Text(context.l10n.select(zh: '当前', en: 'Selected')),
-                  visualDensity: VisualDensity.compact,
-                  side: BorderSide.none,
-                )
-              else
-                Icon(
-                  Icons.radio_button_unchecked_rounded,
-                  color: enabled
-                      ? colorScheme.outline
-                      : colorScheme.outlineVariant,
-                ),
-            ],
+              ],
+            ),
           ),
-        ),
+        ],
       ),
     );
   }
 }
 
+Color _accountSyncStatusColor(
+  BuildContext context, {
+  required bool active,
+  required Object? error,
+  required SyncSummary? result,
+  required SyncAttemptSummary? history,
+}) {
+  final dark = Theme.of(context).brightness == Brightness.dark;
+  if (active) return dark ? Colors.blue.shade300 : Colors.blue.shade700;
+  if (error != null) return dark ? Colors.red.shade300 : Colors.red.shade700;
+  if (result != null) {
+    if (result.failed > BigInt.zero) {
+      return dark ? Colors.orange.shade300 : Colors.orange.shade800;
+    }
+    return dark ? Colors.green.shade300 : Colors.green.shade700;
+  }
+  if (history != null) {
+    return switch (history.status) {
+      'success' => dark ? Colors.green.shade300 : Colors.green.shade700,
+      'partial_failure' =>
+        dark ? Colors.orange.shade300 : Colors.orange.shade800,
+      'cancelled' => dark ? Colors.grey.shade400 : Colors.grey.shade600,
+      _ => dark ? Colors.red.shade300 : Colors.red.shade700,
+    };
+  }
+  return dark ? Colors.grey.shade400 : Colors.grey.shade600;
+}
+
 String _accountSyncHistoryText(
   BuildContext context,
-  SyncRuntimeState? history,
-) {
+  SyncRuntimeState? history, {
+  SyncSummary? result,
+  Object? error,
+  DateTime? attemptedAt,
+  bool active = false,
+}) {
+  if (active) {
+    return context.l10n.select(zh: '正在同步…', en: 'Syncing…');
+  }
+  if (error != null) {
+    final timestamp = attemptedAt == null
+        ? ''
+        : '${formatNsoAttemptTime(attemptedAt)} · ';
+    final errorText = nintendoConditionText(context.l10n, error) ?? error;
+    return context.l10n.select(
+      zh: '$timestamp账号同步失败：$errorText',
+      en: '${timestamp}Account sync failed: $errorText',
+    );
+  }
+  if (result != null) {
+    final timestamp = attemptedAt ?? history?.latestAttempt?.attemptedAt;
+    final formattedTimestamp = timestamp == null
+        ? null
+        : formatNsoAttemptTime(timestamp);
+    final resultStatus = result.failed > BigInt.zero
+        ? context.l10n.select(zh: '部分失败', en: 'Partial failure')
+        : context.l10n.select(zh: '成功', en: 'Succeeded');
+    if (_isEmptyNsoAlbumResult(result)) {
+      final emptyStatus = context.l10n.select(
+        zh: 'NSO线上相册未上传任何媒体',
+        en: 'No media has been uploaded to the NSO album',
+      );
+      return context.l10n.select(
+        zh: '${formattedTimestamp == null ? '' : '$formattedTimestamp · '}$resultStatus · $emptyStatus',
+        en: '${formattedTimestamp == null ? '' : '$formattedTimestamp · '}$resultStatus · $emptyStatus',
+      );
+    }
+    return context.l10n.select(
+      zh: '${formattedTimestamp == null ? '' : '$formattedTimestamp · '}$resultStatus · 新增 ${result.downloaded} · 已存在 ${result.skippedRemote} · 失败 ${result.failed}',
+      en: '${formattedTimestamp == null ? '' : '$formattedTimestamp · '}$resultStatus · New ${result.downloaded} · Existing ${result.skippedRemote} · Failed ${result.failed}',
+    );
+  }
   final attempt = history?.latestAttempt;
   if (attempt == null) {
     return context.l10n.select(zh: '尚未同步', en: 'Never synced');
   }
-  final time = attempt.attemptedAt.toLocal();
-  final timestamp =
-      '${time.year}-${time.month.toString().padLeft(2, '0')}-'
-      '${time.day.toString().padLeft(2, '0')} '
-      '${time.hour.toString().padLeft(2, '0')}:'
-      '${time.minute.toString().padLeft(2, '0')}';
-  final result = switch (attempt.status) {
+  final timestamp = formatNsoAttemptTime(attempt.attemptedAt);
+  if (_isEmptyNsoAlbumAttempt(attempt)) {
+    final emptyStatus = context.l10n.select(
+      zh: 'NSO线上相册未上传任何媒体',
+      en: 'No media has been uploaded to the NSO album',
+    );
+    final historyStatus = switch (attempt.status) {
+      'success' => context.l10n.select(zh: '成功', en: 'Succeeded'),
+      _ => context.l10n.select(zh: '已完成', en: 'Completed'),
+    };
+    return context.l10n.select(
+      zh: '$timestamp · $historyStatus · $emptyStatus',
+      en: '$timestamp · $historyStatus · $emptyStatus',
+    );
+  }
+  final historyStatus = switch (attempt.status) {
     'success' => context.l10n.select(zh: '成功', en: 'Succeeded'),
     'partial_failure' => context.l10n.select(
       zh: '部分失败',
@@ -6577,10 +8772,26 @@ String _accountSyncHistoryText(
     _ => context.l10n.select(zh: '失败', en: 'Failed'),
   };
   return context.l10n.select(
-    zh: '$timestamp · $result · 新增 ${attempt.downloaded} · 重复 ${attempt.duplicates} · 失败 ${attempt.failed}',
-    en: '$timestamp · $result · New ${attempt.downloaded} · Duplicates ${attempt.duplicates} · Failed ${attempt.failed}',
+    zh: '$timestamp · $historyStatus · 新增 ${attempt.downloaded} · 已存在 ${attempt.skippedRemote ?? '未记录'} · 失败 ${attempt.failed}',
+    en: '$timestamp · $historyStatus · New ${attempt.downloaded} · Existing ${attempt.skippedRemote ?? 'not recorded'} · Failed ${attempt.failed}',
   );
 }
+
+bool _isEmptyNsoAlbumResult(SyncSummary result) =>
+    result.totalFound == BigInt.zero &&
+    result.downloaded == BigInt.zero &&
+    result.duplicates == BigInt.zero &&
+    result.skippedRemote == BigInt.zero &&
+    result.failed == BigInt.zero &&
+    result.errors.isEmpty;
+
+bool _isEmptyNsoAlbumAttempt(SyncAttemptSummary attempt) =>
+    (attempt.status == 'success' || attempt.status == 'completed') &&
+    attempt.totalFound == BigInt.zero &&
+    attempt.downloaded == BigInt.zero &&
+    attempt.duplicates == BigInt.zero &&
+    (attempt.skippedRemote ?? BigInt.zero) == BigInt.zero &&
+    attempt.failed == BigInt.zero;
 
 class _NintendoAccountAvatar extends StatelessWidget {
   const _NintendoAccountAvatar({
@@ -6625,6 +8836,29 @@ class _NintendoAccountAvatar extends StatelessWidget {
   );
 }
 
+class _NintendoAccountLoadingPlaceholder extends StatelessWidget {
+  const _NintendoAccountLoadingPlaceholder();
+
+  @override
+  Widget build(BuildContext context) => Row(
+    key: const Key('nintendo-account-loading'),
+    children: [
+      const SizedBox.square(
+        dimension: 46,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      ),
+      const SizedBox(width: 12),
+      Text(
+        context.l10n.select(
+          zh: '正在读取 Nintendo Account 状态…',
+          en: 'Reading Nintendo Account state…',
+        ),
+        style: Theme.of(context).textTheme.titleMedium,
+      ),
+    ],
+  );
+}
+
 double? _syncProgressValue(SyncProgress? progress) {
   if (progress == null || progress.totalItems == BigInt.zero) return null;
   final processed = progress.processedItems.toDouble();
@@ -6649,14 +8883,17 @@ String _syncText(BuildContext context, SyncController controller) {
   final summary = controller.summary;
   if (summary != null) {
     return context.l10n.select(
-      zh: '新增 ${summary.downloaded} · 重复 ${summary.duplicates} · 已存在 ${summary.skippedRemote} · 失败 ${summary.failed}',
-      en: 'New ${summary.downloaded} · Duplicates ${summary.duplicates} · Existing ${summary.skippedRemote} · Failed ${summary.failed}',
+      zh: '新增 ${summary.downloaded} · 已存在 ${summary.skippedRemote} · 失败 ${summary.failed}',
+      en: 'New ${summary.downloaded} · Existing ${summary.skippedRemote} · Failed ${summary.failed}',
     );
   }
   if (controller.error != null) {
+    final message =
+        nintendoConditionText(context.l10n, controller.error!) ??
+        controller.error;
     return context.l10n.select(
-      zh: '同步失败：${controller.error}',
-      en: 'Sync failed: ${controller.error}',
+      zh: '同步失败：$message',
+      en: 'Sync failed: $message',
     );
   }
   return switch (controller.state) {
@@ -6668,6 +8905,10 @@ String _syncText(BuildContext context, SyncController controller) {
     SyncState.completed => context.l10n.select(zh: '同步完成', en: 'Sync complete'),
     SyncState.failed => context.l10n.select(zh: '同步失败', en: 'Sync failed'),
     SyncState.cancelling => context.l10n.select(zh: '正在取消…', en: 'Cancelling…'),
+    SyncState.cancelled => context.l10n.select(
+      zh: '同步已取消',
+      en: 'Sync cancelled',
+    ),
   };
 }
 
@@ -6703,6 +8944,75 @@ class _CustomFontDraftEntry {
   final bool isManaged;
 }
 
+class _SystemFontPickerDialog extends StatefulWidget {
+  const _SystemFontPickerDialog({required this.fonts});
+
+  final List<WindowsSystemFont> fonts;
+
+  @override
+  State<_SystemFontPickerDialog> createState() =>
+      _SystemFontPickerDialogState();
+}
+
+class _SystemFontPickerDialogState extends State<_SystemFontPickerDialog> {
+  final selected = <String>{};
+  final previewFamilies = <String, Future<String>>{};
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text(context.l10n.select(zh: '选择系统字体', en: 'Choose system fonts')),
+    content: SizedBox(
+      width: 520,
+      height: 420,
+      child: ListView.builder(
+        itemCount: widget.fonts.length,
+        itemBuilder: (context, index) {
+          final font = widget.fonts[index];
+          final preview = previewFamilies.putIfAbsent(
+            font.path,
+            () => loadCustomFontFamilyForPreview(font.path),
+          );
+          return CheckboxListTile(
+            value: selected.contains(font.path),
+            title: FutureBuilder<String>(
+              future: preview,
+              builder: (context, snapshot) => Text(
+                font.name,
+                style: TextStyle(
+                  fontFamily:
+                      snapshot.data ?? customFontFamilyForPath(font.path),
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            onChanged: (value) => setState(() {
+              if (value == true) {
+                selected.add(font.path);
+              } else {
+                selected.remove(font.path);
+              }
+            }),
+          );
+        },
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: Text(context.l10n.select(zh: '取消', en: 'Cancel')),
+      ),
+      FilledButton(
+        key: const Key('confirm-system-fonts'),
+        onPressed: selected.isEmpty
+            ? null
+            : () => Navigator.pop(context, selected.toList(growable: false)),
+        child: Text(context.l10n.select(zh: '添加', en: 'Add')),
+      ),
+    ],
+  );
+}
+
 class _SettingsPageState extends State<SettingsPage> {
   bool get _isDesktop =>
       Platform.isWindows || Platform.isMacOS || Platform.isLinux;
@@ -6715,12 +9025,18 @@ class _SettingsPageState extends State<SettingsPage> {
   late List<_CustomFontDraftEntry> _fontDraft;
   bool _fontDraftDirty = false;
   bool _fontBusy = false;
+  final _fontPreviewFamilies = <String, Future<String>>{};
+
+  Future<String> _fontPreviewFamily(String path) => _fontPreviewFamilies
+      .putIfAbsent(path, () => loadCustomFontFamilyForPreview(path));
 
   @override
   void initState() {
     super.initState();
     proxy = TextEditingController(text: widget.controller.value.proxyUrl);
-    appVersion = loadApplicationVersion();
+    appVersion = loadApplicationVersion().then(
+      formatApplicationVersionForDisplay,
+    );
     _fontDraft = widget.controller.value.customFontPaths
         .map((path) => _CustomFontDraftEntry(path, isManaged: true))
         .toList();
@@ -6890,21 +9206,6 @@ class _SettingsPageState extends State<SettingsPage> {
                       ),
                     ],
                     SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: Text(
-                        context.l10n.select(
-                          zh: '显示备注摘要',
-                          en: 'Show note previews',
-                        ),
-                      ),
-                      value: value.showNotePreview,
-                      onChanged: widget.controller.saving
-                          ? null
-                          : (enabled) => _save(
-                              _copySettings(value, showNotePreview: enabled),
-                            ),
-                    ),
-                    SwitchListTile(
                       key: const Key('compact-tag-display'),
                       contentPadding: EdgeInsets.zero,
                       title: Text(
@@ -6967,6 +9268,83 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ),
             ),
+            Card(
+              key: const Key('splatoon3-settings-card'),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.sports_esports_outlined),
+                      title: Text(
+                        context.l10n.select(zh: 'Splatoon 3', en: 'Splatoon 3'),
+                      ),
+                    ),
+                    SwitchListTile(
+                      key: const Key('splatoon-friend-activity'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        context.l10n.select(
+                          zh: '好友列表展示 Splatoon 3 好友具体状态',
+                          en: 'Show detailed Splatoon 3 friend activity',
+                        ),
+                      ),
+                      subtitle: Text(
+                        context.l10n.select(
+                          zh: '开启后会增加一些好友列表查询时间',
+                          en: 'This may make friend-list queries take longer.',
+                        ),
+                      ),
+                      value: value.showSplatoonFriendActivity,
+                      onChanged: widget.controller.saving
+                          ? null
+                          : (enabled) => _save(
+                              _copySettings(
+                                value,
+                                showSplatoonFriendActivity: enabled,
+                              ),
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Card(
+              key: const Key('notification-settings-card'),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.notifications_outlined),
+                      title: Text(
+                        context.l10n.select(zh: '通知', en: 'Notifications'),
+                      ),
+                    ),
+                    SwitchListTile(
+                      key: const Key('nso-auto-sync-notifications'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        context.l10n.select(
+                          zh: '相册同步新增媒体后通知',
+                          en: 'Notify when album sync adds media',
+                        ),
+                      ),
+                      value: value.notifyOnAutoSync,
+                      onChanged: widget.controller.saving
+                          ? null
+                          : (enabled) => _save(
+                              _copySettings(value, notifyOnAutoSync: enabled),
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
             const SizedBox(height: 16),
             if (Platform.isWindows)
               Card(
@@ -7005,24 +9383,47 @@ class _SettingsPageState extends State<SettingsPage> {
                                       .titleMedium,
                                 ),
                               ),
-                              FilledButton.tonalIcon(
-                                key: const Key('choose-custom-fonts'),
-                                onPressed: _fontBusy ? null : _pickCustomFonts,
-                                icon: const Icon(Icons.add_rounded),
-                                label: Text(
-                                  context.l10n.select(
-                                    zh: '添加字体',
-                                    en: 'Add fonts',
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  FilledButton.tonalIcon(
+                                    key: const Key('choose-custom-fonts'),
+                                    onPressed: _fontBusy
+                                        ? null
+                                        : _pickCustomFonts,
+                                    icon: const Icon(Icons.add_rounded),
+                                    label: Text(
+                                      context.l10n.select(
+                                        zh: '添加字体',
+                                        en: 'Add fonts',
+                                      ),
+                                    ),
                                   ),
-                                ),
+                                  OutlinedButton.icon(
+                                    key: const Key('choose-system-fonts'),
+                                    onPressed: _fontBusy
+                                        ? null
+                                        : _pickSystemFonts,
+                                    icon: const Icon(
+                                      Icons.font_download_outlined,
+                                    ),
+                                    label: Text(
+                                      context.l10n.select(
+                                        zh: '添加系统字体',
+                                        en: 'Add system fonts',
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
                           const SizedBox(height: 6),
                           Text(
                             context.l10n.select(
-                              zh: '支持 TTF/OTF，列表顺序决定字体优先级。留空时使用内置字体，应用后立即生效，无需重启。',
-                              en: 'Supports TTF/OTF. List order determines font priority. Leave empty to use built-in fonts. Changes apply immediately without restarting.',
+                              zh: '支持 TTF/OTF/TTC/OTC，列表顺序决定字体优先级。留空时使用内置字体，应用后立即生效，无需重启。',
+                              en: 'Supports TTF/OTF/TTC/OTC. List order determines font priority. Leave empty to use built-in fonts. Changes apply immediately without restarting.',
                             ),
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
@@ -7051,6 +9452,9 @@ class _SettingsPageState extends State<SettingsPage> {
                               itemBuilder: (context, index) {
                                 final entry = _fontDraft[index];
                                 final path = entry.path;
+                                final displayName = path
+                                    .split(Platform.pathSeparator)
+                                    .last;
                                 return ListTile(
                                   key: ValueKey(path),
                                   leading: ReorderableDragStartListener(
@@ -7059,10 +9463,18 @@ class _SettingsPageState extends State<SettingsPage> {
                                       Icons.drag_handle_rounded,
                                     ),
                                   ),
-                                  title: Text(
-                                    path.split(Platform.pathSeparator).last,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
+                                  title: FutureBuilder<String>(
+                                    future: _fontPreviewFamily(path),
+                                    builder: (context, snapshot) => Text(
+                                      displayName,
+                                      style: TextStyle(
+                                        fontFamily:
+                                            snapshot.data ??
+                                            customFontFamilyForPath(path),
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
                                   ),
                                   subtitle: Text(
                                     context.l10n.select(
@@ -7165,6 +9577,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   padding: const EdgeInsets.all(20),
                   child: DropdownButtonFormField<String>(
                     key: ValueKey('close-behavior-${value.closeBehavior}'),
+                    isExpanded: true,
                     initialValue: value.closeBehavior,
                     decoration: InputDecoration(
                       labelText: context.l10n.select(
@@ -7274,6 +9687,29 @@ class _SettingsPageState extends State<SettingsPage> {
                         ),
                       ),
                     ),
+                    const SizedBox(height: 12),
+                    SwitchListTile(
+                      key: const Key('desktop-doh-enabled'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        context.l10n.select(
+                          zh: '网络请求使用DOH',
+                          en: 'Use DoH for network requests',
+                        ),
+                      ),
+                      subtitle: Text(
+                        context.l10n.select(
+                          zh: '同步一直请求失败时可以尝试开启此选项',
+                          en: 'If synchronization keeps failing, try enabling this option.',
+                        ),
+                      ),
+                      value: value.dohEnabled,
+                      onChanged: widget.controller.saving
+                          ? null
+                          : (enabled) => _save(
+                              _copySettings(value, dohEnabled: enabled),
+                            ),
+                    ),
                   ],
                 ),
               ),
@@ -7351,7 +9787,10 @@ class _SettingsPageState extends State<SettingsPage> {
                 contentPadding: const EdgeInsets.all(20),
                 leading: const Icon(Icons.description_outlined),
                 title: Text(
-                  context.l10n.select(zh: '应用日志', en: 'Application log'),
+                  context.l10n.select(
+                    zh: '查看最近运行日志',
+                    en: 'View recent runtime logs',
+                  ),
                 ),
                 subtitle: Text(widget.controller.logFilePath),
                 trailing: FilledButton.tonalIcon(
@@ -7539,11 +9978,74 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _pickCustomFonts() async {
+    await _pickFonts(
+      dialogTitle: context.l10n.select(zh: '选择字体文件', en: 'Choose font files'),
+    );
+  }
+
+  Future<void> _pickSystemFonts() async {
+    if (_fontBusy) return;
+    setState(() => _fontBusy = true);
+    try {
+      final fonts = await const WindowsSystemFonts().list();
+      if (!mounted) return;
+      if (fonts.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          _messageSnackBar(
+            context.l10n.select(
+              zh: '没有找到可读取的系统字体（支持 TTF/OTF/TTC/OTC）。',
+              en: 'No readable system fonts found (TTF/OTF/TTC/OTC only).',
+            ),
+            error: true,
+          ),
+        );
+        return;
+      }
+      final selected = await showDialog<List<String>>(
+        context: context,
+        builder: (context) => _SystemFontPickerDialog(fonts: fonts),
+      );
+      if (!mounted || selected == null || selected.isEmpty) return;
+      await validateCustomFontFiles(selected);
+      setState(() {
+        for (final path in selected) {
+          if (!_fontDraft.any((entry) => entry.path == path)) {
+            _fontDraft.add(_CustomFontDraftEntry(path, isManaged: false));
+          }
+        }
+        _fontDraftDirty = true;
+      });
+    } catch (error, stackTrace) {
+      await widget.controller.logError(
+        'Failed to enumerate system fonts',
+        error,
+        stackTrace,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        _messageSnackBar(
+          context.l10n.select(
+            zh: '系统字体读取失败：$error',
+            en: 'Failed to read system fonts: $error',
+          ),
+          error: true,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _fontBusy = false);
+    }
+  }
+
+  Future<void> _pickFonts({
+    String? initialDirectory,
+    required String dialogTitle,
+  }) async {
     if (_fontBusy) return;
     final result = await FilePicker.pickFiles(
       type: FileType.custom,
-      allowedExtensions: const ['ttf', 'otf'],
-      dialogTitle: context.l10n.select(zh: '选择字体文件', en: 'Choose font files'),
+      allowedExtensions: const ['ttf', 'otf', 'ttc', 'otc'],
+      initialDirectory: initialDirectory,
+      dialogTitle: dialogTitle,
     );
     if (!mounted) return;
     final paths = result
@@ -8539,6 +11041,10 @@ AppSettings _copySettings(
   bool? compactTagDisplay,
   bool? autoPlayVideo,
   bool? autoSyncOnLaunch,
+  bool? notifyOnAutoSync,
+  bool? dohEnabled,
+  bool? showSplatoonSchedule,
+  bool? showSplatoonFriendActivity,
   String? closeBehavior,
   String? theme,
   String? language,
@@ -8552,6 +11058,7 @@ AppSettings _copySettings(
   proxyUrl: proxyUrl == null
       ? value.proxyUrl
       : (proxyUrl.isEmpty ? null : proxyUrl),
+  dohEnabled: dohEnabled ?? value.dohEnabled,
   libraryPath: libraryPath ?? value.libraryPath,
   theme: theme ?? value.theme,
   language: language ?? value.language,
@@ -8562,6 +11069,10 @@ AppSettings _copySettings(
   compactTagDisplay: compactTagDisplay ?? value.compactTagDisplay,
   autoPlayVideo: autoPlayVideo ?? value.autoPlayVideo,
   autoSyncOnLaunch: autoSyncOnLaunch ?? value.autoSyncOnLaunch,
+  notifyOnAutoSync: notifyOnAutoSync ?? value.notifyOnAutoSync,
+  showSplatoonSchedule: showSplatoonSchedule ?? value.showSplatoonSchedule,
+  showSplatoonFriendActivity:
+      showSplatoonFriendActivity ?? value.showSplatoonFriendActivity,
   closeBehavior: closeBehavior ?? value.closeBehavior,
   customFontPaths: customFontPaths ?? value.customFontPaths,
   syncPolicy: syncPolicy ?? value.syncPolicy,

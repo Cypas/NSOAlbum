@@ -153,13 +153,6 @@ class _MediaMetadataEditorState extends State<MediaMetadataEditor> {
                 border: const OutlineInputBorder(),
               ),
             ),
-            const SizedBox(height: 18),
-            SelectableText(
-              context.l10n.select(
-                zh: '文件路径：${widget.asset.storagePath}\n创建时间：${widget.asset.capturedAt?.toLocal() ?? '未知'}\n内容哈希：${widget.asset.sha256}',
-                en: 'File path: ${widget.asset.storagePath}\nCreated at: ${widget.asset.capturedAt?.toLocal() ?? 'Unknown'}\nContent hash: ${widget.asset.sha256}',
-              ),
-            ),
             const SizedBox(height: 20),
             SizedBox(
               width: double.infinity,

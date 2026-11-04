@@ -1,11 +1,18 @@
 import 'dart:async';
 import 'dart:ffi' show Abi;
 import 'dart:io';
+
+import 'src/ui/platform_ui.dart';
+import 'src/ui/android/android_shell.dart';
+import 'src/ui/android/android_theme.dart';
+
 import 'dart:ui';
 
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show kDebugMode, kReleaseMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -15,18 +22,30 @@ import 'src/backend/rust_backend.dart';
 import 'src/l10n/app_localizations.dart';
 import 'src/platform/windows_ime_context.dart';
 import 'src/platform/application_restart.dart';
+import 'src/platform/gallery_notification_navigation.dart';
+import 'src/platform/android_storage_access.dart';
 import 'src/rust/settings.dart';
 import 'src/state/automatic_sync_coordinator.dart';
+import 'src/state/android_update_controller.dart';
 import 'src/state/settings_controller.dart';
 import 'src/state/sync_controller.dart';
 import 'src/startup/startup_diagnostics.dart';
 import 'src/startup/startup_options.dart';
+import 'src/startup/application_bootstrap.dart';
+import 'src/startup/desktop_startup_close.dart';
+import 'src/startup/desktop_single_instance.dart';
+import 'src/startup/desktop_instance_window.dart';
+import 'src/ui/device_sync/startup_page.dart';
 import 'src/ui/ci_smoke_page.dart';
 import 'src/ui/home_shell.dart';
+import 'src/ui/android/android_update_dialog.dart';
+import 'src/ui/image_thumbnail.dart';
+import 'src/ui/gallery_perf.dart';
 import 'src/release_update.dart';
 import 'src/ui/font_families.dart';
 import 'src/ui/video_runtime.dart';
 import 'src/ui/video_thumbnail.dart';
+import 'src/ui/fade_page_transitions.dart';
 
 Future<void> main(List<String> arguments) async {
   late final StartupOptions startupOptions;
@@ -37,6 +56,40 @@ Future<void> main(List<String> arguments) async {
     exit(64);
   }
   WidgetsFlutterBinding.ensureInitialized();
+  configureGalleryDecodedImageCache(
+    PaintingBinding.instance.imageCache,
+    desktop: Platform.isWindows || Platform.isMacOS,
+  );
+  GalleryPerf.instance.register();
+  DesktopSingleInstance? desktopInstance;
+  // Windows elects before constructing Flutter/plugins in its native runner.
+  if (Platform.isMacOS && !startupOptions.ciSmoke) {
+    try {
+      desktopInstance = await DesktopSingleInstance.acquire(
+        directory: Directory(
+          p.join(
+            (await getApplicationSupportDirectory()).path,
+            'desktop-instance',
+          ),
+        ),
+        onActivate: () async {
+          await windowManager.ensureInitialized();
+          await windowManager.show();
+          await windowManager.restore();
+          await windowManager.focus();
+        },
+      );
+      if (desktopInstance == null) {
+        await dismissSecondaryDesktopWindow();
+        return;
+      }
+    } catch (_) {
+      stderr.writeln(
+        'NSOAlbum could not acquire or activate its desktop instance',
+      );
+      exit(73);
+    }
+  }
   StartupDiagnostics? diagnostics;
   try {
     diagnostics = await StartupDiagnostics.open(startupOptions);
@@ -69,97 +122,149 @@ Future<void> main(List<String> arguments) async {
         ? 'media-kit-disabled'
         : 'media-kit-deferred',
   );
-  RustBackend? backend;
-  Object? startupError;
-  try {
-    await diagnostics?.phase('rust-core-initialization-start');
-    backend = await RustBackend.open(
-      logger: diagnostics?.logger,
-      applicationRoot: diagnostics?.applicationRoot,
-      isolated: startupOptions.ciSmoke,
-    ).timeout(const Duration(seconds: 30));
-    if (Platform.isWindows && !startupOptions.ciSmoke) {
-      final fontReport = await loadCustomFontFamilies(
-        backend.settings.customFontPaths,
-        language: backend.settings.language,
+  final startupDiagnostics = diagnostics;
+  final bootstrap = ApplicationBootstrap(
+    safeMode: startupOptions.safeMode && !startupOptions.ciSmoke,
+    prepare: () async {
+      await startupDiagnostics?.phase('rust-core-initialization-start');
+      return RustBackend.prepare(
+        logger: startupDiagnostics?.logger,
+        applicationRoot: startupDiagnostics?.applicationRoot,
+        isolated: startupOptions.ciSmoke,
       );
-      for (final path in fontReport.failedPaths) {
-        await backend.logError(
-          'Failed to load saved custom font; skipped during startup',
-          FileSystemException('Unable to load custom font', path),
+    },
+    initializePresentation: (backend) async {
+      if (Platform.isWindows &&
+          !startupOptions.ciSmoke &&
+          !startupOptions.safeMode) {
+        final fontReport = await loadCustomFontFamilies(
+          backend.settings.customFontPaths,
+          language: backend.settings.language,
         );
+        for (final path in fontReport.failedPaths) {
+          await backend.logError(
+            'Failed to load saved custom font; skipped during startup',
+            FileSystemException('Unable to load custom font', path),
+          );
+        }
       }
+      await startupDiagnostics?.phase('rust-core-initialization-complete');
+    },
+  );
+  // No prepare/recovery future may start before native interception exists.
+  final desktopClose = await DesktopStartupClose.protect(
+    bootstrap: bootstrap,
+    options: startupOptions,
+    desktop: Platform.isWindows || Platform.isMacOS,
+    onError: (error, stack) {
+      unawaited(
+        startupDiagnostics?.failure('desktop-close-failed', error, stack) ??
+            Future<void>.value(),
+      );
+    },
+    onClosed: desktopInstance?.close,
+  );
+  AppBackend? diagnosticBackend;
+  BootstrapPhase? reportedPhase;
+  bootstrap.addListener(() {
+    final phase = bootstrap.phase;
+    final backend = bootstrap.backend;
+    if (backend != null &&
+        diagnosticBackend == null &&
+        (phase == BootstrapPhase.recovering ||
+            phase == BootstrapPhase.localOnly)) {
+      diagnosticBackend = backend;
+      _installRuntimeErrorHandlers(backend, startupDiagnostics);
     }
-    await diagnostics?.phase('rust-core-initialization-complete');
-    FlutterError.onError = (details) {
-      FlutterError.presentError(details);
-      unawaited(
-        backend!.logError(
-          'Unhandled Flutter framework error',
-          details.exception,
-          details.stack,
-        ),
-      );
-      unawaited(
-        diagnostics?.failure(
-              'flutter-framework-error',
-              details.exception,
-              details.stack,
-            ) ??
-            Future<void>.value(),
-      );
+    if (reportedPhase == phase) return;
+    reportedPhase = phase;
+    final label = switch (phase) {
+      BootstrapPhase.timedOut => 'core-preparation-timeout',
+      BootstrapPhase.failed => 'startup-recovery-incomplete',
+      BootstrapPhase.localOnly => 'startup-recovery-deferred',
+      BootstrapPhase.ready => 'startup-ready',
+      _ => null,
     };
-    PlatformDispatcher.instance.onError = (error, stackTrace) {
-      unawaited(
-        backend!.logError('Unhandled asynchronous error', error, stackTrace),
-      );
-      unawaited(
-        diagnostics?.failure(
-              'unhandled-asynchronous-error',
-              error,
-              stackTrace,
-            ) ??
-            Future<void>.value(),
-      );
-      return false;
-    };
-  } catch (error) {
-    startupError = error;
-    await diagnostics?.failure('rust-core-initialization', error);
-  }
+    if (label != null) {
+      unawaited(startupDiagnostics?.phase(label) ?? Future<void>.value());
+    }
+  });
   if (startupOptions.ciSmoke) {
-    if (backend == null || diagnostics == null) {
-      stderr.writeln('NSOAlbum CI smoke core initialization failed');
-      exit(1);
-    }
-    runApp(
-      CiSmokeApp(
-        backend: backend,
-        options: startupOptions,
-        diagnostics: diagnostics,
-        gallery: startupOptions.ciSmokeScenario == 'reopen'
-            ? const SizedBox.shrink()
-            : SquidAlbumApp(
-                backend: backend,
-                startupOptions: startupOptions,
-                diagnostics: diagnostics,
-              ),
-      ),
-    );
-    return;
+    bootstrap.addListener(() {
+      if ((bootstrap.phase == BootstrapPhase.failed ||
+              bootstrap.phase == BootstrapPhase.timedOut) &&
+          !bootstrap.busy) {
+        stderr.writeln('NSOAlbum CI smoke core initialization failed');
+        exit(1);
+      }
+    });
   }
   await diagnostics?.phase('run-app-start');
   runApp(
-    SquidAlbumApp(
-      backend: backend,
-      startupError: startupError,
-      startupOptions: startupOptions,
-      diagnostics: diagnostics,
+    DeviceSyncStartupApp(
+      controller: bootstrap,
+      theme: (theme) => resolveAppUiPlatform() == AppUiPlatform.android
+          ? androidTheme(theme)
+          : _themeFor(theme),
+      frame: (child, title) => resolveAppUiPlatform() == AppUiPlatform.android
+          ? child
+          : DesktopWindowFrame(title: title, child: child),
+      application: (backend) {
+        final app = SquidAlbumApp(
+          backend: backend,
+          startupOptions: startupOptions,
+          diagnostics: startupDiagnostics,
+          desktopClose: desktopClose,
+        );
+        if (!startupOptions.ciSmoke) return app;
+        return CiSmokeApp(
+          backend: backend as RustBackend,
+          options: startupOptions,
+          diagnostics: startupDiagnostics!,
+          gallery: startupOptions.ciSmokeScenario == 'reopen'
+              ? const SizedBox.shrink()
+              : app,
+        );
+      },
     ),
   );
   WidgetsBinding.instance.addPostFrameCallback((_) {
     unawaited(diagnostics?.phase('first-frame') ?? Future<void>.value());
   });
+}
+
+void _installRuntimeErrorHandlers(
+  AppBackend backend,
+  StartupDiagnostics? diagnostics,
+) {
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    unawaited(
+      backend.logError(
+        'Unhandled Flutter framework error',
+        details.exception,
+        details.stack,
+      ),
+    );
+    unawaited(
+      diagnostics?.failure(
+            'flutter-framework-error',
+            details.exception,
+            details.stack,
+          ) ??
+          Future<void>.value(),
+    );
+  };
+  PlatformDispatcher.instance.onError = (error, stackTrace) {
+    unawaited(
+      backend.logError('Unhandled asynchronous error', error, stackTrace),
+    );
+    unawaited(
+      diagnostics?.failure('unhandled-asynchronous-error', error, stackTrace) ??
+          Future<void>.value(),
+    );
+    return false;
+  };
 }
 
 class SquidAlbumApp extends StatefulWidget {
@@ -170,6 +275,8 @@ class SquidAlbumApp extends StatefulWidget {
     this.startupOptions = const StartupOptions(),
     this.diagnostics,
     this.onRestartApplication,
+    this.uiPlatform,
+    this.desktopClose,
   });
 
   final AppBackend? backend;
@@ -177,6 +284,8 @@ class SquidAlbumApp extends StatefulWidget {
   final StartupOptions startupOptions;
   final StartupDiagnostics? diagnostics;
   final Future<void> Function()? onRestartApplication;
+  final AppUiPlatform? uiPlatform;
+  final DesktopStartupClose? desktopClose;
 
   @override
   State<SquidAlbumApp> createState() => _SquidAlbumAppState();
@@ -290,9 +399,11 @@ class _DesktopTitleBarState extends State<DesktopTitleBar> with WindowListener {
                     Text(
                       widget.title,
                       key: const Key('desktop-titlebar-title'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontFamily: appFontFamily,
-                        fontFamilyFallback: appFontFallback,
+                        fontFamily: appBrandFontFamily,
+                        fontFamilyFallback: appBrandFontFallback,
                         color: scheme.onSurface,
                         fontSize: 14,
                         fontWeight: FontWeight.w700,
@@ -332,7 +443,7 @@ class _DesktopTitleBarState extends State<DesktopTitleBar> with WindowListener {
 }
 
 class _SquidAlbumAppState extends State<SquidAlbumApp>
-    with WindowListener, TrayListener {
+    with WindowListener, TrayListener, WidgetsBindingObserver {
   final navigatorKey = GlobalKey<NavigatorState>();
   SettingsController? settings;
   SyncController? sync;
@@ -340,9 +451,15 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
   bool desktopLifecycleReady = false;
   bool quitting = false;
   bool startupSyncStarted = false;
+  Timer? startupSyncDelayTimer;
+  Completer<void>? startupSyncDelayCompleter;
   String? latestReleaseVersion;
   UpdateStatusKind? updateStatus;
   Object? updateStatusError;
+  AndroidUpdateController? androidUpdates;
+  AndroidStorageAccess? androidStorageAccess;
+  bool startupStorageAccessPending = false;
+  late final GalleryNotificationNavigation notificationNavigation;
 
   bool get supportsDesktopLifecycle =>
       widget.backend is RustBackend &&
@@ -352,13 +469,55 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    notificationNavigation = GalleryNotificationNavigation()..install();
+    if (widget.startupOptions.openGalleryOnLaunch) {
+      notificationNavigation.requestOpenGallery();
+    }
     final backend = widget.backend;
     if (backend != null) {
       selectAppFontLanguage(backend.settings.language);
       settings = SettingsController(backend)..addListener(_settingsChanged);
-      sync = SyncController(backend);
-      automaticSync = AutomaticSyncCoordinator(backend, settings!, sync!);
+      sync = SyncController(
+        backend,
+        onMediaImported: (count, since) =>
+            ImageThumbnailCache.prefetchImportedImages(
+              backend,
+              count,
+              importedSince: since,
+            ),
+        // Nintendo synchronization is an account queue on every platform.
+        // Keeping this shared prevents desktop from falling back to the
+        // legacy selected-account path while Android runs all accounts.
+        allAccounts: true,
+      );
+      automaticSync = AutomaticSyncCoordinator(
+        backend,
+        settings!,
+        sync!,
+        startupDelay: const Duration(seconds: 1),
+      );
+      if (androidUpdateChecksEnabled(
+        isAndroid: Platform.isAndroid,
+        isTest: Platform.environment.containsKey('FLUTTER_TEST'),
+        ciSmoke: widget.startupOptions.ciSmoke,
+        safeMode: widget.startupOptions.safeMode,
+      )) {
+        androidUpdates = AndroidUpdateController(
+          applicationRoot: widget.diagnostics?.applicationRoot,
+        );
+      }
+      if (androidStorageStartupEnabled(
+        isAndroid: Platform.isAndroid,
+        isTest: Platform.environment.containsKey('FLUTTER_TEST'),
+        ciSmoke: widget.startupOptions.ciSmoke,
+        safeMode: widget.startupOptions.safeMode,
+      )) {
+        androidStorageAccess = AndroidStorageAccess();
+        startupStorageAccessPending = true;
+      }
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_requestStartupStorageAccess());
         if (supportsDesktopLifecycle) {
           unawaited(
             widget.diagnostics?.runGuarded(
@@ -383,10 +542,22 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
             !widget.startupOptions.safeMode) {
           unawaited(_checkForUpdates(automatic: true));
         }
-        if (!widget.startupOptions.ciSmoke &&
-            !Platform.environment.containsKey('FLUTTER_TEST') &&
-            !widget.startupOptions.disableVideoThumbnails &&
-            !widget.startupOptions.safeMode) {
+        if (androidUpdateStartupEnabled(
+          isAndroid: Platform.isAndroid,
+          releaseMode: kReleaseMode,
+          isTest: Platform.environment.containsKey('FLUTTER_TEST'),
+          ciSmoke: widget.startupOptions.ciSmoke,
+          safeMode: widget.startupOptions.safeMode,
+        )) {
+          unawaited(_restoreAndroidUpdatesAndCheck());
+        }
+        if (shouldPrewarmVideoRuntime(
+          isAndroid: Platform.isAndroid,
+          ciSmoke: widget.startupOptions.ciSmoke,
+          isTest: Platform.environment.containsKey('FLUTTER_TEST'),
+          disabled: widget.startupOptions.disableVideoThumbnails,
+          safeMode: widget.startupOptions.safeMode,
+        )) {
           unawaited(
             widget.diagnostics?.runGuarded(
                   'media-player-prewarm',
@@ -408,7 +579,7 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
                 ) ??
                 automaticSync!.start(),
           );
-          unawaited(_runStartupSync());
+          unawaited(_runStartupSync(startupDelay: const Duration(seconds: 1)));
         } else {
           unawaited(
             widget.diagnostics?.phase('automatic-sync-disabled') ??
@@ -421,16 +592,58 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
 
   @override
   void dispose() {
+    startupStorageAccessPending = false;
+    WidgetsBinding.instance.removeObserver(this);
+    androidUpdates?.dispose();
+    notificationNavigation.dispose();
     settings?.removeListener(_settingsChanged);
+    widget.desktopClose?.releasePolicy(this);
     if (desktopLifecycleReady) {
-      windowManager.removeListener(this);
+      if (widget.desktopClose == null) windowManager.removeListener(this);
       trayManager.removeListener(this);
       unawaited(trayManager.destroy());
     }
     automaticSync?.dispose();
+    startupSyncDelayTimer?.cancel();
+    startupSyncDelayTimer = null;
+    final startupDelay = startupSyncDelayCompleter;
+    startupSyncDelayCompleter = null;
+    if (startupDelay != null && !startupDelay.isCompleted) {
+      startupDelay.complete();
+    }
     sync?.dispose();
     settings?.dispose();
     super.dispose();
+  }
+
+  Future<void> _restoreAndroidUpdatesAndCheck() async {
+    await androidUpdates?.restore();
+    if (mounted) await _checkForUpdates(automatic: true);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    androidUpdates?.setForeground(state == AppLifecycleState.resumed);
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_requestStartupStorageAccess());
+    }
+  }
+
+  Future<void> _requestStartupStorageAccess() async {
+    if (!mounted ||
+        !startupStorageAccessPending ||
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
+    }
+    final access = androidStorageAccess;
+    if (access == null) return;
+    startupStorageAccessPending = false;
+    final state = await access.request(automatic: true);
+    if (mounted && state == AndroidStorageAccessState.busy) {
+      // A different system prompt owns this foreground turn. Retry only on a
+      // later resume, never in a polling loop or before recovery has finished.
+      startupStorageAccessPending = true;
+    }
   }
 
   Future<void> _initializeDesktopLifecycle() async {
@@ -447,15 +660,23 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
         );
         await widget.diagnostics?.phase('custom-titlebar-enabled');
       }
-      windowManager.addListener(this);
+      if (widget.desktopClose == null) windowManager.addListener(this);
       trayManager.addListener(this);
-      await windowManager.setPreventClose(true);
+      if (widget.desktopClose == null) {
+        await windowManager.setPreventClose(true);
+      }
       await trayManager.setIcon(
         Platform.isWindows
             ? 'assets/tray/app_icon.ico'
             : 'assets/tray/app_icon.png',
       );
+      if (!mounted) {
+        trayManager.removeListener(this);
+        await trayManager.destroy();
+        return;
+      }
       desktopLifecycleReady = true;
+      widget.desktopClose?.adoptPolicy(this, _handleWindowClose);
       await _updateDesktopChrome();
     } catch (error, stackTrace) {
       await widget.backend?.logError(
@@ -493,10 +714,21 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
     );
   }
 
-  Future<void> _runStartupSync() async {
+  Future<void> _runStartupSync({Duration startupDelay = Duration.zero}) async {
     if (widget.startupOptions.disableAutomaticSync) return;
     if (startupSyncStarted || settings?.value.autoSyncOnLaunch != true) return;
     startupSyncStarted = true;
+    if (startupDelay > Duration.zero) {
+      final delay = Completer<void>();
+      startupSyncDelayCompleter = delay;
+      startupSyncDelayTimer = Timer(startupDelay, () {
+        if (!delay.isCompleted) delay.complete();
+      });
+      await delay.future;
+      startupSyncDelayTimer = null;
+      startupSyncDelayCompleter = null;
+      if (!mounted || widget.startupOptions.disableAutomaticSync) return;
+    }
     if (await widget.backend?.isSignedIn != true) return;
     await sync?.run();
   }
@@ -506,6 +738,21 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
     final context = navigatorKey.currentContext;
     final backend = widget.backend;
     if (context == null || backend == null) return;
+    if (Platform.isAndroid) {
+      await androidUpdates?.check(
+        automatic: automatic,
+        language: settings?.value.language ?? 'en',
+        confirm: (release) {
+          if (!mounted) return Future.value(null);
+          return showAndroidReleaseUpdateDialog(
+            context,
+            release: release,
+            allowDownload: androidUpdates!.allowPackageUpdates,
+          );
+        },
+      );
+      return;
+    }
     await showLatestReleaseUpdate(
       context,
       automatic: automatic,
@@ -586,7 +833,10 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
     if (quitting) return;
     quitting = true;
     try {
-      if (desktopLifecycleReady) {
+      if (widget.desktopClose != null) {
+        if (desktopLifecycleReady) await trayManager.destroy();
+        await widget.desktopClose!.closeApplication();
+      } else if (desktopLifecycleReady) {
         await trayManager.destroy();
         await windowManager.setPreventClose(false);
         await windowManager.close();
@@ -664,12 +914,14 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
   @override
   Widget build(BuildContext context) {
     final controller = settings;
+    final android =
+        (widget.uiPlatform ?? resolveAppUiPlatform()) == AppUiPlatform.android;
     if (controller == null) {
       return MaterialApp(
         onGenerateTitle: (context) =>
             context.l10n.select(zh: appChineseName, en: appEnglishName),
         debugShowCheckedModeBanner: false,
-        theme: _themeFor('ocean'),
+        theme: android ? androidTheme('ocean') : _themeFor('ocean'),
         supportedLocales: AppLocalizations.supportedLocales,
         localizationsDelegates: const [
           AppLocalizations.delegate,
@@ -690,7 +942,9 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
         onGenerateTitle: (context) =>
             context.l10n.select(zh: appChineseName, en: appEnglishName),
         debugShowCheckedModeBanner: false,
-        theme: _themeFor(controller.value.theme),
+        theme: android
+            ? androidTheme(controller.value.theme)
+            : _themeFor(controller.value.theme),
         locale: Locale(controller.value.language),
         supportedLocales: AppLocalizations.supportedLocales,
         localizationsDelegates: const [
@@ -699,33 +953,56 @@ class _SquidAlbumAppState extends State<SquidAlbumApp>
           GlobalWidgetsLocalizations.delegate,
           GlobalCupertinoLocalizations.delegate,
         ],
-        home: DesktopWindowFrame(
-          title: controller.value.language == 'en'
-              ? appEnglishName
-              : appChineseName,
-          child: HomeShell(
-            backend: widget.backend!,
-            settings: controller,
-            syncController: sync,
-            onNintendoAccountChanged: widget.startupOptions.disableAutomaticSync
-                ? null
-                : automaticSync?.accountChanged,
-            enableVideoFeatures: !widget.startupOptions.disableVideoThumbnails,
-            enableMtpDetection: !widget.startupOptions.disableMtpDetection,
-            startupDiagnostics: widget.diagnostics,
-            onCheckForUpdates: widget.startupOptions.ciSmoke
-                ? null
-                : () => _checkForUpdates(automatic: false),
-            onInstallUpdate: widget.startupOptions.ciSmoke
-                ? null
-                : _installUpdate,
-            onRestartApplication:
-                widget.onRestartApplication ?? _restartApplication,
-            latestReleaseVersion: latestReleaseVersion,
-            updateStatus: updateStatus,
-            updateStatusError: updateStatusError,
-          ),
-        ),
+        home: android
+            ? AndroidShell(
+                backend: widget.backend!,
+                settings: controller,
+                sync: sync!,
+                onNintendoAccountChanged:
+                    widget.startupOptions.disableAutomaticSync
+                    ? null
+                    : automaticSync?.accountChanged,
+                onCheckForUpdates:
+                    widget.startupOptions.ciSmoke ||
+                        (Platform.isAndroid && androidUpdates == null)
+                    ? null
+                    : () => _checkForUpdates(automatic: false),
+                latestReleaseVersion: latestReleaseVersion,
+                updateStatus: updateStatus,
+                updateController: androidUpdates,
+                notificationNavigation: notificationNavigation,
+              )
+            : DesktopWindowFrame(
+                title: controller.value.language == 'en'
+                    ? appEnglishName
+                    : appChineseName,
+                child: HomeShell(
+                  backend: widget.backend!,
+                  settings: controller,
+                  syncController: sync,
+                  onNintendoAccountChanged:
+                      widget.startupOptions.disableAutomaticSync
+                      ? null
+                      : automaticSync?.accountChanged,
+                  enableVideoFeatures:
+                      !widget.startupOptions.disableVideoThumbnails,
+                  enableMtpDetection:
+                      !widget.startupOptions.disableMtpDetection,
+                  startupDiagnostics: widget.diagnostics,
+                  onCheckForUpdates: widget.startupOptions.ciSmoke
+                      ? null
+                      : () => _checkForUpdates(automatic: false),
+                  onInstallUpdate: widget.startupOptions.ciSmoke
+                      ? null
+                      : _installUpdate,
+                  onRestartApplication:
+                      widget.onRestartApplication ?? _restartApplication,
+                  latestReleaseVersion: latestReleaseVersion,
+                  updateStatus: updateStatus,
+                  updateStatusError: updateStatusError,
+                  notificationNavigation: notificationNavigation,
+                ),
+              ),
       ),
     );
   }
@@ -804,6 +1081,7 @@ AppSettings _settingsWithCloseBehavior(
   String closeBehavior,
 ) => AppSettings(
   proxyUrl: value.proxyUrl,
+  dohEnabled: value.dohEnabled,
   libraryPath: value.libraryPath,
   theme: value.theme,
   language: value.language,
@@ -814,6 +1092,9 @@ AppSettings _settingsWithCloseBehavior(
   compactTagDisplay: value.compactTagDisplay,
   autoPlayVideo: value.autoPlayVideo,
   autoSyncOnLaunch: value.autoSyncOnLaunch,
+  notifyOnAutoSync: value.notifyOnAutoSync,
+  showSplatoonSchedule: value.showSplatoonSchedule,
+  showSplatoonFriendActivity: value.showSplatoonFriendActivity,
   closeBehavior: closeBehavior,
   customFontPaths: value.customFontPaths,
   syncPolicy: value.syncPolicy,
@@ -913,7 +1194,14 @@ ThemeData _themeFor(String name) {
         TextStyle(fontWeight: FontWeight.w700, color: seed),
       ),
     ),
+    scrollbarTheme: ScrollbarThemeData(
+      // Keep desktop scrollbars visually inside their card instead of
+      // touching the outer border of nested tab panels and dialogs.
+      crossAxisMargin: 8,
+      mainAxisMargin: 8,
+    ),
     useMaterial3: true,
+    pageTransitionsTheme: appFadePageTransitionsTheme,
   );
 }
 

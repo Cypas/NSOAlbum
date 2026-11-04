@@ -3,6 +3,17 @@
 
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
+import 'device_sync/connection.dart';
+import 'device_sync/driver.dart';
+import 'device_sync/headless.dart';
+import 'device_sync/native_io.dart';
+import 'device_sync/planner.dart';
+import 'device_sync/read_model.dart';
+import 'device_sync/runtime.dart';
+import 'device_sync/source_names.dart';
+import 'device_sync/space_budget.dart';
+import 'device_sync/usb.dart';
+import 'device_sync/work.dart';
 import 'frb_generated.dart';
 import 'models.dart';
 import 'nso/provider.dart';
@@ -10,8 +21,417 @@ import 'nso/provider.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 import 'settings.dart';
+import 'switch_import.dart';
 
-// These functions are ignored because they are not marked as `pub`: `core`, `error_text`
+// These functions are ignored because they are not marked as `pub`: `clear_current_sync`, `core`, `error_text`, `register_current_sync`
+
+Future<LibraryInfo> deviceSyncOpenLibrary({required String libraryRoot}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncOpenLibrary(
+      libraryRoot: libraryRoot,
+    );
+
+Future<LibraryInfo> deviceSyncLibraryInfo({required String library_}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncLibraryInfo(library_: library_);
+
+Future<void> deviceSyncRecoverInterruptedSessions({
+  required String library_,
+  required List<String> sessions,
+}) => RustLib.instance.api.crateBridgeDeviceSyncRecoverInterruptedSessions(
+  library_: library_,
+  sessions: sessions,
+);
+
+Future<void> deviceSyncCloseLibrary({required String library_}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncCloseLibrary(library_: library_);
+
+Future<JournalInfo?> deviceSyncJournal({
+  required String library_,
+  required String operation,
+}) => RustLib.instance.api.crateBridgeDeviceSyncJournal(
+  library_: library_,
+  operation: operation,
+);
+
+Future<JournalInfo> deviceSyncBackupJournal({
+  required String library_,
+  required String backup,
+}) => RustLib.instance.api.crateBridgeDeviceSyncBackupJournal(
+  library_: library_,
+  backup: backup,
+);
+
+Future<HostInfo> deviceSyncHost({
+  required String library_,
+  required String name,
+  String? tcpAddress,
+}) => RustLib.instance.api.crateBridgeDeviceSyncHost(
+  library_: library_,
+  name: name,
+  tcpAddress: tcpAddress,
+);
+
+Future<String> deviceSyncClient({
+  required String library_,
+  required String invitation,
+  required String name,
+}) => RustLib.instance.api.crateBridgeDeviceSyncClient(
+  library_: library_,
+  invitation: invitation,
+  name: name,
+);
+
+Future<HostInfo> deviceSyncHostTcp({
+  required String library_,
+  required String name,
+  required String address,
+  String? wifiSsid,
+  ApplicationBuild? appBuild,
+}) => RustLib.instance.api.crateBridgeDeviceSyncHostTcp(
+  library_: library_,
+  name: name,
+  address: address,
+  wifiSsid: wifiSsid,
+  appBuild: appBuild,
+);
+
+Future<InvitationConnection> deviceSyncInspectInvitation({
+  required String invitation,
+  required ApplicationBuild appBuild,
+}) => RustLib.instance.api.crateBridgeDeviceSyncInspectInvitation(
+  invitation: invitation,
+  appBuild: appBuild,
+);
+
+Future<String> deviceSyncClientTcp({
+  required String library_,
+  required String invitation,
+  required String name,
+}) => RustLib.instance.api.crateBridgeDeviceSyncClientTcp(
+  library_: library_,
+  invitation: invitation,
+  name: name,
+);
+
+Future<HostInfo> deviceSyncHostUsb({
+  required String library_,
+  required String name,
+  ApplicationBuild? appBuild,
+}) => RustLib.instance.api.crateBridgeDeviceSyncHostUsb(
+  library_: library_,
+  name: name,
+  appBuild: appBuild,
+);
+
+Future<String> deviceSyncClientUsb({
+  required String library_,
+  required String invitation,
+  required String name,
+}) => RustLib.instance.api.crateBridgeDeviceSyncClientUsb(
+  library_: library_,
+  invitation: invitation,
+  name: name,
+);
+
+Future<UsbView> deviceSyncUsbView({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncUsbView(endpoint: endpoint);
+
+Future<void> deviceSyncUsbSelect({
+  required String endpoint,
+  required String device,
+  required String storage,
+}) => RustLib.instance.api.crateBridgeDeviceSyncUsbSelect(
+  endpoint: endpoint,
+  device: device,
+  storage: storage,
+);
+
+Future<UsbAction?> deviceSyncUsbNext({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncUsbNext(endpoint: endpoint);
+
+Future<void> deviceSyncUsbComplete({
+  required String endpoint,
+  required UsbReply reply,
+}) => RustLib.instance.api.crateBridgeDeviceSyncUsbComplete(
+  endpoint: endpoint,
+  reply: reply,
+);
+
+Future<UsbView> deviceSyncUsbWaitClosed({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncUsbWaitClosed(endpoint: endpoint);
+
+Future<EndpointStatus> deviceSyncStatus({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncStatus(endpoint: endpoint);
+
+Future<EndpointRead> deviceSyncReadEndpoint({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncReadEndpoint(endpoint: endpoint);
+
+Future<AppliedMediaCachePageRead> deviceSyncAppliedMediaPage({
+  required String endpoint,
+  required BigInt offset,
+}) => RustLib.instance.api.crateBridgeDeviceSyncAppliedMediaPage(
+  endpoint: endpoint,
+  offset: offset,
+);
+
+Future<PreviewRead> deviceSyncReadPreview({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncReadPreview(endpoint: endpoint);
+
+/// Debug acceptance-test guard; non-Debug binaries reject before endpoint lookup.
+Future<bool> deviceSyncBenchmarkRequireNoop({
+  required String endpoint,
+  required String binding,
+}) => RustLib.instance.api.crateBridgeDeviceSyncBenchmarkRequireNoop(
+  endpoint: endpoint,
+  binding: binding,
+);
+
+/// Fixed-field measurements are available only after successful safe cleanup.
+Future<String?> deviceSyncBenchmarkMetrics({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncBenchmarkMetrics(
+      endpoint: endpoint,
+    );
+
+Future<ConflictPageRead> deviceSyncReadConflicts({
+  required String endpoint,
+  required String binding,
+  String? cursor,
+  required BigInt limit,
+}) => RustLib.instance.api.crateBridgeDeviceSyncReadConflicts(
+  endpoint: endpoint,
+  binding: binding,
+  cursor: cursor,
+  limit: limit,
+);
+
+Future<BackupPageRead> deviceSyncReadBackups({
+  required String library_,
+  String? cursor,
+  required BigInt limit,
+}) => RustLib.instance.api.crateBridgeDeviceSyncReadBackups(
+  library_: library_,
+  cursor: cursor,
+  limit: limit,
+);
+
+Future<RestoreSummaryRead> deviceSyncReadRestoreSummary({
+  required String restore,
+  required String binding,
+}) => RustLib.instance.api.crateBridgeDeviceSyncReadRestoreSummary(
+  restore: restore,
+  binding: binding,
+);
+
+Future<void> deviceSyncPoll({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncPoll(endpoint: endpoint);
+
+Future<String> deviceSyncConfirmationCode({required String endpoint}) => RustLib
+    .instance
+    .api
+    .crateBridgeDeviceSyncConfirmationCode(endpoint: endpoint);
+
+Future<void> deviceSyncConfirm({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncConfirm(endpoint: endpoint);
+
+Future<void> deviceSyncConsentControlled({
+  required String endpoint,
+  required bool accepted,
+}) => RustLib.instance.api.crateBridgeDeviceSyncConsentControlled(
+  endpoint: endpoint,
+  accepted: accepted,
+);
+
+Future<void> deviceSyncApproveControlled({
+  required String endpoint,
+  required String binding,
+}) => RustLib.instance.api.crateBridgeDeviceSyncApproveControlled(
+  endpoint: endpoint,
+  binding: binding,
+);
+
+Future<void> deviceSyncPublishAccountPreview({
+  required String endpoint,
+  required String binding,
+  required BigInt added,
+  required BigInt replaced,
+  required BigInt removed,
+  required BigInt kept,
+}) => RustLib.instance.api.crateBridgeDeviceSyncPublishAccountPreview(
+  endpoint: endpoint,
+  binding: binding,
+  added: added,
+  replaced: replaced,
+  removed: removed,
+  kept: kept,
+);
+
+Future<void> deviceSyncConfigure({
+  required String endpoint,
+  required bool phoneToDesktop,
+  required bool overwrite,
+  required bool includeAccounts,
+}) => RustLib.instance.api.crateBridgeDeviceSyncConfigure(
+  endpoint: endpoint,
+  phoneToDesktop: phoneToDesktop,
+  overwrite: overwrite,
+  includeAccounts: includeAccounts,
+);
+
+Future<void> deviceSyncExportAccounts({
+  required String endpoint,
+  required List<int> payload,
+  required String stateDigest,
+}) => RustLib.instance.api.crateBridgeDeviceSyncExportAccounts(
+  endpoint: endpoint,
+  payload: payload,
+  stateDigest: stateDigest,
+);
+
+Future<void> deviceSyncReceiveAccounts({
+  required String endpoint,
+  required String stateDigest,
+}) => RustLib.instance.api.crateBridgeDeviceSyncReceiveAccounts(
+  endpoint: endpoint,
+  stateDigest: stateDigest,
+);
+
+Future<void> deviceSyncDeclineAccounts({required String endpoint}) => RustLib
+    .instance
+    .api
+    .crateBridgeDeviceSyncDeclineAccounts(endpoint: endpoint);
+
+Future<Uint8List?> deviceSyncAccountPayload({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncAccountPayload(
+      endpoint: endpoint,
+    );
+
+Future<void> deviceSyncApprove({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncApprove(endpoint: endpoint);
+
+Future<void> deviceSyncApproveAccounts({
+  required String endpoint,
+  required String binding,
+  required String stateDigest,
+  required String external_,
+}) => RustLib.instance.api.crateBridgeDeviceSyncApproveAccounts(
+  endpoint: endpoint,
+  binding: binding,
+  stateDigest: stateDigest,
+  external_: external_,
+);
+
+Future<void> deviceSyncSourceFinal({
+  required String endpoint,
+  required String stateDigest,
+}) => RustLib.instance.api.crateBridgeDeviceSyncSourceFinal(
+  endpoint: endpoint,
+  stateDigest: stateDigest,
+);
+
+Future<void> deviceSyncTargetFinal({
+  required String endpoint,
+  required String stateDigest,
+}) => RustLib.instance.api.crateBridgeDeviceSyncTargetFinal(
+  endpoint: endpoint,
+  stateDigest: stateDigest,
+);
+
+Future<void> deviceSyncExternalCheck({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncExternalCheck(endpoint: endpoint);
+
+Future<void> deviceSyncExternalStep({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncExternalStep(endpoint: endpoint);
+
+Future<void> deviceSyncFinalizeAccounts({
+  required String endpoint,
+  required String external_,
+}) => RustLib.instance.api.crateBridgeDeviceSyncFinalizeAccounts(
+  endpoint: endpoint,
+  external_: external_,
+);
+
+Future<Uint8List> deviceSyncDrain({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncDrain(endpoint: endpoint);
+
+Future<void> deviceSyncIngest({
+  required String endpoint,
+  required List<int> bytes,
+}) => RustLib.instance.api.crateBridgeDeviceSyncIngest(
+  endpoint: endpoint,
+  bytes: bytes,
+);
+
+Future<void> deviceSyncWritten({
+  required String endpoint,
+  required BigInt bytes,
+}) => RustLib.instance.api.crateBridgeDeviceSyncWritten(
+  endpoint: endpoint,
+  bytes: bytes,
+);
+
+Future<bool> deviceSyncFinishSuccess({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncFinishSuccess(endpoint: endpoint);
+
+Future<void> deviceSyncCancelSignal({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncCancelSignal(endpoint: endpoint);
+
+Future<void> deviceSyncDetachTransport({required String endpoint}) => RustLib
+    .instance
+    .api
+    .crateBridgeDeviceSyncDetachTransport(endpoint: endpoint);
+
+Future<void> deviceSyncShutdown({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncShutdown(endpoint: endpoint);
+
+Future<void> deviceSyncCloseEndpoint({required String endpoint}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncCloseEndpoint(endpoint: endpoint);
+
+Future<JournalInfo> deviceSyncCompensate({
+  required String library_,
+  required String operation,
+}) => RustLib.instance.api.crateBridgeDeviceSyncCompensate(
+  library_: library_,
+  operation: operation,
+);
+
+Future<RestoreInfo> deviceSyncPreviewRestore({
+  required String library_,
+  required String backup,
+}) => RustLib.instance.api.crateBridgeDeviceSyncPreviewRestore(
+  library_: library_,
+  backup: backup,
+);
+
+Future<RestoreInfo> deviceSyncApplyRestore({
+  required String restore,
+  required String binding,
+  String? external_,
+}) => RustLib.instance.api.crateBridgeDeviceSyncApplyRestore(
+  restore: restore,
+  binding: binding,
+  external_: external_,
+);
+
+Future<void> deviceSyncValidateRestore({
+  required String restore,
+  required String binding,
+}) => RustLib.instance.api.crateBridgeDeviceSyncValidateRestore(
+  restore: restore,
+  binding: binding,
+);
+
+Future<void> deviceSyncFinalizeRestore({
+  required String restore,
+  required String external_,
+}) => RustLib.instance.api.crateBridgeDeviceSyncFinalizeRestore(
+  restore: restore,
+  external_: external_,
+);
+
+Future<void> deviceSyncCloseRestore({required String restore}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncCloseRestore(restore: restore);
+
+Future<void> deviceSyncCancelRestore({required String restore}) =>
+    RustLib.instance.api.crateBridgeDeviceSyncCancelRestore(restore: restore);
 
 Future<void> initCore({required String libraryRoot}) =>
     RustLib.instance.api.crateBridgeInitCore(libraryRoot: libraryRoot);
@@ -22,11 +442,19 @@ Future<LibraryRootProbe> probeLibraryRoot({required String libraryRoot}) =>
 Future<AppSettings?> loadSettings() =>
     RustLib.instance.api.crateBridgeLoadSettings();
 
+Future<AppSettings?> bootstrapSettings() =>
+    RustLib.instance.api.crateBridgeBootstrapSettings();
+
 Future<void> saveSettings({required AppSettings settings}) =>
     RustLib.instance.api.crateBridgeSaveSettings(settings: settings);
 
 Future<void> saveSyncPolicy({required SyncPolicy policy}) =>
     RustLib.instance.api.crateBridgeSaveSyncPolicy(policy: policy);
+
+Future<void> setRuntimeProxyPolicy({required bool disableAppProxy}) => RustLib
+    .instance
+    .api
+    .crateBridgeSetRuntimeProxyPolicy(disableAppProxy: disableAppProxy);
 
 Future<SyncScheduleStatus> syncScheduleStatus({required String accountId}) =>
     RustLib.instance.api.crateBridgeSyncScheduleStatus(accountId: accountId);
@@ -48,6 +476,7 @@ Future<SyncRuntimeState> recordSyncAttempt({
   required BigInt totalFound,
   required BigInt downloaded,
   required BigInt duplicates,
+  BigInt? skippedRemote,
   required BigInt failed,
 }) => RustLib.instance.api.crateBridgeRecordSyncAttempt(
   accountId: accountId,
@@ -55,6 +484,7 @@ Future<SyncRuntimeState> recordSyncAttempt({
   totalFound: totalFound,
   downloaded: downloaded,
   duplicates: duplicates,
+  skippedRemote: skippedRemote,
   failed: failed,
 );
 
@@ -83,11 +513,185 @@ Future<CoralSession> establishCoralSession({
   proxyUrl: proxyUrl,
 );
 
+Future<CoralSession> establishCoralSessionForAccount({
+  required String sessionToken,
+  required String expectedAccount,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeEstablishCoralSessionForAccount(
+  sessionToken: sessionToken,
+  expectedAccount: expectedAccount,
+  proxyUrl: proxyUrl,
+);
+
+Future<NintendoFriendsSnapshot> nintendoFriends({
+  required String accountId,
+  required String sessionToken,
+  required String operationId,
+  String? proxyUrl,
+  required bool includeSplatoonFriendActivity,
+}) => RustLib.instance.api.crateBridgeNintendoFriends(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+  includeSplatoonFriendActivity: includeSplatoonFriendActivity,
+);
+
+Future<Uint8List> nintendoFriendAvatar({
+  required String accountId,
+  required String sessionToken,
+  required String friendId,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeNintendoFriendAvatar(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  friendId: friendId,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
+Future<List<NintendoFriendGame>> nintendoFriendPlayLog({
+  required String accountId,
+  required String sessionToken,
+  required String friendId,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeNintendoFriendPlayLog(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  friendId: friendId,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
+Future<Uint8List> nintendoGameImage({
+  required String accountId,
+  required String sessionToken,
+  required String gameName,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeNintendoGameImage(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  gameName: gameName,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
+Future<NintendoFriendCodeSnapshot> nintendoFriendCode({
+  required String accountId,
+  required String sessionToken,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeNintendoFriendCode(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
+Future<NintendoFriendCodeUser> nintendoFriendLookup({
+  required String accountId,
+  required String sessionToken,
+  required String friendCode,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeNintendoFriendLookup(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  friendCode: friendCode,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
+Future<NintendoFriendRequestResult> nintendoSendFriendRequest({
+  required String accountId,
+  required String sessionToken,
+  required String friendId,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeNintendoSendFriendRequest(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  friendId: friendId,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
+Future<void> nintendoUpdateFriendNote({
+  required String accountId,
+  required String sessionToken,
+  required String friendId,
+  required String note,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeNintendoUpdateFriendNote(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  friendId: friendId,
+  note: note,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
+Future<SplatNetWebSession> prepareSplatnetSession({
+  required String accountId,
+  required String sessionToken,
+  required String operationId,
+  required bool forceRefresh,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgePrepareSplatnetSession(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  operationId: operationId,
+  forceRefresh: forceRefresh,
+  proxyUrl: proxyUrl,
+);
+
+Future<SeedExportPayload> prepareSeedExport({
+  required String accountId,
+  required String sessionToken,
+  required String operationId,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgePrepareSeedExport(
+  accountId: accountId,
+  sessionToken: sessionToken,
+  operationId: operationId,
+  proxyUrl: proxyUrl,
+);
+
+Future<bool> cancelAccountToolOperation({required String operationId}) =>
+    RustLib.instance.api.crateBridgeCancelAccountToolOperation(
+      operationId: operationId,
+    );
+
+Future<void> clearAccountToolCache({required String accountId}) =>
+    RustLib.instance.api.crateBridgeClearAccountToolCache(accountId: accountId);
+
 Future<SyncSummary> syncNso({
   required CoralSession session,
   String? proxyUrl,
 }) => RustLib.instance.api.crateBridgeSyncNso(
   session: session,
+  proxyUrl: proxyUrl,
+);
+
+Future<SyncSummary> syncNsoFromSessionToken({
+  required String sessionToken,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeSyncNsoFromSessionToken(
+  sessionToken: sessionToken,
+  proxyUrl: proxyUrl,
+);
+
+Future<SyncSummary> syncNsoFromSessionTokenForAccount({
+  required String sessionToken,
+  required String expectedAccount,
+  String? proxyUrl,
+}) => RustLib.instance.api.crateBridgeSyncNsoFromSessionTokenForAccount(
+  sessionToken: sessionToken,
+  expectedAccount: expectedAccount,
   proxyUrl: proxyUrl,
 );
 
@@ -99,6 +703,15 @@ Future<SyncProgress?> currentSyncProgress() =>
 
 Future<List<MediaAsset>> listMedia({required GalleryQuery query}) =>
     RustLib.instance.api.crateBridgeListMedia(query: query);
+
+Future<BigInt> countMedia({required GalleryQuery query}) =>
+    RustLib.instance.api.crateBridgeCountMedia(query: query);
+
+Future<GalleryPage> listMediaPage({required GalleryPageRequest request}) =>
+    RustLib.instance.api.crateBridgeListMediaPage(request: request);
+
+Future<MediaDetails> mediaDetails({required PlatformInt64 mediaId}) =>
+    RustLib.instance.api.crateBridgeMediaDetails(mediaId: mediaId);
 
 Future<List<AlbumSummary>> listAlbums() =>
     RustLib.instance.api.crateBridgeListAlbums();
@@ -129,6 +742,9 @@ Future<void> mergeTags({
 
 Future<List<GameTagSummary>> listGameTags() =>
     RustLib.instance.api.crateBridgeListGameTags();
+
+Future<List<GameMediaCount>> listGameMediaCounts({PlatformInt64? albumId}) =>
+    RustLib.instance.api.crateBridgeListGameMediaCounts(albumId: albumId);
 
 Future<List<GameTagAliasSummary>> listGameTagAliases() =>
     RustLib.instance.api.crateBridgeListGameTagAliases();
@@ -163,6 +779,22 @@ Future<ImportSummary> importCustomFiles({
   gameName: gameName,
 );
 
+Future<ImportSummary> importCustomFilesWithProgress({
+  required List<String> paths,
+  required String gameName,
+  required String operationId,
+}) => RustLib.instance.api.crateBridgeImportCustomFilesWithProgress(
+  paths: paths,
+  gameName: gameName,
+  operationId: operationId,
+);
+
+Future<OperationProgress?> currentImportProgress({
+  required String operationId,
+}) => RustLib.instance.api.crateBridgeCurrentImportProgress(
+  operationId: operationId,
+);
+
 Future<ImportSummary> importMtpFiles({
   required List<String> paths,
   required String deviceName,
@@ -170,6 +802,51 @@ Future<ImportSummary> importMtpFiles({
   paths: paths,
   deviceName: deviceName,
 );
+
+Future<ImportSummary> importMtpFilesWithProgress({
+  required List<String> paths,
+  required String deviceName,
+  required String operationId,
+}) => RustLib.instance.api.crateBridgeImportMtpFilesWithProgress(
+  paths: paths,
+  deviceName: deviceName,
+  operationId: operationId,
+);
+
+Future<bool> cancelImport({required String operationId}) =>
+    RustLib.instance.api.crateBridgeCancelImport(operationId: operationId);
+
+Future<List<String>> switchMtpListDevices() =>
+    RustLib.instance.api.crateBridgeSwitchMtpListDevices();
+
+Future<List<SwitchMtpEntry>> switchMtpScan({required String device}) =>
+    RustLib.instance.api.crateBridgeSwitchMtpScan(device: device);
+
+Future<void> switchMtpStartStage({
+  required String operationId,
+  required String device,
+  required List<SwitchMtpEntry> entries,
+}) => RustLib.instance.api.crateBridgeSwitchMtpStartStage(
+  operationId: operationId,
+  device: device,
+  entries: entries,
+);
+
+Future<SwitchMtpStageStatus?> switchMtpStageStatus({
+  required String operationId,
+}) => RustLib.instance.api.crateBridgeSwitchMtpStageStatus(
+  operationId: operationId,
+);
+
+Future<bool> switchMtpCancelStage({required String operationId}) => RustLib
+    .instance
+    .api
+    .crateBridgeSwitchMtpCancelStage(operationId: operationId);
+
+Future<void> switchMtpCleanupStage({required String operationId}) => RustLib
+    .instance
+    .api
+    .crateBridgeSwitchMtpCleanupStage(operationId: operationId);
 
 Future<MediaExportSummary> exportMedia({
   required Int64List mediaIds,

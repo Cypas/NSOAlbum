@@ -87,6 +87,15 @@ class VideoRuntime {
   }
 }
 
+bool shouldPrewarmVideoRuntime({
+  required bool isAndroid,
+  required bool ciSmoke,
+  required bool isTest,
+  required bool disabled,
+  required bool safeMode,
+}) =>
+    !isAndroid && !ciSmoke && !isTest && !disabled && !safeMode;
+
 class _PreparedVideo {
   const _PreparedVideo(this.player, this.ready);
 

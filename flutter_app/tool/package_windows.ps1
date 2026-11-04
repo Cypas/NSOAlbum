@@ -1,7 +1,9 @@
 param(
     [string]$Version,
     [switch]$SkipTests,
-    [switch]$UseExistingFlutterBuild
+    [switch]$SkipBridgeGeneration,
+    [switch]$UseExistingFlutterBuild,
+    [string]$PackageDirectory
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,9 +14,35 @@ $rustRoot = Join-Path $workspaceRoot 'rust_core'
 $pubspec = Join-Path $projectRoot 'pubspec.yaml'
 $bridgeScript = Join-Path $PSScriptRoot 'generate_bridge.ps1'
 $releaseRoot = Join-Path $projectRoot 'build\windows\x64\runner\Release'
-$rustDll = Join-Path $rustRoot 'target\release\squid_album_core.dll'
+$rustDll = $null
 $releaseDll = Join-Path $releaseRoot 'squid_album_core.dll'
 $distRoot = Join-Path $workspaceRoot 'dist'
+
+function Assert-NewPackageDirectory {
+    param([Parameter(Mandatory)][string]$Path)
+    $candidate = [IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    $allowed = [IO.Path]::GetFullPath($distRoot).TrimEnd('\', '/')
+    if (-not $candidate.StartsWith("$allowed\", [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'PackageDirectory must be a new directory strictly inside this workspace dist.'
+    }
+    if (Test-Path -LiteralPath $candidate) {
+        throw "Refusing to overwrite an existing package: $candidate"
+    }
+    $ancestor = $candidate
+    while (-not [string]::IsNullOrEmpty($ancestor)) {
+        if (Test-Path -LiteralPath $ancestor) {
+            $item = Get-Item -LiteralPath $ancestor -Force
+            if (-not $item.PSIsContainer -or
+                ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "PackageDirectory traverses a file or reparse point: $ancestor"
+            }
+        }
+        $parent = Split-Path -Parent $ancestor
+        if ($parent -eq $ancestor) { break }
+        $ancestor = $parent
+    }
+    return $candidate
+}
 
 function Resolve-Executable {
     param(
@@ -186,6 +214,12 @@ if ($Version -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') {
     throw "Invalid release version: $Version"
 }
 
+$packageName = "NSOAlbum-Windows-x64-$Version"
+if ([string]::IsNullOrWhiteSpace($PackageDirectory)) {
+    $PackageDirectory = Join-Path $distRoot $packageName
+}
+$PackageDirectory = Assert-NewPackageDirectory -Path $PackageDirectory
+
 $releaseTag = if ($env:GITHUB_REF_TYPE -eq 'tag') {
     $env:GITHUB_REF_NAME
 } else {
@@ -215,10 +249,16 @@ if ($null -eq $dart) {
     $dart = $dartCommand.Source
 }
 
-Write-Host 'Generating Flutter/Rust bridge code...'
-& $bridgeScript
-if ($LASTEXITCODE -ne 0) {
-    throw "Bridge generation failed with exit code $LASTEXITCODE."
+if ($SkipBridgeGeneration) {
+    if ($env:GITHUB_ACTIONS -ne 'true') {
+        throw 'Skipping bridge generation is only supported by the pinned CI build job.'
+    }
+} else {
+    Write-Host 'Generating Flutter/Rust bridge code...'
+    & $bridgeScript
+    if ($LASTEXITCODE -ne 0) {
+        throw "Bridge generation failed with exit code $LASTEXITCODE."
+    }
 }
 
 $rustGenerated = Get-Content -Raw -LiteralPath (Join-Path $rustRoot 'src\frb_generated.rs')
@@ -241,14 +281,56 @@ if (-not $SkipTests) {
     Invoke-Checked -Executable $flutter -Arguments @('test') -WorkingDirectory $projectRoot
 }
 
-Write-Host 'Building the Rust release library...'
-Invoke-Checked -Executable $cargo -Arguments @('build', '--release') -WorkingDirectory $rustRoot
-if (-not (Test-Path -LiteralPath $rustDll)) {
-    throw "Rust build did not produce $rustDll."
+Write-Host 'Building the Rust release library and MTP helper from Cargo JSON...'
+$nativeReports = Join-Path $projectRoot "build\desktop-native\package-windows-$([guid]::NewGuid().ToString('N'))"
+$nativeBuildReport = Join-Path $nativeReports 'build.json'
+$previousNativeCargo = [Environment]::GetEnvironmentVariable('CARGO', 'Process')
+try {
+    [Environment]::SetEnvironmentVariable('CARGO', $cargo, 'Process')
+    Invoke-Checked -Executable $dart -Arguments @(
+        (Join-Path $PSScriptRoot 'build_desktop_native.dart'),
+        '--target', 'x86_64-pc-windows-msvc',
+        '--configuration', 'Release',
+        '--output', (Join-Path $releaseRoot 'nsoalbum_mtp_worker.exe'),
+        '--report', $nativeBuildReport,
+        '--cargo-log', (Join-Path $nativeReports 'cargo.jsonl'),
+        '--library'
+    ) -WorkingDirectory $projectRoot
+} finally {
+    if ($null -eq $previousNativeCargo) {
+        [Environment]::SetEnvironmentVariable('CARGO', [NullString]::Value, 'Process')
+    } else {
+        [Environment]::SetEnvironmentVariable('CARGO', $previousNativeCargo, 'Process')
+    }
+}
+$nativeBuild = Get-Content -LiteralPath $nativeBuildReport -Raw -Encoding UTF8 | ConvertFrom-Json
+$rustDll = $nativeBuild.library.path
+if (-not $nativeBuild.cargoSuccess -or $nativeBuild.target -ne 'x86_64-pc-windows-msvc' -or
+    $nativeBuild.profile -ne 'release' -or [string]::IsNullOrWhiteSpace($rustDll)) {
+    throw 'The current Cargo invocation did not report the required Release DLL/helper.'
+}
+
+# Cargo's explicit build report points into target/. Flutter's later Cargokit
+# invocation can rebuild the same target and replace those bytes. Snapshot the
+# exact, recorded artifacts before Flutter runs so the package never depends on
+# a mutable Cargo target path after that boundary.
+$authoritativeNative = Join-Path $nativeReports 'authoritative'
+New-Item -ItemType Directory -Path $authoritativeNative -Force | Out-Null
+$authoritativeWorker = Join-Path $authoritativeNative 'nsoalbum_mtp_worker.exe'
+$authoritativeDll = Join-Path $authoritativeNative 'squid_album_core.dll'
+Copy-Item -LiteralPath $nativeBuild.worker.path -Destination $authoritativeWorker -Force
+Copy-Item -LiteralPath $rustDll -Destination $authoritativeDll -Force
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $authoritativeWorker).Hash -ne
+    $nativeBuild.worker.sha256) {
+    throw 'The staged MTP helper differs from the explicit Cargo build record.'
+}
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $authoritativeDll).Hash -ne
+    $nativeBuild.library.sha256) {
+    throw 'The staged Rust DLL differs from the explicit Cargo build record.'
 }
 
 if ($UseExistingFlutterBuild) {
-    Write-Warning 'Reusing the existing Flutter Windows build. The Rust DLL will still be rebuilt, replaced, and verified.'
+    Write-Warning 'Reusing the existing Flutter Windows build. The Rust DLL and helper are still rebuilt, replaced, and verified.'
 }
 else {
     Write-Host 'Building the Flutter Windows application...'
@@ -267,31 +349,42 @@ foreach ($staleName in @('FreshAlbum.exe', 'squid_album.exe')) {
     }
 }
 
-# Cargokit can leave a stale native library behind if its custom build step fails.
-# Always replace it with the library built from the current generated Rust source.
-Copy-Item -LiteralPath $rustDll -Destination $releaseDll -Force
-$sourceDllHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $rustDll).Hash
+# Cargokit can leave stale or newly rebuilt native outputs in target/. Restore
+# the bytes captured from the successful explicit Cargo invocation, not paths
+# that Flutter may have rewritten since its build started.
+Copy-Item -LiteralPath $authoritativeDll -Destination $releaseDll -Force
+Copy-Item -LiteralPath $authoritativeWorker -Destination (Join-Path $releaseRoot 'nsoalbum_mtp_worker.exe') -Force
+$sourceDllHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $authoritativeDll).Hash
 $releaseDllHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseDll).Hash
 if ($sourceDllHash -ne $releaseDllHash) {
     throw 'The packaged Rust DLL does not match the freshly built DLL.'
 }
 
-$packageName = "NSOAlbum-Windows-x64-$Version"
-$packageDirectory = Join-Path $distRoot $packageName
-New-Item -ItemType Directory -Path $distRoot -Force | Out-Null
+$workerReceipt = Join-Path $releaseRoot 'data\mtp-worker-build.json'
+Invoke-Checked -Executable $dart -Arguments @(
+    (Join-Path $PSScriptRoot 'verify_mtp_worker.dart'),
+    '--bundle', $releaseRoot, '--platform', 'windows-x64',
+    '--build-record', $nativeBuildReport, '--write-record', $workerReceipt
+) -WorkingDirectory $projectRoot
 
-if (Test-Path -LiteralPath $packageDirectory) {
-    Remove-Item -LiteralPath $packageDirectory -Recurse -Force
-}
-
-Copy-Item -LiteralPath $releaseRoot -Destination $packageDirectory -Recurse
-New-Item -ItemType Directory -Path (Join-Path $packageDirectory 'docs') -Force | Out-Null
-New-Item -ItemType Directory -Path (Join-Path $packageDirectory 'licenses') -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $workspaceRoot 'LICENSE') -Destination (Join-Path $packageDirectory 'licenses\MIT-LICENSE.txt') -Force
-Copy-Item -LiteralPath (Join-Path $workspaceRoot 'docs\legal\THIRD-PARTY-NOTICES.md') -Destination (Join-Path $packageDirectory 'licenses\THIRD-PARTY-NOTICES.md') -Force
-Copy-Item -LiteralPath (Join-Path $workspaceRoot 'docs\legal\ASSET-ATTRIBUTION.md') -Destination (Join-Path $packageDirectory 'licenses\ASSET-ATTRIBUTION.md') -Force
-Copy-Item -LiteralPath (Join-Path $projectRoot 'assets\fonts\SmileySans-OFL.txt') -Destination (Join-Path $packageDirectory 'licenses\SmileySans-OFL.txt') -Force
+# Recheck immediately before publication; an existing path is never removed.
+$PackageDirectory = Assert-NewPackageDirectory -Path $PackageDirectory
+New-Item -ItemType Directory -Path (Split-Path -Parent $PackageDirectory) -Force | Out-Null
+New-Item -ItemType Directory -Path $PackageDirectory | Out-Null
+Get-ChildItem -LiteralPath $releaseRoot -Force | Copy-Item -Destination $PackageDirectory -Recurse
+New-Item -ItemType Directory -Path (Join-Path $PackageDirectory 'docs') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $PackageDirectory 'licenses') -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $workspaceRoot 'LICENSE') -Destination (Join-Path $PackageDirectory 'licenses\MIT-LICENSE.txt') -Force
+Copy-Item -LiteralPath (Join-Path $workspaceRoot 'docs\legal\THIRD-PARTY-NOTICES.md') -Destination (Join-Path $PackageDirectory 'licenses\THIRD-PARTY-NOTICES.md') -Force
+Copy-Item -LiteralPath (Join-Path $workspaceRoot 'docs\legal\ASSET-ATTRIBUTION.md') -Destination (Join-Path $PackageDirectory 'licenses\ASSET-ATTRIBUTION.md') -Force
+Copy-Item -LiteralPath (Join-Path $projectRoot 'assets\fonts\SmileySans-OFL.txt') -Destination (Join-Path $PackageDirectory 'licenses\SmileySans-OFL.txt') -Force
+Invoke-Checked -Executable $dart -Arguments @(
+    (Join-Path $PSScriptRoot 'verify_mtp_worker.dart'),
+    '--bundle', $PackageDirectory, '--platform', 'windows-x64',
+    '--build-record', (Join-Path $PackageDirectory 'data\mtp-worker-build.json')
+) -WorkingDirectory $projectRoot
 
 Write-Host "Bridge content hash: $($rustHashMatch.Groups[1].Value)"
 Write-Host "Native DLL SHA-256: $sourceDllHash"
-Write-Host "Package: $packageDirectory"
+Write-Host "Native build provenance: $nativeBuildReport"
+Write-Host "Package: $PackageDirectory"

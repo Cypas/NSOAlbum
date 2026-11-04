@@ -3,10 +3,14 @@
 #include <windows.h>
 
 #include <fstream>
+#include <cstdio>
+#include <memory>
 #include <string>
+#include <type_traits>
 
 #include "flutter_window.h"
 #include "utils.h"
+#include "native_single_instance.h"
 
 namespace {
 
@@ -54,20 +58,56 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     CreateAndAttachConsole();
   }
 
-  // Initialize COM, so that it is available for use in the library and/or
-  // plugins.
-  ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  std::vector<std::string> command_line_arguments = GetCommandLineArguments();
+  // Invalid smoke arguments are still rejected by Dart before any core opens.
+  const bool smoke = HasArgument(command_line_arguments, "--ci-smoke");
+  NativeSingleInstance desktop_instance(
+      smoke ? std::filesystem::path{} : NativeSingleInstance::UserDirectory());
+  if (!smoke) {
+    const auto outcome = desktop_instance.AcquireOrActivate();
+    if (outcome == NativeSingleInstance::Outcome::Activated) {
+      std::fputs("NSOAlbum: activated existing desktop window\n", stdout);
+      return EXIT_SUCCESS;
+    }
+    if (outcome != NativeSingleInstance::Outcome::Primary) {
+      std::fputs("NSOAlbum: desktop instance unavailable\n", stderr);
+      return 73;
+    }
+  }
+
+  // WebView2 must be created on the runner's STA UI thread. Do not continue
+  // after a conflicting apartment initialization: that would surface later as
+  // a misleading "CoInitialize has not been called" environment failure.
+  const HRESULT com_result =
+      ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  if (FAILED(com_result)) {
+    std::fprintf(stderr, "NSOAlbum: STA COM initialization failed: 0x%08lx\n",
+                 static_cast<unsigned long>(com_result));
+    return static_cast<int>(com_result);
+  }
+
+  // WebView loads its system compositor dynamically, but its static COM
+  // resources survive until DLL detach. Initialize the optional provider before
+  // that delay-loaded consumer, preserving provider/consumer unload ordering.
+  // A missing provider remains optional: the plugin keeps its runtime checks.
+  using ModuleOwner =
+      std::unique_ptr<std::remove_pointer_t<HMODULE>, decltype(&::FreeLibrary)>;
+  const ModuleOwner composition_provider(
+      ::LoadLibraryExW(L"CoreMessaging.dll", nullptr,
+                       LOAD_LIBRARY_SEARCH_SYSTEM32),
+      &::FreeLibrary);
 
   flutter::DartProject project(L"data");
 
-  std::vector<std::string> command_line_arguments =
-      GetCommandLineArguments();
+  // Windows plugins receive method-channel callbacks on the Dart UI isolate.
+  // WebView2 requires its environment and controls to be created on the runner
+  // thread's STA, so keep the UI isolate on that same thread instead of letting
+  // it inherit an incompatible COM apartment on Flutter's separate UI thread.
+  project.set_ui_thread_policy(
+      flutter::UIThreadPolicy::RunOnPlatformThread);
 
-  // Keep the renderer on the stable Skia path. Do not force a GPU adapter or
-  // move the UI isolate onto the platform thread: both options change plugin
-  // callback threading/adapter selection and have caused more instability on
-  // Windows 11 26200 machines. The explicit software safe mode below remains
-  // available for machines with a broken graphics driver.
+  // Keep the renderer on the stable Skia path. The explicit software safe mode
+  // below remains available for machines with a broken graphics driver.
   project.set_impeller_switch(flutter::ImpellerSwitch::Disabled);
 
   if (HasArgument(command_line_arguments, "--safe-mode=software")) {
@@ -77,11 +117,17 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
-  FlutterWindow window(project);
+  FlutterWindow window(project, smoke ? nullptr : &desktop_instance);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
   if (!window.Create(L"NSOAlbum", origin, size)) {
+    ::CoUninitialize();
     return EXIT_FAILURE;
+  }
+  if (!smoke && !desktop_instance.Attach(window.GetHandle())) {
+    window.Destroy();
+    ::CoUninitialize();
+    return 73;
   }
   window.SetQuitOnClose(true);
 

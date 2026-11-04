@@ -9,6 +9,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 class AppSettings {
   final String? proxyUrl;
+  final bool dohEnabled;
   final String libraryPath;
   final String theme;
   final String language;
@@ -19,12 +20,16 @@ class AppSettings {
   final bool compactTagDisplay;
   final bool autoPlayVideo;
   final bool autoSyncOnLaunch;
+  final bool notifyOnAutoSync;
+  final bool showSplatoonSchedule;
+  final bool showSplatoonFriendActivity;
   final String closeBehavior;
   final List<String> customFontPaths;
   final SyncPolicy syncPolicy;
 
   const AppSettings({
     this.proxyUrl,
+    required this.dohEnabled,
     required this.libraryPath,
     required this.theme,
     required this.language,
@@ -35,6 +40,9 @@ class AppSettings {
     required this.compactTagDisplay,
     required this.autoPlayVideo,
     required this.autoSyncOnLaunch,
+    required this.notifyOnAutoSync,
+    required this.showSplatoonSchedule,
+    required this.showSplatoonFriendActivity,
     required this.closeBehavior,
     required this.customFontPaths,
     required this.syncPolicy,
@@ -43,6 +51,7 @@ class AppSettings {
   @override
   int get hashCode =>
       proxyUrl.hashCode ^
+      dohEnabled.hashCode ^
       libraryPath.hashCode ^
       theme.hashCode ^
       language.hashCode ^
@@ -53,6 +62,9 @@ class AppSettings {
       compactTagDisplay.hashCode ^
       autoPlayVideo.hashCode ^
       autoSyncOnLaunch.hashCode ^
+      notifyOnAutoSync.hashCode ^
+      showSplatoonSchedule.hashCode ^
+      showSplatoonFriendActivity.hashCode ^
       closeBehavior.hashCode ^
       customFontPaths.hashCode ^
       syncPolicy.hashCode;
@@ -63,6 +75,7 @@ class AppSettings {
       other is AppSettings &&
           runtimeType == other.runtimeType &&
           proxyUrl == other.proxyUrl &&
+          dohEnabled == other.dohEnabled &&
           libraryPath == other.libraryPath &&
           theme == other.theme &&
           language == other.language &&
@@ -73,6 +86,9 @@ class AppSettings {
           compactTagDisplay == other.compactTagDisplay &&
           autoPlayVideo == other.autoPlayVideo &&
           autoSyncOnLaunch == other.autoSyncOnLaunch &&
+          notifyOnAutoSync == other.notifyOnAutoSync &&
+          showSplatoonSchedule == other.showSplatoonSchedule &&
+          showSplatoonFriendActivity == other.showSplatoonFriendActivity &&
           closeBehavior == other.closeBehavior &&
           customFontPaths == other.customFontPaths &&
           syncPolicy == other.syncPolicy;
@@ -84,6 +100,7 @@ class SyncAttemptSummary {
   final BigInt totalFound;
   final BigInt downloaded;
   final BigInt duplicates;
+  final BigInt? skippedRemote;
   final BigInt failed;
 
   const SyncAttemptSummary({
@@ -92,6 +109,7 @@ class SyncAttemptSummary {
     required this.totalFound,
     required this.downloaded,
     required this.duplicates,
+    this.skippedRemote,
     required this.failed,
   });
 
@@ -102,6 +120,7 @@ class SyncAttemptSummary {
       totalFound.hashCode ^
       downloaded.hashCode ^
       duplicates.hashCode ^
+      skippedRemote.hashCode ^
       failed.hashCode;
 
   @override
@@ -114,6 +133,7 @@ class SyncAttemptSummary {
           totalFound == other.totalFound &&
           downloaded == other.downloaded &&
           duplicates == other.duplicates &&
+          skippedRemote == other.skippedRemote &&
           failed == other.failed;
 }
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 --architecture arm64|x64 --version VERSION --build-number NUMBER --reports DIRECTORY" >&2
+  echo "usage: $0 --architecture arm64|x64 --version VERSION --build-number NUMBER --reports DIRECTORY [--build-only | --reuse-app APP]" >&2
   exit 2
 }
 
@@ -10,12 +10,16 @@ ARCH=""
 VERSION=""
 BUILD_NUMBER=""
 REPORTS=""
+BUILD_ONLY=false
+REUSE_APP=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --architecture) ARCH="${2:-}"; shift 2 ;;
     --version) VERSION="${2:-}"; shift 2 ;;
     --build-number) BUILD_NUMBER="${2:-}"; shift 2 ;;
     --reports) REPORTS="${2:-}"; shift 2 ;;
+    --build-only) BUILD_ONLY=true; shift ;;
+    --reuse-app) REUSE_APP="${2:-}"; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -24,6 +28,7 @@ done
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || usage
 [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || usage
 [[ -n "$REPORTS" ]] || usage
+[[ "$BUILD_ONLY" == false || -z "$REUSE_APP" ]] || usage
 [[ "$(uname -s)" == "Darwin" ]] || { echo "macOS packaging requires a Darwin host" >&2; exit 1; }
 
 case "$ARCH" in
@@ -36,6 +41,9 @@ source "$SCRIPT_DIR/macos_rpaths.sh"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)"
 APP="$PROJECT_ROOT/build/macos/Build/Products/Release/NSOAlbum.app"
+if [[ -n "$REUSE_APP" ]]; then
+  APP="$(cd "$REUSE_APP" && pwd)"
+fi
 DIST="$WORKSPACE_ROOT/dist"
 DMG="$DIST/NSOAlbum-macOS-${ARCH}-${VERSION}.dmg"
 SMOKE_RUNNER="$SCRIPT_DIR/run_release_smoke.dart"
@@ -43,21 +51,19 @@ run_smoke() {
   dart run "$SMOKE_RUNNER" "$@"
 }
 [[ -f "$SMOKE_RUNNER" ]] || { echo "Missing native smoke driver" >&2; exit 1; }
-[[ ! -e "$DMG" ]] || { echo "Refusing to overwrite existing DMG: $DMG" >&2; exit 1; }
+if [[ "$BUILD_ONLY" == false ]]; then
+  [[ ! -e "$DMG" ]] || { echo "Refusing to overwrite existing DMG: $DMG" >&2; exit 1; }
+fi
 
 cd "$PROJECT_ROOT"
 mkdir -p "$DIST" "$REPORTS"
 REPORTS="$(cd "$REPORTS" && pwd)"
-flutter config --enable-macos-desktop
-
 if [[ "$ARCH" == "arm64" ]]; then
   EXPECTED="arm64"
   RUST_TARGET="aarch64-apple-darwin"
-  flutter config --enable-macos-arm64-only
 else
   EXPECTED="x86_64"
   RUST_TARGET="x86_64-apple-darwin"
-  flutter config --no-enable-macos-arm64-only
 fi
 
 # Flutter forwards only FLUTTER_XCODE_* environment entries to xcodebuild.
@@ -67,17 +73,44 @@ export FLUTTER_XCODE_CODE_SIGNING_ALLOWED=NO
 export FLUTTER_XCODE_CODE_SIGNING_REQUIRED=NO
 export CARGO_BUILD_TARGET="$RUST_TARGET"
 
-flutter build macos --release --build-name "$VERSION" --build-number "$BUILD_NUMBER"
+if [[ -z "$REUSE_APP" ]]; then
+  if [[ ! -f .dart_tool/package_config.json ]]; then
+    flutter pub get
+  fi
+  flutter config --enable-macos-desktop
+  if [[ "$ARCH" == arm64 ]]; then
+    flutter config --enable-macos-arm64-only
+  else
+    flutter config --no-enable-macos-arm64-only
+  fi
+  bash "$SCRIPT_DIR/build_macos_cached.sh" \
+    "${NSO_SWIFTPM_ARTIFACTS:-$HOME/Library/Caches/org.swift.swiftpm/artifacts}" \
+    flutter build macos --release --no-pub --build-name "$VERSION" --build-number "$BUILD_NUMBER"
+fi
 [[ -d "$APP" ]] || { echo "Missing app bundle: $APP" >&2; exit 1; }
-bash "$SCRIPT_DIR/configure_macos_renderer.sh" "$APP" "$ARCH"
+if [[ -z "$REUSE_APP" ]]; then
+  bash "$SCRIPT_DIR/configure_macos_renderer.sh" "$APP" "$ARCH"
+fi
 
 EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
 MAIN="$APP/Contents/MacOS/$EXECUTABLE"
 [[ -x "$MAIN" ]] || { echo "Missing app executable: $MAIN" >&2; exit 1; }
+WORKER="$APP/Contents/MacOS/nsoalbum_mtp_worker"
+[[ -s "$WORKER" && -x "$WORKER" && ! -L "$WORKER" ]] || {
+  echo "Missing, empty, linked or non-executable MTP helper: $WORKER" >&2; exit 1;
+}
+if [[ -z "$REUSE_APP" ]]; then
+  WORKER_BUILD_RECORD="$(dirname "$APP")/nsoalbum-mtp-worker.build.json"
+else
+  WORKER_BUILD_RECORD="$(dirname "$APP")/nsoalbum-mtp-worker.final.json"
+fi
+[[ -s "$WORKER_BUILD_RECORD" ]] || { echo "Missing same-run MTP helper build record" >&2; exit 1; }
+dart run "$SCRIPT_DIR/verify_mtp_worker.dart" --bundle "$APP" --platform "macos-$ARCH" --build-record "$WORKER_BUILD_RECORD"
 APP_CANONICAL="$(realpath "$APP")"
 
 FOUND="$(lipo -archs "$MAIN" | tr ' ' '\n' | sort | paste -sd, -)"
 [[ "$FOUND" == "$EXPECTED" ]] || { echo "Expected $EXPECTED executable, got $FOUND" >&2; exit 1; }
+[[ "$(lipo -archs "$WORKER")" == "$EXPECTED" ]] || { echo "MTP helper architecture differs from $EXPECTED" >&2; exit 1; }
 
 expand_runtime_path() {
   local value="$1" binary="$2"
@@ -184,16 +217,35 @@ while IFS= read -r -d '' nested; do
     resolved_nested="$(realpath "$nested")"
     arches="$(lipo -archs "$resolved_nested")"
     [[ " $arches " == *" $EXPECTED "* ]] || { echo "Missing $EXPECTED slice: $nested ($arches)" >&2; exit 1; }
-    sanitize_build_rpaths "$resolved_nested"
+    if [[ -z "$REUSE_APP" ]]; then
+      sanitize_build_rpaths "$resolved_nested"
+    fi
     check_dependencies "$resolved_nested"
   fi
 done < <(find "$APP/Contents" \( -type f -o -type l \) -print0)
 
-bash "$SCRIPT_DIR/sign_macos_app.sh" "$APP" "$PROJECT_ROOT/macos/Runner/Release.entitlements"
+if [[ -z "$REUSE_APP" ]]; then
+  bash "$SCRIPT_DIR/sign_macos_app.sh" "$APP" "$PROJECT_ROOT/macos/Runner/Release.entitlements"
+fi
+codesign --verify --strict "$WORKER"
+codesign --verify --deep --strict "$APP"
+if [[ -z "$REUSE_APP" ]]; then
+  WORKER_FINAL_RECORD="$REPORTS/nsoalbum-mtp-worker.final.json"
+  dart run "$SCRIPT_DIR/verify_mtp_worker.dart" --bundle "$APP" --platform "macos-$ARCH" \
+    --build-record "$WORKER_BUILD_RECORD" --write-record "$WORKER_FINAL_RECORD"
+else
+  WORKER_FINAL_RECORD="$WORKER_BUILD_RECORD"
+fi
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" == "$VERSION" ]] || exit 1
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" == "$BUILD_NUMBER" ]] || exit 1
 ENTITLEMENTS="$(codesign -d --entitlements :- "$APP" 2>/dev/null)"
 if [[ "$ENTITLEMENTS" == *"com.apple.security.app-sandbox"* ]]; then
   echo "Packaged app must not contain an app-sandbox entitlement" >&2
   exit 1
+fi
+if [[ "$BUILD_ONLY" == true ]]; then
+  echo "Signed native build ready for isolated verification: $ARCH"
+  exit 0
 fi
 run_smoke --launch-app "$APP" --reports-dir "$REPORTS/app"
 
@@ -243,8 +295,22 @@ MOUNTED_APP="$MOUNT/NSOAlbum.app"
 [[ -d "$MOUNTED_APP" ]] || { echo "DMG did not contain NSOAlbum.app" >&2; exit 1; }
 codesign --verify --deep --strict "$MOUNTED_APP"
 [[ "$(lipo -archs "$MOUNTED_APP/Contents/MacOS/$EXECUTABLE")" == "$EXPECTED" ]] || exit 1
+dart run "$SCRIPT_DIR/verify_mtp_worker.dart" --bundle "$MOUNTED_APP" --platform "macos-$ARCH" \
+  --build-record "$WORKER_FINAL_RECORD"
 run_smoke --launch-app "$MOUNTED_APP" --reports-dir "$REPORTS/dmg"
-hdiutil detach "$MOUNT" -quiet
+if ! DETACH_OUTPUT="$(hdiutil detach "$MOUNT" 2>&1)"; then
+  echo "Normal DMG detach failed for the temporary smoke mount; retrying forced detach." >&2
+  [[ -z "$DETACH_OUTPUT" ]] || printf '%s\n' "$DETACH_OUTPUT" >&2
+  # This mount point was created above for this exact generated DMG. The
+  # smoke processes have completed and their reports were validated before
+  # reaching this cleanup boundary.
+  if ! FORCE_DETACH_OUTPUT="$(hdiutil detach -force "$MOUNT" 2>&1)"; then
+    echo "Forced DMG detach failed for $MOUNT." >&2
+    [[ -z "$FORCE_DETACH_OUTPUT" ]] || printf '%s\n' "$FORCE_DETACH_OUTPUT" >&2
+    exit 1
+  fi
+  [[ -z "$FORCE_DETACH_OUTPUT" ]] || printf '%s\n' "$FORCE_DETACH_OUTPUT"
+fi
 rmdir "$MOUNT"
 MOUNT=""
 trap - EXIT

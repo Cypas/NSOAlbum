@@ -23,7 +23,9 @@ void main() {
     });
 
     test('adds the Flutter software renderer switch when requested', () async {
-      final temp = await Directory.systemTemp.createTemp('smoke-driver-render-');
+      final temp = await Directory.systemTemp.createTemp(
+        'smoke-driver-render-',
+      );
       addTearDown(() => temp.delete(recursive: true));
       final bundle = await Directory('${temp.path}/bundle').create();
       final app = File('${bundle.path}/NSOAlbum.exe')..createSync();
@@ -184,6 +186,7 @@ void main() {
           await Directory('$root/logs').create(recursive: true);
           await File('$root/logs/ci-smoke.log').writeAsString(
             '$root/private.mp4\nAuthorization: Bearer test-secret\n'
+            'VM http://localhost:12345/synthetic-native-debug-key=/\n'
             'native diagnostic retained\n',
           );
           await File('$root/safe.json')
@@ -197,6 +200,7 @@ void main() {
       expect(log, contains('native diagnostic retained'));
       expect(log, isNot(contains(temp.path)));
       expect(log, isNot(contains('test-secret')));
+      expect(log, isNot(contains('synthetic-native-debug-key')));
     });
 
     test('retains late native errors after lengthy process output', () async {

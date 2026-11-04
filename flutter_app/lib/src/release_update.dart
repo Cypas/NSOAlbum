@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'app_branding.dart';
+import 'app_version.dart';
 import 'backend/storage_paths.dart';
 
 const githubLatestReleaseApi =
@@ -122,6 +123,7 @@ class LatestReleaseInfo {
     required this.installer,
     this.body,
     this.macosArchitectures = const [],
+    this.androidPackage,
   });
 
   final String version;
@@ -131,6 +133,21 @@ class LatestReleaseInfo {
 
   /// Availability only. Manual DMG downloads are not verified by this client.
   final List<String> macosArchitectures;
+  final AndroidReleasePackage? androidPackage;
+}
+
+class AndroidReleasePackage {
+  const AndroidReleasePackage({
+    required this.version,
+    required this.url,
+    required this.sha256,
+    required this.size,
+  });
+
+  final String version;
+  final Uri url;
+  final String sha256;
+  final int size;
 }
 
 int compareStableVersions(String left, String right) {
@@ -193,12 +210,48 @@ LatestReleaseInfo? latestReleaseInfoFromGithubJson(
     tag: tag,
     installer: StableRelease.fromGithubJson(json),
     body: json['body'] is String ? json['body'] as String : null,
+    androidPackage: _androidReleasePackage(json['assets'], tag, version),
     macosArchitectures: List.unmodifiable([
       for (final architecture in ['arm64', 'x64'])
         if (_hasMacosDmg(json['assets'], tag, version, architecture))
           architecture,
     ]),
   );
+}
+
+AndroidReleasePackage? _androidReleasePackage(
+  Object? assets,
+  String tag,
+  String version,
+) {
+  if (assets is! List) return null;
+  final name = 'NSOAlbum-Android-arm64-$version.apk';
+  final officialUrl =
+      'https://github.com/Cypas/NSOAlbum/releases/download/$tag/$name';
+  for (final asset in assets) {
+    if (asset is! Map<String, dynamic> ||
+        asset['name'] != name ||
+        asset['browser_download_url'] != officialUrl) {
+      continue;
+    }
+    final digest = asset['digest'];
+    final size = asset['size'];
+    if (digest is! String ||
+        size is! int ||
+        size <= 0 ||
+        size > _maxInstallerBytes) {
+      continue;
+    }
+    final match = RegExp(r'^sha256:([0-9a-fA-F]{64})$').firstMatch(digest);
+    if (match == null) continue;
+    return AndroidReleasePackage(
+      version: version,
+      url: Uri.parse(officialUrl),
+      sha256: match.group(1)!.toLowerCase(),
+      size: size,
+    );
+  }
+  return null;
 }
 
 bool _hasMacosDmg(
@@ -275,6 +328,10 @@ class ReleaseUpdateService {
   final Directory? _downloadDirectory;
   final String? _applicationRootOverride;
   final String? customProxyUrl;
+  Future<String>? _userAgent;
+
+  Future<String> _requestUserAgent() => _userAgent ??= loadApplicationVersion()
+      .then((version) => 'Cypas-NSOAlbum/${version.split('+').first}');
 
   String? get _customProxyDirective => _proxyDirective(customProxyUrl);
 
@@ -334,6 +391,7 @@ class ReleaseUpdateService {
   }
 
   Future<LatestReleaseInfo?> checkLatestRelease(String currentVersion) async {
+    final userAgent = await _requestUserAgent();
     Object? lastError;
     final candidates = _apiCandidateBuilder();
     final attempts = [
@@ -349,7 +407,7 @@ class ReleaseUpdateService {
           HttpHeaders.acceptHeader,
           'application/vnd.github+json',
         );
-        request.headers.set(HttpHeaders.userAgentHeader, appEnglishName);
+        request.headers.set(HttpHeaders.userAgentHeader, userAgent);
         request.headers.set('X-GitHub-Api-Version', '2022-11-28');
         final response = await request.close().timeout(
           const Duration(seconds: 15),
@@ -394,6 +452,7 @@ class ReleaseUpdateService {
     required UpdateCancellation cancellation,
     void Function(int received, int? total)? onProgress,
   }) async {
+    final userAgent = await _requestUserAgent();
     final updateDirectory = Directory(
       _downloadDirectory?.path ??
           '${(await _applicationRoot()).path}${Platform.pathSeparator}updates',
@@ -419,7 +478,7 @@ class ReleaseUpdateService {
       try {
         if (await partial.exists()) await partial.delete();
         final request = await _client.getUrl(attempt.uri);
-        request.headers.set(HttpHeaders.userAgentHeader, appEnglishName);
+        request.headers.set(HttpHeaders.userAgentHeader, userAgent);
         final response = await request.close().timeout(
           const Duration(seconds: 30),
         );

@@ -8,6 +8,7 @@ import '../rust/frb_generated.dart';
 Future<void>? _rustLibInitialization;
 
 Future<void> ensureRustLibInitialized() {
+  if (RustLib.instance.initialized) return Future<void>.value();
   return _rustLibInitialization ??= _initializePackagedRust();
 }
 

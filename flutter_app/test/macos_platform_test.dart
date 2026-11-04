@@ -141,7 +141,7 @@ void main() {
           support,
           isValidLibraryRoot: (_) async => false,
         ),
-        p.join(support, libraryDirectoryName),
+        support,
       );
     });
   }, skip: macosOnly);

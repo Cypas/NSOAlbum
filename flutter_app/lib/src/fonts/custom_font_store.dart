@@ -67,8 +67,13 @@ class CustomFontStore {
 
   static Future<void> _validateFontFile(File file) async {
     final extension = file.path.toLowerCase().split('.').last;
-    if (extension != 'ttf' && extension != 'otf') {
-      throw const FormatException('Only .ttf and .otf fonts are supported.');
+    if (extension != 'ttf' &&
+        extension != 'otf' &&
+        extension != 'ttc' &&
+        extension != 'otc') {
+      throw const FormatException(
+        'Only .ttf, .otf, .ttc, and .otc fonts are supported.',
+      );
     }
     if (!await file.exists() || await file.length() < 4) {
       throw FormatException('Font file is missing or too small: ${file.path}');
@@ -81,6 +86,7 @@ class CustomFontStore {
       [0x4f, 0x54, 0x54, 0x4f], // OpenType CFF (OTTO).
       [0x74, 0x72, 0x75, 0x65],
       [0x74, 0x79, 0x70, 0x31],
+      [0x74, 0x74, 0x63, 0x66], // TrueType font collection.
     ];
     if (!supportedHeaders.any(
       (signature) => signature.asMap().entries.every(

@@ -1,0 +1,86 @@
+//! Ephemeral pairing trust and bounded transfers; local library journals persist.
+
+#[cfg(test)]
+mod account_tests;
+pub mod accounts;
+pub(crate) mod benchmark;
+pub mod clock;
+pub mod connection;
+pub(crate) mod diagnostics;
+pub mod driver;
+pub mod headless;
+#[cfg(test)]
+mod headless_tests;
+pub(crate) mod io_metrics;
+pub mod library_guard;
+pub(crate) mod local_apply;
+pub mod mailbox;
+pub mod manifest;
+pub(crate) mod metrics;
+pub mod native_io;
+#[cfg(any(windows, target_os = "macos"))]
+pub mod native_mtp;
+pub mod native_process;
+pub mod planner;
+mod qr;
+pub mod read_model;
+#[cfg(test)]
+mod read_model_tests;
+pub mod receiver;
+pub mod recovery;
+pub mod runtime;
+mod session;
+pub mod source_names;
+pub mod space_budget;
+pub mod staging;
+pub(crate) mod startup_recovery;
+pub mod tcp;
+#[cfg(test)]
+mod tests;
+pub mod usb;
+#[cfg(test)]
+mod usb_tests;
+pub(crate) mod validation;
+pub mod wire;
+pub mod work;
+pub use qr::{Invitation, Qr};
+pub use session::{PeerInfo, Session, SessionState};
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SessionError {
+    InvalidQr,
+    VersionMismatch,
+    Expired,
+    Consumed,
+    Terminal,
+    Protocol,
+    Authentication,
+    Tls,
+    Bounds,
+    NotConfirmed,
+    Io,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    Sender,
+    Receiver,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    deny_unknown_fields,
+    tag = "kind",
+    content = "address",
+    rename_all = "snake_case"
+)]
+pub enum Transport {
+    Tcp(std::net::SocketAddr),
+    Usb,
+}
+
+pub const MAX_CIPHERTEXT: usize = 65_536;
+pub const MAX_PAYLOAD: usize = wire::MEDIA_CHUNK + 100;
+pub const MAX_BUFFER: usize = 1024 * 1024;
+pub const MAX_CONTROL: usize = 4_096;

@@ -6,6 +6,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::Digest;
 use tokio::sync::Mutex;
 
 use crate::error::{CoreError, CoreResult};
@@ -17,6 +18,28 @@ const DEFAULT_CLIENT_ID: &str = "OhFZ3YmNeYnls5Fo-z3BkA";
 // This is a compatibility identifier, not the Coral app version. It must be
 // updated deliberately when nxapi changes its Coral request implementation.
 const ZNCA_CLIENT_VERSION: &str = "d8fAZDPzwimzQ7c6";
+
+async fn nxapi_transport_request<F, Fut>(mut send: F) -> CoreResult<HttpResponseData>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = CoreResult<HttpResponseData>>,
+{
+    let first = send().await;
+    let retry = match first.as_ref() {
+        Err(CoreError::NetworkRequest { reason, .. }) => {
+            matches!(*reason, "timeout" | "connect_failed")
+        }
+        Err(CoreError::Network(error)) => error.is_timeout() || error.is_connect(),
+        _ => false,
+    };
+    if !retry {
+        return first;
+    }
+    // Only the NXAPI service's stateless exchanges use this wrapper. Never
+    // retry Coral account writes here, and never change the selected proxy.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    send().await
+}
 
 fn is_incompatible_client(response: &HttpResponseData) -> bool {
     response.status == 400
@@ -41,14 +64,49 @@ fn oauth_client_authentication_error(response: &HttpResponseData) -> Option<Stri
     if value.get("error").and_then(Value::as_str) != Some("invalid_client") {
         return None;
     }
-    let description = value
-        .get("error_description")
-        .and_then(Value::as_str)
-        .unwrap_or("client authentication was rejected");
     Some(format!(
-        "NXAPI OAuth client authentication is required for client id {}: {description}. Configure the matching nxapi-auth client secret/client assertion; it must not be bundled in the app.",
+        "NXAPI OAuth client authentication is required for client id {}. Configure the matching nxapi-auth client secret/client assertion; it must not be bundled in the app. NXAPI code: invalid_client",
         DEFAULT_CLIENT_ID
     ))
+}
+
+fn ensure_nxapi_success(response: &HttpResponseData, operation: &str) -> CoreResult<()> {
+    // Never echo remote descriptions, unknown error strings, IDs or bodies.
+    let value = response.json::<Value>().ok();
+    let code = value
+        .as_ref()
+        .and_then(|value| value.get("error"))
+        .and_then(Value::as_str);
+    let safe_code = match code {
+        Some("invalid_request") => "invalid_request",
+        Some("request_parameter_not_set") => "request_parameter_not_set",
+        Some("unsupported_platform") => "unsupported_platform",
+        Some("unsupported_version") => "unsupported_version",
+        Some("incompatible_client") => "incompatible_client",
+        Some("unauthorised") => "unauthorised",
+        Some("invalid_token") => "invalid_token",
+        Some("insufficient_scope") => "insufficient_scope",
+        Some("rate_limit") => "rate_limit",
+        Some("unknown_error") => "unknown_error",
+        Some("service_unavailable") => "service_unavailable",
+        Some("invalid_client") => "invalid_client",
+        Some("invalid_grant") => "invalid_grant",
+        Some("invalid_scope") => "invalid_scope",
+        Some("unauthorized_client") => "unauthorized_client",
+        Some("unsupported_grant_type") => "unsupported_grant_type",
+        _ => return response.ensure_success_redacted(operation),
+    };
+    response
+        .ensure_success_redacted(operation)
+        .map_err(|error| match error {
+            CoreError::Provider(message) => {
+                CoreError::Provider(format!("{message}; NXAPI code: {safe_code}"))
+            }
+            CoreError::Authentication(message) => {
+                CoreError::Authentication(format!("{message}; NXAPI code: {safe_code}"))
+            }
+            other => other,
+        })
 }
 
 fn build_f_request_body(
@@ -121,12 +179,12 @@ impl Default for NxapiConfig {
             znca_base_url: DEFAULT_ZNCA_BASE_URL.into(),
             oauth_url: DEFAULT_OAUTH_URL.into(),
             client_id: DEFAULT_CLIENT_ID.into(),
-            user_agent: format!("Cypas/NSOAlbum/{}", env!("CARGO_PKG_VERSION")),
+            user_agent: format!("Cypas-NSOAlbum/{}", env!("CARGO_PKG_VERSION")),
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct OAuthToken {
     access_token: String,
     refresh_token: Option<String>,
@@ -163,6 +221,25 @@ impl NxapiAttestationClient {
         }
     }
 
+    /// Keep public version metadata and serialization, but never another user's
+    /// OAuth credentials. Clones of this account client still reuse its token.
+    pub(crate) fn isolated_credentials(&self) -> Self {
+        Self {
+            token: Arc::new(Mutex::new(None)),
+            ..self.clone()
+        }
+    }
+
+    pub(crate) fn service_key(&self) -> String {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(self.config.znca_base_url.as_bytes());
+        hasher.update([0]);
+        hasher.update(self.config.oauth_url.as_bytes());
+        hasher.update([0]);
+        hasher.update(self.config.client_id.as_bytes());
+        hex::encode(hasher.finalize())
+    }
+
     async fn oauth_token(&self) -> CoreResult<String> {
         let now = Instant::now();
         let cached = self.token.lock().await.clone();
@@ -177,13 +254,13 @@ impl NxapiAttestationClient {
         } else {
             self.request_oauth_token("client_credentials", None).await?
         };
-        if response.status >= 400 && refresh_token.is_some() {
+        if matches!(response.status, 400 | 401) && refresh_token.is_some() {
             response = self.request_oauth_token("client_credentials", None).await?;
         }
         if let Some(message) = oauth_client_authentication_error(&response) {
             return Err(CoreError::Authentication(message));
         }
-        response.ensure_success("NXAPI OAuth token request")?;
+        ensure_nxapi_success(&response, "NXAPI OAuth token request")?;
         let value: Value = response.json()?;
         let access_token = value
             .get("access_token")
@@ -204,7 +281,15 @@ impl NxapiAttestationClient {
         *self.token.lock().await = Some(OAuthToken {
             access_token: access_token.clone(),
             refresh_token,
-            expires_at: Instant::now() + Duration::from_secs(expires_in.saturating_sub(30).max(1)),
+            expires_at: Instant::now()
+                + super::token_expiry::expires_at(
+                    &access_token,
+                    Some(expires_in.min(i64::MAX as u64) as i64),
+                    chrono::Utc::now(),
+                )
+                .signed_duration_since(chrono::Utc::now())
+                .to_std()
+                .unwrap_or_default(),
         });
         Ok(access_token)
     }
@@ -222,13 +307,16 @@ impl NxapiAttestationClient {
         if let Some(refresh_token) = refresh_token {
             fields.push(("refresh_token", refresh_token.to_owned()));
         }
-        self.transport
-            .post_form_raw(
-                &self.config.oauth_url,
-                &[("User-Agent", self.config.user_agent.clone())],
-                &fields,
-            )
-            .await
+        nxapi_transport_request(|| async {
+            self.transport
+                .post_form_raw(
+                    &self.config.oauth_url,
+                    &[("User-Agent", self.config.user_agent.clone())],
+                    &fields,
+                )
+                .await
+        })
+        .await
     }
 
     async fn znca_request(
@@ -256,7 +344,7 @@ impl NxapiAttestationClient {
                 "NXAPI client compatibility identifier is outdated; update NSOAlbum".into(),
             ));
         }
-        response.ensure_success(&format!("NXAPI {path}"))?;
+        ensure_nxapi_success(&response, &format!("NXAPI {path}"))?;
         Ok(response)
     }
 
@@ -269,10 +357,12 @@ impl NxapiAttestationClient {
     ) -> CoreResult<HttpResponseData> {
         let url = format!("{}{path}", self.config.znca_base_url.trim_end_matches('/'));
         if path == "/config" {
-            return self
-                .transport
-                .get_raw(&url, &[("User-Agent", self.config.user_agent.clone())])
-                .await;
+            return nxapi_transport_request(|| async {
+                self.transport
+                    .get_raw(&url, &[("User-Agent", self.config.user_agent.clone())])
+                    .await
+            })
+            .await;
         }
 
         let token = self.oauth_token().await?;
@@ -291,7 +381,7 @@ impl NxapiAttestationClient {
         if requires_client_id(path) {
             headers.push(("Client-Id", self.config.client_id.clone()));
         }
-        self.transport.post_json_raw(&url, &headers, body).await
+        nxapi_transport_request(|| self.transport.post_json_raw(&url, &headers, body)).await
     }
 
     async fn nso_version_uncached(&self) -> CoreResult<String> {
@@ -308,7 +398,7 @@ impl NxapiAttestationClient {
         let response = self
             .znca_request_once("/config", &Value::Null, "application/json", None)
             .await?;
-        response.ensure_success("NXAPI /config")?;
+        ensure_nxapi_success(&response, "NXAPI /config")?;
         let value: Value = response.json()?;
         let version = value
             .get("nso_version")
@@ -416,6 +506,327 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test]
+    async fn transient_transport_recovery_stops_after_one_extra_attempt() {
+        let mut calls = 0;
+        let error = nxapi_transport_request(|| {
+            calls += 1;
+            std::future::ready(Err(CoreError::NetworkRequest {
+                stage: "nxapi_encrypt",
+                reason: "timeout",
+                proxy: "explicit",
+                elapsed_ms: 30000,
+                url: "https://nxapi-znca-api.fancy.org.uk/api/znca/encrypt-request".into(),
+                code_kind: "none",
+                code: "none".into(),
+            }))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(calls, 2);
+        assert!(matches!(
+            error,
+            CoreError::NetworkRequest {
+                reason: "timeout",
+                proxy: "explicit",
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_failed_request_after_doh_fallback_is_not_replayed_by_nxapi_retry() {
+        let mut calls = 0;
+        let result = nxapi_transport_request(|| {
+            calls += 1;
+            std::future::ready(Err(CoreError::NetworkRequest {
+                stage: "nxapi_encrypt",
+                reason: "doh_request_failed",
+                proxy: "default",
+                elapsed_ms: 12,
+                url: "https://nxapi-znca-api.fancy.org.uk/api/znca/encrypt-request".into(),
+                code_kind: "none",
+                code: "none".into(),
+            }))
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[tokio::test]
+    async fn transport_recovery_does_not_retry_http_rate_limits_or_business_errors() {
+        for status in [400, 429, 503] {
+            let (base, server) = crate::transport::tests::capture_response(
+                status,
+                r#"{"error":"service_unavailable"}"#,
+                &[],
+            );
+            let client = NxapiAttestationClient::new(
+                HttpTransport::new(Default::default()).unwrap(),
+                NxapiConfig {
+                    znca_base_url: base,
+                    ..Default::default()
+                },
+            );
+            let error = client.nso_version().await.unwrap_err();
+            server.join().unwrap();
+            if status == 429 {
+                assert!(matches!(
+                    error,
+                    CoreError::RateLimited {
+                        retry_after_seconds: 60
+                    }
+                ));
+            } else {
+                assert!(error.to_string().contains(&format!("HTTP {status}")));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn nxapi_config_recovers_one_transport_timeout_then_caches_the_success() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut requests = 0;
+            while requests < 2 && Instant::now() < deadline {
+                let (mut socket, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("synthetic listener failed: {error}"),
+                };
+                // Accepted sockets can inherit the listener's nonblocking
+                // mode on Windows. The request may arrive after accept().
+                socket.set_nonblocking(false).unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut request = [0; 2048];
+                let length = socket.read(&mut request).unwrap();
+                assert!(std::str::from_utf8(&request[..length])
+                    .unwrap()
+                    .starts_with("GET /config "));
+                requests += 1;
+                if requests == 1 {
+                    std::thread::sleep(Duration::from_millis(400));
+                    continue;
+                }
+                let body = r#"{"nso_version":"3.9.9"}"#;
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            requests
+        });
+        let client = NxapiAttestationClient::new(
+            HttpTransport::new(crate::transport::TransportConfig {
+                timeout: Duration::from_millis(200),
+                ..Default::default()
+            })
+            .unwrap(),
+            NxapiConfig {
+                znca_base_url: base,
+                ..Default::default()
+            },
+        );
+        let result = client.nso_version().await;
+        let requests = server.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "A single transient timeout must be recoverable: {result:?}"
+        );
+        assert_eq!(result.unwrap(), "3.9.9");
+        assert_eq!(requests, 2);
+        assert_eq!(client.nso_version().await.unwrap(), "3.9.9");
+    }
+
+    #[tokio::test]
+    async fn nxapi_error_keeps_only_a_known_code_and_not_remote_response_details() {
+        let (base, server) = crate::transport::tests::capture_response(
+            400,
+            r#"{"error":"invalid_request","error_description":"session_token=PRIVATE","debug_id":"PRIVATE-ID","token":"PRIVATE-TOKEN"}"#,
+            &[],
+        );
+        let client = NxapiAttestationClient::new(
+            HttpTransport::new(Default::default()).unwrap(),
+            NxapiConfig {
+                znca_base_url: base,
+                ..Default::default()
+            },
+        );
+        let error = client.nso_version().await.unwrap_err().to_string();
+        server.join().unwrap();
+        assert!(error.contains("HTTP 400"));
+        assert!(error.contains("NXAPI code: invalid_request"));
+        assert!(!error.contains("PRIVATE"));
+    }
+
+    #[test]
+    fn oauth_client_error_does_not_echo_untrusted_description() {
+        let response = HttpResponseData {
+            status: 401,
+            headers: HashMap::new(),
+            body: br#"{"error":"invalid_client","error_description":"access_token=PRIVATE"}"#
+                .to_vec(),
+        };
+        let message = oauth_client_authentication_error(&response).unwrap();
+        assert!(!message.contains("PRIVATE"));
+        assert!(message.contains("invalid_client"));
+    }
+
+    #[test]
+    fn safe_error_codes_keep_error_categories_and_never_echo_unknown_values() {
+        for body in [
+            br#"{"error":"session_token_PRIVATE","error_description":"PRIVATE"}"#.to_vec(),
+            b"PRIVATE HTML response".to_vec(),
+            br#"{"error":{"token":"PRIVATE"}}"#.to_vec(),
+        ] {
+            let response = HttpResponseData {
+                status: 400,
+                headers: HashMap::new(),
+                body,
+            };
+            let error = ensure_nxapi_success(&response, "NXAPI /f")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("HTTP 400"));
+            assert!(!error.contains("PRIVATE"));
+            assert!(!error.contains("NXAPI code:"));
+        }
+        let mut response = HttpResponseData {
+            status: 401,
+            headers: HashMap::new(),
+            body: br#"{"error":"invalid_token","token":"PRIVATE"}"#.to_vec(),
+        };
+        let error = ensure_nxapi_success(&response, "NXAPI /f").unwrap_err();
+        assert!(matches!(error, CoreError::Authentication(_)));
+        assert!(error.to_string().contains("NXAPI code: invalid_token"));
+        assert!(!error.to_string().contains("PRIVATE"));
+        response.status = 429;
+        assert!(matches!(
+            ensure_nxapi_success(&response, "NXAPI /f"),
+            Err(CoreError::RateLimited {
+                retry_after_seconds: 60
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn oauth_and_znca_config_send_the_application_user_agent() {
+        let expected = format!("user-agent: Cypas-NSOAlbum/{}", env!("CARGO_PKG_VERSION"));
+        let (oauth_url, oauth_server) = crate::transport::tests::capture_request(
+            r#"{"access_token":"test-only-token","expires_in":300}"#,
+        );
+        let (znca_base_url, config_server) =
+            crate::transport::tests::capture_request(r#"{"nso_version":"3.8.0"}"#);
+        let client = NxapiAttestationClient::new(
+            HttpTransport::new(Default::default()).unwrap(),
+            NxapiConfig {
+                oauth_url,
+                znca_base_url,
+                ..Default::default()
+            },
+        );
+        client.oauth_token().await.unwrap();
+        assert_eq!(client.nso_version().await.unwrap(), "3.8.0");
+        for request in [oauth_server.join().unwrap(), config_server.join().unwrap()] {
+            assert!(request
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case(&expected)));
+        }
+    }
+
+    #[tokio::test]
+    async fn short_lived_nxapi_oauth_is_reused_until_expiry_not_a_five_minute_margin() {
+        let (url, server) = crate::transport::tests::capture_request(
+            r#"{"access_token":"synthetic-short-oauth","expires_in":15}"#,
+        );
+        let client = NxapiAttestationClient::new(
+            HttpTransport::new(Default::default()).unwrap(),
+            NxapiConfig {
+                oauth_url: url,
+                ..Default::default()
+            },
+        );
+        assert_eq!(client.oauth_token().await.unwrap(), "synthetic-short-oauth");
+        server.join().unwrap();
+        assert_eq!(
+            client.oauth_token().await.unwrap(),
+            "synthetic-short-oauth",
+            "a still-valid short NXAPI OAuth token must not request a second grant",
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_nxapi_oauth_renews_its_own_grant_then_reuses_the_replacement() {
+        let (url, server) = crate::transport::tests::capture_request(
+            r#"{"access_token":"synthetic-renewed-oauth","expires_in":15}"#,
+        );
+        let client = NxapiAttestationClient::new(
+            HttpTransport::new(Default::default()).unwrap(),
+            NxapiConfig {
+                oauth_url: url,
+                ..Default::default()
+            },
+        );
+        *client.token.lock().await = Some(OAuthToken {
+            access_token: "synthetic-expired-oauth".into(),
+            refresh_token: Some("synthetic-refresh-grant".into()),
+            expires_at: Instant::now() - Duration::from_secs(1),
+        });
+        assert_eq!(
+            client.oauth_token().await.unwrap(),
+            "synthetic-renewed-oauth"
+        );
+        let request = server.join().unwrap();
+        let fields: std::collections::HashMap<_, _> =
+            url::form_urlencoded::parse(request.split("\r\n\r\n").nth(1).unwrap().as_bytes())
+                .into_owned()
+                .collect();
+        assert_eq!(fields["grant_type"], "refresh_token");
+        assert_eq!(fields["refresh_token"], "synthetic-refresh-grant");
+        assert_eq!(
+            client.oauth_token().await.unwrap(),
+            "synthetic-renewed-oauth"
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limited_oauth_refresh_does_not_fall_back_to_another_grant() {
+        let (oauth_url, server) = crate::transport::tests::capture_response(429, "{}", &[]);
+        let client = NxapiAttestationClient::new(
+            HttpTransport::new(Default::default()).unwrap(),
+            NxapiConfig {
+                oauth_url,
+                ..Default::default()
+            },
+        );
+        *client.token.lock().await = Some(OAuthToken {
+            access_token: "expired-test-token".into(),
+            refresh_token: Some("test-refresh".into()),
+            expires_at: Instant::now() - Duration::from_secs(1),
+        });
+        let result = client.oauth_token().await;
+        server.join().unwrap();
+        assert!(matches!(
+            result,
+            Err(CoreError::RateLimited {
+                retry_after_seconds: 60
+            })
+        ));
+    }
+
     #[test]
     fn uses_current_nxapi_client_identifiers() {
         let config = NxapiConfig::default();
@@ -423,7 +834,7 @@ mod tests {
         assert_eq!(config.client_id, "OhFZ3YmNeYnls5Fo-z3BkA");
         assert_eq!(
             config.user_agent,
-            format!("Cypas/NSOAlbum/{}", env!("CARGO_PKG_VERSION"))
+            format!("Cypas-NSOAlbum/{}", env!("CARGO_PKG_VERSION"))
         );
         assert_eq!(ZNCA_CLIENT_VERSION, "d8fAZDPzwimzQ7c6");
     }
@@ -478,7 +889,18 @@ mod tests {
         )
         .unwrap();
 
-        assert!(body.get("coral_user_id").is_none());
+        assert_eq!(
+            body,
+            json!({
+                "token": "id-token",
+                "hash_method": 1,
+                "na_id": "1234567890",
+                "encrypt_token_request": {
+                    "url": "https://example.com/login",
+                    "parameter": {"naIdToken": "id-token"},
+                },
+            })
+        );
     }
 
     #[test]
@@ -502,7 +924,19 @@ mod tests {
             Some("9876543210"),
         )
         .unwrap();
-        assert_eq!(body["coral_user_id"], "9876543210");
+        assert_eq!(
+            body,
+            json!({
+                "token": "access-token",
+                "hash_method": 2,
+                "na_id": "1234567890",
+                "coral_user_id": "9876543210",
+                "encrypt_token_request": {
+                    "url": "https://example.com/token",
+                    "parameter": {},
+                },
+            })
+        );
     }
 
     #[test]
